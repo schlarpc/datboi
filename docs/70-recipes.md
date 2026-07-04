@@ -64,7 +64,12 @@ documentation + UI/ACL affordance; positions are normative.
 - **`zstd-decompress@1`, `xz-decompress@1`, `deflate-decompress@1`** —
   decompression of a valid stream is spec-determined. **Compression is
   never builtin** (encoder output varies by version); anything reproducing
-  compressed bytes pins a wasm component.
+  compressed bytes pins a wasm component. Decompressor params carry an
+  optional input **window** `{1: offset, 2: len}` (ratified at M1
+  implementation): a zip member is one windowed recipe over the container
+  blob rather than a slice-recipe pair with an intermediate
+  compressed-slice identity — halves recipe rows at MAME scale and the
+  pattern generalizes to seekable-zstd frames.
 
 Everything else is a pinned wasm component (D5/D6).
 
