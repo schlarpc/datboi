@@ -1,0 +1,644 @@
+//! Command implementations (docs/85-cli.md). Human tables by default,
+//! `--json` everywhere; audit exit codes: 0 complete / 1 incomplete /
+//! 2 error.
+
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use anyhow::{Context, bail};
+use datboi_catalog::{ImportOptions, audit, export_dat, import_dat};
+use datboi_core::alias::AliasHasher;
+use datboi_core::object::{self, ObjectKind};
+use datboi_core::recipe::{Op, Recipe};
+use datboi_index::recipes::NewRecipe;
+use datboi_index::types::{Namespace as NsRow, OpKind, RecipeSource, Residency, SeekClass};
+use datboi_ingest::{IngestReport, Ingester};
+use datboi_store_fs::{Namespace, StoreError, VerifyOutcome};
+use serde_json::json;
+
+use crate::config::Env;
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
+/// Split "provider/system" (system may itself contain slashes).
+fn split_source(arg: &str) -> anyhow::Result<(&str, &str)> {
+    arg.split_once('/')
+        .filter(|(p, s)| !p.is_empty() && !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("expected <provider>/<system>, got {arg:?}"))
+}
+
+fn warn_detector_errors(env: &Env) {
+    for (path, err) in &env.detector_errors {
+        eprintln!("warning: detector {}: {err}", path.display());
+    }
+}
+
+// ---- ingest ----
+
+pub fn ingest(mut env: Env, paths: &[PathBuf], mv: bool, json: bool) -> anyhow::Result<ExitCode> {
+    if mv {
+        // D40 custody semantics (delete source only after index rows are
+        // durable) need a per-file hook the Ingester doesn't expose yet;
+        // shipping half of --move would be worse than none.
+        bail!("--move is not implemented yet; ingest defaults to --copy semantics (D40)");
+    }
+    warn_detector_errors(&env);
+    // Best-effort sweep of crash-orphaned temp files (docs/10-cas.md).
+    if let Ok(swept) = env.store.cleanup_temp(Duration::from_secs(24 * 60 * 60))
+        && swept > 0
+    {
+        eprintln!("note: removed {swept} stale temp file(s)");
+    }
+    let detectors = std::mem::take(&mut env.detectors);
+    let report = Ingester::new(&env.store, &mut env.db, &detectors).ingest(paths);
+    if json {
+        println!("{}", ingest_json(&report));
+    } else {
+        print_ingest(&report);
+    }
+    Ok(if report.errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
+fn ingest_json(r: &IngestReport) -> serde_json::Value {
+    json!({
+        "files_scanned": r.files_scanned,
+        "files_unchanged": r.files_unchanged,
+        "files_stored": r.files_stored,
+        "files_already_present": r.files_already_present,
+        "members_claimed": r.members_claimed,
+        "detector_hits": r.detector_hits,
+        "skipper_skipped_large": r.skipper_skipped_large,
+        "errors": r.errors.iter()
+            .map(|(p, e)| json!({"path": p.display().to_string(), "error": e}))
+            .collect::<Vec<_>>(),
+        "member_skips": r.member_skips.iter()
+            .map(|(p, m, e)| json!({"path": p.display().to_string(), "member": m, "reason": e}))
+            .collect::<Vec<_>>(),
+        "notes": r.notes,
+    })
+}
+
+fn print_ingest(r: &IngestReport) {
+    println!("scanned            {:>8}", r.files_scanned);
+    println!("unchanged (cache)  {:>8}", r.files_unchanged);
+    println!("stored             {:>8}", r.files_stored);
+    println!("already present    {:>8}", r.files_already_present);
+    println!("members claimed    {:>8}", r.members_claimed);
+    println!("detector hits      {:>8}", r.detector_hits);
+    if r.skipper_skipped_large > 0 {
+        println!(
+            "skipper skipped    {:>8} (over size cap)",
+            r.skipper_skipped_large
+        );
+    }
+    for note in &r.notes {
+        println!("note: {note}");
+    }
+    for (path, member, reason) in &r.member_skips {
+        println!("skip: {} :: {member}: {reason}", path.display());
+    }
+    for (path, err) in &r.errors {
+        println!("error: {}: {err}", path.display());
+    }
+}
+
+// ---- dat import / list ----
+
+pub fn dat_import(
+    mut env: Env,
+    file: &Path,
+    provider: Option<&str>,
+    system: Option<&str>,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let bytes = std::fs::read(file).with_context(|| format!("reading dat {}", file.display()))?;
+    let report = import_dat(
+        &env.store,
+        &mut env.db,
+        &bytes,
+        &ImportOptions {
+            provider,
+            system,
+            imported_at: now_unix(),
+        },
+    )?;
+    if json {
+        println!(
+            "{}",
+            json!({
+                "source_id": report.source_id,
+                "revision_id": report.revision_id,
+                "dat_blob": report.dat_blob.to_hex(),
+                "entries": report.entries,
+                "claims": report.claims,
+                "demoted_revisions": report.demoted_revisions,
+            })
+        );
+    } else {
+        println!(
+            "imported revision {} ({} entries, {} claims) as blob {}",
+            report.revision_id, report.entries, report.claims, report.dat_blob
+        );
+        if !report.demoted_revisions.is_empty() {
+            println!(
+                "demoted to header-only (D38): revisions {:?}",
+                report.demoted_revisions
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn dat_list(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
+    let conn = env.db.cache();
+    let mut stmt = conn.prepare(
+        "SELECT s.provider, s.system, r.revision_id, r.version, r.dat_date, r.imported_at,
+                (SELECT COUNT(*) FROM entry e WHERE e.revision_id = r.revision_id)
+         FROM dat_source s
+         LEFT JOIN dat_revision r ON r.revision_id = s.current_revision_id
+         ORDER BY s.provider, s.system",
+    )?;
+    type SourceRow = (
+        String,
+        String,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        i64,
+    );
+    let rows: Vec<SourceRow> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        })?
+        .collect::<Result<_, _>>()?;
+    if json {
+        let items: Vec<_> = rows
+            .iter()
+            .map(|(p, s, rev, ver, date, at, entries)| {
+                json!({
+                    "provider": p, "system": s, "current_revision": rev,
+                    "version": ver, "date": date, "imported_at": at,
+                    "entries": entries,
+                })
+            })
+            .collect();
+        println!("{}", json!({ "sources": items }));
+    } else if rows.is_empty() {
+        println!("no dat sources imported");
+    } else {
+        for (p, s, rev, ver, date, _at, entries) in &rows {
+            println!(
+                "{p}/{s}  rev {}  version {}  date {}  entries {entries}",
+                rev.map_or_else(|| "-".into(), |r| r.to_string()),
+                ver.as_deref().unwrap_or("-"),
+                date.as_deref().unwrap_or("-"),
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+// ---- audit ----
+
+pub fn audit_cmd(
+    env: &Env,
+    source: &str,
+    missing_only: bool,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let (provider, system) = split_source(source)?;
+    let report = audit(&env.db, provider, system)?;
+    let t = &report.totals;
+    let complete = t.missing == 0 && t.probable == 0;
+    if json {
+        let entries: Vec<_> = report
+            .entries
+            .iter()
+            .filter(|e| !missing_only || e.missing > 0)
+            .map(|e| {
+                json!({
+                    "name": e.name, "required": e.required,
+                    "have_verified": e.have_verified, "have_claimed": e.have_claimed,
+                    "probable": e.probable, "peer_available": e.peer_available,
+                    "missing": e.missing, "mia": e.mia,
+                    "complete": e.complete(),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            json!({
+                "provider": report.provider, "system": report.system,
+                "revision_id": report.revision_id,
+                "totals": {
+                    "entries": t.entries, "entries_complete": t.entries_complete,
+                    "required": t.required, "have_verified": t.have_verified,
+                    "have_claimed": t.have_claimed, "probable": t.probable,
+                    "peer_available": t.peer_available, "missing": t.missing,
+                    "mia": t.mia,
+                },
+                "complete": complete,
+                "entries": entries,
+            })
+        );
+    } else {
+        println!(
+            "{}/{} (revision {})",
+            report.provider, report.system, report.revision_id
+        );
+        println!(
+            "entries {}/{} complete; roms: {} verified, {} claimed, {} probable, {} peer, {} missing ({} mia)",
+            t.entries_complete,
+            t.entries,
+            t.have_verified,
+            t.have_claimed,
+            t.probable,
+            t.peer_available,
+            t.missing,
+            t.mia,
+        );
+        for e in &report.entries {
+            if e.complete() && missing_only {
+                continue;
+            }
+            if e.complete() && !missing_only {
+                continue; // tables list problems; --json lists everything
+            }
+            println!(
+                "  {}  missing {}/{}{}",
+                e.name,
+                e.missing,
+                e.required,
+                if e.probable > 0 {
+                    format!(" (+{} probable)", e.probable)
+                } else {
+                    String::new()
+                }
+            );
+        }
+    }
+    Ok(if complete {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
+// ---- export ----
+
+pub fn export_dat_cmd(env: &Env, source: &str, out: &Path) -> anyhow::Result<ExitCode> {
+    let (provider, system) = split_source(source)?;
+    let bytes = export_dat(&env.db, provider, system, None)?;
+    std::fs::write(out, &bytes).with_context(|| format!("writing {}", out.display()))?;
+    println!("wrote {} ({} bytes)", out.display(), bytes.len());
+    Ok(ExitCode::SUCCESS)
+}
+
+// ---- recover ----
+
+/// M1 recovery scope (D15, documented in command help): rebuilds the
+/// blob index (with recomputed aliases — one full read pass over data/)
+/// and the recipe index from meta/ objects. Recovered recipes have no
+/// verification provenance, so they re-enter as Pending and re-verify
+/// lazily. Catalog tables (dat sources/entries/claims) come back via
+/// `datboi dat import` of the dat files; snapshot-driven full recovery
+/// lands with the state-snapshot encoder.
+pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
+    env.db.truncate_cache()?;
+    let now = now_unix();
+
+    let mut blobs: u64 = 0;
+    let mut corrupt: Vec<String> = Vec::new();
+    let mut foreign: u64 = 0;
+
+    // data/: re-hash every blob (verifies while rebuilding aliases).
+    for item in env.store.list(Namespace::Data) {
+        match item {
+            Ok((hash, _size)) => {
+                let mut file = env
+                    .store
+                    .get(Namespace::Data, &hash)?
+                    .context("listed blob vanished mid-recover")?;
+                let mut hasher = AliasHasher::new();
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    let n = file.read(&mut buf)?;
+                    if n == 0 {
+                        break;
+                    }
+                    hasher.update(&buf[..n]);
+                }
+                let aliases = hasher.finalize();
+                if aliases.blake3 != hash {
+                    corrupt.push(hash.to_hex());
+                    // Index the row (the file exists) but grant it no
+                    // verification and no aliases.
+                    env.db.upsert_blob(
+                        &hash,
+                        Some(aliases.size),
+                        NsRow::Data,
+                        Residency::Resident,
+                    )?;
+                    continue;
+                }
+                let blob_id = env.db.upsert_blob(
+                    &hash,
+                    Some(aliases.size),
+                    NsRow::Data,
+                    Residency::Resident,
+                )?;
+                env.db.insert_aliases(blob_id, &aliases)?;
+                env.db.set_verified(blob_id, now)?;
+                blobs += 1;
+            }
+            Err(StoreError::Foreign { .. }) => foreign += 1,
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    // meta/: recipes and other structured objects.
+    let mut recipes: u64 = 0;
+    let mut meta_unknown: u64 = 0;
+    for item in env.store.list(Namespace::Meta) {
+        match item {
+            Ok((hash, _size)) => {
+                let mut file = env
+                    .store
+                    .get(Namespace::Meta, &hash)?
+                    .context("listed blob vanished mid-recover")?;
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                let mut hasher = AliasHasher::new();
+                hasher.update(&bytes);
+                let aliases = hasher.finalize();
+                if aliases.blake3 != hash {
+                    corrupt.push(hash.to_hex());
+                    continue;
+                }
+                let blob_id = env.db.upsert_blob(
+                    &hash,
+                    Some(aliases.size),
+                    NsRow::Meta,
+                    Residency::Resident,
+                )?;
+                env.db.insert_aliases(blob_id, &aliases)?;
+                env.db.set_verified(blob_id, now)?;
+                match object::sniff(&bytes) {
+                    Some((ObjectKind::Recipe, _, _)) => {
+                        let recipe = Recipe::decode(&bytes)?;
+                        index_recovered_recipe(&mut env.db, blob_id, &recipe)?;
+                        recipes += 1;
+                    }
+                    _ => meta_unknown += 1,
+                }
+            }
+            Err(StoreError::Foreign { .. }) => foreign += 1,
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    let notes = [
+        "recipes recovered as Pending (no verification provenance); they re-verify lazily",
+        "catalog tables are empty: re-run `datboi dat import` for each dat to restore audits",
+        "rescan cache is empty: the next ingest re-reads sources",
+    ];
+    if json {
+        println!(
+            "{}",
+            json!({
+                "blobs_indexed": blobs,
+                "recipes_indexed": recipes,
+                "meta_other": meta_unknown,
+                "foreign_files": foreign,
+                "corrupt": corrupt,
+                "notes": notes,
+            })
+        );
+    } else {
+        println!("blobs indexed      {blobs:>8}");
+        println!("recipes indexed    {recipes:>8}");
+        if meta_unknown > 0 {
+            println!("other meta objects {meta_unknown:>8}");
+        }
+        if foreign > 0 {
+            println!("foreign files      {foreign:>8}");
+        }
+        for hash in &corrupt {
+            println!("CORRUPT: {hash}");
+        }
+        for note in notes {
+            println!("note: {note}");
+        }
+    }
+    Ok(if corrupt.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
+fn index_recovered_recipe(
+    db: &mut datboi_index::Db,
+    recipe_blob_id: i64,
+    recipe: &Recipe,
+) -> anyhow::Result<()> {
+    let (op_kind, op_name, seek_class) = match &recipe.op {
+        Op::Builtin { name, major } => {
+            let full = format!("{name}@{major}");
+            // Conservative inference; docs/80-views.md classes. Unknown
+            // builtins default to Opaque (never lies toward seekability).
+            let class = if name == "assemble" || name == "swap" {
+                SeekClass::Affine
+            } else {
+                SeekClass::Opaque
+            };
+            (OpKind::Builtin, full, class)
+        }
+        Op::Wasm {
+            component, export, ..
+        } => (
+            OpKind::Wasm,
+            format!("{}#{export}", component.to_hex()),
+            SeekClass::Opaque,
+        ),
+    };
+    let mut inputs = Vec::new();
+    for (position, input) in recipe.inputs.iter().enumerate() {
+        let id = ensure_blob(db, &input.hash)?;
+        inputs.push((
+            u32::try_from(position).expect("recipe input count fits u32"),
+            id,
+            input.role.as_deref(),
+        ));
+    }
+    let mut outputs = Vec::new();
+    for (ordinal, output) in recipe.outputs.iter().enumerate() {
+        let id = ensure_blob(db, &output.hash)?;
+        outputs.push((
+            u32::try_from(ordinal).expect("recipe output count fits u32"),
+            id,
+            output.size,
+            output.name.as_deref(),
+        ));
+    }
+    db.insert_recipe(&NewRecipe {
+        blob_id: recipe_blob_id,
+        op_kind,
+        op_name: &op_name,
+        seek_class,
+        source: RecipeSource::LocalIngest,
+        inputs: &inputs,
+        outputs: &outputs,
+    })?;
+    Ok(())
+}
+
+/// Referenced-but-absent blobs get Absent rows (peer/member semantics).
+fn ensure_blob(db: &datboi_index::Db, hash: &datboi_core::hash::Blake3) -> anyhow::Result<i64> {
+    if let Some(id) = db.get_blob_id(hash)? {
+        return Ok(id);
+    }
+    Ok(db.upsert_blob(hash, None, NsRow::Data, Residency::Absent)?)
+}
+
+// ---- scrub ----
+
+pub fn scrub(env: &Env, sample_pct: u8, json: bool) -> anyhow::Result<ExitCode> {
+    let pct = sample_pct.min(100);
+    let mut checked: u64 = 0;
+    let mut corrupt: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for ns in [Namespace::Data, Namespace::Meta] {
+        for item in env.store.list(ns) {
+            let (hash, _) = match item {
+                Ok(pair) => pair,
+                Err(StoreError::Foreign { .. }) => continue,
+                Err(e) => return Err(e.into()),
+            };
+            // Deterministic sampling by hash prefix: no RNG, same subset
+            // every run at a given percentage.
+            if u32::from(hash.0[0]) * 100 >= u32::from(pct) * 256 {
+                continue;
+            }
+            checked += 1;
+            match env.store.verify(ns, &hash)? {
+                VerifyOutcome::Valid => {}
+                VerifyOutcome::Corrupt { .. } => corrupt.push(hash.to_hex()),
+                VerifyOutcome::Missing => missing.push(hash.to_hex()),
+            }
+        }
+    }
+    if json {
+        println!(
+            "{}",
+            json!({
+                "sample_pct": pct, "checked": checked,
+                "corrupt": corrupt, "missing": missing,
+            })
+        );
+    } else {
+        println!("checked {checked} blobs ({pct}% sample)");
+        for h in &corrupt {
+            println!("CORRUPT: {h}");
+        }
+        for h in &missing {
+            println!("MISSING: {h}");
+        }
+        if corrupt.is_empty() && missing.is_empty() {
+            println!("no problems found");
+        }
+    }
+    Ok(if corrupt.is_empty() && missing.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
+// ---- status ----
+
+pub fn status(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
+    let mut ns_stats = Vec::new();
+    for ns in [Namespace::Data, Namespace::Meta] {
+        let (mut count, mut bytes) = (0u64, 0u64);
+        for (_, size) in env.store.list(ns).flatten() {
+            count += 1;
+            bytes += size;
+        }
+        ns_stats.push((ns, count, bytes));
+    }
+    let conn = env.db.cache();
+    let table_count = |table: &str| -> anyhow::Result<i64> {
+        Ok(conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?)
+    };
+    let tables = [
+        "blob",
+        "alias",
+        "recipe",
+        "entry",
+        "rom_claim",
+        "content_identity",
+    ];
+    let mut counts = Vec::new();
+    for t in tables {
+        counts.push((t, table_count(t)?));
+    }
+    let mut sources: Vec<(String, String, Option<i64>)> = Vec::new();
+    let mut stmt = conn.prepare(
+        "SELECT s.provider, s.system, MAX(r.imported_at)
+         FROM dat_source s LEFT JOIN dat_revision r ON r.source_id = s.source_id
+         GROUP BY s.source_id ORDER BY s.provider, s.system",
+    )?;
+    for row in stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))? {
+        sources.push(row?);
+    }
+
+    if json {
+        println!(
+            "{}",
+            json!({
+                "store": ns_stats.iter()
+                    .map(|(ns, c, b)| json!({"namespace": ns.dir(), "blobs": c, "bytes": b}))
+                    .collect::<Vec<_>>(),
+                "db": counts.iter().map(|(t, c)| json!({"table": t, "rows": c})).collect::<Vec<_>>(),
+                "sources": sources.iter()
+                    .map(|(p, s, at)| json!({"provider": p, "system": s, "last_import": at}))
+                    .collect::<Vec<_>>(),
+            })
+        );
+    } else {
+        for (ns, count, bytes) in &ns_stats {
+            println!("{:<5} {count:>8} blobs  {bytes:>12} bytes", ns.dir());
+        }
+        for (t, c) in &counts {
+            println!("{t:<17} {c:>8} rows");
+        }
+        for (p, s, at) in &sources {
+            println!(
+                "{p}/{s}  last import {}",
+                at.map_or_else(|| "-".into(), |v| v.to_string())
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}

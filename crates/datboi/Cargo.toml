@@ -10,7 +10,20 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+datboi-catalog.workspace = true
+datboi-core.workspace = true
+datboi-formats.workspace = true
+datboi-index.workspace = true
+datboi-ingest.workspace = true
 datboi-server.workspace = true
+datboi-store-fs.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+crc32fast.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

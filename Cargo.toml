@@ -22,6 +22,7 @@ datboi-server = { path = "crates/datboi-server" }
 datboi-store-fs = { path = "crates/datboi-store-fs" }
 
 anyhow = "1"
+assert_cmd = "2"
 blake3 = "1"
 clap = { version = "4", features = ["derive", "env"] }
 crc32fast = "1"
@@ -29,6 +30,7 @@ crc32fast = "1"
 # (decompression only — compression never reproduces bytes anyway, D24).
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 md-5 = "0.10"
+predicates = "3"
 proptest = "1"
 quick-xml = "0.38"
 # `bundled` vendors and pins the SQLite build: reproducible under nix, the
