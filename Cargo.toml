@@ -12,6 +12,7 @@ license = "MIT"
 repository = "https://github.com/schlarpc/datboi"
 
 [workspace.dependencies]
+datboi-catalog = { path = "crates/datboi-catalog" }
 datboi-core = { path = "crates/datboi-core" }
 datboi-formats = { path = "crates/datboi-formats" }
 datboi-index = { path = "crates/datboi-index" }
@@ -35,6 +36,8 @@ quick-xml = "0.38"
 # version (and thus JSONB availability) moves — a system libsqlite would
 # reintroduce exactly the version drift the design forbids elsewhere.
 rusqlite = { version = "0.37", features = ["bundled"] }
+# Value-construction only (JSONB column text); no serde derive anywhere.
+serde_json = "1"
 sha1 = "0.10"
 sha2 = "0.10"
 tempfile = "3"

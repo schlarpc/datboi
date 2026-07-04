@@ -1,0 +1,25 @@
+[package]
+name = "datboi-catalog"
+description = "Dat import, content-identity unification, audit rollups, dir2dat export"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+datboi-core.workspace = true
+datboi-formats.workspace = true
+datboi-index.workspace = true
+datboi-store-fs.workspace = true
+quick-xml.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+datboi-ingest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

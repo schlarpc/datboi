@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
+pub use recipes::GroundingMode;
 pub use types::{
     AliasAlgo, ClaimKind, ClaimStatus, Namespace, OpKind, RecipeSource, Residency, SeekClass,
     VerifyState,

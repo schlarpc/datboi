@@ -29,11 +29,15 @@ pub(crate) fn skip_subtree(
 }
 
 /// Read the text content of a simple `<elem>text</elem>` element.
+/// `read_text` yields raw text; entities must be unescaped here just as
+/// `decode_and_unescape_value` does for attributes (`&amp;` → `&`).
 pub(crate) fn element_text(
     reader: &mut Reader<&[u8]>,
     start: &BytesStart<'_>,
 ) -> Result<String, ParseError> {
-    Ok(reader.read_text(start.to_end().name())?.into_owned())
+    let raw = reader.read_text(start.to_end().name())?;
+    let unescaped = quick_xml::escape::unescape(&raw).map_err(quick_xml::Error::from)?;
+    Ok(unescaped.into_owned())
 }
 
 pub(crate) fn pos(reader: &Reader<&[u8]>) -> u64 {

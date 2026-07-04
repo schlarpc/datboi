@@ -160,19 +160,57 @@ impl Db {
     /// loop of set-based rounds (∀-inputs-grounded is not a monotone
     /// recursive CTE); converges in ≤ DAG depth rounds.
     pub fn grounded_set(&self) -> Result<HashSet<i64>, IndexError> {
-        grounded(self.cache(), None)
+        grounded(self.cache(), GroundingMode::Eviction, None)
+    }
+
+    /// Grounding under a chosen recipe-trust rule. `Eviction` is the D25
+    /// drop-safety rule (replayed-local only); the two audit modes serve
+    /// completeness reporting, where D4's verify-on-ingest already makes
+    /// locally-minted claims verified-grade knowledge without licensing
+    /// any literal drop.
+    pub fn grounded_set_with(&self, mode: GroundingMode) -> Result<HashSet<i64>, IndexError> {
+        grounded(self.cache(), mode, None)
     }
 
     /// Would `blob_id` remain grounded if its literal were dropped?
     /// (M1 never evicts; the primitive lives with the schema so the D21
     /// semantics are pinned by tests from day one.) The D27 opaque/pinned
     /// rule layers on top of this when the residency planner lands.
+    /// Always uses the `Eviction` rule (D25).
     pub fn is_evictable(&self, blob_id: i64) -> Result<bool, IndexError> {
-        Ok(grounded(self.cache(), Some(blob_id))?.contains(&blob_id))
+        Ok(grounded(self.cache(), GroundingMode::Eviction, Some(blob_id))?.contains(&blob_id))
     }
 }
 
-fn grounded(conn: &Connection, without_literal: Option<i64>) -> Result<HashSet<i64>, IndexError> {
+/// Which recipes may carry grounding (D21) for a given question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroundingMode {
+    /// Drop-safety (D25): replayed-local recipes only.
+    Eviction,
+    /// Audit "have(verified)": replayed-local, plus Verified recipes minted
+    /// by local ingest — we hashed the real bytes ourselves (D4).
+    AuditVerified,
+    /// Audit "have(claimed)": any non-failed verified-grade claim,
+    /// regardless of source (peer claims count; D4 language).
+    AuditClaimed,
+}
+
+impl GroundingMode {
+    /// SQL predicate over `recipe r` selecting recipes that ground.
+    fn recipe_condition(self) -> &'static str {
+        match self {
+            Self::Eviction => "r.verify = 3",
+            Self::AuditVerified => "(r.verify = 3 OR (r.verify = 1 AND r.source = 0))",
+            Self::AuditClaimed => "r.verify IN (1, 3)",
+        }
+    }
+}
+
+fn grounded(
+    conn: &Connection,
+    mode: GroundingMode,
+    without_literal: Option<i64>,
+) -> Result<HashSet<i64>, IndexError> {
     conn.execute_batch(
         "DROP TABLE IF EXISTS temp.grounded;
          CREATE TEMP TABLE grounded (blob_id INTEGER PRIMARY KEY);",
@@ -185,14 +223,17 @@ fn grounded(conn: &Connection, without_literal: Option<i64>) -> Result<HashSet<i
     )?;
     loop {
         let added = conn.execute(
-            "INSERT OR IGNORE INTO temp.grounded
-             SELECT ro.blob_id
-             FROM recipe r JOIN recipe_output ro ON ro.recipe_id = r.recipe_id
-             WHERE r.verify = 3
-               AND NOT EXISTS (
-                 SELECT 1 FROM recipe_input ri
-                 WHERE ri.recipe_id = r.recipe_id
-                   AND ri.blob_id NOT IN (SELECT blob_id FROM temp.grounded))",
+            &format!(
+                "INSERT OR IGNORE INTO temp.grounded
+                 SELECT ro.blob_id
+                 FROM recipe r JOIN recipe_output ro ON ro.recipe_id = r.recipe_id
+                 WHERE {}
+                   AND NOT EXISTS (
+                     SELECT 1 FROM recipe_input ri
+                     WHERE ri.recipe_id = r.recipe_id
+                       AND ri.blob_id NOT IN (SELECT blob_id FROM temp.grounded))",
+                mode.recipe_condition()
+            ),
             [],
         )?;
         if added == 0 {
