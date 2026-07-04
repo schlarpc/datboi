@@ -1,0 +1,19 @@
+[package]
+name = "datboi-index"
+description = "Metadata DB layer: cache.db (derivable, nukeable) + state.db (authoritative-until-snapshotted)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+datboi-core.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

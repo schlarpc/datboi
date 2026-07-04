@@ -25,6 +25,11 @@ crc32fast = "1"
 md-5 = "0.10"
 proptest = "1"
 quick-xml = "0.38"
+# `bundled` vendors and pins the SQLite build: reproducible under nix, the
+# same library everywhere the daemon runs, and we control when the SQLite
+# version (and thus JSONB availability) moves — a system libsqlite would
+# reintroduce exactly the version drift the design forbids elsewhere.
+rusqlite = { version = "0.37", features = ["bundled"] }
 sha1 = "0.10"
 sha2 = "0.10"
 tempfile = "3"
