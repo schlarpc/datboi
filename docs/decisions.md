@@ -323,6 +323,17 @@ M5 (p2p) → M6+ (frontier). Full definition in 90-roadmap.md. *Rejected:*
 early storage wins in MVP (adds drop-adjacent paths to v1), status-page
 scope leak, p2p-before-UI reordering.
 
+## D40 — Ingest custody: copy default, move for bulk adoption, no by-reference blobs (2026-07-03)
+
+`ingest --copy` is the default (source untouched); `--move` renames into
+the store for collections already on the NAS dataset (zero data
+movement, layout intentionally destroyed — loud docs). By-reference
+storage is rejected: every blob-index row must be backed by bytes in
+`data/` (rebuildability + no mutable-under-us files). The
+try-before-custody use case is served by an audit-only mode
+(`datboi audit --against <dir>`: hash, claim, report; store nothing but
+the rescan cache).
+
 ## D36 — Aggregation ratified, lands M2 (2026-07-03)
 
 Content-defined aggregation as designed: aggregate = plain blob = concat

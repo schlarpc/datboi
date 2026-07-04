@@ -4,6 +4,8 @@
 //! losslessly into the canonical Entry/RomClaim model; unknown attributes
 //! are preserved in attrs maps.
 
+pub mod skipper;
+
 /// The dat families datboi accommodates (D13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DatFormat {

@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<!--
+  Transcription of the No-Intro NES (iNES) header detector rule shape:
+  16-byte iNES header when the "NES\x1a" magic (4E45531A) is at offset 0.
+  Real No-Intro detector XMLs are distributed via DAT-o-MATIC (login-gated);
+  this transcription matches the documented rule and the shape used by
+  other implementations (e.g. oxyromon's test fixture uses the same
+  start_offset/data pattern with attribute defaults omitted).
+-->
+<detector>
+  <name>Nintendo - Nintendo Entertainment System</name>
+  <author>datboi (transcribed)</author>
+  <version>20260703</version>
+  <rule start_offset="10">
+    <data offset="0" value="4E45531A"/>
+  </rule>
+</detector>

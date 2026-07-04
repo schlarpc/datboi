@@ -11,8 +11,11 @@ via `DATBOI_*` env with flags overriding.*
 datboi serve                         # run the daemon (localhost/unix socket)
 
 datboi ingest <path>...              # hash + claim content into the store
-    --move | --copy | --reference    # what happens to source files (default: reference)
+    --copy                           # default: source untouched (D40)
+    --move                           # rename into store (bulk adoption; destroys source layout)
     --rescan                         # force full rescan (ignore O(changed) cache)
+
+datboi audit --against <dir>         # audit-only: hash + report, take no custody (D40)
 
 datboi dat import <file|url>         # manual drop (No-Intro daily pack, D16)
 datboi dat fetch [<provider>]        # polite auto-fetch (Redump, MAME, libretro…)

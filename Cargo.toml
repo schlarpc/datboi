@@ -24,8 +24,10 @@ clap = { version = "4", features = ["derive", "env"] }
 crc32fast = "1"
 md-5 = "0.10"
 proptest = "1"
+quick-xml = "0.38"
 sha1 = "0.10"
 sha2 = "0.10"
+tempfile = "3"
 thiserror = "2"
 
 [workspace.lints.rust]

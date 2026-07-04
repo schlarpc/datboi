@@ -252,6 +252,8 @@ name = "datboi-formats"
 version = "0.1.0"
 dependencies = [
  "datboi-core",
+ "quick-xml",
+ "thiserror",
 ]
 
 [[package]]
@@ -273,7 +275,11 @@ dependencies = [
 name = "datboi-store-fs"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "datboi-core",
+ "proptest",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -382,6 +388,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "memchr"
+version = "2.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
+
+[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -444,6 +456,15 @@ name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
+
+[[package]]
+name = "quick-xml"
+version = "0.38.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "quote"

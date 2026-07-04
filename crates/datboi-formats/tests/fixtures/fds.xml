@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<!--
+  Transcription of the No-Intro Famicom Disk System detector rule shape:
+  16-byte fwNES header when the "FDS\x1a" magic (4644531A) is at offset 0.
+  See nes.xml for provenance notes.
+-->
+<detector>
+  <name>Nintendo - Famicom Disk System</name>
+  <author>datboi (transcribed)</author>
+  <version>20260703</version>
+  <rule start_offset="10">
+    <data offset="0" value="4644531A"/>
+  </rule>
+</detector>
