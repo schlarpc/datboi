@@ -1,0 +1,14 @@
+[package]
+name = "datboi-runtime"
+description = "wasmtime host for deterministic sandboxed transforms (datboi:transform world)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+datboi-core.workspace = true
+
+[lints]
+workspace = true

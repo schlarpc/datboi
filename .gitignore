@@ -1,0 +1,9 @@
+/target
+/transforms/target
+/result
+/result-*
+/.direnv
+*.db
+*.db-wal
+*.db-shm
+/prompt.txt

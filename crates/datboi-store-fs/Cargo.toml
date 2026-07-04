@@ -1,0 +1,14 @@
+[package]
+name = "datboi-store-fs"
+description = "NFS/local filesystem blob store: loose sharded files, tmp/fsync/rename discipline"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+datboi-core.workspace = true
+
+[lints]
+workspace = true

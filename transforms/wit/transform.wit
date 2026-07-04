@@ -1,0 +1,76 @@
+/// datboi:transform — the versioned transform ABI (D7).
+///
+/// STATUS: DRAFT. Frozen by M1 prototype 3 (wasmtime determinism PoC);
+/// until then this file is a design sketch, not a contract.
+///
+/// Determinism contract (D5): components targeting this world are executed
+/// with NaN canonicalization, no threads, and NO ambient capabilities — the
+/// imports below are the entire world. Same params + same input bytes MUST
+/// produce identical output bytes on every host, forever.
+///
+/// Streaming discipline: nothing may assume a blob fits in memory. Inputs
+/// and outputs are chunked handles; wasip3 native `stream<u8>` replaces the
+/// chunked calls later as an internal migration (our world, not a format
+/// break).
+package datboi:transform@0.1.0;
+
+interface types {
+    /// Why a read/write cannot proceed.
+    enum io-error {
+        closed,
+        out-of-range,
+        /// The host refused the access mode (e.g. read-at without the
+        /// random-access capability having been declared).
+        refused,
+    }
+
+    /// Seekability class a transform declares (docs/80-views.md, D27).
+    enum seek-class {
+        affine,
+        manifest-seekable,
+        opaque,
+    }
+
+    /// Input handle provided by the host, in recipe input order.
+    resource input {
+        /// Total size in bytes (hosts always know it).
+        size: func() -> u64;
+        /// Pull the next sequential chunk; empty list = EOF.
+        read: func(max: u64) -> result<list<u8>, io-error>;
+        /// Random access; only honored when the transform's describe()
+        /// declared random-access for this input position.
+        read-at: func(offset: u64, max: u64) -> result<list<u8>, io-error>;
+    }
+
+    /// Output handle, in recipe output order.
+    resource output {
+        /// Optional: pre-announce the total size when known.
+        announce-size: func(size: u64);
+        write: func(data: list<u8>) -> result<_, io-error>;
+    }
+
+    /// Static metadata the host reads before instantiating a run.
+    record descriptor {
+        /// Seekability of each export, keyed by export name.
+        seek: seek-class,
+        /// Input positions that require read-at (forces host spill on
+        /// non-seekable sources — docs/70-recipes.md execution model).
+        random-access-inputs: list<u32>,
+    }
+}
+
+world transform {
+    use types.{descriptor, input, output};
+
+    /// Describe capabilities; must be pure and constant.
+    export describe: func(export-name: string) -> descriptor;
+
+    /// Execute one operation application (one recipe).
+    /// params is the recipe's canonical-CBOR params bstr, verbatim.
+    export run: func(
+        export-name: string,
+        params: list<u8>,
+        inputs: list<input>,
+        outputs: list<output>,
+    ) -> result<_, string>;
+}

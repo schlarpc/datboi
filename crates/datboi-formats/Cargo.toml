@@ -1,0 +1,14 @@
+[package]
+name = "datboi-formats"
+description = "Dat parsers (Logiqx XML, clrmamepro, MAME listxml/softlist) and header-skipper interpreter"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+datboi-core.workspace = true
+
+[lints]
+workspace = true

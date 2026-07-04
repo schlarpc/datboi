@@ -1,0 +1,33 @@
+# Host workspace. The wasm transforms live in their own workspace under
+# transforms/ (different target/profile; see docs/50-infra.md).
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Chaz Schlarp"]
+license = "MIT"
+repository = "https://github.com/schlarpc/datboi"
+
+[workspace.dependencies]
+datboi-core = { path = "crates/datboi-core" }
+datboi-formats = { path = "crates/datboi-formats" }
+datboi-runtime = { path = "crates/datboi-runtime" }
+datboi-server = { path = "crates/datboi-server" }
+datboi-store-fs = { path = "crates/datboi-store-fs" }
+
+anyhow = "1"
+blake3 = "1"
+clap = { version = "4", features = ["derive", "env"] }
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_docs = "allow" # enable when the API stabilizes
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "allow", priority = -1 }
+nursery = { level = "allow", priority = -1 }

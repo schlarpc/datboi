@@ -1,0 +1,37 @@
+# Open questions & active research
+
+Design passes R1–R8 complete; core design ratified through D39. Docs
+00–90 are the record.
+
+## Open (minor / deferred to build-time)
+
+- Shard fanout + inline-outboard threshold: frozen by the M1 NFS
+  benchmark (spec in 90-roadmap.md), not by discussion.
+- State snapshot cadence + exact encoding: settle when implementing the
+  snapshot encoder (state.db round-trip requirement is already fixed by
+  D37).
+- Browser-side wasm lane in the web UI: deferred until a concrete need
+  (M4 at the earliest).
+- Auto-fill-gaps-from-peers policy (beyond the manual fetch action):
+  later, per-view opt-in, after M5 holdings channels exist.
+- peer_have bitmap representation: deferred until mirror-scale peers are
+  real.
+
+## Next sessions (pick up here)
+
+- ~~Repo bootstrap~~ done 2026-07-03: flake (crane + rust-overlay,
+  rust-flake pattern) + host workspace (6 crates) + transforms workspace
+  (wit draft + xf-reference) + checks (build/clippy/fmt/nextest × 2
+  workspaces + wasm lane). 8 unit tests green.
+- ~~WIT world sketch~~ drafted at transforms/wit/transform.wit — marked
+  DRAFT; frozen by M1 prototype 3 (determinism PoC).
+- ~~CLI surface draft~~ docs/85-cli.md.
+- **M1 prototype 1**: NFS store benchmark harness (spec in 90-roadmap.md).
+- **M1 prototype 2**: recipe canonical-CBOR codec + assemble executor +
+  multi-hash ingest throughput.
+- API shape for M4 (axum routes ↔ Svelte, codegen via datboi-api crate) —
+  can wait until M3 wraps.
+
+## Resolved
+
+See [decisions.md](decisions.md) (D1–D39).

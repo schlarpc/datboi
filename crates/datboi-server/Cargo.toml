@@ -1,0 +1,15 @@
+[package]
+name = "datboi-server"
+description = "The datboi daemon (12-factor, localhost-only until M4)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+datboi-core.workspace = true
+
+[lints]
+workspace = true

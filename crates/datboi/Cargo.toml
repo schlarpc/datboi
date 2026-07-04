@@ -1,0 +1,16 @@
+[package]
+name = "datboi"
+description = "dat/rom management on content-addressed storage"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+datboi-server.workspace = true
+
+[lints]
+workspace = true
