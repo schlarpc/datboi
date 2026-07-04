@@ -43,11 +43,22 @@
 
       # ---- host workspace (crates/) ----
 
-      hostArgsFor = system:
+      # cleanCargoSource drops non-Rust files; keep test fixtures (.xml)
+      # and the WIT ABI (.wit) in the build source.
+      srcFor = system: root:
         let craneLib = craneLibFor system;
         in
+        nixpkgs.lib.cleanSourceWith {
+          src = root;
+          filter = path: type:
+            (builtins.match ".*\\.(xml|wit)$" path != null)
+            || (craneLib.filterCargoSources path type);
+          name = "source";
+        };
+
+      hostArgsFor = system:
         {
-          src = craneLib.cleanCargoSource ./.;
+          src = srcFor system ./.;
           strictDeps = true;
           pname = "datboi";
           version = "0.1.0";
@@ -60,10 +71,8 @@
       # ---- transforms workspace (transforms/, wasm32-wasip2) ----
 
       wasmArgsFor = system:
-        let craneLib = craneLibFor system;
-        in
         {
-          src = craneLib.cleanCargoSource ./transforms;
+          src = srcFor system ./transforms;
           strictDeps = true;
           pname = "datboi-transforms";
           version = "0.1.0";
@@ -81,10 +90,8 @@
       # (transform logic is target-independent; wasm artifacts are checked
       # by building them, tested by the host determinism gate later).
       wasmHostTestArgsFor = system:
-        let craneLib = craneLibFor system;
-        in
         {
-          src = craneLib.cleanCargoSource ./transforms;
+          src = srcFor system ./transforms;
           strictDeps = true;
           pname = "datboi-transforms-host";
           version = "0.1.0";
