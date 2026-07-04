@@ -1,0 +1,23 @@
+[package]
+name = "datboi-ingest"
+description = "M1 ingest pipeline: rescan cache, streaming store+hash, zip members-as-claims, skipper dual identities"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+datboi-core.workspace = true
+datboi-formats.workspace = true
+datboi-index.workspace = true
+datboi-store-fs.workspace = true
+flate2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+crc32fast.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

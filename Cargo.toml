@@ -14,6 +14,8 @@ repository = "https://github.com/schlarpc/datboi"
 [workspace.dependencies]
 datboi-core = { path = "crates/datboi-core" }
 datboi-formats = { path = "crates/datboi-formats" }
+datboi-index = { path = "crates/datboi-index" }
+datboi-ingest = { path = "crates/datboi-ingest" }
 datboi-runtime = { path = "crates/datboi-runtime" }
 datboi-server = { path = "crates/datboi-server" }
 datboi-store-fs = { path = "crates/datboi-store-fs" }
@@ -22,6 +24,9 @@ anyhow = "1"
 blake3 = "1"
 clap = { version = "4", features = ["derive", "env"] }
 crc32fast = "1"
+# rust_backend: no C dependency, deterministic output not required here
+# (decompression only — compression never reproduces bytes anyway, D24).
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 md-5 = "0.10"
 proptest = "1"
 quick-xml = "0.38"

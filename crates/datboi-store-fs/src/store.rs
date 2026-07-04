@@ -125,6 +125,58 @@ impl Store {
         Ok((outcome, aliases.expect("aliases requested")))
     }
 
+    /// Stream `reader` into the store without knowing its hash up front —
+    /// the ingest entry point (D40 `--copy`): one pass computes the full
+    /// alias tuple, names the blob by its computed blake3, and publishes
+    /// with the same temp/fsync/rename discipline as [`Store::put`]. There
+    /// is no expectation to violate, so the only failure mode is I/O; a
+    /// mid-read error deletes the temp and publishes nothing.
+    pub fn put_new(
+        &self,
+        ns: Namespace,
+        mut reader: impl Read,
+    ) -> Result<(Blake3, AliasTuple, PutOutcome), StoreError> {
+        let temp = self.new_temp_path();
+        let mut file = File::create_new(&temp).map_err(|e| StoreError::io(&temp, e))?;
+        let mut hasher = AliasHasher::new();
+        let mut buf = vec![0u8; CHUNK];
+        let result = loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break Ok(()),
+                Ok(n) => {
+                    hasher.update(&buf[..n]);
+                    if let Err(e) = file.write_all(&buf[..n]) {
+                        break Err(StoreError::io(&temp, e));
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => break Err(StoreError::io(&temp, e)),
+            }
+        };
+        if let Err(e) = result {
+            drop(file);
+            let _ = fs::remove_file(&temp);
+            return Err(e);
+        }
+
+        let aliases = hasher.finalize();
+        let hash = aliases.blake3;
+        let final_path = self.blob_path(ns, &hash);
+        if final_path.exists() {
+            drop(file);
+            let _ = fs::remove_file(&temp);
+            return Ok((hash, aliases, PutOutcome::AlreadyPresent));
+        }
+
+        file.sync_all().map_err(|e| StoreError::io(&temp, e))?;
+        drop(file);
+        let parent = final_path.parent().expect("blob paths have parents");
+        fs::create_dir_all(parent).map_err(|e| StoreError::io(parent, e))?;
+        fs::rename(&temp, &final_path).map_err(|e| StoreError::io(&final_path, e))?;
+        fsync_dir(parent)?;
+        Ok((hash, aliases, PutOutcome::Stored))
+    }
+
     fn put_inner(
         &self,
         ns: Namespace,
@@ -614,6 +666,50 @@ mod tests {
         // …and a zero-age sweep removes everything.
         assert_eq!(store.cleanup_temp(Duration::ZERO).expect("sweep"), 1);
         assert!(!tmp.join("orphan.temp").exists());
+    }
+
+    #[test]
+    fn put_new_names_by_computed_hash() {
+        let (_dir, store) = temp_store();
+        let data = vec![0x5a; 2 * CHUNK + 3];
+        let (hash, aliases, outcome) = store
+            .put_new(Namespace::Data, data.as_slice())
+            .expect("put_new");
+        assert_eq!(outcome, PutOutcome::Stored);
+        assert_eq!(hash, Blake3::compute(&data));
+        assert_eq!(aliases.size, data.len() as u64);
+        assert_eq!(
+            store.verify(Namespace::Data, &hash).expect("verify"),
+            VerifyOutcome::Valid
+        );
+        // Same bytes again: already present, aliases still computed.
+        let (hash2, aliases2, outcome2) = store
+            .put_new(Namespace::Data, data.as_slice())
+            .expect("re-put");
+        assert_eq!((hash2, outcome2), (hash, PutOutcome::AlreadyPresent));
+        assert_eq!(aliases2, aliases);
+        assert_eq!(tree_files(&store.root).len(), 1);
+    }
+
+    #[test]
+    fn put_new_mid_read_error_leaves_no_trace() {
+        struct FailAfter(usize);
+        impl Read for FailAfter {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.0 == 0 {
+                    return Err(io::Error::other("simulated source failure"));
+                }
+                let n = self.0.min(buf.len());
+                buf[..n].fill(0xEE);
+                self.0 -= n;
+                Ok(n)
+            }
+        }
+        let (_dir, store) = temp_store();
+        store
+            .put_new(Namespace::Data, FailAfter(CHUNK + 1))
+            .expect_err("source failed");
+        assert!(tree_files(&store.root).is_empty());
     }
 
     proptest! {
