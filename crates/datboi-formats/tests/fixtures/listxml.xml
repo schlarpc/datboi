@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<!-- Synthetic MAME -listxml fixture: bios/device machines, device_ref,
+     biosset, nodump/optional roms, disk with index/writable, driver and
+     feature status, softwarelist reference, skipped emulation elements. -->
+<mame build="0.270 (synthetic)" debug="no">
+	<machine name="neogeo" sourcefile="neogeo.cpp" isbios="yes" runnable="no">
+		<description>Neo-Geo</description>
+		<year>1990</year>
+		<manufacturer>SNK</manufacturer>
+		<biosset name="euro" description="Europe MVS" default="yes"/>
+		<rom name="sp-s2.sp1" bios="euro" size="131072" crc="9036d879" sha1="4f5ed7105b7128794654ce82b51723e16e389543" region="mainbios" offset="0"/>
+		<chip type="cpu" tag="maincpu" name="68000" clock="12000000"/>
+	</machine>
+	<machine name="mslug" sourcefile="neogeo.cpp" romof="neogeo">
+		<description>Metal Slug</description>
+		<year>1996</year>
+		<manufacturer>Nazca</manufacturer>
+		<rom name="201-p1.p1" size="2097152" crc="08d8daa5" sha1="dddddddddddddddddddddddddddddddddddddddd" region="maincpu" offset="0"/>
+		<rom name="201-c1.c1" size="4194304" status="nodump" region="sprites" optional="yes"/>
+		<device_ref name="z80"/>
+		<device_ref name="ym2610"/>
+		<sample name="shot"/>
+		<disk name="mslug_hdd" sha1="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" region="ide" index="0" writable="no"/>
+		<driver status="good" emulation="good" savestate="supported"/>
+		<feature type="graphics" status="imperfect"/>
+		<softwarelist tag="cart" name="neogeo" status="original"/>
+		<input players="2">
+			<control type="joy" ways="8"/>
+		</input>
+		<display tag="screen" type="raster" rotate="0" width="320" height="224"/>
+	</machine>
+	<machine name="z80" sourcefile="z80.cpp" isdevice="yes" runnable="no"/>
+</mame>

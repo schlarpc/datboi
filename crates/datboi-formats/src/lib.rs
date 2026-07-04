@@ -4,7 +4,32 @@
 //! losslessly into the canonical Entry/RomClaim model; unknown attributes
 //! are preserved in attrs maps.
 
+pub mod cmpro;
+pub mod listxml;
+pub mod logiqx;
+pub mod model;
 pub mod skipper;
+pub mod softlist;
+mod xmlutil;
+
+/// Parse any supported dat family, dispatching on [`detect`].
+///
+/// # Errors
+/// [`model::ParseError::UnknownFormat`] when detection fails;
+/// [`model::ParseError::Unsupported`] for recognized-but-unimplemented
+/// families (RomCenter).
+pub fn parse(bytes: &[u8]) -> Result<model::DatFile, model::ParseError> {
+    match detect(bytes) {
+        Some(DatFormat::Logiqx) => logiqx::parse(bytes),
+        Some(DatFormat::MameListXml) => listxml::parse(bytes),
+        Some(DatFormat::MameSoftwareList) => softlist::parse(bytes),
+        Some(DatFormat::ClrMamePro) => cmpro::parse(bytes),
+        Some(DatFormat::RomCenter) => Err(model::ParseError::Unsupported(
+            "romcenter (import planned, not yet implemented)",
+        )),
+        None => Err(model::ParseError::UnknownFormat),
+    }
+}
 
 /// The dat families datboi accommodates (D13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

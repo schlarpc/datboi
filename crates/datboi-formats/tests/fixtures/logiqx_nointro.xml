@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+<!-- Synthetic No-Intro-style P/C fixture exercising 60-dats gotchas:
+     P/C ids, sha256/mia/serial extensions, zero-byte rom, duplicate
+     hashes under different names, nodump/baddump, unknown attrs,
+     releases, biosset, sample, short crc padding. -->
+<datafile>
+	<header>
+		<name>Nintendo - Game Boy</name>
+		<description>Nintendo - Game Boy (Parent-Clone)</description>
+		<version>20260630-123456</version>
+		<date>20260630</date>
+		<author>No-Intro</author>
+		<homepage>No-Intro</homepage>
+		<url>https://www.no-intro.org</url>
+		<clrmamepro header="No-Intro_NES.xml" forcenodump="required" mood="synthy"/>
+		<romcenter plugin="wips.dll"/>
+	</header>
+	<game name="Alpha (USA)" id="0001" mysterious="yes">
+		<description>Alpha (USA)</description>
+		<release name="Alpha (USA)" region="USA"/>
+		<rom name="Alpha (USA).gb" size="32768" crc="1b2c3d4e" md5="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" sha1="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" sha256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" serial="DMG-AA-USA" mia="yes"/>
+		<rom name="empty.bin" size="0" crc="00000000"/>
+		<rom name="pad.gb" size="16" crc="ABC"/>
+	</game>
+	<game name="Alpha (Europe)" id="0002" cloneofid="0001" cloneof="Alpha (USA)">
+		<description>Alpha (Europe)</description>
+		<comment>first comment</comment>
+		<comment>second comment</comment>
+		<release name="Alpha (Europe)" region="EUR" language="en"/>
+		<release name="Alpha (France)" region="FRA" language="fr" default="yes"/>
+		<rom name="Alpha (Europe).gb" size="32768" crc="deadbeef" status="baddump" weird="attr"/>
+		<rom name="Alpha (Europe) alt.gb" size="32768" crc="deadbeef"/>
+		<rom name="lost.gb" size="32768" status="nodump"/>
+	</game>
+	<machine name="BIOS Set" isbios="yes">
+		<description>BIOS</description>
+		<biosset name="euro" description="Euro BIOS" default="yes"/>
+		<rom name="bios.rom" size="1024" crc="0f0f0f0f" status="verified"/>
+		<sample name="boing"/>
+	</machine>
+</datafile>

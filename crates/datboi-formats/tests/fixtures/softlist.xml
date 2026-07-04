@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<!-- Synthetic MAME software-list fixture: part/dataarea/loadflag structure
+     (D13 losslessness), hex dataarea size, nameless continue/ignore rows,
+     diskarea, info/sharedfeat, clone with supported=partial. -->
+<softwarelist name="gba" description="Nintendo Game Boy Advance cartridges">
+	<software name="alphaadv">
+		<description>Alpha Advance</description>
+		<year>2003</year>
+		<publisher>Ninty</publisher>
+		<info name="serial" value="AGB-AAAE-USA"/>
+		<sharedfeat name="compatibility" value="GBA"/>
+		<part name="cart" interface="gba_cart">
+			<feature name="slot" value="rom"/>
+			<dataarea name="rom" size="0x800000" width="32" endianness="little">
+				<rom name="alpha.bin" size="4194304" crc="11223344" sha1="ffffffffffffffffffffffffffffffffffffffff" offset="0x000000"/>
+				<rom size="4194304" offset="0x400000" loadflag="continue"/>
+				<rom loadflag="ignore"/>
+			</dataarea>
+		</part>
+		<part name="disk1" interface="cdrom">
+			<diskarea name="cdrom">
+				<disk name="alpha disc" sha1="1111111111111111111111111111111111111111"/>
+			</diskarea>
+		</part>
+	</software>
+	<software name="alphaadvj" cloneof="alphaadv" supported="partial">
+		<description>Alpha Advance (Japan)</description>
+		<year>2003</year>
+		<publisher>Ninty</publisher>
+		<part name="cart" interface="gba_cart">
+			<dataarea name="rom" size="4194304">
+				<rom name="alphaj.bin" size="4194304" crc="55667788" sha1="2222222222222222222222222222222222222222"/>
+			</dataarea>
+		</part>
+	</software>
+</softwarelist>
