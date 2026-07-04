@@ -26,9 +26,12 @@ Design passes R1–R8 complete; core design ratified through D39. Docs
 - ~~WIT world sketch~~ drafted at transforms/wit/transform.wit — marked
   DRAFT; frozen by M1 prototype 3 (determinism PoC).
 - ~~CLI surface draft~~ docs/85-cli.md.
-- **M1 prototype 1**: NFS store benchmark harness (spec in 90-roadmap.md).
-- **M1 prototype 2**: recipe canonical-CBOR codec + assemble executor +
-  multi-hash ingest throughput.
+- **M1 prototype 1** (NFS store benchmark): DEFERRED — current dev
+  machine isn't the NFS-bearing one. Shard fanout stays provisional
+  (2×256); run the benchmark (spec in 90-roadmap.md) before declaring the
+  on-disk format stable.
+- **M1 prototype 2** (in progress): recipe canonical-CBOR codec +
+  assemble executor + multi-hash ingest throughput.
 - API shape for M4 (axum routes ↔ Svelte, codegen via datboi-api crate) —
   can wait until M3 wraps.
 
