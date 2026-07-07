@@ -404,3 +404,32 @@ test instantiates a WASI-importing component and asserts refusal.
 *Rejected:* linking deterministic WASI stubs (weakens
 "unrepresentable" to "stubbed", and pulls wasmtime-wasi into the
 minimal engine build).
+
+## D43 — Snapshot format: signed envelope + sharded alias batches (2026-07-06)
+
+`datboi/statesnap/1` is an ed25519-signed envelope (signature over
+`header || payload`, key + sig embedded; recovery additionally PINS the
+key to the local identity — an attacker who can write meta/ can mint
+self-consistent snapshots under their own key). Payload: sequence,
+created_at, dat-source refs (provider/system/dat-blob/imported_at —
+enough to replay `dat import` bit-identically), and references to
+`alias_fanout` sharded `datboi/aliases/1` batch blobs. Ratified over
+inline aliases: additive-only MVP (D35) never deletes, and an inline
+table re-writes ~100 MB per snapshot at MAME scale; sharded batches
+(fanout 256, rows strictly sorted by blake3) make snapshot cost
+proportional to what changed — unchanged shards dedupe by content
+address. Shard *assignment* is encoder policy, not format. Alias rows
+cover data/ only: meta objects never appear in dats, and including them
+would let every snapshot dirty its own shards. Sequence monotonicity is
+authoritative state: `recover` re-seeds the snapshot log from the
+snapshot it consumed. Unlike recipes, snapshot identity stability is not
+sacred (only the latest matters), but the codec still gets golden-vector
+coverage. *Deferred to M2:* a HEAD pointer for total-disk-loss discovery
+(M1 recovery scans meta/ and takes the max verified sequence);
+snapshot-driven fast recovery that skips the full re-hash pass (recover
+still re-hashes everything today, so batches are written but not yet
+consumed).
+
+*Rejected:* inline alias table (fat permanent garbage), no aliases in
+snapshot (amends D22, makes future fast-recovery impossible), unsigned
+snapshots (recovery root must be authenticated).

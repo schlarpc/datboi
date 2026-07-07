@@ -74,6 +74,33 @@ impl Db {
             .optional()?)
     }
 
+    /// The sequence number the NEXT snapshot will get (mint the object with
+    /// this, then [`Db::snapshot_log_append`] it — the log assigns the same
+    /// number because seq is the INTEGER PRIMARY KEY).
+    pub fn next_snapshot_seq(&self) -> Result<i64, IndexError> {
+        Ok(self.state().query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM snapshot_log",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Re-seed the snapshot log from a recovered snapshot object (explicit
+    /// seq): sequence monotonicity is authoritative state and must survive
+    /// a DB nuke, or the next mint would reuse an existing sequence.
+    pub fn snapshot_log_restore(
+        &self,
+        seq: i64,
+        hash: &Blake3,
+        created_at: i64,
+    ) -> Result<(), IndexError> {
+        self.state().execute(
+            "INSERT OR REPLACE INTO snapshot_log (seq, hash, created_at) VALUES (?1, ?2, ?3)",
+            params![seq, hash.0.as_slice(), created_at],
+        )?;
+        Ok(())
+    }
+
     /// Append a snapshot emission record; returns its sequence number.
     pub fn snapshot_log_append(&self, hash: &Blake3, created_at: i64) -> Result<i64, IndexError> {
         let seq = self.state().query_row(

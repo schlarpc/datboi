@@ -9,3 +9,4 @@ pub mod hash;
 pub mod identity;
 pub mod object;
 pub mod recipe;
+pub mod snapshot;

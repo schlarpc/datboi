@@ -98,6 +98,59 @@ impl Db {
         Ok(ids)
     }
 
+    /// Every data/ blob with a complete alias tuple, for the state
+    /// snapshot's sharded alias batches (D22). data/ only: the table exists
+    /// to map dat hashes to content, and meta objects never appear in dats —
+    /// including them would also make every snapshot dirty its own alias
+    /// shards (the batch blobs it mints), defeating cross-snapshot dedup.
+    /// Complete-tuple-only: partial rows are re-derivable and not worth a
+    /// lossy encoding. Ordered by hash for determinism.
+    pub fn list_alias_tuples(&self) -> Result<Vec<AliasTuple>, IndexError> {
+        let mut stmt = self.cache().prepare_cached(
+            "SELECT b.hash, b.size,
+                    (SELECT digest FROM alias WHERE blob_id = b.blob_id AND algo = ?1),
+                    (SELECT digest FROM alias WHERE blob_id = b.blob_id AND algo = ?2),
+                    (SELECT digest FROM alias WHERE blob_id = b.blob_id AND algo = ?3),
+                    (SELECT digest FROM alias WHERE blob_id = b.blob_id AND algo = ?4)
+             FROM blob b
+             WHERE b.size IS NOT NULL AND b.namespace = ?5
+             ORDER BY b.hash",
+        )?;
+        let rows = stmt
+            .query_map(
+                params![
+                    AliasAlgo::Crc32.code(),
+                    AliasAlgo::Md5.code(),
+                    AliasAlgo::Sha1.code(),
+                    AliasAlgo::Sha256.code(),
+                    Namespace::Data.code()
+                ],
+                |row| {
+                    let hash: [u8; 32] = row.get(0)?;
+                    let size: i64 = row.get(1)?;
+                    let crc32: Option<[u8; 4]> = row.get(2)?;
+                    let md5: Option<[u8; 16]> = row.get(3)?;
+                    let sha1: Option<[u8; 20]> = row.get(4)?;
+                    let sha256: Option<[u8; 32]> = row.get(5)?;
+                    Ok((hash, size, crc32, md5, sha1, sha256))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(hash, size, crc32, md5, sha1, sha256)| {
+                Some(AliasTuple {
+                    blake3: Blake3(hash),
+                    size: u64::try_from(size).ok()?,
+                    crc32: crc32?,
+                    md5: md5?,
+                    sha1: sha1?,
+                    sha256: sha256?,
+                })
+            })
+            .collect())
+    }
+
     /// Record what a source path hashed to (rescan cache).
     pub fn upsert_source_file(
         &self,

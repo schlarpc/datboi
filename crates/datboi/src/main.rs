@@ -55,10 +55,15 @@ enum Command {
     /// Export operations.
     #[command(subcommand)]
     Export(ExportCommand),
-    /// Rebuild local databases from the store (D15). M1 scope: blob and
-    /// recipe indexes; re-run `datboi dat import` afterwards to restore
-    /// catalog state (full snapshot-driven recovery comes later).
+    /// Rebuild local databases from the store (D15): blob and recipe
+    /// indexes from a full read pass, catalog state replayed from the
+    /// newest state snapshot that verifies under this instance's identity.
     Recover {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mint a signed state snapshot into the store (the recovery root).
+    Snapshot {
         #[arg(long)]
         json: bool,
     },
@@ -150,6 +155,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             cmds::export_dat_cmd(&cli.global.open()?, &source, &out)
         }
         Command::Recover { json } => cmds::recover(cli.global.open()?, json),
+        Command::Snapshot { json } => cmds::snapshot(cli.global.open()?, json),
         Command::Scrub { sample, json } => cmds::scrub(&cli.global.open()?, sample, json),
         Command::Status { json } => cmds::status(&cli.global.open()?, json),
     }

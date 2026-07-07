@@ -26,11 +26,13 @@ datboi audit <source>...             # have(verified)/claimed/probable/peer/miss
     --missing | --unknown            # filter reports
 datboi export dat <source> -o x.dat  # dir2dat (D29)
 
-datboi recover                       # rebuild local DBs from the store (D15)
+datboi recover                       # rebuild local DBs from the store (D15);
+                                     # catalog replays from the newest verified snapshot
 datboi scrub [--sample <pct>]        # background verification pass
 datboi status                        # store stats, snapshot age, last scrub
 
-datboi snapshot [--now]              # force a state snapshot (D15)
+datboi snapshot                      # mint a signed state snapshot (D15/D43);
+                                     # scheduling/--now arrives with the daemon
 ```
 
 ## Later milestones (sketch)

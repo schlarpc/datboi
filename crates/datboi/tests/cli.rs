@@ -343,3 +343,92 @@ fn move_is_explicitly_unimplemented() {
         .code(2)
         .stderr(predicate::str::contains("not implemented"));
 }
+
+/// The bare-NAS recovery drill (90-roadmap.md M1): mint a signed snapshot,
+/// nuke every database (keeping the identity key — the one non-CAS secret),
+/// recover, and the audit must come back byte-identical with zero manual
+/// re-imports.
+#[test]
+fn snapshot_recovery_drill() {
+    let u = Universe::new();
+    fs::create_dir_all(u.src()).unwrap();
+
+    let alpha = vec![0xA1u8; 4096];
+    let beta = vec![0xB2u8; 2048];
+    fs::write(u.src().join("alpha.gba"), &alpha).unwrap();
+    fs::write(u.src().join("beta.gba"), &beta).unwrap();
+    u.cmd().arg("ingest").arg(u.src()).assert().success();
+
+    let dat_path = u.root.path().join("drill.dat");
+    fs::write(
+        &dat_path,
+        dat_xml(
+            "drill",
+            &format!(
+                r#"<game name="Alpha"><description>Alpha</description>{}</game>
+                   <game name="Beta"><description>Beta</description>{}</game>
+                   <game name="Gone"><description>Gone</description>{}</game>"#,
+                rom_xml("Alpha.gba", &alpha),
+                rom_xml("Beta.gba", &beta),
+                rom_xml("Gone.gba", b"never ingested"),
+            ),
+        ),
+    )
+    .unwrap();
+    u.cmd()
+        .args(["dat", "import"])
+        .arg(&dat_path)
+        .args(["--provider", "test", "--system", "drill"])
+        .assert()
+        .success();
+
+    let (before, code_before) = audit_json(&u, "test/drill");
+    assert_eq!(code_before, Some(1)); // Gone.gba is missing on purpose
+
+    // Mint the snapshot (creates the identity key on first use).
+    let snap_out = u
+        .cmd()
+        .args(["snapshot", "--json"])
+        .output()
+        .expect("snapshot runs");
+    assert!(snap_out.status.success());
+    let snap: serde_json::Value = serde_json::from_slice(&snap_out.stdout).unwrap();
+    assert_eq!(snap["sequence"], 1);
+    assert_eq!(snap["sources"], 1);
+
+    // Nuke every database file; keep identity.key (out-of-band-backed-up).
+    for entry in fs::read_dir(u.db()).unwrap() {
+        let path = entry.unwrap().path();
+        if path.file_name().is_some_and(|n| n != "identity.key") {
+            fs::remove_file(&path).unwrap();
+        }
+    }
+
+    // Recover replays the dat import from the snapshot automatically.
+    u.cmd()
+        .arg("recover")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("snapshot used"))
+        .stdout(predicate::str::contains("dats re-imported"))
+        .stdout(predicate::str::contains("catalog restored"));
+
+    let (after, code_after) = audit_json(&u, "test/drill");
+    assert_eq!(code_after, code_before);
+    assert_eq!(after, before, "audit must be byte-identical after recovery");
+
+    // A re-mint after recovery writes no new alias-batch bytes: identical
+    // rows shard to identical batches, which dedupe by content address.
+    let again = u
+        .cmd()
+        .args(["snapshot", "--json"])
+        .output()
+        .expect("snapshot runs");
+    assert!(again.status.success());
+    let again: serde_json::Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(again["sequence"], 2);
+    assert_eq!(
+        again["new_batch_blobs"], 0,
+        "unchanged alias shards must dedupe to existing batch blobs"
+    );
+}

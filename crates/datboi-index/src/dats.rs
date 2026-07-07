@@ -3,6 +3,7 @@
 //! CAS dat blob is the true canonical form; generated columns are the
 //! index-later escape hatch).
 
+use datboi_core::hash::Blake3;
 use rusqlite::params;
 
 use crate::types::{ClaimKind, ClaimStatus};
@@ -53,6 +54,30 @@ pub struct NewEntry<'a> {
 }
 
 impl Db {
+    /// Every source with a current revision: what a state snapshot needs to
+    /// replay `dat import` after recovery (provider, system, dat blob hash,
+    /// original imported_at). Ordered by (provider, system) — the snapshot
+    /// payload's canonical order.
+    pub fn list_current_sources(&self) -> Result<Vec<(String, String, Blake3, i64)>, IndexError> {
+        let mut stmt = self.cache().prepare_cached(
+            "SELECT s.provider, s.system, b.hash, r.imported_at
+             FROM dat_source s
+             JOIN dat_revision r ON r.revision_id = s.current_revision_id
+             JOIN blob b ON b.blob_id = r.blob_id
+             ORDER BY s.provider, s.system",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                let provider: String = row.get(0)?;
+                let system: String = row.get(1)?;
+                let hash: [u8; 32] = row.get(2)?;
+                let imported_at: i64 = row.get(3)?;
+                Ok((provider, system, Blake3(hash), imported_at))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Get-or-create a dat source; returns source_id.
     pub fn upsert_dat_source(&self, provider: &str, system: &str) -> Result<i64, IndexError> {
         // ON CONFLICT DO UPDATE (a no-op set) so RETURNING fires on both paths.

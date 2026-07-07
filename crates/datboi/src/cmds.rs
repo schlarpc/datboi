@@ -12,6 +12,7 @@ use datboi_catalog::{ImportOptions, audit, export_dat, import_dat};
 use datboi_core::alias::AliasHasher;
 use datboi_core::object::{self, ObjectKind};
 use datboi_core::recipe::{Op, Recipe};
+use datboi_core::snapshot::{AliasBatch, SnapshotPayload, SourceRef, StateSnapshot, alias_shard};
 use datboi_index::recipes::NewRecipe;
 use datboi_index::types::{Namespace as NsRow, OpKind, RecipeSource, Residency, SeekClass};
 use datboi_ingest::{IngestReport, Ingester};
@@ -314,15 +315,111 @@ pub fn export_dat_cmd(env: &Env, source: &str, out: &Path) -> anyhow::Result<Exi
     Ok(ExitCode::SUCCESS)
 }
 
+// ---- snapshot ----
+
+/// Shard count for the alias batches. 256 keeps per-shard churn small at
+/// MAME scale; at demo scale the 256 identical empty-batch blobs dedupe to
+/// ONE tiny CAS object, so small collections pay almost nothing.
+const ALIAS_FANOUT: usize = 256;
+
+/// Mint a signed state snapshot (D15): dat-source typing + sharded alias
+/// batches into meta/, logged in state.db. `recover` consumes the newest
+/// one that verifies under this instance's identity.
+pub fn snapshot(env: Env, json: bool) -> anyhow::Result<ExitCode> {
+    let identity = crate::config::load_or_create_identity(&env.db_dir)?;
+    let now = now_unix();
+
+    let sources: Vec<SourceRef> = env
+        .db
+        .list_current_sources()?
+        .into_iter()
+        .map(|(provider, system, dat_blob, imported_at)| SourceRef {
+            provider,
+            system,
+            dat_blob,
+            imported_at: u64::try_from(imported_at).unwrap_or(0),
+        })
+        .collect();
+
+    let mut shards: Vec<Vec<datboi_core::alias::AliasTuple>> = vec![Vec::new(); ALIAS_FANOUT];
+    let mut alias_rows: u64 = 0;
+    for tuple in env.db.list_alias_tuples()? {
+        shards[alias_shard(&tuple.blake3, ALIAS_FANOUT)].push(tuple);
+        alias_rows += 1;
+    }
+
+    let mut alias_batches = Vec::with_capacity(ALIAS_FANOUT);
+    let mut new_batch_blobs: u64 = 0;
+    for rows in shards {
+        let bytes = AliasBatch { rows }.encode()?;
+        let (hash, aliases, outcome) = env.store.put_new(Namespace::Meta, bytes.as_slice())?;
+        if outcome == datboi_store_fs::PutOutcome::Stored {
+            new_batch_blobs += 1;
+        }
+        let blob_id =
+            env.db
+                .upsert_blob(&hash, Some(aliases.size), NsRow::Meta, Residency::Resident)?;
+        env.db.insert_aliases(blob_id, &aliases)?;
+        env.db.set_verified(blob_id, now)?;
+        alias_batches.push(hash);
+    }
+
+    let sequence = env.db.next_snapshot_seq()?;
+    let payload = SnapshotPayload {
+        sequence: u64::try_from(sequence).unwrap_or(0),
+        created_at: u64::try_from(now).unwrap_or(0),
+        sources,
+        alias_fanout: ALIAS_FANOUT,
+        alias_batches,
+    };
+    let bytes = payload.encode_signed(&identity)?;
+    let (hash, aliases, _outcome) = env.store.put_new(Namespace::Meta, bytes.as_slice())?;
+    let blob_id =
+        env.db
+            .upsert_blob(&hash, Some(aliases.size), NsRow::Meta, Residency::Resident)?;
+    env.db.insert_aliases(blob_id, &aliases)?;
+    env.db.set_verified(blob_id, now)?;
+    let logged = env.db.snapshot_log_append(&hash, now)?;
+    anyhow::ensure!(
+        logged == sequence,
+        "snapshot_log assigned seq {logged}, object was minted with {sequence} (concurrent snapshot?)"
+    );
+
+    if json {
+        println!(
+            "{}",
+            json!({
+                "snapshot": hash.to_hex(),
+                "sequence": sequence,
+                "sources": payload.sources.len(),
+                "alias_rows": alias_rows,
+                "alias_batches": ALIAS_FANOUT,
+                "new_batch_blobs": new_batch_blobs,
+            })
+        );
+    } else {
+        println!("snapshot {hash} (seq {sequence})");
+        println!(
+            "{} source(s), {alias_rows} alias row(s) in {ALIAS_FANOUT} batch(es) ({new_batch_blobs} new)",
+            payload.sources.len()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 // ---- recover ----
 
 /// M1 recovery scope (D15, documented in command help): rebuilds the
 /// blob index (with recomputed aliases — one full read pass over data/)
 /// and the recipe index from meta/ objects. Recovered recipes have no
 /// verification provenance, so they re-enter as Pending and re-verify
-/// lazily. Catalog tables (dat sources/entries/claims) come back via
-/// `datboi dat import` of the dat files; snapshot-driven full recovery
-/// lands with the state-snapshot encoder.
+/// lazily. If the newest state snapshot verifies under this instance's
+/// identity key, catalog tables come back automatically by replaying
+/// `dat import` from the snapshot's CAS dat blobs; without a key (or a
+/// snapshot), re-run `datboi dat import` by hand. The full re-hash pass
+/// already rebuilds the alias table, so the snapshot's alias batches are
+/// not consulted here — they exist for the future fast-recovery path
+/// that skips the read pass and lets scrub re-verify lazily.
 pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
     env.db.truncate_cache()?;
     let now = now_unix();
@@ -379,6 +476,7 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
     // meta/: recipes and other structured objects.
     let mut recipes: u64 = 0;
     let mut meta_unknown: u64 = 0;
+    let mut snapshot_candidates: Vec<(datboi_core::hash::Blake3, Vec<u8>)> = Vec::new();
     for item in env.store.list(Namespace::Meta) {
         match item {
             Ok((hash, _size)) => {
@@ -409,6 +507,9 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
                         index_recovered_recipe(&mut env.db, blob_id, &recipe)?;
                         recipes += 1;
                     }
+                    Some((ObjectKind::StateSnapshot, _, _)) => {
+                        snapshot_candidates.push((hash, bytes.clone()));
+                    }
                     _ => meta_unknown += 1,
                 }
             }
@@ -417,9 +518,65 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
         }
     }
 
+    // Snapshot-driven catalog recovery: newest snapshot that verifies under
+    // OUR identity (an attacker who can write meta/ can mint self-consistent
+    // snapshots under their own key, so an unpinned signature proves nothing).
+    let mut dats_reimported: u64 = 0;
+    let mut snapshot_seq: Option<u64> = None;
+    let mut snapshot_note: &str =
+        "no usable state snapshot: re-run `datboi dat import` for each dat to restore audits";
+    match crate::config::load_identity(&env.db_dir)? {
+        None => {
+            snapshot_note = "no identity key: cannot authenticate snapshots; \
+                re-run `datboi dat import` for each dat to restore audits";
+        }
+        Some(identity) => {
+            let pk = identity.public_key();
+            let best = snapshot_candidates
+                .iter()
+                .filter_map(|(hash, b)| Some((*hash, StateSnapshot::decode(b).ok()?)))
+                .filter(|(_, snap)| snap.verify(&pk).is_ok())
+                .max_by_key(|(_, snap)| snap.payload.sequence);
+            if let Some((snap_hash, snap)) = best {
+                for source in &snap.payload.sources {
+                    let Some(mut file) = env.store.get(Namespace::Data, &source.dat_blob)? else {
+                        eprintln!(
+                            "warning: snapshot references dat blob {} for {}/{} but it is not in the store",
+                            source.dat_blob, source.provider, source.system
+                        );
+                        continue;
+                    };
+                    let mut dat_bytes = Vec::new();
+                    file.read_to_end(&mut dat_bytes)?;
+                    import_dat(
+                        &env.store,
+                        &mut env.db,
+                        &dat_bytes,
+                        &ImportOptions {
+                            provider: Some(&source.provider),
+                            system: Some(&source.system),
+                            imported_at: i64::try_from(source.imported_at).unwrap_or(0),
+                        },
+                    )?;
+                    dats_reimported += 1;
+                }
+                // Sequence monotonicity survives the nuke: re-seed the log
+                // so the next mint continues from here instead of reusing
+                // this snapshot's sequence.
+                env.db.snapshot_log_restore(
+                    i64::try_from(snap.payload.sequence).unwrap_or(i64::MAX),
+                    &snap_hash,
+                    i64::try_from(snap.payload.created_at).unwrap_or(0),
+                )?;
+                snapshot_seq = Some(snap.payload.sequence);
+                snapshot_note = "catalog restored from the state snapshot (dat imports replayed)";
+            }
+        }
+    }
+
     let notes = [
         "recipes recovered as Pending (no verification provenance); they re-verify lazily",
-        "catalog tables are empty: re-run `datboi dat import` for each dat to restore audits",
+        snapshot_note,
         "rescan cache is empty: the next ingest re-reads sources",
     ];
     if json {
@@ -430,6 +587,8 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
                 "recipes_indexed": recipes,
                 "meta_other": meta_unknown,
                 "foreign_files": foreign,
+                "snapshot_seq": snapshot_seq,
+                "dats_reimported": dats_reimported,
                 "corrupt": corrupt,
                 "notes": notes,
             })
@@ -437,6 +596,10 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
     } else {
         println!("blobs indexed      {blobs:>8}");
         println!("recipes indexed    {recipes:>8}");
+        if let Some(seq) = snapshot_seq {
+            println!("snapshot used      {seq:>8}");
+            println!("dats re-imported   {dats_reimported:>8}");
+        }
         if meta_unknown > 0 {
             println!("other meta objects {meta_unknown:>8}");
         }
