@@ -1,6 +1,6 @@
 //! Daemon entry point. 12-factor: config via env, structured logs to
 //! stdout, no pidfiles (docs/50-infra.md). Localhost/unix-socket only
-//! until M4 (D35).
+//! until M5 (D35/D50).
 
 /// Run the daemon until shutdown.
 ///

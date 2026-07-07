@@ -24,7 +24,7 @@ pub const BASIS_CRC_SIZE: i64 = 0;
 /// A container header's self-declaration (CHD internal sha1, D44):
 /// evidence about content we never hashed ourselves. Grades as `probable`
 /// in rollups, exactly like crc+size — the declaration is checkable only
-/// by decompressing (M2).
+/// by decompressing (M3, post-D50).
 pub const BASIS_DECLARED: i64 = -1;
 
 /// The partial hash tuple of a claim or identity row.

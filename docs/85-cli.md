@@ -37,10 +37,12 @@ datboi snapshot                      # mint a signed state snapshot (D15/D43);
 
 ## Later milestones (sketch)
 
-- M2: `datboi gc plan|run`, `datboi aggregate`, `datboi convert` (in-store
-  representation), `datboi verify <recipe>`.
-- M3: `datboi view create|eval|serve|sync|image`, `datboi select`
+- M2 (engine, D50): `datboi verify <recipe>`, `datboi analyze [--sweep]`
+  (refinement fixpoint; provenance-aware).
+- M3 (shrink): `datboi gc plan|run`, `datboi aggregate`, `datboi convert`
+  (in-store representation).
+- M4: `datboi view create|eval|serve|sync|image`, `datboi select`
   (1G1R dry-runs).
-- M4: `datboi user invite|list`, `datboi token`.
-- M5: `datboi peer add|list`, `datboi channel publish|subscribe`,
+- M5: `datboi user invite|list`, `datboi token`.
+- M6: `datboi peer add|list`, `datboi channel publish|subscribe`,
   `datboi fetch --from-peer`.

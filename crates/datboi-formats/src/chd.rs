@@ -6,7 +6,7 @@
 //! Header-only, no decompression: the declared sha1 is a *self-attestation*
 //! by whatever wrote the file. Audit therefore grades header matches as
 //! `probable` (ruled 2026-07-06, D44): evidence, never proof, until a real
-//! decompressing verify exists (M2 chdman-port component).
+//! decompressing verify exists (M3 chdman-port component, post-D50).
 
 /// Every CHD file starts with this magic, all versions.
 pub const CHD_MAGIC: &[u8; 8] = b"MComprHD";

@@ -8,7 +8,7 @@ Two load-bearing scope cuts, both ratified:
 
 1. **Additive-only**: recipes/verification/grounding exist, but nothing is
    ever evicted — no residency planner, no code path that can destroy
-   bytes. Storage wins are M2's headline.
+   bytes. Storage wins are M3's headline (post-D50 numbering).
 2. **Containers stay literal; members are claims**: ingest streams through
    zips hashing members and minting derive recipes (`slice` +
    `deflate-decompress` builtins — replay needs no zip parsing), storing
@@ -17,7 +17,7 @@ Two load-bearing scope cuts, both ratified:
 Consequences: zero load-bearing wasm in MVP (all recipes are builtins);
 wasmtime ships as infrastructure + one reference transform + the
 determinism CI gate (D5/D7 proven, nothing blocked on transform
-authoring). CLI-only; daemon on localhost/unix socket; no auth until M4.
+authoring). CLI-only; daemon on localhost/unix socket; no auth until M5.
 
 **Definition of done** (abridged; full criteria in this doc's history):
 ingest a messy directory (zips, raw, headered/headerless NES, bin/cue,
@@ -58,20 +58,36 @@ recovery-equivalence as a property test.
 
 ## Milestones
 
-- **M2 — "The NAS gets smaller"**: residency planner + eviction
-  (D21/D25/D27), **aggregation (D36)**, FastCDC chunking, TorrentZip +
-  wild-zip rebuild discovery (D24), 7z/rar input, ECM. First real wasm
+- **M2 — "The engine streams"** (platform; split from the old fat M2 by
+  D50): `datboi:transform@2` streaming world designed and **frozen**
+  (D46: streams as resources in our own `types` interface,
+  empty-linker sandbox preserved); streaming executor integration +
+  spill rule; bao outboard machinery (computed on materialization,
+  survives eviction — D49); mandatory output-bao verification on
+  seekable recipe routes + the seek-quarantine failure class;
+  determinism gate extended to @2 with seek-equivalence property tests
+  (random range reads ≡ slices of full materialization, ±1 at declared
+  boundaries); refinement fixpoint skeleton (D45/D47/D48): background
+  sweep queue with dat-aware ordering, analyzer provenance including
+  negative results, provenance snapshot batches in the recovery drill.
+  **Exit test**: a ~4 GB zip member replays in bounded memory,
+  verified, both sequential and seeked; a no-op analyzer sweep records
+  provenance and survives bare-NAS recovery.
+- **M3 — "The NAS gets smaller"** (features on that platform):
+  residency planner + eviction (D21/D25/D27), **aggregation (D36,
+  still NFS-bench-gated)**, FastCDC chunking, TorrentZip + wild-zip
+  rebuild discovery (D24), 7z/rar input, ECM. First real wasm
   transforms in anger.
-- **M3 — "The NAS becomes useful"**: views/snapshots/profiles (D33),
+- **M4 — "The NAS becomes useful"**: views/snapshots/profiles (D33),
   1G1R + retool clonelists, MAME merge-mode rendering + device_ref
   closure + softlist fidelity (D31 deferred set), HTTP/WebDAV, SD sync,
   in-process NFSv3, FAT32 image synthesis.
-- **M4 — "Other people can touch it"**: axum API, invites + passwords
+- **M5 — "Other people can touch it"**: axum API, invites + passwords
   (D30), ACLs, Svelte web UI (D17).
-- **M5 — "Friends"**: iroh, partial-blob bitfields + irpc store facade
+- **M6 — "Friends"**: iroh, partial-blob bitfields + irpc store facade
   (D14 stage 2), holdings channels + peer-availability audit state (D34),
   tickets.
-- **M6+ — frontier**: platform rebuild long tail (CHD/RVZ/NSZ, D12 key
+- **M7+ — frontier**: platform rebuild long tail (CHD/RVZ/NSZ, D12 key
   flows), read-only SMB1 server (D32), curated channels, waddup ZKP
   swarms, browser emulator cores.
 

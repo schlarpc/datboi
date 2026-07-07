@@ -250,7 +250,7 @@ impl<'a> Ingester<'a> {
     /// Claim every supported member of a stored zip container.
     /// CHD v5: record the header's declared internal sha1 (the identity
     /// MAME disk claims reference). Header-only — the declaration grades as
-    /// `probable` in audit (D44) until a decompressing verify exists (M2).
+    /// `probable` in audit (D44) until a decompressing verify exists (M3).
     fn process_chd(
         &mut self,
         path: &Path,

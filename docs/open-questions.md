@@ -8,7 +8,7 @@ Design passes R1–R8 complete; core design ratified through D39. Docs
 - Ingest-policy config vocabulary, detector registry (ordering /
   confidence beyond skipper XMLs), canonical-orientation preference per
   swap/header family: deliberately molten until a second real analyzer
-  exists to generalize from (M2). Fixpoint/provenance/dat-blindness
+  exists to generalize from (M3, post-D50). Fixpoint/provenance/dat-blindness
   principles are ratified (D45/D47/D48); only the config surface waits.
 
 - Shard fanout + inline-outboard threshold: frozen by the M1 NFS
@@ -17,9 +17,9 @@ Design passes R1–R8 complete; core design ratified through D39. Docs
   snapshot encoder (state.db round-trip requirement is already fixed by
   D37).
 - Browser-side wasm lane in the web UI: deferred until a concrete need
-  (M4 at the earliest).
+  (M5 at the earliest, post-D50).
 - Auto-fill-gaps-from-peers policy (beyond the manual fetch action):
-  later, per-view opt-in, after M5 holdings channels exist.
+  later, per-view opt-in, after M6 holdings channels exist (post-D50).
 - peer_have bitmap representation: deferred until mirror-scale peers are
   real.
 
@@ -38,9 +38,9 @@ Design passes R1–R8 complete; core design ratified through D39. Docs
   on-disk format stable.
 - **M1 prototype 2** (in progress): recipe canonical-CBOR codec +
   assemble executor + multi-hash ingest throughput.
-- API shape for M4 (axum routes ↔ Svelte, codegen via datboi-api crate) —
-  can wait until M3 wraps.
-- **transform@2 streaming world** (ratified for M2 by D46): streams as
+- API shape for M5 (axum routes ↔ Svelte, codegen via datboi-api crate) —
+  can wait until M4 wraps (post-D50 numbering).
+- **transform@2 streaming world** (ratified for M2 by D46; M2 is now exactly this platform, D50): streams as
   resources in our own `types` interface, empty-linker property
   preserved, determinism gate extended to @2 — plus the D49
   seek-equivalence property test (random ranges == slices of full

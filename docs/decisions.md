@@ -544,3 +544,34 @@ materialization, with ranges placed at ±1 of every declared boundary.
 *Rejected:* input-side verification for affine routes (blind to lying
 segment maps), verify-optional streamed reads for derived outputs
 (leaves the never-verified seek path in the serving hot path).
+
+## D50 — M2 split: engine platform before shrink features (2026-07-06)
+
+D45–D49 grew M2 into four workstreams with an internal serialization:
+the shrink (planner/eviction/aggregation) depends on the streaming
+engine (D46 — the byte win is disc-era, and D25 replay of a 4 GB
+DEFLATE member needs @2), and rebuild discovery depends on the
+refinement fixpoint (D45/D48 — trial recompression without provenance
+re-burns days of CPU per sweep). One "milestone" would have meant
+months of platform work with no user-visible win. Ratified split:
+
+- **M2 — "The engine streams"** (platform): transform@2 design+freeze,
+  streaming executor + spill, bao outboard machinery + mandatory
+  output-bao verify on seekable routes + seek-quarantine (D49),
+  determinism/seek-equivalence gates, fixpoint skeleton (sweep queue,
+  analyzer provenance incl. negatives, provenance snapshot batches).
+  Exit: ~4 GB member replays bounded-memory verified (sequential and
+  seeked); a no-op analyzer sweep survives the recovery drill.
+- **M3 — "The NAS gets smaller"** (features): analyzers in anger
+  (TorrentZip/wild-zip discovery, ECM, 7z/rar), residency planner +
+  eviction, aggregation (NFS-bench-gated), FastCDC chunking.
+
+Downstream milestones shift one: views M4, API/UI M5, p2p M6,
+frontier M7+. **Numbering note**: decision entries D1–D49 predate the
+split — read their "M2 (shrink)" as M3, "M3 (views)" as M4, and so on;
+historical entries are records and are not rewritten.
+
+*Rejected:* cart-era-only shrink first (small byte win — carts are
+small, aggregation wins file-count not bytes — and the eviction path
+would ship twice: once @1-only, once streaming), keeping the fat M2
+(a platform milestone wearing a feature milestone's name).

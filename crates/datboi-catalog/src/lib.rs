@@ -11,7 +11,7 @@
 //! (D4: verify on ingest, trust after). For *audit* purposes those blobs
 //! count as **have(verified)** — we computed the hashes ourselves — even
 //! though their literal bytes are absent. `have(claimed)` is reserved for
-//! verified-grade claims from other sources (peers, M5+). Neither audit
+//! verified-grade claims from other sources (peers, M6+). Neither audit
 //! notion licenses dropping literals: eviction remains gated on
 //! `ReplayedLocal` (D25), untouched.
 
