@@ -5,6 +5,12 @@ Design passes R1–R8 complete; core design ratified through D39. Docs
 
 ## Open (minor / deferred to build-time)
 
+- Ingest-policy config vocabulary, detector registry (ordering /
+  confidence beyond skipper XMLs), canonical-orientation preference per
+  swap/header family: deliberately molten until a second real analyzer
+  exists to generalize from (M2). Fixpoint/provenance/dat-blindness
+  principles are ratified (D45/D47/D48); only the config surface waits.
+
 - Shard fanout + inline-outboard threshold: frozen by the M1 NFS
   benchmark (spec in 90-roadmap.md), not by discussion.
 - State snapshot cadence + exact encoding: settle when implementing the
@@ -34,7 +40,12 @@ Design passes R1–R8 complete; core design ratified through D39. Docs
   assemble executor + multi-hash ingest throughput.
 - API shape for M4 (axum routes ↔ Svelte, codegen via datboi-api crate) —
   can wait until M3 wraps.
+- **transform@2 streaming world** (ratified for M2 by D46): streams as
+  resources in our own `types` interface, empty-linker property
+  preserved, determinism gate extended to @2 — plus the D49
+  seek-equivalence property test (random ranges == slices of full
+  materialization, boundaries ±1) for declared-seekable components.
 
 ## Resolved
 
-See [decisions.md](decisions.md) (D1–D39).
+See [decisions.md](decisions.md) (D1–D48).

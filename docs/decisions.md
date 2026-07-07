@@ -450,3 +450,97 @@ sets reach "complete" in M1 and matches what other rom managers do; the
 ruling favors strictness — a truncated CHD with an intact header must
 not audit as have. Unsupported CHD versions (v1–v4) are stored as opaque
 bytes and reported.
+
+## D45 — Ingest is custody; analysis is a refinement fixpoint (2026-07-06)
+
+Ingest = custody + identity (single-pass full alias tuple) + only the
+cheap inline structural claims audit needs immediately (container
+members, skipper identities). Everything expensive — trial
+recompression, ECM, chunking, decrypt derivations — runs as background
+refinement sweeps over the corpus. Corollary: "new analyzer ships" and
+"keys arrive after the NSPs did" are the same event; the fixpoint
+advances. Requires analyzer provenance (which analyzer versions ran on
+which blobs) including negative results — extends D24: failed rebuild
+discovery is recorded, never silently retried each sweep. *Rejected:*
+inline-everything (M2 analyzers crater ingest throughput),
+defer-the-seam (ingest crate ossifies around inline assumptions).
+
+## D46 — transform@2 streaming world lands with M2 (2026-07-06)
+
+Amends D41's expectation that streaming is far-future. M2's headline is
+container recipes for disc-era content, and those replays are
+unbounded: a single-member Redump zip is ~4 GB of DEFLATE that D25
+requires replaying locally before the literal drops — whole-buffer @1
+means ~8 GB of guest memory per replay, and deflate can't be chunked
+without breaking bit-exactness. So the streaming world is designed
+alongside M2, not deferred. Binding constraint carried from D41/D42:
+streams are resources in `datboi:transform@2`'s own `types` interface,
+host-implemented — NOT wasi:io/pollables — so the empty-linker "import
+surface is the sandbox" property survives, and the determinism gate
+extends to @2. @1 stays frozen and executable forever (D7/D41); the
+target world remains recipe metadata. *Rejected:* RAM cap with
+containers-stay-literal above it (guts M2's shrink win exactly where
+the bytes are — disc imagery), per-member framing (doesn't bound
+single-member containers).
+
+## D47 — Claims are dat-blind; scheduling may be dat-aware (2026-07-06)
+
+Hard rule: catalog contents never influence *what* gets claimed —
+claims are facts about bytes, and instances holding the same bytes must
+converge on the same claim set (p2p claim sharing, reproducibility).
+The refinement scheduler MAY consult dats to order work
+(complete-a-set-first). M1's dat-blind ingest is thereby ratified as
+principle, not accident. *Rejected:* dat-aware analysis (claim sets
+become a function of which dats happen to be loaded; cross-instance
+convergence frays), fully-blind scheduling (queue burns days on
+unmatched junk before touching near-complete sets).
+
+## D48 — Analysis provenance: cache rows + snapshot batches (2026-07-06)
+
+Analyzer provenance and negative results are pure functions of
+bytes × analyzer hash → cache.db rows (D37), batched into signed
+snapshots alias-style (D22/D43 precedent; own sharded batch type) so
+bare-NAS recovery doesn't re-pay expensive negatives — trial
+recompression across a MAME-scale corpus is days of CPU. *Rejected:*
+authoritative state.db rows (derivable data erodes the D37 boundary
+that makes the doctrine checkable), cache-only (doctrine-pure, but the
+first real recovery pays the full re-analysis bill).
+
+## D49 — Seekable-route verification: output bao, mandatory, forever (2026-07-06)
+
+Claim-level verification (one full materialization + tee, D4/D25) never
+exercises a component's *seek* path — sequential and seeked replay are
+different code, and boundary off-by-ones live exactly where a
+start-to-finish check can't see them. This isn't only adversarial
+(lying peer recipes); our own and community wasm will have seek-point /
+window-arithmetic bugs. Three rules, all corollaries of accepted
+machinery:
+
+1. **Outboards survive eviction.** Dropping a literal (D25/D27) deletes
+   bytes, never the `.obao` — the tree is what makes every future
+   recipe-backed range read verifiable without rematerialization. D25
+   guarantees it exists at drop time (the licensing replay is a full
+   materialization). Outboards are self-authenticating against the
+   root, so peer-supplied outboards need no trust machinery.
+2. **Recipe-served range reads always verify against the *output*
+   outboard** — mandatory for seekable-transform routes, tightening
+   D4's "cheap default" stance for this class. Input-side bao proves
+   sources honest, not segment maps or seek arithmetic; derived reads
+   face rot + claims + unverified seek code, and get *stronger*
+   per-read checks than literals, not weaker. Mismatch ⇒ EIO to the
+   serving surface, never bad bytes.
+3. **Seek-path mismatch on a verified recipe is its own failure class**
+   — not "claim false" (sequential replay proves the claim), not D-late
+   nondeterminism. Response: quarantine *seekability* for the
+   implicated component hash; planner reclassifies its recipes as
+   opaque so the spill rule serves reads through the known-good
+   sequential path. Fix ships as a new component hash / new recipes.
+   Literal re-pinning only if sequential replay also fails.
+
+Companion (rides with D46's @2 work): the conformance gate gains a
+seek-equivalence property test — random range reads over
+declared-seekable components must equal slices of a full
+materialization, with ranges placed at ±1 of every declared boundary.
+*Rejected:* input-side verification for affine routes (blind to lying
+segment maps), verify-optional streamed reads for derived outputs
+(leaves the never-verified seek path in the serving hot path).
