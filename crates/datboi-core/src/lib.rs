@@ -6,5 +6,6 @@ pub mod alias;
 pub mod assemble;
 pub mod cbor;
 pub mod hash;
+pub mod identity;
 pub mod object;
 pub mod recipe;
