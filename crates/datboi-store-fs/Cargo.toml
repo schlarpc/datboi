@@ -16,5 +16,18 @@ thiserror.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 
+[features]
+# Enables the process-abort injection points in `put_new` and builds the
+# `crash-child` test binary. Test-only: never enable in a shipping build.
+crash-injection = []
+
+# The child process the crash harness kills. Gated so a default build (and
+# `nix flake check`) never produces it; the harness runs under
+# `cargo test --features crash-injection`.
+[[bin]]
+name = "crash-child"
+path = "src/bin/crash_child.rs"
+required-features = ["crash-injection"]
+
 [lints]
 workspace = true

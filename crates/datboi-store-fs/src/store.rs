@@ -18,6 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use datboi_core::alias::{AliasHasher, AliasTuple};
 use datboi_core::hash::Blake3;
 
+use crate::crash;
 use crate::layout::{self, Namespace};
 
 /// Streaming buffer size; nothing in this crate buffers more than this.
@@ -138,8 +139,10 @@ impl Store {
     ) -> Result<(Blake3, AliasTuple, PutOutcome), StoreError> {
         let temp = self.new_temp_path();
         let mut file = File::create_new(&temp).map_err(|e| StoreError::io(&temp, e))?;
+        crash::inject(crash::Phase::TempCreated);
         let mut hasher = AliasHasher::new();
         let mut buf = vec![0u8; CHUNK];
+        let mut written: u64 = 0;
         let result = loop {
             match reader.read(&mut buf) {
                 Ok(0) => break Ok(()),
@@ -148,6 +151,8 @@ impl Store {
                     if let Err(e) = file.write_all(&buf[..n]) {
                         break Err(StoreError::io(&temp, e));
                     }
+                    written += n as u64;
+                    crash::inject_mid_write(written);
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => break Err(StoreError::io(&temp, e)),
@@ -168,11 +173,14 @@ impl Store {
             return Ok((hash, aliases, PutOutcome::AlreadyPresent));
         }
 
+        crash::inject(crash::Phase::Written);
         file.sync_all().map_err(|e| StoreError::io(&temp, e))?;
         drop(file);
         let parent = final_path.parent().expect("blob paths have parents");
         fs::create_dir_all(parent).map_err(|e| StoreError::io(parent, e))?;
+        crash::inject(crash::Phase::Fsynced);
         fs::rename(&temp, &final_path).map_err(|e| StoreError::io(&final_path, e))?;
+        crash::inject(crash::Phase::Renamed);
         fsync_dir(parent)?;
         Ok((hash, aliases, PutOutcome::Stored))
     }

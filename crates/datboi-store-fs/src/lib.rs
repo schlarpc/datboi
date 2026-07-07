@@ -10,6 +10,7 @@
 //! freezes the real constant before the on-disk format is declared stable
 //! (docs/90-roadmap.md, prototype 1).
 
+mod crash;
 pub mod layout;
 pub mod store;
 
