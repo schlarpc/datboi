@@ -432,3 +432,89 @@ fn snapshot_recovery_drill() {
         "unchanged alias shards must dedupe to existing batch blobs"
     );
 }
+
+/// `dat diff` across two imported revisions: added / removed / renamed
+/// (fingerprint-matched — no stable keys in this dat) / rehashed, with
+/// diff(1)-style exit codes.
+#[test]
+fn dat_diff_categories() {
+    let u = Universe::new();
+
+    let keep = b"unchanged content".as_slice();
+    let moved = b"renamed but identical".as_slice();
+    let fixed_v1 = b"bad dump".as_slice();
+    let fixed_v2 = b"good dump".as_slice();
+    let dropped = b"gone in v2".as_slice();
+    let fresh = b"new in v2".as_slice();
+
+    let game = |name: &str, rom: &str| -> String {
+        format!(r#"<game name="{name}"><description>{name}</description>{rom}</game>"#)
+    };
+
+    let v1 = dat_xml(
+        "diffy",
+        &format!(
+            "{}{}{}{}",
+            game("Keep", &rom_xml("Keep.gba", keep)),
+            game("Old Name", &rom_xml("Old Name.gba", moved)),
+            game("Fixed", &rom_xml("Fixed.gba", fixed_v1)),
+            game("Dropped", &rom_xml("Dropped.gba", dropped)),
+        ),
+    );
+    let v2 = dat_xml(
+        "diffy",
+        &format!(
+            "{}{}{}{}",
+            game("Keep", &rom_xml("Keep.gba", keep)),
+            game("New Name", &rom_xml("New Name.gba", moved)),
+            game("Fixed", &rom_xml("Fixed.gba", fixed_v2)),
+            game("Fresh", &rom_xml("Fresh.gba", fresh)),
+        ),
+    );
+
+    let import = |xml: &str, tag: &str| {
+        let path = u.root.path().join(format!("{tag}.dat"));
+        fs::write(&path, xml).unwrap();
+        u.cmd()
+            .args(["dat", "import"])
+            .arg(&path)
+            .args(["--provider", "test", "--system", "diffy"])
+            .assert()
+            .success();
+    };
+
+    // Only one revision: diff must refuse clearly.
+    import(&v1, "v1");
+    u.cmd()
+        .args(["dat", "diff", "test/diffy"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("only one materialized revision"));
+
+    import(&v2, "v2");
+    let out = u
+        .cmd()
+        .args(["dat", "diff", "test/diffy", "--json"])
+        .output()
+        .expect("diff runs");
+    assert_eq!(out.status.code(), Some(1), "changes -> exit 1");
+    let diff: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(diff["added"], serde_json::json!(["Fresh"]));
+    assert_eq!(diff["removed"], serde_json::json!(["Dropped"]));
+    assert_eq!(
+        diff["renamed"],
+        serde_json::json!([{"from": "Old Name", "to": "New Name"}])
+    );
+    assert_eq!(
+        diff["rehashed"],
+        serde_json::json!([{"from": "Fixed", "to": "Fixed"}])
+    );
+
+    // Re-import v2: identical revisions diff empty, exit 0.
+    import(&v2, "v2-again");
+    u.cmd()
+        .args(["dat", "diff", "test/diffy"])
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("no changes"));
+}

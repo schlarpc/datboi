@@ -101,6 +101,14 @@ enum DatCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Diff a source's two newest revisions (previous → current, D38).
+    /// Exit code: 0 no changes, 1 changes, 2 error.
+    Diff {
+        /// Source as <provider>/<system>.
+        source: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -146,6 +154,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             json,
         ),
         Command::Dat(DatCommand::List { json }) => cmds::dat_list(&cli.global.open()?, json),
+        Command::Dat(DatCommand::Diff { source, json }) => {
+            cmds::dat_diff(&cli.global.open()?, &source, json)
+        }
         Command::Audit {
             source,
             missing,

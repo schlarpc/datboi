@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
-use datboi_catalog::{ImportOptions, audit, export_dat, import_dat};
+use datboi_catalog::{ImportOptions, audit, diff_source, export_dat, import_dat};
 use datboi_core::alias::AliasHasher;
 use datboi_core::object::{self, ObjectKind};
 use datboi_core::recipe::{Op, Recipe};
@@ -313,6 +313,72 @@ pub fn export_dat_cmd(env: &Env, source: &str, out: &Path) -> anyhow::Result<Exi
     std::fs::write(out, &bytes).with_context(|| format!("writing {}", out.display()))?;
     println!("wrote {} ({} bytes)", out.display(), bytes.len());
     Ok(ExitCode::SUCCESS)
+}
+
+// ---- dat diff ----
+
+/// Diff previous → current revision (D38 keeps exactly those two
+/// materialized). Exit code mirrors diff(1): 0 identical, 1 different.
+pub fn dat_diff(env: &Env, source: &str, json: bool) -> anyhow::Result<ExitCode> {
+    let (provider, system) = split_source(source)?;
+    let diff = diff_source(&env.db, provider, system)?;
+    if json {
+        println!(
+            "{}",
+            json!({
+                "provider": diff.provider,
+                "system": diff.system,
+                "revision_old": diff.revision_old,
+                "revision_new": diff.revision_new,
+                "entries_old": diff.entries_old,
+                "entries_new": diff.entries_new,
+                "added": diff.added,
+                "removed": diff.removed,
+                "renamed": diff.renamed
+                    .iter()
+                    .map(|(from, to)| json!({"from": from, "to": to}))
+                    .collect::<Vec<_>>(),
+                "rehashed": diff.rehashed
+                    .iter()
+                    .map(|r| json!({"from": r.name_old, "to": r.name_new}))
+                    .collect::<Vec<_>>(),
+            })
+        );
+    } else {
+        println!(
+            "{}/{}: revision {} -> {} ({} -> {} entries)",
+            diff.provider,
+            diff.system,
+            diff.revision_old,
+            diff.revision_new,
+            diff.entries_old,
+            diff.entries_new
+        );
+        for name in &diff.added {
+            println!("added     {name}");
+        }
+        for name in &diff.removed {
+            println!("removed   {name}");
+        }
+        for (from, to) in &diff.renamed {
+            println!("renamed   {from} -> {to}");
+        }
+        for r in &diff.rehashed {
+            if r.name_old == r.name_new {
+                println!("rehashed  {}", r.name_new);
+            } else {
+                println!("rehashed  {} -> {}", r.name_old, r.name_new);
+            }
+        }
+        if diff.is_empty() {
+            println!("no changes");
+        }
+    }
+    Ok(if diff.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
 }
 
 // ---- snapshot ----

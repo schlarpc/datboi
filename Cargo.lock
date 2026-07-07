@@ -517,6 +517,7 @@ dependencies = [
 name = "datboi-catalog"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "datboi-core",
  "datboi-formats",
  "datboi-index",

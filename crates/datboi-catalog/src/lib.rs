@@ -16,12 +16,14 @@
 //! `ReplayedLocal` (D25), untouched.
 
 pub mod audit;
+pub mod diff;
 pub mod export;
 pub mod import;
 pub mod rollup;
 pub mod unify;
 
 pub use audit::{AuditReport, EntryAudit, audit};
+pub use diff::{DatDiff, diff_source};
 pub use export::export_dat;
 pub use import::{ImportOptions, ImportReport, import_dat};
 pub use rollup::refresh_rollups;
@@ -47,4 +49,8 @@ pub enum CatalogError {
     UnknownSource { provider: String, system: String },
     #[error("source {provider}/{system} has no current revision")]
     NoCurrentRevision { provider: String, system: String },
+    #[error(
+        "source {provider}/{system} has only one materialized revision — import a newer dat first"
+    )]
+    NoPreviousRevision { provider: String, system: String },
 }

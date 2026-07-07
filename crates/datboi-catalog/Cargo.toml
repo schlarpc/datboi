@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+blake3.workspace = true
 datboi-core.workspace = true
 datboi-formats.workspace = true
 datboi-index.workspace = true
