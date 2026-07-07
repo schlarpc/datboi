@@ -7,4 +7,8 @@
 channel = "1.96.1"
 profile = "default"
 components = ["rust-src", "rust-analyzer", "llvm-tools-preview"]
-targets = ["wasm32-wasip2"]
+# unknown-unknown (not wasip2): transform components must import NOTHING
+# (D5 empty-import determinism contract), and wasip2's std wires WASI shims
+# into every component even when unused. Core modules from unknown-unknown
+# are componentized with `wasm-tools component new` — no adapter, no imports.
+targets = ["wasm32-unknown-unknown"]

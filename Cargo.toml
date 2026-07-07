@@ -26,6 +26,12 @@ assert_cmd = "2"
 blake3 = "1"
 clap = { version = "4", features = ["derive", "env"] }
 crc32fast = "1"
+# ed25519 signs the state snapshot (D15 recovery root); the keypair is also
+# the future server/iroh identity. Signing is deterministic (RFC 8032), so a
+# fixed seed + payload yields a fixed signature — golden-testable.
+ed25519-dalek = "2"
+# "std" so getrandom::Error implements std::error::Error (thiserror #[from]).
+getrandom = { version = "0.2", features = ["std"] }
 # rust_backend: no C dependency, deterministic output not required here
 # (decompression only — compression never reproduces bytes anyway, D24).
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
@@ -44,6 +50,12 @@ sha1 = "0.10"
 sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
+# Component model + cranelift only; no wasi/async/cache — a pure, minimal,
+# deterministic execution surface (D5/D6). `signals-based-traps` off keeps
+# behavior uniform; we gate resources with fuel + StoreLimits instead.
+wasmtime = { version = "38", default-features = false, features = ["runtime", "component-model", "cranelift"] }
+# Test-only: hand-written component wat for the ambient-import rejection test.
+wat = "1"
 
 [workspace.lints.rust]
 unsafe_code = "warn"

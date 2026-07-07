@@ -66,7 +66,10 @@ pull/push streaming on wasip2 today; WASI 0.3 native `stream<u8>` is
 adopted later as an internal migration (our world, not a format break).
 Nothing in the ABI may assume whole-blob buffering. *Rejected:* betting on
 wasip3 immediately (rustc target still tier 3), raw core-wasm C-style ABI
-(loses typed interfaces + semver'd WIT packages).
+(loses typed interfaces + semver'd WIT packages). *Amended by
+D41/D42 at the M1 freeze: `@1` is a whole-buffer profile (streaming —
+wasip2-chunked or wasip3-native — becomes the future `@2` world), and the
+build target is wasm32-unknown-unknown, not wasip2.*
 
 ## D8 — P2P trust sequencing: friends first, ZKP later (2026-07-03)
 
@@ -368,3 +371,36 @@ crc32+size-only matches report as `probable`, never folded into
 have(claimed). Six states: have-verified / have-claimed / probable /
 available-from-peer / missing / unknown. Same honesty principle as the
 verified/claimed split; UIs may collapse visually.
+
+## D41 — WIT world frozen at @1: whole-buffer profile (2026-07-06)
+
+`datboi:transform@1.0.0` (transforms/wit/transform.wit) is frozen:
+`describe(op) -> descriptor` + `run(op, params, inputs: list<list<u8>>)
+-> result<list<list<u8>>, string>`. Whole-buffer by-value blobs; the
+world imports NOTHING except its own `types` interface, so ambient
+nondeterminism (clock/random/fs) is unrepresentable — the import surface
+is the sandbox. Seekability (D27) rides along as `describe` metadata even
+though @1 can't stream. A streaming profile is a deliberate future
+`@2` world, not a revision: per D7 old worlds stay executable forever,
+and which world a component targets is recipe metadata. The determinism
+gate (crates/datboi-runtime/tests/determinism.rs) pins the committed
+reference component by blake3 plus a golden output hash as the
+cross-architecture anchor; updating the fixture is a format event.
+*Rejected:* shipping streaming in @1 (host-backed stream resources drag
+in wasi:io and its pollables — see D42 — and M1's bounded transforms
+don't need it).
+
+## D42 — Transforms build for wasm32-unknown-unknown, not wasip2 (2026-07-06)
+
+Discovered by the determinism PoC before the freeze: Rust's
+`wasm32-wasip2` std links WASI shims (wasi:io, wasi:cli, …) into every
+component even when unused, so a "pure" transform demands ambient
+imports the empty linker must refuse — the D5 contract and the target
+were incompatible. Transforms therefore compile to core modules for
+`wasm32-unknown-unknown` (std available, zero host imports; panics
+become traps) and are componentized with `wasm-tools component new` (no
+adapter). Enforced two ways: the runtime's linker is empty, and the gate
+test instantiates a WASI-importing component and asserts refusal.
+*Rejected:* linking deterministic WASI stubs (weakens
+"unrepresentable" to "stubbed", and pulls wasmtime-wasi into the
+minimal engine build).

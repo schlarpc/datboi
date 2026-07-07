@@ -43,15 +43,16 @@
 
       # ---- host workspace (crates/) ----
 
-      # cleanCargoSource drops non-Rust files; keep test fixtures (.xml)
-      # and the WIT ABI (.wit) in the build source.
+      # cleanCargoSource drops non-Rust files; keep test fixtures (.xml, and
+      # the committed .wasm component the determinism gate pins) and the WIT
+      # ABI (.wit) in the build source.
       srcFor = system: root:
         let craneLib = craneLibFor system;
         in
         nixpkgs.lib.cleanSourceWith {
           src = root;
           filter = path: type:
-            (builtins.match ".*\\.(xml|wit)$" path != null)
+            (builtins.match ".*\\.(xml|wit|wasm)$" path != null)
             || (craneLib.filterCargoSources path type);
           name = "source";
         };
@@ -76,7 +77,11 @@
           strictDeps = true;
           pname = "datboi-transforms";
           version = "0.1.0";
-          CARGO_BUILD_TARGET = "wasm32-wasip2";
+          # unknown-unknown, NOT wasip2: components must import nothing (D5
+          # empty-import determinism contract), and wasip2's std wires WASI
+          # shims into every component. Core modules are componentized with
+          # `wasm-tools component new` in the install phase.
+          CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
           # Wasm artifacts are data, not executables to test here; the host
           # runs them under the determinism gate instead.
           doCheck = false;
@@ -115,10 +120,15 @@
 
           transforms = craneLib.buildPackage (wasmArgs // {
             cargoArtifacts = wasmDepsFor system;
-            # cdylib outputs; install the .wasm files as package contents.
+            nativeBuildInputs = [ (pkgsFor system).wasm-tools ];
+            # Each cdylib is a core module; componentize it so the package
+            # contents are real `datboi:transform` components — the
+            # content-addressed artifacts recipes pin (D5/D6).
             installPhaseCommand = ''
               mkdir -p $out/lib
-              find target/wasm32-wasip2 -name '*.wasm' -exec cp {} $out/lib/ \;
+              for m in target/wasm32-unknown-unknown/release/*.wasm; do
+                wasm-tools component new "$m" -o "$out/lib/$(basename "$m")"
+              done
             '';
           });
         });

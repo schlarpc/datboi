@@ -1,76 +1,69 @@
 /// datboi:transform — the versioned transform ABI (D7).
 ///
-/// STATUS: DRAFT. Frozen by M1 prototype 3 (wasmtime determinism PoC);
-/// until then this file is a design sketch, not a contract.
+/// STATUS: FROZEN @ M1 (prototype 3). This is `@1`, the *whole-buffer*
+/// profile: each input and output is a complete byte blob passed by value.
+/// It is the correct shape for bounded transforms (header add/strip,
+/// byte/word swaps, small patches) and is what the M1 determinism gate
+/// exercises.
 ///
-/// Determinism contract (D5): components targeting this world are executed
-/// with NaN canonicalization, no threads, and NO ambient capabilities — the
-/// imports below are the entire world. Same params + same input bytes MUST
-/// produce identical output bytes on every host, forever.
+/// A *streaming* profile (host-backed pull/push resources, for multi-GB
+/// ISOs) is a deliberate FUTURE world `datboi:transform@2`, NOT a
+/// replacement: per D7 old worlds stay executable forever, so `@1`
+/// components keep running unchanged after `@2` ships. "Which world a
+/// component targets" is recipe metadata, so a recipe is never ambiguous
+/// about how to invoke its component.
 ///
-/// Streaming discipline: nothing may assume a blob fits in memory. Inputs
-/// and outputs are chunked handles; wasip3 native `stream<u8>` replaces the
-/// chunked calls later as an internal migration (our world, not a format
-/// break).
-package datboi:transform@0.1.0;
+/// Determinism contract (D5): the host runs components with NaN
+/// canonicalization ON, threads OFF, relaxed-SIMD OFF, and NO ambient
+/// capabilities (no clock, random, or filesystem) — `params` plus the input
+/// bytes are the entire world. The same inputs MUST produce byte-identical
+/// outputs on every host and architecture, forever. Two enforcement layers:
+/// the empty import surface makes ambient nondeterminism unrepresentable,
+/// and the wasmtime `Config` pins the remaining engine-level knobs.
+package datboi:transform@1.0.0;
 
 interface types {
-    /// Why a read/write cannot proceed.
-    enum io-error {
-        closed,
-        out-of-range,
-        /// The host refused the access mode (e.g. read-at without the
-        /// random-access capability having been declared).
-        refused,
-    }
-
-    /// Seekability class a transform declares (docs/80-views.md, D27).
+    /// Seekability class a transform declares for its output
+    /// (docs/80-views.md, D27). Carried as metadata even in the whole-buffer
+    /// profile so the view planner can classify a transform's random-access
+    /// cost without needing a streaming ABI.
     enum seek-class {
+        /// Output ranges map to input ranges arithmetically (swaps, headers).
         affine,
+        /// Random access via a content-addressed index (frame/block tables).
         manifest-seekable,
+        /// Whole-stream only; range reads require full materialization first.
         opaque,
     }
 
-    /// Input handle provided by the host, in recipe input order.
-    resource input {
-        /// Total size in bytes (hosts always know it).
-        size: func() -> u64;
-        /// Pull the next sequential chunk; empty list = EOF.
-        read: func(max: u64) -> result<list<u8>, io-error>;
-        /// Random access; only honored when the transform's describe()
-        /// declared random-access for this input position.
-        read-at: func(offset: u64, max: u64) -> result<list<u8>, io-error>;
-    }
-
-    /// Output handle, in recipe output order.
-    resource output {
-        /// Optional: pre-announce the total size when known.
-        announce-size: func(size: u64);
-        write: func(data: list<u8>) -> result<_, io-error>;
-    }
-
-    /// Static metadata the host reads before instantiating a run.
+    /// Static, pure metadata the host reads before running a transform.
     record descriptor {
-        /// Seekability of each export, keyed by export name.
         seek: seek-class,
-        /// Input positions that require read-at (forces host spill on
-        /// non-seekable sources — docs/70-recipes.md execution model).
+        /// Input positions that require random access — the host must
+        /// materialize a non-seekable source before calling
+        /// (docs/70-recipes.md execution model). Empty for whole-buffer
+        /// transforms.
         random-access-inputs: list<u32>,
     }
 }
 
 world transform {
-    use types.{descriptor, input, output};
+    use types.{descriptor, seek-class};
 
-    /// Describe capabilities; must be pure and constant.
-    export describe: func(export-name: string) -> descriptor;
+    /// Describe an operation's capabilities. Must be pure and constant for
+    /// a given `op` — the host may cache the result by component hash.
+    export describe: func(op: string) -> descriptor;
 
-    /// Execute one operation application (one recipe).
-    /// params is the recipe's canonical-CBOR params bstr, verbatim.
+    /// Apply one operation (one recipe). `op` selects the operation within
+    /// the component, `params` is the recipe's canonical-CBOR params bstr
+    /// verbatim, and `inputs` are the resolved input blobs in recipe order.
+    /// Returns the claimed output blobs in recipe order (multi-output
+    /// transforms — e.g. archive members — are supported), or an error
+    /// message. The host verifies output hashes against the recipe (D4), so
+    /// a buggy transform wastes CPU but cannot corrupt the store.
     export run: func(
-        export-name: string,
+        op: string,
         params: list<u8>,
-        inputs: list<input>,
-        outputs: list<output>,
-    ) -> result<_, string>;
+        inputs: list<list<u8>>,
+    ) -> result<list<list<u8>>, string>;
 }

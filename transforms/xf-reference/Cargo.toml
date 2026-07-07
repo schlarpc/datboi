@@ -10,5 +10,11 @@ repository.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# Only the wasm component needs the guest bindings; host-native unit tests
+# (run by `nix flake check`) build without them. Default features drag in
+# async support (futures) that a pure whole-buffer transform must not have.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen = { version = "0.46", default-features = false, features = ["macros", "realloc"] }
+
 [lints]
 workspace = true

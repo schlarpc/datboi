@@ -9,6 +9,12 @@ repository.workspace = true
 
 [dependencies]
 datboi-core.workspace = true
+thiserror.workspace = true
+wasmtime.workspace = true
+
+[dev-dependencies]
+blake3.workspace = true
+wat.workspace = true
 
 [lints]
 workspace = true

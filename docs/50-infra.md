@@ -14,7 +14,7 @@ and reads unlike the user's other repos. If outputs explode, split into
 ```
 datboi/
 ├── flake.nix                  # crane + rust-overlay + importNpmLock
-├── rust-toolchain.toml        # stable + wasm32-wasip2 target
+├── rust-toolchain.toml        # stable + wasm32-unknown-unknown target (D42)
 ├── Cargo.toml                 # host workspace
 ├── crates/
 │   ├── datboi-core/           # CAS, recipes, hashing, typestate domain model
@@ -33,7 +33,9 @@ datboi/
 ```
 
 Two cargo workspaces because targets/profiles differ (host vs
-wasm32-wasip2) and wasm crates shouldn't pollute the host dep cache. Each
+wasm32-unknown-unknown — not wasip2, whose std drags WASI imports into
+every component; see D42) and wasm crates shouldn't pollute the host dep
+cache. Each
 transform is a `packages.xf-*` flake output; the daemon embeds builtin
 transforms via `include_bytes!` of those store paths — nix makes
 "transforms are content-addressed artifacts" nearly literal. Shared API

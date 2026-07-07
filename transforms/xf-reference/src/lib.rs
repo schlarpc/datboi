@@ -2,10 +2,10 @@
 //! wasm twin of the `swap@1` builtin (docs/70-recipes.md).
 //!
 //! Purpose: prove the ABI and the determinism gate (M1 prototype 3), not to
-//! be useful — the native builtin serves production traffic (D6). Component
-//! bindings (wit-bindgen against ../wit/transform.wit) land with the
-//! prototype; the pure logic below is target-independent and tested on the
-//! host.
+//! be useful — the native builtin serves production traffic (D6). The pure
+//! functions below are spec-pinned and target-independent (tested on the
+//! host); the `component` module wires them to the frozen
+//! `datboi:transform@1` world and only compiles for `wasm32`.
 
 /// Reverse the bits of every byte (skipper `bitswap`).
 pub fn bitswap(buf: &mut [u8]) {
@@ -36,6 +36,64 @@ pub fn wordbyteswap32(buf: &mut [u8]) {
         quad.swap(0, 2);
         quad.swap(1, 3);
     }
+}
+
+/// Apply the swap named by `op` to a fresh copy of `input`. Shared by the
+/// wasm component and the host-side tests so both agree by construction.
+/// Returns `None` for an unknown op (the world's `run` maps that to Err).
+#[must_use]
+pub fn apply(op: &str, input: &[u8]) -> Option<Vec<u8>> {
+    let mut buf = input.to_vec();
+    match op {
+        "bitswap" => bitswap(&mut buf),
+        "byteswap" => byteswap16(&mut buf),
+        "wordswap" => wordswap32(&mut buf),
+        "wordbyteswap" => wordbyteswap32(&mut buf),
+        _ => return None,
+    }
+    Some(buf)
+}
+
+/// Component glue for the frozen `datboi:transform@1` world. Only built for
+/// `wasm32` so the host-side unit tests (run natively by `nix flake check`)
+/// don't drag in the component machinery. `unsafe_code` is allowed here
+/// because the generated component ABI shims require it; our own logic
+/// (`super::apply`) stays safe.
+#[cfg(target_arch = "wasm32")]
+#[allow(unsafe_code)]
+mod component {
+    wit_bindgen::generate!({
+        world: "transform",
+        path: "../wit",
+    });
+
+    // `generate!` hoists `Descriptor` (it appears in the world's function
+    // signatures) to this module's root; `SeekClass` only appears nested, so
+    // it's imported from the generated interface path.
+    use datboi::transform::types::SeekClass;
+
+    struct Xf;
+
+    impl Guest for Xf {
+        /// Every swap is byte-for-byte positional → affine, no random access.
+        fn describe(_op: String) -> Descriptor {
+            Descriptor {
+                seek: SeekClass::Affine,
+                random_access_inputs: Vec::new(),
+            }
+        }
+
+        /// One input blob in, one swapped output blob out. `params` is unused
+        /// by the swap ops (the operation is fully determined by `op`).
+        fn run(op: String, _params: Vec<u8>, inputs: Vec<Vec<u8>>) -> Result<Vec<Vec<u8>>, String> {
+            let [input] = <[Vec<u8>; 1]>::try_from(inputs)
+                .map_err(|got| format!("swap takes exactly 1 input, got {}", got.len()))?;
+            let out = super::apply(&op, &input).ok_or_else(|| format!("unknown swap op {op:?}"))?;
+            Ok(vec![out])
+        }
+    }
+
+    export!(Xf);
 }
 
 #[cfg(test)]
@@ -72,5 +130,11 @@ mod tests {
         let mut wbs = vec![0x01, 0x02, 0x03, 0x04];
         wordbyteswap32(&mut wbs);
         assert_eq!(wbs, [0x03, 0x04, 0x01, 0x02]);
+    }
+
+    #[test]
+    fn apply_dispatches_and_rejects_unknown() {
+        assert_eq!(apply("byteswap", &[0x01, 0x02]), Some(vec![0x02, 0x01]));
+        assert_eq!(apply("nonsense", &[0x01]), None);
     }
 }
