@@ -103,10 +103,16 @@ state.db on a cache-only change).*
 independently** (`CACHE_SCHEMA_VERSION` / `STATE_SCHEMA_VERSION` in
 schema.rs):
 
-- **cache.db** — an older-version file is deleted and recreated empty
-  on open (it is derivable by definition; `datboi recover` or rescans
-  repopulate). No in-place cache migrations: the "cheap in-place"
-  option was dropped as complexity spent protecting disposable data.
+- **cache.db** — in-place `CACHE_MIGRATIONS` ladder first (same
+  machinery as state; an equivalence test pins each step to fresh
+  CACHE_DDL shapes), drop-and-recreate as the fallback when no step
+  reaches or a step fails. The fallback is where D37's "cavalier
+  migrations" license lives — but at 10M-blob scale a rebuild is a
+  full NFS metadata walk, so routine bumps should always ship a step.
+  Corollary work item: the rebuild path itself must become
+  metadata-only (hash-named files + stat + snapshot batches; re-hash
+  is scrub's job) — the deferred D43 fast-recovery machinery, promoted
+  by this policy.
 - **state.db** — an older file is upgraded in place by the
   `STATE_MIGRATIONS` ladder: one SQL batch per version step, each in
   its own transaction with `user_version` stamped inside it (a crash

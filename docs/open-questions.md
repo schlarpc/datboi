@@ -7,6 +7,16 @@ Design passes R1–R8 complete; core design ratified through D39. Docs
 
 - ~~`.obao` sidecar format~~ ratified 2026-07-07 as **D52**
   (headerless pre-order obao4, iroh-compatible).
+- **Fast cache rebuild / fast recovery** (work item, promoted
+  2026-07-07 from the D43 deferral by the cache-migration ruling):
+  `recover` currently re-hashes every byte in data/ — days over NFS at
+  10M-blob scale, and it is also the fallback path for cache schema
+  recreates. Replace with a metadata-only rebuild: parallel READDIR
+  walk (hash from the file name, size from stat), full meta/ parse,
+  alias + analysis rows from snapshot batches, deterministic dat
+  re-import; byte-reading demoted to background scrub that refreshes
+  `verified_at`. Tune the walk parallelism with the M1 NFS bench
+  numbers when the bench machine exists.
 - **Quarantine attribution refinement** (work item, accepted
   2026-07-07): `serve_range` quarantines a component on ANY
   window-verify failure through its seek path, including failures

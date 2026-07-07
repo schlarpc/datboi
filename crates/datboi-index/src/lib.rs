@@ -81,7 +81,7 @@ impl Db {
             "NORMAL",
             schema::CACHE_DDL,
             schema::CACHE_SCHEMA_VERSION,
-            OnOlderVersion::DropAndRecreate,
+            OnOlderVersion::MigrateOrRecreate(schema::CACHE_MIGRATIONS),
         )?;
         Ok(Self {
             cache,
@@ -126,14 +126,19 @@ impl Db {
 /// than this build supports. (Newer is always a hard error: downgrades
 /// are unsupported in both files.)
 enum OnOlderVersion {
-    /// cache.db (D37): the file is derivable, so delete it (and its WAL
-    /// sidecars) and recreate empty at the current version. The caller
-    /// repopulates via `datboi recover` / rescans; until then queries
-    /// see an empty cache, which is a state the doctrine already
-    /// requires every feature to survive.
-    DropAndRecreate,
+    /// cache.db (D37): apply the ladder in place when it reaches;
+    /// otherwise (no step provided, or a step fails) delete the file
+    /// (and its WAL sidecars) and recreate empty at the current version
+    /// — it is derivable by definition, and `datboi recover` / rescans
+    /// repopulate it. Until then queries see an empty cache, a state
+    /// the doctrine already requires every feature to survive. At
+    /// 10M-blob scale the rebuild is a full NFS metadata walk, which is
+    /// why the ladder comes first.
+    MigrateOrRecreate(&'static [&'static str]),
     /// state.db (D37): apply the migration ladder in place, one step
-    /// per transaction, stamping `user_version` after each.
+    /// per transaction, stamping `user_version` after each. No
+    /// reachable step is a hard error — the authoritative file is
+    /// never dropped.
     Migrate(&'static [&'static str]),
 }
 
@@ -181,20 +186,26 @@ fn open_file(
             });
         }
         (_, found) if found < version => match on_older {
-            OnOlderVersion::DropAndRecreate => {
-                drop(conn);
-                for suffix in ["", "-wal", "-shm"] {
-                    let mut victim = path.as_os_str().to_owned();
-                    victim.push(suffix);
-                    match std::fs::remove_file(Path::new(&victim)) {
-                        Ok(()) | Err(_) => {} // -wal/-shm may not exist
+            OnOlderVersion::MigrateOrRecreate(ladder) => {
+                match migrate_in_place(&conn, label, found, version, ladder) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        drop(conn);
+                        for suffix in ["", "-wal", "-shm"] {
+                            let mut victim = path.as_os_str().to_owned();
+                            victim.push(suffix);
+                            match std::fs::remove_file(Path::new(&victim)) {
+                                Ok(()) | Err(_) => {} // -wal/-shm may not exist
+                            }
+                        }
+                        eprintln!(
+                            "note: {label} was schema v{found} and could not migrate in \
+                             place ({e}); recreated empty at v{version} — run `datboi \
+                             recover` or re-ingest to repopulate"
+                        );
+                        return open_file(path, label, app_id, synchronous, ddl, version, on_older);
                     }
                 }
-                eprintln!(
-                    "note: {label} was schema v{found} (this build uses v{version}); \
-                     recreated empty — run `datboi recover` or re-ingest to repopulate"
-                );
-                return open_file(path, label, app_id, synchronous, ddl, version, on_older);
             }
             OnOlderVersion::Migrate(ladder) => {
                 migrate_in_place(&conn, label, found, version, ladder)?;

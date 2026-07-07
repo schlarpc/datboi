@@ -8,11 +8,48 @@
 /// The two files version INDEPENDENTLY (D37 made mechanical): a cache
 /// schema change must never touch the authoritative file's openability.
 ///
-/// cache.db policy is drop-and-rebuild: an older-version cache file is
-/// deleted and recreated empty on open (it is derivable by definition —
-/// `datboi recover` or a rescan repopulates it).
+/// cache.db upgrade policy: in-place [`CACHE_MIGRATIONS`] when a ladder
+/// step exists, else drop-and-recreate empty (derivable by definition —
+/// `datboi recover` or a rescan repopulates, and D37's "cavalier
+/// migrations" license lives exactly in that fallback). At 10M-blob
+/// scale a rebuild is a full NFS metadata walk, so routine bumps should
+/// always ship a step; the fallback is for changes not worth one.
 /// v2: seek_quarantine (D49), analysis + sweep_queue (D45/D48).
 pub const CACHE_SCHEMA_VERSION: u32 = 2;
+
+/// cache.db migration ladder, same shape and rules as
+/// [`STATE_MIGRATIONS`]: `CACHE_MIGRATIONS[i]` migrates version `i + 1`
+/// to `i + 2`; shipped steps are append-only and immutable. Each step
+/// must produce shapes identical to a fresh [`CACHE_DDL`] — the
+/// `migrated_cache_equals_fresh_schema` test enforces it.
+pub const CACHE_MIGRATIONS: &[&str] = &[
+    // v1 → v2: seek_quarantine (D49), analysis + sweep_queue (D45/D48) —
+    // purely additive.
+    "
+CREATE TABLE seek_quarantine (
+  component      BLOB PRIMARY KEY,
+  quarantined_at INTEGER NOT NULL,
+  reason         TEXT NOT NULL
+) STRICT, WITHOUT ROWID;
+CREATE TABLE analysis (
+  blob_id     INTEGER NOT NULL REFERENCES blob(blob_id),
+  analyzer    BLOB NOT NULL,
+  outcome     INTEGER NOT NULL,
+  detail      TEXT,
+  analyzed_at INTEGER NOT NULL,
+  PRIMARY KEY (blob_id, analyzer)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX analysis_by_analyzer ON analysis(analyzer);
+CREATE TABLE sweep_queue (
+  blob_id     INTEGER NOT NULL REFERENCES blob(blob_id),
+  analyzer    BLOB NOT NULL,
+  priority    INTEGER NOT NULL DEFAULT 0,
+  enqueued_at INTEGER NOT NULL,
+  PRIMARY KEY (blob_id, analyzer)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX sweep_by_priority ON sweep_queue(priority DESC, enqueued_at);
+",
+];
 
 /// state.db gets REAL migrations forever: an older file is upgraded in
 /// place by [`STATE_MIGRATIONS`], never dropped. A newer-than-supported

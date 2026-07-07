@@ -110,23 +110,20 @@ fn schema_and_pragmas() {
     Db::open(dir.path()).expect("reopen");
 }
 
-/// D37's split, made mechanical: an older cache.db is disposable and
-/// comes back empty at the current version; state.db (authoritative) is
-/// never dropped, and a future-versioned file of either kind refuses to
-/// open (no downgrades).
+/// D37's split, made mechanical: an older cache.db migrates in place
+/// when a ladder step exists (rows survive), falls back to
+/// drop-and-recreate when it can't; state.db (authoritative) is never
+/// dropped; a future-versioned file of either kind refuses to open (no
+/// downgrades).
 #[test]
 fn version_skew_recreates_cache_and_protects_state() {
     let dir = tempfile::tempdir().expect("tempdir");
+    let cached = Blake3::compute(b"cached row");
     {
         let db = Db::open(dir.path()).expect("open");
-        db.upsert_blob(
-            &Blake3::compute(b"cached row"),
-            Some(1),
-            Namespace::Data,
-            Residency::Resident,
-        )
-        .expect("row");
-        // Authoritative row that must survive the cache nuke.
+        db.upsert_blob(&cached, Some(1), Namespace::Data, Residency::Resident)
+            .expect("row");
+        // Authoritative row that must survive whatever the cache does.
         db.state()
             .execute(
                 "INSERT INTO config (key, value) VALUES ('precious', x'01')",
@@ -135,22 +132,45 @@ fn version_skew_recreates_cache_and_protects_state() {
             .expect("state row");
     }
 
-    // Simulate a file from an older build: rewind cache.db's version.
+    // A v1 cache (the shipped ladder's floor): drop the v2 tables and
+    // rewind the stamp, exactly what a real v1 file looks like.
     {
         let conn = rusqlite::Connection::open(dir.path().join("cache.db")).expect("raw open");
+        conn.execute_batch(
+            "DROP TABLE sweep_queue; DROP TABLE analysis; DROP TABLE seek_quarantine;",
+        )
+        .expect("devolve");
         conn.pragma_update(None, "user_version", 1).expect("rewind");
     }
-    let db = Db::open(dir.path()).expect("reopen upgrades");
+    {
+        let db = Db::open(dir.path()).expect("reopen migrates in place");
+        assert_eq!(
+            db.get_blob_id(&cached).expect("q"),
+            Some(1),
+            "in-place migration keeps cache rows"
+        );
+        let version: u32 = db
+            .cache()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .expect("q");
+        assert_eq!(version, datboi_index::schema::CACHE_SCHEMA_VERSION);
+        // The migrated tables work.
+        db.quarantine_seek(&Blake3::compute(b"c"), 1, "test")
+            .expect("v2 table live");
+    }
+
+    // A version below the ladder's floor (never stamped): the fallback
+    // recreates the cache empty; authoritative state is untouched.
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("cache.db")).expect("raw open");
+        conn.pragma_update(None, "user_version", 0).expect("rewind");
+    }
+    let db = Db::open(dir.path()).expect("reopen recreates");
     let blobs: i64 = db
         .cache()
         .query_row("SELECT COUNT(*) FROM blob", [], |r| r.get(0))
         .expect("q");
-    assert_eq!(blobs, 0, "old cache dropped and recreated empty");
-    let version: u32 = db
-        .cache()
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .expect("q");
-    assert_eq!(version, datboi_index::schema::CACHE_SCHEMA_VERSION);
+    assert_eq!(blobs, 0, "unreachable version fell back to recreate");
     let precious: i64 = db
         .state()
         .query_row(
@@ -183,6 +203,50 @@ fn version_skew_recreates_cache_and_protects_state() {
             .expect("restore");
     }
     Db::open(dir.path()).expect("healthy again");
+}
+
+/// The anti-drift guarantee for the cache ladder: devolving a fresh
+/// schema to the ladder's floor and migrating back up yields shapes
+/// IDENTICAL to a fresh CACHE_DDL. If a future DDL edit forgets its
+/// migration step (or the step diverges from the DDL), this fails.
+#[test]
+fn migrated_cache_equals_fresh_schema() {
+    let fresh_dir = tempfile::tempdir().expect("tempdir");
+    let fresh = Db::open(fresh_dir.path()).expect("open");
+    let shapes = |conn: &rusqlite::Connection| -> Vec<(String, String)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, sql FROM sqlite_master
+                 WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+                 ORDER BY name",
+            )
+            .expect("q");
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("q")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("q")
+    };
+    let fresh_shapes = shapes(fresh.cache());
+
+    // Devolve a copy to v1 (drop everything the v1→v2 step creates),
+    // then let open() migrate it back up.
+    let migrated_dir = tempfile::tempdir().expect("tempdir");
+    drop(Db::open(migrated_dir.path()).expect("open"));
+    {
+        let conn =
+            rusqlite::Connection::open(migrated_dir.path().join("cache.db")).expect("raw open");
+        conn.execute_batch(
+            "DROP TABLE sweep_queue; DROP TABLE analysis; DROP TABLE seek_quarantine;",
+        )
+        .expect("devolve");
+        conn.pragma_update(None, "user_version", 1).expect("rewind");
+    }
+    let migrated = Db::open(migrated_dir.path()).expect("migrates");
+    assert_eq!(
+        shapes(migrated.cache()),
+        fresh_shapes,
+        "CACHE_MIGRATIONS must reproduce CACHE_DDL exactly"
+    );
 }
 
 #[test]
