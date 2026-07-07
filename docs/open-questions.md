@@ -23,6 +23,50 @@ Design passes R1–R8 complete; core design ratified through D39. Docs
 - peer_have bitmap representation: deferred until mirror-scale peers are
   real.
 
+## Open (design work, ratify before M4 views)
+
+- **Reified views: shares as projections, images as recipes.** Insight
+  (2026-07-06): every serving surface is a projection of a view
+  snapshot — *live* (NFS/SMB/WebDAV/TNFS dirents walk the manifest;
+  reads are verified blob range reads) or *reified* (the whole tree
+  encoded as one blob: FAT32/exFAT/ISO/PS2-HDL image). A reified image
+  is a plain `assemble@1` recipe — skeleton blobs (boot sector, FAT
+  tables, dir clusters) + windowed segments over content blobs + fill
+  for slack — with the filesystem-layout math running at view-eval
+  time in the policy tier (D23: policies emit recipes; policy code
+  needs no determinism because the emitted recipe self-verifies). No
+  format code in the read path: nbd serving, Etcher-burnable export,
+  and live share are one object at different residency; images are
+  recipe-covered by construction so they cost nothing to keep.
+  Design work owed: skeleton-generator tier, image params (fixed
+  timestamps etc. pin identity), and **writable overlays** — devices
+  write saves into shares and even into flashed images; the
+  datboi-shaped answer is "writes are ingests" (per-device overlay,
+  save history for free), but overlay semantics for live shares and
+  dirty-image diff-back are real unbuilt design.
+- **Curation distribution without byte distribution** ("moxfield for
+  roms"). Because a curated view is a snapshot hash + manifest +
+  recipes, sharing it shares *curation, not content*: a curator
+  publishes a list; subscribers synthesize the view from bytes they
+  already hold and gap-fill from their own swarm (D34 curated
+  channels + peer-availability). Design work owed when curated
+  channels land (M6): manifest-only subscription UX, gap-fill
+  economics, and how curator updates flow (D34's
+  no-auto-promotion caveat applies).
+- **Pended D49 amendment — carve-out for locally-minted affine
+  routes.** Tension: D49 mandates output-bao verification on
+  recipe-served ranges, but the outboard requires one full
+  materialization — and giant synthesized images (nbd-served OPL
+  disks) are designed to never fully materialize. Candidate ruling
+  (user leans this way, NOT yet ruled): carve out locally-minted,
+  pure-builtin, affine-only routes over verified inputs
+  (input-side bao + trusted executor arithmetic suffices — D49's
+  target was seekable *transform code*, not `assemble` math), plus an
+  optional background "blessing" pass (materialize-to-null, tee,
+  cache the outboard) to promote them to full D49 status. M2's
+  verify-path implementation should keep this pluggable; rule no
+  later than M4.
+
 ## Next sessions (pick up here)
 
 - ~~Repo bootstrap~~ done 2026-07-03: flake (crane + rust-overlay,
@@ -48,4 +92,4 @@ Design passes R1–R8 complete; core design ratified through D39. Docs
 
 ## Resolved
 
-See [decisions.md](decisions.md) (D1–D48).
+See [decisions.md](decisions.md) (D1–D50).
