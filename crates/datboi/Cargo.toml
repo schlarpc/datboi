@@ -17,11 +17,14 @@ datboi-index.workspace = true
 datboi-ingest.workspace = true
 datboi-server.workspace = true
 datboi-store-fs.workspace = true
+flate2.workspace = true
 serde_json.workspace = true
+ureq.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
 crc32fast.workspace = true
+flate2.workspace = true
 predicates.workspace = true
 tempfile.workspace = true
 

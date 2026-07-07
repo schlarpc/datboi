@@ -315,6 +315,122 @@ pub fn export_dat_cmd(env: &Env, source: &str, out: &Path) -> anyhow::Result<Exi
     Ok(ExitCode::SUCCESS)
 }
 
+// ---- dat fetch ----
+
+/// Resolve a fetch source: a full URL passes through; `redump/<slug>`
+/// expands to the stable datfile endpoint (D16: Redump auto-fetches
+/// normally; No-Intro stays a manual drop).
+fn fetch_url(source: &str) -> anyhow::Result<(String, Option<&str>)> {
+    if source.starts_with("http://") || source.starts_with("https://") {
+        return Ok((source.to_owned(), None));
+    }
+    if let Some(slug) = source.strip_prefix("redump/") {
+        anyhow::ensure!(
+            !slug.is_empty() && slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+            "bad redump system slug {slug:?}"
+        );
+        return Ok((format!("http://redump.org/datfile/{slug}/"), Some("Redump")));
+    }
+    bail!("expected a URL or redump/<system-slug>, got {source:?}");
+}
+
+/// If `bytes` is a zip, extract its single .dat member; otherwise pass
+/// through (Redump serves zips; a direct URL may serve a bare dat).
+fn unwrap_fetched_dat(bytes: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    if !datboi_ingest::zip::looks_like_zip(&bytes) {
+        return Ok(bytes);
+    }
+    let mut cursor = std::io::Cursor::new(&bytes);
+    let parsed = datboi_ingest::zip::parse_members(&mut cursor)
+        .map_err(|e| anyhow::anyhow!("fetched zip: {e}"))?;
+    let dats: Vec<_> = parsed
+        .members
+        .iter()
+        .filter(|m| m.name.to_ascii_lowercase().ends_with(".dat"))
+        .collect();
+    let [member] = dats[..] else {
+        bail!(
+            "fetched zip has {} .dat members, expected exactly 1",
+            dats.len()
+        );
+    };
+    let start = usize::try_from(member.data_start).context("zip offset")?;
+    let len = usize::try_from(member.comp_size).context("zip size")?;
+    let raw = bytes
+        .get(start..start + len)
+        .context("zip member out of bounds")?;
+    match member.method {
+        datboi_ingest::zip::Method::Stored => Ok(raw.to_vec()),
+        datboi_ingest::zip::Method::Deflate => {
+            let mut out =
+                Vec::with_capacity(usize::try_from(member.uncomp_size).unwrap_or(raw.len() * 4));
+            flate2::read::DeflateDecoder::new(raw)
+                .read_to_end(&mut out)
+                .context("inflating fetched dat")?;
+            Ok(out)
+        }
+    }
+}
+
+/// Fetch a dat over HTTP and run it through the normal import path (the
+/// artifact enters CAS first; import stays a deterministic function of the
+/// CAS blob, D15). One polite request: honest User-Agent, 60s timeout,
+/// no retries — a failed fetch degrades to a manual drop (D16).
+pub fn dat_fetch(
+    mut env: Env,
+    source: &str,
+    provider: Option<&str>,
+    system: Option<&str>,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let (url, provider_default) = fetch_url(source)?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(60))
+        .user_agent(concat!("datboi/", env!("CARGO_PKG_VERSION")))
+        .build();
+    let response = agent
+        .get(&url)
+        .call()
+        .with_context(|| format!("fetching {url}"))?;
+    let mut body = Vec::new();
+    response
+        .into_reader()
+        .take(256 << 20) // a dat is never this big; a hostile server might be
+        .read_to_end(&mut body)
+        .context("reading fetch body")?;
+    let bytes = unwrap_fetched_dat(body)?;
+
+    let report = import_dat(
+        &env.store,
+        &mut env.db,
+        &bytes,
+        &ImportOptions {
+            provider: provider.or(provider_default),
+            system,
+            imported_at: now_unix(),
+        },
+    )?;
+    if json {
+        println!(
+            "{}",
+            json!({
+                "url": url,
+                "source_id": report.source_id,
+                "revision_id": report.revision_id,
+                "dat_blob": report.dat_blob.to_hex(),
+                "entries": report.entries,
+                "claims": report.claims,
+            })
+        );
+    } else {
+        println!(
+            "fetched {url} -> revision {} ({} entries, {} claims) as blob {}",
+            report.revision_id, report.entries, report.claims, report.dat_blob
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 // ---- dat diff ----
 
 /// Diff previous → current revision (D38 keeps exactly those two

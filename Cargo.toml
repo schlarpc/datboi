@@ -50,6 +50,8 @@ sha1 = "0.10"
 sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
+# Blocking HTTP for `dat fetch` (D16): small, no async runtime in the CLI.
+ureq = "2"
 # Component model + cranelift only; no wasi/async/cache — a pure, minimal,
 # deterministic execution surface (D5/D6). `signals-based-traps` off keeps
 # behavior uniform; we gate resources with fuel + StoreLimits instead.

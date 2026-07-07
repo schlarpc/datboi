@@ -101,6 +101,19 @@ enum DatCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Fetch a dat over HTTP and import it (Redump auto-fetch, D16).
+    Fetch {
+        /// Full URL, or redump/<system-slug> (e.g. redump/psx).
+        source: String,
+        /// Provider label (redump/... defaults to "Redump").
+        #[arg(long)]
+        provider: Option<String>,
+        /// System label (defaults derive from the dat header).
+        #[arg(long)]
+        system: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Diff a source's two newest revisions (previous → current, D38).
     /// Exit code: 0 no changes, 1 changes, 2 error.
     Diff {
@@ -154,6 +167,18 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             json,
         ),
         Command::Dat(DatCommand::List { json }) => cmds::dat_list(&cli.global.open()?, json),
+        Command::Dat(DatCommand::Fetch {
+            source,
+            provider,
+            system,
+            json,
+        }) => cmds::dat_fetch(
+            cli.global.open()?,
+            &source,
+            provider.as_deref(),
+            system.as_deref(),
+            json,
+        ),
         Command::Dat(DatCommand::Diff { source, json }) => {
             cmds::dat_diff(&cli.global.open()?, &source, json)
         }

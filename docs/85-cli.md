@@ -18,7 +18,7 @@ datboi ingest <path>...              # hash + claim content into the store
 datboi audit --against <dir>         # audit-only: hash + report, take no custody (D40)
 
 datboi dat import <file|url>         # manual drop (No-Intro daily pack, D16)
-datboi dat fetch [<provider>]        # polite auto-fetch (Redump, MAME, libretro…)
+datboi dat fetch <url|redump/slug>   # polite auto-fetch (D16); one request, no retries
 datboi dat list                      # sources, current revisions, freshness
 datboi dat diff <source> [<rev>..<rev>]   # added/removed/renamed/rehashed
 

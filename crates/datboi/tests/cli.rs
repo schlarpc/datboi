@@ -563,3 +563,129 @@ fn chd_header_match_is_probable() {
     assert_eq!(t["have_verified"], 0);
     assert_eq!(t["missing"], 0);
 }
+
+/// One-shot HTTP server: accepts a single connection, ignores the request,
+/// returns `body` with 200. Returns the URL to fetch.
+fn serve_once(body: Vec<u8>, content_type: &'static str) -> String {
+    use std::io::Write as _;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut buf = [0u8; 4096];
+        let _ = std::io::Read::read(&mut stream, &mut buf); // drain request head
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(&body).unwrap();
+    });
+    format!("http://127.0.0.1:{port}/datfile/")
+}
+
+/// `dat fetch`: HTTP → CAS → normal import path, for both a zipped dat
+/// (the Redump shape) and a bare dat body.
+#[test]
+fn dat_fetch_imports_zipped_and_bare() {
+    let u = Universe::new();
+    let dat = dat_xml(
+        "fetchy",
+        &format!(
+            r#"<game name="Net"><description>Net</description>{}</game>"#,
+            rom_xml("Net.gba", b"fetched over http")
+        ),
+    );
+
+    // Redump shape: a zip wrapping the dat.
+    let url = serve_once(
+        stored_zip(&[("fetchy (2026).dat", dat.as_bytes())]),
+        "application/zip",
+    );
+    u.cmd()
+        .args(["dat", "fetch"])
+        .arg(&url)
+        .args(["--provider", "test", "--system", "zipped"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("entries"));
+    u.cmd().args(["audit", "test/zipped"]).assert().code(1); // imported; rom missing
+
+    // Real Redump zips DEFLATE their member: build one by hand (local
+    // header + deflate stream + central directory) and fetch it.
+    let deflated = {
+        use std::io::Write as _;
+        let raw = dat.as_bytes();
+        let mut enc =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(raw).unwrap();
+        let cdata = enc.finish().unwrap();
+        let crc = {
+            let mut h = crc32fast::Hasher::new();
+            h.update(raw);
+            h.finalize()
+        };
+        let name = b"fetchy.dat";
+        let mut zip = Vec::new();
+        zip.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+        zip.extend_from_slice(&20u16.to_le_bytes());
+        zip.extend_from_slice(&0u16.to_le_bytes());
+        zip.extend_from_slice(&8u16.to_le_bytes()); // DEFLATE
+        zip.extend_from_slice(&0u32.to_le_bytes());
+        zip.extend_from_slice(&crc.to_le_bytes());
+        zip.extend_from_slice(&u32::try_from(cdata.len()).unwrap().to_le_bytes());
+        zip.extend_from_slice(&u32::try_from(raw.len()).unwrap().to_le_bytes());
+        zip.extend_from_slice(&u16::try_from(name.len()).unwrap().to_le_bytes());
+        zip.extend_from_slice(&0u16.to_le_bytes());
+        zip.extend_from_slice(name);
+        zip.extend_from_slice(&cdata);
+        let cd_start = zip.len();
+        zip.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+        zip.extend_from_slice(&20u16.to_le_bytes()); // version made by
+        zip.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        zip.extend_from_slice(&0u16.to_le_bytes());
+        zip.extend_from_slice(&8u16.to_le_bytes()); // DEFLATE
+        zip.extend_from_slice(&0u32.to_le_bytes());
+        zip.extend_from_slice(&crc.to_le_bytes());
+        zip.extend_from_slice(&u32::try_from(cdata.len()).unwrap().to_le_bytes());
+        zip.extend_from_slice(&u32::try_from(raw.len()).unwrap().to_le_bytes());
+        zip.extend_from_slice(&u16::try_from(name.len()).unwrap().to_le_bytes());
+        zip.extend_from_slice(&[0u8; 12]); // extra/comment/disk/int+ext attrs
+        zip.extend_from_slice(&0u32.to_le_bytes()); // local header offset
+        zip.extend_from_slice(name);
+        let cd_len = zip.len() - cd_start;
+        zip.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+        zip.extend_from_slice(&[0u8; 4]); // disk numbers
+        zip.extend_from_slice(&1u16.to_le_bytes());
+        zip.extend_from_slice(&1u16.to_le_bytes());
+        zip.extend_from_slice(&u32::try_from(cd_len).unwrap().to_le_bytes());
+        zip.extend_from_slice(&u32::try_from(cd_start).unwrap().to_le_bytes());
+        zip.extend_from_slice(&0u16.to_le_bytes());
+        zip
+    };
+    let url = serve_once(deflated, "application/zip");
+    u.cmd()
+        .args(["dat", "fetch"])
+        .arg(&url)
+        .args(["--provider", "test", "--system", "deflated"])
+        .assert()
+        .success();
+    u.cmd().args(["audit", "test/deflated"]).assert().code(1);
+
+    // Bare dat body passes through unchanged.
+    let url = serve_once(dat.into_bytes(), "text/xml");
+    u.cmd()
+        .args(["dat", "fetch"])
+        .arg(&url)
+        .args(["--provider", "test", "--system", "bare"])
+        .assert()
+        .success();
+    u.cmd().args(["audit", "test/bare"]).assert().code(1);
+
+    // Unknown shorthand is a clear error, not a surprise request.
+    u.cmd()
+        .args(["dat", "fetch", "nointro/gba"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("redump/<system-slug>"));
+}
