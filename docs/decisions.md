@@ -575,3 +575,42 @@ historical entries are records and are not rewritten.
 small, aggregation wins file-count not bytes — and the eviction path
 would ship twice: once @1-only, once streaming), keeping the fat M2
 (a platform milestone wearing a feature milestone's name).
+
+## D51 — transform@2 interaction model: guest pulls, guest pushes (2026-07-06)
+
+The streaming world's shape, ruled after adversarial review:
+
+1. **Pull-in / push-out**: `run` executes to completion, calling
+   `source.read` / `file.read-at` and `sink.write` on host-implemented
+   resources. Chosen over a host-driven `update/finish` pump because
+   multi-input transforms (zip rebuild: skeleton + N members) must
+   decide which input they need next — a pump can't know. Cost
+   accepted: composing two streaming guests in one operator tree needs
+   host-side fiber suspension (executor work, still ahead).
+2. **Exact stream contract** (the determinism linchpin): `read(n)`
+   returns exactly `n` bytes, short only at end-of-stream; `write`
+   accepts every chunk unconditionally. Anything weaker lets the
+   guest-visible byte sequence depend on host buffering, and outputs
+   could legally vary. Enforced host-side; the reference guest carries
+   a `read-contract-probe` op that verifies it from inside the sandbox.
+3. **`serve-range` ships in @2** (not deferred to @3): the range path
+   for non-opaque transforms, property-tested for seek-equivalence
+   (D49) with boundary-straddling ranges. All serve-range inputs are
+   random-access by contract.
+4. **`MAX_READ` guard** (16 MiB per read): oversized reads trap
+   deterministically — the resource-abuse guard that doesn't break the
+   exact-read contract with a clamp.
+5. **Compile/run split in the host API**: components compile once
+   (`load`) and instantiate per run (~µs) — the executor replays
+   thousands of recipes against a handful of pinned components.
+
+Status: WIT is DRAFT (transforms/wit/v2); the M2 gate is green — 13
+tests: golden anchors, N-run identity, 64 MiB streamed through an
+8 MiB guest, seek-equivalence for swaps and concat (±1 at group
+boundaries, input joins, EOF), greedy-read trap, fuel trap, ambient
+imports still refused (the linker carries exactly our types interface).
+Freeze happens with the ~4 GB exit test once the executor lands.
+
+*Rejected:* host-driven update/finish (single-implicit-input shape),
+"read up to n" semantics (nondeterminism by buffering), wasi:io streams
+(ambient surface, D46).

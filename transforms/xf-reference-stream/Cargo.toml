@@ -1,0 +1,19 @@
+[package]
+name = "xf-reference-stream"
+description = "Streaming reference transform for the datboi:transform@2 DRAFT world: swap family + concat + read-contract probe, exercised by the M2 determinism and seek-equivalence gates"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Guest bindings only for the wasm component; host-native unit tests build
+# without them. No async features — pure whole-stream pull/push.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen = { version = "0.46", default-features = false, features = ["macros", "realloc"] }
+
+[lints]
+workspace = true

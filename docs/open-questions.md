@@ -84,7 +84,7 @@ Design passes R1–R8 complete; core design ratified through D39. Docs
   assemble executor + multi-hash ingest throughput.
 - API shape for M5 (axum routes ↔ Svelte, codegen via datboi-api crate) —
   can wait until M4 wraps (post-D50 numbering).
-- **transform@2 streaming world** (ratified for M2 by D46; M2 is now exactly this platform, D50): streams as
+- **transform@2 streaming world** (D46/D50; interaction model ruled D51, WIT drafted, gate green — freeze pends the 4 GB executor exit test): streams as
   resources in our own `types` interface, empty-linker property
   preserved, determinism gate extended to @2 — plus the D49
   seek-equivalence property test (random ranges == slices of full

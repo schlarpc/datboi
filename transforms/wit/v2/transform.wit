@@ -1,0 +1,133 @@
+/// datboi:transform@2 — the STREAMING profile (D46, D49, ruled 2026-07-06).
+///
+/// STATUS: DRAFT. Freezes when the M2 determinism + seek-equivalence gate
+/// is green and the 4 GB bounded-memory exit test passes (the same
+/// discipline that froze @1). Until then fields may change.
+///
+/// A sibling of the frozen whole-buffer `datboi:transform@1`, never a
+/// replacement (D7/D41): which world a component targets is recipe
+/// metadata, and @1 components stay executable forever.
+///
+/// Interaction model (ruled): the guest PULLS inputs and PUSHES outputs.
+/// `run` executes to completion, calling `source.read` / `file.read-at` on
+/// host-implemented input resources and `sink.write` on host-implemented
+/// output resources. Multi-input transforms read whichever input they need
+/// next; the host never has to guess.
+///
+/// Determinism contract (D5), two layers as in @1:
+///
+/// 1. The only imports are this package's own `types` interface — the
+///    stream resources below, implemented BY THE HOST (never wasi:io). No
+///    clock, no random, no filesystem: `params` + input bytes remain the
+///    entire world. The linker gains exactly these methods and nothing
+///    ambient (D46).
+/// 2. The stream contract is exact: `read(n)` returns exactly `n` bytes,
+///    short only at end-of-stream; `write` accepts every chunk
+///    unconditionally (backpressure is host-side suspension the guest
+///    cannot observe). Anything weaker would let the guest-visible byte
+///    sequence depend on host buffering, and outputs could legally vary.
+///
+/// Fuel meters guest instructions only; host time inside stream calls is
+/// free and irrelevant to guest-visible state.
+package datboi:transform@2.0.0;
+
+interface types {
+    /// Seekability class (D27) — same vocabulary as @1.
+    enum seek-class {
+        /// Output ranges map to input ranges arithmetically.
+        affine,
+        /// Random access via a content-addressed index (frame/block maps).
+        manifest-seekable,
+        /// Whole-stream only; range reads require full materialization.
+        opaque,
+    }
+
+    /// Static, pure metadata the host reads before running a transform.
+    record descriptor {
+        seek: seek-class,
+        /// Input positions the guest will access via `file` (read-at)
+        /// instead of `source` (sequential). The host materializes
+        /// non-seekable sources at these positions first (spill rule,
+        /// docs/70-recipes.md).
+        random-access-inputs: list<u32>,
+    }
+
+    /// Host-implemented sequential input stream.
+    resource source {
+        /// Read the next `n` bytes. EXACT contract: returns `n` bytes
+        /// unless the stream ends first, in which case the final read
+        /// returns the remainder (possibly empty). A short read IS
+        /// end-of-stream — no retry semantics exist.
+        read: func(n: u32) -> list<u8>;
+        /// Total stream length in bytes (always known: inputs are CAS
+        /// blobs with claimed sizes).
+        len: func() -> u64;
+    }
+
+    /// Host-implemented random-access input (positions listed in
+    /// `descriptor.random-access-inputs` receive this shape).
+    resource file {
+        /// Read exactly `n` bytes at `offset`; short only where
+        /// `offset + n` passes end-of-file. Reads past EOF return empty.
+        read-at: func(offset: u64, n: u32) -> list<u8>;
+        len: func() -> u64;
+    }
+
+    /// Host-implemented output sink. The host hash-tees every chunk (D4);
+    /// on seekable routes it additionally verifies against the output's
+    /// bao outboard (D49).
+    resource sink {
+        /// Accepts every chunk, unconditionally. Never fails, never
+        /// blocks visibly: backpressure suspends the guest fiber.
+        write: func(chunk: list<u8>);
+    }
+
+    /// One resolved recipe input, in recipe order.
+    variant input {
+        /// Sequential pull stream.
+        sequential(source),
+        /// Random access (declared in the descriptor).
+        random-access(file),
+    }
+}
+
+world transform-stream {
+    use types.{descriptor, input, sink};
+
+    /// Describe an operation's capabilities. Pure and constant per `op`
+    /// (the host may cache by component hash) — identical to @1.
+    export describe: func(op: string) -> descriptor;
+
+    /// Apply one operation: read `inputs` (recipe order), write the
+    /// claimed outputs to `outputs` (recipe order). Runs to completion.
+    /// The host verifies every output hash against the recipe (D4), so a
+    /// buggy transform wastes CPU but cannot corrupt the store.
+    export run: func(
+        op: string,
+        params: list<u8>,
+        inputs: list<input>,
+        outputs: list<sink>,
+    ) -> result<_, string>;
+
+    /// Produce exactly `output[output-ix][offset .. offset+len)` into
+    /// `out` — the range-serving path for non-opaque transforms (ruled
+    /// into @2; D49). ALL inputs arrive as `random-access` here regardless
+    /// of the descriptor (serving a range implies the host already has
+    /// seekable sources — materialized if necessary, per the spill rule);
+    /// `descriptor.random-access-inputs` governs `run` only. Writing fewer than `len` bytes is legal only where
+    /// the output ends inside the range. MUST byte-match the same span of
+    /// a full `run` materialization: the conformance gate property-tests
+    /// this with boundary-straddling ranges, and production range reads
+    /// verify against the output bao outboard (D49) — a mismatch
+    /// quarantines the component's seekability, it never serves bytes.
+    /// Opaque ops return an error here.
+    export serve-range: func(
+        op: string,
+        params: list<u8>,
+        inputs: list<input>,
+        output-ix: u32,
+        offset: u64,
+        len: u64,
+        out: sink,
+    ) -> result<_, string>;
+}

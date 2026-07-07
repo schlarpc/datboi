@@ -8,6 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# wasmtime host traits speak anyhow (wasmtime::Result).
+anyhow.workspace = true
 datboi-core.workspace = true
 thiserror.workspace = true
 wasmtime.workspace = true

@@ -18,11 +18,33 @@ mod bindings {
     // file.
     wasmtime::component::bindgen!({
         world: "transform",
-        path: "../../transforms/wit",
+        path: "../../transforms/wit/v1",
     });
 }
 
 use bindings::Transform;
+
+pub mod stream;
+
+/// The deterministic engine configuration (D5) shared by the @1 and @2
+/// hosts. Every knob here is part of the determinism contract.
+#[must_use]
+pub(crate) fn deterministic_config() -> Config {
+    let mut config = Config::new();
+    // Component model is the transform packaging format (D7).
+    config.wasm_component_model(true);
+    // NaN bit patterns are the one spec-sanctioned source of float
+    // nondeterminism; canonicalize them so two hosts agree.
+    config.cranelift_nan_canonicalization(true);
+    // Threads need no knob: our wasmtime build omits the `threads` cargo
+    // feature entirely — disabled at compile time.
+    // Relaxed SIMD is *defined* to give implementation-specific results;
+    // forbid it outright (plain SIMD stays on and is deterministic).
+    config.wasm_relaxed_simd(false);
+    // Meter fuel so runaway components trap at a fixed, reproducible point.
+    config.consume_fuel(true);
+    config
+}
 
 /// Seekability class a transform declares (docs/80-views.md, D27). Mirrors
 /// the WIT enum; kept as a hand-written host type so the rest of the daemon
@@ -105,25 +127,7 @@ impl TransformHost {
     /// # Errors
     /// If wasmtime rejects the deterministic engine configuration.
     pub fn new(limits: Limits) -> Result<Self, RuntimeError> {
-        let mut config = Config::new();
-        // Component model is the transform packaging format (D7).
-        config.wasm_component_model(true);
-        // --- the determinism knobs (D5) ---
-        // NaN bit patterns are the one spec-sanctioned source of float
-        // nondeterminism; canonicalize them so two hosts agree.
-        config.cranelift_nan_canonicalization(true);
-        // Threads (scheduling nondeterminism) need no knob: our wasmtime
-        // build omits the `threads` cargo feature entirely, so the
-        // `Config::wasm_threads` method doesn't even exist — disabled at
-        // compile time, which is stronger than a runtime flag.
-        // Relaxed SIMD is *defined* to give implementation-specific results;
-        // forbid it outright (plain SIMD stays on and is deterministic).
-        config.wasm_relaxed_simd(false);
-        // Meter fuel so runaway components trap at a fixed, reproducible point
-        // rather than running forever.
-        config.consume_fuel(true);
-
-        let engine = Engine::new(&config).map_err(RuntimeError::Component)?;
+        let engine = Engine::new(&deterministic_config()).map_err(RuntimeError::Component)?;
         // The world imports nothing (no clock/random/fs) — ambient
         // nondeterminism is unrepresentable, so the linker stays empty.
         let linker = Linker::new(&engine);

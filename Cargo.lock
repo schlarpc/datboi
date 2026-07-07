@@ -590,6 +590,7 @@ dependencies = [
 name = "datboi-runtime"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "blake3",
  "datboi-core",
  "thiserror",
