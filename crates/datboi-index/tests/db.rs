@@ -66,9 +66,19 @@ fn recipe(db: &mut Db, seed: &[u8], inputs: &[i64], outputs: &[i64], state: Veri
 #[test]
 fn schema_and_pragmas() {
     let (dir, db) = open_db();
-    for (conn, synchronous, app_id) in [
-        (db.cache(), 1_i64, 0x6474_6263_u32),
-        (db.state(), 2_i64, 0x6474_6273_u32),
+    for (conn, synchronous, app_id, expected_version) in [
+        (
+            db.cache(),
+            1_i64,
+            0x6474_6263_u32,
+            datboi_index::schema::CACHE_SCHEMA_VERSION,
+        ),
+        (
+            db.state(),
+            2_i64,
+            0x6474_6273_u32,
+            datboi_index::schema::STATE_SCHEMA_VERSION,
+        ),
     ] {
         let mode: String = conn
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
@@ -93,11 +103,86 @@ fn schema_and_pragmas() {
         let version: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, datboi_index::schema::SCHEMA_VERSION);
+        assert_eq!(version, expected_version);
     }
     // Reopen is idempotent (existing files pass validation).
     drop(db);
     Db::open(dir.path()).expect("reopen");
+}
+
+/// D37's split, made mechanical: an older cache.db is disposable and
+/// comes back empty at the current version; state.db (authoritative) is
+/// never dropped, and a future-versioned file of either kind refuses to
+/// open (no downgrades).
+#[test]
+fn version_skew_recreates_cache_and_protects_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let db = Db::open(dir.path()).expect("open");
+        db.upsert_blob(
+            &Blake3::compute(b"cached row"),
+            Some(1),
+            Namespace::Data,
+            Residency::Resident,
+        )
+        .expect("row");
+        // Authoritative row that must survive the cache nuke.
+        db.state()
+            .execute(
+                "INSERT INTO config (key, value) VALUES ('precious', x'01')",
+                [],
+            )
+            .expect("state row");
+    }
+
+    // Simulate a file from an older build: rewind cache.db's version.
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("cache.db")).expect("raw open");
+        conn.pragma_update(None, "user_version", 1).expect("rewind");
+    }
+    let db = Db::open(dir.path()).expect("reopen upgrades");
+    let blobs: i64 = db
+        .cache()
+        .query_row("SELECT COUNT(*) FROM blob", [], |r| r.get(0))
+        .expect("q");
+    assert_eq!(blobs, 0, "old cache dropped and recreated empty");
+    let version: u32 = db
+        .cache()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .expect("q");
+    assert_eq!(version, datboi_index::schema::CACHE_SCHEMA_VERSION);
+    let precious: i64 = db
+        .state()
+        .query_row(
+            "SELECT COUNT(*) FROM config WHERE key = 'precious'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("q");
+    assert_eq!(precious, 1, "authoritative state untouched");
+    drop(db);
+
+    // A FUTURE version (downgrade scenario) refuses for both files.
+    for file in ["cache.db", "state.db"] {
+        let conn = rusqlite::Connection::open(dir.path().join(file)).expect("raw open");
+        conn.pragma_update(None, "user_version", 9999)
+            .expect("fast-forward");
+        drop(conn);
+        let err = match Db::open(dir.path()) {
+            Ok(_) => panic!("{file}: future version must refuse to open"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, IndexError::SchemaVersion { .. }), "{file}");
+        let conn = rusqlite::Connection::open(dir.path().join(file)).expect("raw open");
+        let restore = if file == "cache.db" {
+            datboi_index::schema::CACHE_SCHEMA_VERSION
+        } else {
+            datboi_index::schema::STATE_SCHEMA_VERSION
+        };
+        conn.pragma_update(None, "user_version", restore)
+            .expect("restore");
+    }
+    Db::open(dir.path()).expect("healthy again");
 }
 
 #[test]

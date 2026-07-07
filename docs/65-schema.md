@@ -95,7 +95,25 @@ don't sweep).
 
 ## Migration posture
 
-`user_version` + `application_id` on both files. cache.db: attempt cheap
-in-place, else rebuild from CAS (needs state.db or snapshot first for
-tags/source list — matches D15 recovery ordering). state.db: real
-migrations, snapshot restore as the worst-case path.
+*Implemented 2026-07-07 (was posture-only until the first real bump —
+cache v2 — exposed that one shared version constant could brick
+state.db on a cache-only change).*
+
+`user_version` + `application_id` on both files, **versioned
+independently** (`CACHE_SCHEMA_VERSION` / `STATE_SCHEMA_VERSION` in
+schema.rs):
+
+- **cache.db** — an older-version file is deleted and recreated empty
+  on open (it is derivable by definition; `datboi recover` or rescans
+  repopulate). No in-place cache migrations: the "cheap in-place"
+  option was dropped as complexity spent protecting disposable data.
+- **state.db** — an older file is upgraded in place by the
+  `STATE_MIGRATIONS` ladder: one SQL batch per version step, each in
+  its own transaction with `user_version` stamped inside it (a crash
+  resumes at the exact step). Shipped steps are append-only and
+  immutable. Every step must preserve the snapshot round-trip (D37) —
+  the codec is the cross-check that a migration didn't change state
+  semantics. Snapshot restore remains the worst-case path.
+- **Both files** — a NEWER version than the build supports is a hard
+  error (no downgrades), and a wrong `application_id` is never touched
+  (even the cache remedy must not delete a foreign database).

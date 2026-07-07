@@ -620,3 +620,22 @@ updating it is now a format event.
 *Rejected:* host-driven update/finish (single-implicit-input shape),
 "read up to n" semantics (nondeterminism by buffering), wasi:io streams
 (ambient surface, D46).
+
+## D52 — Outboard sidecar format: headerless pre-order obao4 (2026-07-07)
+
+The `.obao` sidecar is the pre-order bao outboard over 16 KiB chunk
+groups (`BlockSize(4)`), hash pairs only — no header, no size prefix
+(blob length comes from the data file or the index). Byte-identical to
+what iroh-blobs writes, so the M6 p2p layer serves our sidecars
+unchanged (D2/D14 alignment); the tree root IS the blob's blake3, so
+sidecars are self-authenticating and peer-supplied ones need no trust
+machinery (D49). Implementation rides the `bao-tree` crate (n0's, the
+same code iroh uses); a golden-vector test pins the encoding — this is
+an at-rest format commitment on the same tier as the store layout.
+Small blobs (≤ one chunk group) have an empty outboard by construction:
+no sidecar file exists below 16 KiB, and absence-of-file is the
+canonical encoding of "empty". *Rejected:* post-order layout (writes
+stream nicely but iroh can't serve it), the original bao crate's 1 KiB
+tree (4× sidecar bytes for verification granularity nothing needs),
+inline-in-DB outboards (violates D15 — the tree must survive DB loss
+with the bytes it protects).

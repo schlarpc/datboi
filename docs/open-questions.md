@@ -5,13 +5,15 @@ Design passes R1–R8 complete; core design ratified through D39. Docs
 
 ## Flagged for ruling (raised 2026-07-07, M2/M3 build session)
 
-- **`.obao` sidecar format** (needs a decision entry): implemented as
-  headerless pre-order obao4 via the `bao-tree` crate — 16 KiB chunk
-  groups, byte-identical to iroh-blobs sidecars, root == blake3 (D2).
-  This is a decades-scale at-rest commitment like the store layout;
-  golden-vector pinned in code but NOT yet ratified. Alternatives if
-  challenged: post-order (streamable writes, iroh-incompatible), or the
-  original bao crate's 1 KiB tree (4× sidecar size).
+- ~~`.obao` sidecar format~~ ratified 2026-07-07 as **D52**
+  (headerless pre-order obao4, iroh-compatible).
+- **Quarantine attribution refinement** (work item, accepted
+  2026-07-07): `serve_range` quarantines a component on ANY
+  window-verify failure through its seek path, including failures
+  actually caused by corrupt *inputs*. Safe but defamatory. Refinement:
+  on mismatch, verify the route's inputs (input-side bao / re-hash)
+  before writing the quarantine row; only an inputs-clean mismatch
+  indicts the component. Slot: `Executor::serve_range`'s error arm.
 - **Analyzer identity for native analyzers**: implemented as
   `blake3("datboi-analyzer:<name>/<version>")` tags with parameters
   baked into the name (e.g. `fastcdc-v2020-nc2-64k-256k-1m/1`). Wasm
@@ -21,12 +23,29 @@ Design passes R1–R8 complete; core design ratified through D39. Docs
   chunks every data blob ≥ 4 MiB. Molten with the D45 config
   vocabulary; also interacts with "don't chunk blobs that already have
   cheaper routes."
-- **zlib-exact wasm compressor**: the deflate-trial analyzer proves the
-  discovery loop but matches only miniz-produced streams. Real scene
-  zips are zlib/TorrentZip output. Candidates: zlib compiled to
-  wasm32-unknown-unknown (C toolchain in the flake), zlib-rs (verify
-  byte-exactness per level/version), or accepting miniz-only coverage.
-  Blocks TorrentZip rebuild discovery.
+- **Deflate rebuild: preflate, not parameter discovery** (researched
+  2026-07-07; RECOMMENDATION, not yet ruled). Prior art review found
+  the compressor-matching frame is obsolete: **preflate**
+  (deus-libri/preflate; Rust port `preflate-rs` 0.7.x, Microsoft,
+  Apache-2.0, `forbid(unsafe)`, built for exact-binary cloud storage)
+  reconstructs ANY valid deflate stream bit-exactly from plaintext + a
+  small corrections blob — no compressor identification needed.
+  Measured corrections overhead vs uncompressed: zlib 0.01–0.08%
+  (i.e. TorrentZip too), zlib-ng ≤1.07%, libdeflate ≤1.51%,
+  miniz ≤2.7%. Related: precomp (zlib-param brute force only),
+  reflate, grittibanzli — all subsumed. This would make effectively
+  EVERY wild zip rebuildable (kills most of the D24 stays-literal tax):
+  recipe = xf-preflate(corrections blob {role: skeleton}, member
+  plaintext) → container bytes; corrections are ordinary CAS inputs, so
+  determinism needs only the pinned component (preflate version churn
+  can't break old recipes — D5 holds by construction). The zlib-exact
+  compressor path is DEAD: zlib-rs has had output-determinism bugs and
+  zlib-ng guarantees reproducibility only within one identical build.
+  Work owed before ruling: verify preflate-rs compiles for
+  wasm32-unknown-unknown (deps: cabac, bitcode) under the empty-linker
+  rule; measure corrections size on real TorrentZip corpora; decide
+  @1 vs @2 world for xf-preflate (members are big → @2); replace the
+  deflate-trial analyzer's match-hunting with preflate splitting.
 - **Sequential assemble over opaque children spills today**: the
   executor opens assemble children random-access, so a sequential read
   of concat-of-derived (e.g. concat over decompressed members) spills

@@ -5,10 +5,31 @@
 //! are authoritative until snapshotted into CAS (D37). Tables are STRICT;
 //! hashes are 32-byte BLOBs; graph tables use integer surrogate keys.
 
-/// Bumped only on incompatible schema changes. cache.db migration policy
-/// is "drop and rebuild"; state.db gets real migrations forever (D37).
+/// The two files version INDEPENDENTLY (D37 made mechanical): a cache
+/// schema change must never touch the authoritative file's openability.
+///
+/// cache.db policy is drop-and-rebuild: an older-version cache file is
+/// deleted and recreated empty on open (it is derivable by definition —
+/// `datboi recover` or a rescan repopulates it).
 /// v2: seek_quarantine (D49), analysis + sweep_queue (D45/D48).
-pub const SCHEMA_VERSION: u32 = 2;
+pub const CACHE_SCHEMA_VERSION: u32 = 2;
+
+/// state.db gets REAL migrations forever: an older file is upgraded in
+/// place by [`STATE_MIGRATIONS`], never dropped. A newer-than-supported
+/// version is a hard error in both files (no downgrades).
+pub const STATE_SCHEMA_VERSION: u32 = 1;
+
+/// The state.db migration ladder: `STATE_MIGRATIONS[i]` is the SQL batch
+/// migrating version `i + 1` to `i + 2`; each step runs in its own
+/// transaction and stamps `user_version` before the next. Every entry is
+/// append-only and immutable once released — editing a shipped step
+/// would fork the upgrade path of existing deployments.
+///
+/// Writing a step: additive DDL (ADD COLUMN, CREATE TABLE) plus any row
+/// backfill. Anything a snapshot round-trips (D37) must keep
+/// round-tripping after the step — the snapshot codec is the cross-check
+/// that a migration didn't silently change state semantics.
+pub const STATE_MIGRATIONS: &[&str] = &[];
 
 /// `application_id` magics: "dtbc" / "dtbs" as big-endian ASCII.
 pub const CACHE_APP_ID: u32 = 0x6474_6263;
