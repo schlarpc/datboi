@@ -8,8 +8,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+bao-tree = { version = "0.16.0", default-features = false, features = ["validate"] }
 blake3.workspace = true
 datboi-core.workspace = true
+positioned-io = { version = "0.3", default-features = false }
 thiserror.workspace = true
 
 [dev-dependencies]

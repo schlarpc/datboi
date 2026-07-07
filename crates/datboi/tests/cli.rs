@@ -385,6 +385,30 @@ fn snapshot_recovery_drill() {
     let (before, code_before) = audit_json(&u, "test/drill");
     assert_eq!(code_before, Some(1)); // Gone.gba is missing on purpose
 
+    // A no-op refinement sweep records provenance for every data blob
+    // (negatives included) — the D50 exit criterion drives this drill.
+    let sweep_out = u
+        .cmd()
+        .args(["sweep", "--json"])
+        .output()
+        .expect("sweep runs");
+    assert!(sweep_out.status.success());
+    let sweep: serde_json::Value = serde_json::from_slice(&sweep_out.stdout).unwrap();
+    let analyzed = sweep["analyzed"].as_u64().unwrap();
+    assert!(analyzed >= 3, "alpha, beta, and the dat blob at minimum");
+    assert_eq!(sweep["negative"], analyzed, "noop concludes negative");
+    assert_eq!(sweep["queue_remaining"], 0);
+
+    // A second sweep finds nothing new to do — the fixpoint is at rest.
+    let sweep2 = u
+        .cmd()
+        .args(["sweep", "--json"])
+        .output()
+        .expect("sweep runs");
+    let sweep2: serde_json::Value = serde_json::from_slice(&sweep2.stdout).unwrap();
+    assert_eq!(sweep2["enqueued"], 0);
+    assert_eq!(sweep2["analyzed"], 0);
+
     // Mint the snapshot (creates the identity key on first use).
     let snap_out = u
         .cmd()
@@ -405,17 +429,37 @@ fn snapshot_recovery_drill() {
     }
 
     // Recover replays the dat import from the snapshot automatically.
-    u.cmd()
-        .arg("recover")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("snapshot used"))
-        .stdout(predicate::str::contains("dats re-imported"))
-        .stdout(predicate::str::contains("catalog restored"));
+    let recover_out = u
+        .cmd()
+        .args(["recover", "--json"])
+        .output()
+        .expect("recover runs");
+    assert!(recover_out.status.success());
+    let recovered: serde_json::Value = serde_json::from_slice(&recover_out.stdout).unwrap();
+    assert!(recovered["snapshot_seq"].as_u64().is_some());
+    assert!(
+        recovered["analysis_restored"].as_u64().unwrap() >= analyzed,
+        "provenance rows come back from the snapshot batches (D48)"
+    );
 
     let (after, code_after) = audit_json(&u, "test/drill");
     assert_eq!(code_after, code_before);
     assert_eq!(after, before, "audit must be byte-identical after recovery");
+
+    // The restored provenance means a fresh sweep re-pays NOTHING for
+    // blobs analyzed before the disaster (D48's whole purpose). The
+    // snapshot/batch objects minted along the way live in meta/, which is
+    // never an analysis candidate, so they don't enqueue either.
+    let sweep3 = u
+        .cmd()
+        .args(["sweep", "--json"])
+        .output()
+        .expect("sweep runs");
+    let sweep3: serde_json::Value = serde_json::from_slice(&sweep3.stdout).unwrap();
+    assert_eq!(
+        sweep3["analyzed"], 0,
+        "no analysis re-paid after recovery: {sweep3}"
+    );
 
     // A re-mint after recovery writes no new alias-batch bytes: identical
     // rows shard to identical batches, which dedupe by content address.

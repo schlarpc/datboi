@@ -10,6 +10,7 @@
 //! only live in state.db, which must round-trip through the CAS snapshot
 //! encoder. Cross-file consistency is eventual — recovery assumes it.
 
+pub mod analysis;
 pub mod blobs;
 pub mod dats;
 pub mod recipes;
@@ -21,6 +22,8 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
+pub use analysis::{AnalysisOutcome, SweepItem};
+pub use blobs::BlobRow;
 pub use recipes::GroundingMode;
 pub use types::{
     AliasAlgo, ClaimKind, ClaimStatus, Namespace, OpKind, RecipeSource, Residency, SeekClass,

@@ -8,6 +8,16 @@ use rusqlite::{OptionalExtension, params};
 use crate::types::{AliasAlgo, Namespace, Residency};
 use crate::{Db, IndexError};
 
+/// A full blob-index row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobRow {
+    pub blob_id: i64,
+    pub hash: Blake3,
+    pub size: Option<u64>,
+    pub namespace: Namespace,
+    pub residency: Residency,
+}
+
 impl Db {
     /// Insert or update a blob row; returns its surrogate id. Size (when
     /// known) and residency are refreshed; namespace is first-write-wins
@@ -35,6 +45,62 @@ impl Db {
             |row| row.get(0),
         )?;
         Ok(id)
+    }
+
+    /// Full blob row by hash (executor route planning, eviction).
+    pub fn blob_by_hash(&self, hash: &Blake3) -> Result<Option<BlobRow>, IndexError> {
+        self.blob_row(
+            "SELECT blob_id, hash, size, namespace, residency FROM blob WHERE hash = ?1",
+            params![hash.0.as_slice()],
+        )
+    }
+
+    /// Full blob row by surrogate id.
+    pub fn blob_by_id(&self, blob_id: i64) -> Result<Option<BlobRow>, IndexError> {
+        self.blob_row(
+            "SELECT blob_id, hash, size, namespace, residency FROM blob WHERE blob_id = ?1",
+            params![blob_id],
+        )
+    }
+
+    fn blob_row(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Option<BlobRow>, IndexError> {
+        let row = self
+            .cache()
+            .query_row(sql, params, |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, [u8; 32]>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .optional()?;
+        row.map(|(blob_id, hash, size, ns, residency)| {
+            Ok(BlobRow {
+                blob_id,
+                hash: Blake3(hash),
+                size: size.map(|s| u64::try_from(s).expect("sizes stored non-negative")),
+                namespace: Namespace::from_code(ns)?,
+                residency: Residency::from_code(residency)?,
+            })
+        })
+        .transpose()
+    }
+
+    /// Flip a blob's residency (the eviction/rematerialization state
+    /// change). The caller is responsible for the D25 safety rules; this
+    /// is a plain cache write.
+    pub fn set_residency(&self, blob_id: i64, residency: Residency) -> Result<(), IndexError> {
+        self.cache().execute(
+            "UPDATE blob SET residency = ?2 WHERE blob_id = ?1",
+            params![blob_id, residency.code()],
+        )?;
+        Ok(())
     }
 
     pub fn get_blob_id(&self, hash: &Blake3) -> Result<Option<i64>, IndexError> {

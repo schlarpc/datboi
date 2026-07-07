@@ -40,6 +40,18 @@ pub enum StoreError {
     /// (recovery scans surface these instead of silently skipping).
     #[error("foreign file in store tree: {path}")]
     Foreign { path: PathBuf },
+    /// A verified range read was requested but no outboard sidecar exists
+    /// yet (compute one with [`Store::ensure_obao`]).
+    #[error("no outboard sidecar for {path}")]
+    MissingOutboard { path: PathBuf },
+    /// Outboard computation or range validation failed (D49: surfaces as
+    /// EIO at serving surfaces, never as bytes).
+    #[error("outboard failure at {path}: {source}")]
+    Obao {
+        path: PathBuf,
+        #[source]
+        source: crate::obao::ObaoError,
+    },
 }
 
 impl StoreError {
@@ -314,6 +326,224 @@ impl Store {
         }
     }
 
+    /// Materialization primitive (D25/D49): stream exactly `len` claimed
+    /// bytes from `reader`, computing the bao outboard in the same pass
+    /// (the tree root IS the blake3 hash — one traversal verifies and
+    /// builds the sidecar). On a root match the blob and its sidecar are
+    /// both published; on any mismatch — wrong bytes, short stream, or
+    /// trailing bytes past `len` — nothing is, and the temp is removed.
+    ///
+    /// Unlike [`Store::put`], the reader is ALWAYS fully consumed and
+    /// verified even when the blob is already present: replay licensing
+    /// requires the *stream* to be proven, not the destination.
+    pub fn put_with_obao(
+        &self,
+        ns: Namespace,
+        expected: Blake3,
+        len: u64,
+        mut reader: impl Read,
+    ) -> Result<PutOutcome, StoreError> {
+        let temp = self.new_temp_path();
+        let mut file = File::create_new(&temp).map_err(|e| StoreError::io(&temp, e))?;
+        let result = crate::obao::compute(
+            TeeToFile {
+                inner: &mut reader,
+                file: &mut file,
+                path: &temp,
+            },
+            len,
+        );
+        let (root, sidecar) = match result {
+            Ok(pair) => pair,
+            Err(e) => {
+                drop(file);
+                let _ = fs::remove_file(&temp);
+                return Err(StoreError::Obao {
+                    path: temp,
+                    source: e,
+                });
+            }
+        };
+        // A stream longer than the claimed size must fail verification
+        // even if the first `len` bytes hash correctly — a deterministic
+        // replay produces the claim exactly.
+        let mut probe = [0u8; 1];
+        let trailing = loop {
+            match reader.read(&mut probe) {
+                Ok(n) => break n > 0,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => {
+                    drop(file);
+                    let _ = fs::remove_file(&temp);
+                    return Err(StoreError::io(&temp, e));
+                }
+            }
+        };
+        if root != expected || trailing {
+            drop(file);
+            let _ = fs::remove_file(&temp);
+            return Err(StoreError::HashMismatch {
+                expected,
+                // Trailing bytes: report the root we computed; the claim
+                // is false either way.
+                actual: root,
+            });
+        }
+
+        let final_path = self.blob_path(ns, &expected);
+        let outcome = if final_path.exists() {
+            drop(file);
+            let _ = fs::remove_file(&temp);
+            PutOutcome::AlreadyPresent
+        } else {
+            file.sync_all().map_err(|e| StoreError::io(&temp, e))?;
+            drop(file);
+            let parent = final_path.parent().expect("blob paths have parents");
+            fs::create_dir_all(parent).map_err(|e| StoreError::io(parent, e))?;
+            fs::rename(&temp, &final_path).map_err(|e| StoreError::io(&final_path, e))?;
+            fsync_dir(parent)?;
+            PutOutcome::Stored
+        };
+        self.put_obao(ns, &expected, &sidecar)?;
+        Ok(outcome)
+    }
+
+    /// Publish a bao outboard sidecar next to its blob, same tmp → fsync →
+    /// rename discipline. Idempotent: an existing sidecar wins (same tree
+    /// ⇒ same bytes). Empty outboards (blob ≤ one chunk group) are never
+    /// written — absence IS the sidecar for small blobs.
+    pub fn put_obao(
+        &self,
+        ns: Namespace,
+        hash: &Blake3,
+        sidecar: &[u8],
+    ) -> Result<PutOutcome, StoreError> {
+        if sidecar.is_empty() {
+            return Ok(PutOutcome::AlreadyPresent);
+        }
+        let final_path = self.obao_path(ns, hash);
+        if final_path.exists() {
+            return Ok(PutOutcome::AlreadyPresent);
+        }
+        let temp = self.new_temp_path();
+        let mut file = File::create_new(&temp).map_err(|e| StoreError::io(&temp, e))?;
+        if let Err(e) = file.write_all(sidecar) {
+            drop(file);
+            let _ = fs::remove_file(&temp);
+            return Err(StoreError::io(&temp, e));
+        }
+        file.sync_all().map_err(|e| StoreError::io(&temp, e))?;
+        drop(file);
+        let parent = final_path.parent().expect("sidecar paths have parents");
+        fs::create_dir_all(parent).map_err(|e| StoreError::io(parent, e))?;
+        fs::rename(&temp, &final_path).map_err(|e| StoreError::io(&final_path, e))?;
+        fsync_dir(parent)?;
+        Ok(PutOutcome::Stored)
+    }
+
+    /// Load a blob's outboard sidecar. `Ok(Some(vec![]))` means the blob
+    /// is resident and small enough (≤ one chunk group) that its outboard
+    /// is empty; `Ok(None)` means no sidecar has been computed. The
+    /// sidecar file is consulted FIRST: outboards must survive eviction
+    /// of the literal (D49 rule 1), so this works with no blob on disk.
+    /// (For an evicted small blob the caller decides emptiness from the
+    /// indexed size — the store can't know the length of absent bytes.)
+    pub fn get_obao(&self, ns: Namespace, hash: &Blake3) -> Result<Option<Vec<u8>>, StoreError> {
+        let path = self.obao_path(ns, hash);
+        match fs::read(&path) {
+            Ok(bytes) => return Ok(Some(bytes)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(StoreError::io(&path, e)),
+        }
+        match self.len(ns, hash)? {
+            Some(len) if crate::obao::outboard_size(len) == 0 => Ok(Some(Vec::new())),
+            _ => Ok(None),
+        }
+    }
+
+    /// Compute-and-publish a blob's outboard from its stored bytes if it
+    /// isn't already present (one streaming read). Returns whether a
+    /// sidecar now exists (false only for absent blobs).
+    ///
+    /// This is the "blessing" primitive: eviction (D49 rule 1) and
+    /// recipe-served range reads both require the outboard to exist.
+    pub fn ensure_obao(&self, ns: Namespace, hash: &Blake3) -> Result<bool, StoreError> {
+        if self.get_obao(ns, hash)?.is_some() {
+            return Ok(true);
+        }
+        let Some(len) = self.len(ns, hash)? else {
+            return Ok(false);
+        };
+        let file = self
+            .get(ns, hash)?
+            .expect("len() saw the blob; single-writer tree");
+        let path = self.blob_path(ns, hash);
+        let (root, sidecar) =
+            crate::obao::compute(io::BufReader::new(file), len).map_err(|e| StoreError::Obao {
+                path: path.clone(),
+                source: e,
+            })?;
+        if root != *hash {
+            return Err(StoreError::HashMismatch {
+                expected: *hash,
+                actual: root,
+            });
+        }
+        self.put_obao(ns, hash, &sidecar)?;
+        Ok(true)
+    }
+
+    /// Verified range read (D49 rule 2): validate the covering chunk
+    /// groups against the blob's outboard, then return exactly
+    /// `offset..offset+len` (clamped to the blob). Fails — never returns
+    /// unverified bytes — if the outboard is missing or validation fails.
+    pub fn read_range_verified(
+        &self,
+        ns: Namespace,
+        hash: &Blake3,
+        offset: u64,
+        len: u64,
+    ) -> Result<Vec<u8>, StoreError> {
+        let path = self.blob_path(ns, hash);
+        let Some(blob_len) = self.len(ns, hash)? else {
+            return Err(StoreError::io(
+                &path,
+                io::Error::new(io::ErrorKind::NotFound, "blob absent"),
+            ));
+        };
+        let sidecar = self
+            .get_obao(ns, hash)?
+            .ok_or_else(|| StoreError::MissingOutboard { path: path.clone() })?;
+        let file = self.get(ns, hash)?.expect("len() saw the blob");
+        let start = offset.min(blob_len);
+        let end = offset.saturating_add(len).min(blob_len);
+        crate::obao::read_range_verified(&file, blob_len, hash, &sidecar, start..end)
+            .map_err(|e| StoreError::Obao { path, source: e })
+    }
+
+    /// Remove a blob's LITERAL BYTES, keeping its outboard sidecar
+    /// forever (D49 rule 1: the tree is what keeps recipe-served range
+    /// reads verifiable after the bytes are gone).
+    ///
+    /// THIS IS THE ONLY BYTE-DESTROYING OPERATION IN THE STORE. The
+    /// caller owns the D25/D21/D27 safety rules — a replayed-local
+    /// recipe route grounded in retained literals must exist. The store
+    /// cannot check that; `datboi-exec`'s eviction path is the one
+    /// legitimate caller.
+    ///
+    /// Returns `false` if the blob wasn't resident (idempotent).
+    pub fn evict_literal(&self, ns: Namespace, hash: &Blake3) -> Result<bool, StoreError> {
+        let path = self.blob_path(ns, hash);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(StoreError::io(&path, e)),
+        }
+        // Make the removal durable the same way publishes are.
+        fsync_dir(path.parent().expect("blob paths have parents"))?;
+        Ok(true)
+    }
+
     /// Remove crash-orphaned temp files older than `max_age`. Returns how
     /// many were removed. Never touches published blobs.
     pub fn cleanup_temp(&self, max_age: Duration) -> Result<usize, StoreError> {
@@ -346,6 +576,10 @@ impl Store {
         self.root.join(layout::blob_path(ns, hash))
     }
 
+    fn obao_path(&self, ns: Namespace, hash: &Blake3) -> PathBuf {
+        self.root.join(layout::outboard_path(ns, hash))
+    }
+
     fn new_temp_path(&self) -> PathBuf {
         let n = self.temp_counter.fetch_add(1, Ordering::Relaxed);
         self.root.join("tmp").join(format!(
@@ -353,6 +587,26 @@ impl Store {
             std::process::id(),
             self.temp_token,
         ))
+    }
+}
+
+/// Read-side tee: every byte pulled by the outboard builder also lands in
+/// the temp file, so materialize + verify + sidecar is one pass.
+struct TeeToFile<'a, R: Read> {
+    inner: &'a mut R,
+    file: &'a mut File,
+    path: &'a Path,
+}
+
+impl<R: Read> Read for TeeToFile<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            self.file.write_all(&buf[..n]).map_err(|e| {
+                io::Error::new(e.kind(), format!("tee to {}: {e}", self.path.display()))
+            })?;
+        }
+        Ok(n)
     }
 }
 
@@ -674,6 +928,86 @@ mod tests {
         // …and a zero-age sweep removes everything.
         assert_eq!(store.cleanup_temp(Duration::ZERO).expect("sweep"), 1);
         assert!(!tmp.join("orphan.temp").exists());
+    }
+
+    #[test]
+    fn obao_sidecar_lifecycle() {
+        let (_dir, store) = temp_store();
+        // Small blob: ensure_obao succeeds without writing a sidecar file.
+        let small = vec![0x11u8; 4096];
+        let small_hash = Blake3::compute(&small);
+        store
+            .put(Namespace::Data, small_hash, small.as_slice())
+            .expect("put");
+        assert!(
+            store
+                .ensure_obao(Namespace::Data, &small_hash)
+                .expect("ensure")
+        );
+        assert_eq!(
+            store.get_obao(Namespace::Data, &small_hash).expect("get"),
+            Some(Vec::new())
+        );
+        assert_eq!(tree_files(&store.root).len(), 1, "no sidecar file written");
+        assert_eq!(
+            store
+                .read_range_verified(Namespace::Data, &small_hash, 100, 200)
+                .expect("verified read"),
+            &small[100..300]
+        );
+
+        // Large blob: sidecar written once, verified reads work, absent
+        // sidecar is a loud error first.
+        let big: Vec<u8> = (0..200_000u32).map(|i| (i % 253) as u8).collect();
+        let big_hash = Blake3::compute(&big);
+        store
+            .put(Namespace::Data, big_hash, big.as_slice())
+            .expect("put");
+        let err = store
+            .read_range_verified(Namespace::Data, &big_hash, 0, 16)
+            .expect_err("no sidecar yet");
+        assert!(matches!(err, StoreError::MissingOutboard { .. }));
+        assert!(
+            store
+                .ensure_obao(Namespace::Data, &big_hash)
+                .expect("ensure")
+        );
+        assert!(
+            store
+                .ensure_obao(Namespace::Data, &big_hash)
+                .expect("idempotent")
+        );
+        assert_eq!(
+            store
+                .read_range_verified(Namespace::Data, &big_hash, 65_000, 70_000)
+                .expect("verified read"),
+            &big[65_000..135_000]
+        );
+        // Read past EOF clamps.
+        assert_eq!(
+            store
+                .read_range_verified(Namespace::Data, &big_hash, 199_999, 50)
+                .expect("clamped read"),
+            &big[199_999..]
+        );
+
+        // Corrupt the blob: the verified read fails with Obao, and the
+        // listing still treats the sidecar as an expected store file.
+        let path = store.blob_path(Namespace::Data, &big_hash);
+        let mut bytes = fs::read(&path).expect("read blob");
+        bytes[100_000] ^= 0xff;
+        fs::write(&path, &bytes).expect("corrupt");
+        let err = store
+            .read_range_verified(Namespace::Data, &big_hash, 99_000, 4096)
+            .expect_err("corruption detected");
+        assert!(matches!(err, StoreError::Obao { .. }));
+
+        // ensure_obao on an absent blob reports false, not an error.
+        assert!(
+            !store
+                .ensure_obao(Namespace::Data, &Blake3::compute(b"never stored"))
+                .expect("absent ok")
+        );
     }
 
     #[test]

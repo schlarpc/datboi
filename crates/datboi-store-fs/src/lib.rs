@@ -12,6 +12,7 @@
 
 mod crash;
 pub mod layout;
+pub mod obao;
 pub mod store;
 
 pub use layout::Namespace;

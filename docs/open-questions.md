@@ -3,6 +3,37 @@
 Design passes R1–R8 complete; core design ratified through D39. Docs
 00–90 are the record.
 
+## Flagged for ruling (raised 2026-07-07, M2/M3 build session)
+
+- **`.obao` sidecar format** (needs a decision entry): implemented as
+  headerless pre-order obao4 via the `bao-tree` crate — 16 KiB chunk
+  groups, byte-identical to iroh-blobs sidecars, root == blake3 (D2).
+  This is a decades-scale at-rest commitment like the store layout;
+  golden-vector pinned in code but NOT yet ratified. Alternatives if
+  challenged: post-order (streamable writes, iroh-incompatible), or the
+  original bao crate's 1 KiB tree (4× sidecar size).
+- **Analyzer identity for native analyzers**: implemented as
+  `blake3("datboi-analyzer:<name>/<version>")` tags with parameters
+  baked into the name (e.g. `fastcdc-v2020-nc2-64k-256k-1m/1`). Wasm
+  analyzers will use their component hash. Convention, not yet a
+  ruling.
+- **Chunking threshold + eligibility policy**: ChunkAnalyzer currently
+  chunks every data blob ≥ 4 MiB. Molten with the D45 config
+  vocabulary; also interacts with "don't chunk blobs that already have
+  cheaper routes."
+- **zlib-exact wasm compressor**: the deflate-trial analyzer proves the
+  discovery loop but matches only miniz-produced streams. Real scene
+  zips are zlib/TorrentZip output. Candidates: zlib compiled to
+  wasm32-unknown-unknown (C toolchain in the flake), zlib-rs (verify
+  byte-exactness per level/version), or accepting miniz-only coverage.
+  Blocks TorrentZip rebuild discovery.
+- **Sequential assemble over opaque children spills today**: the
+  executor opens assemble children random-access, so a sequential read
+  of concat-of-derived (e.g. concat over decompressed members) spills
+  each derived child even though pure sequential streaming would do.
+  Chunk recipes are unaffected (children are literals). Optimization
+  noted, not designed.
+
 ## Open (minor / deferred to build-time)
 
 - Ingest-policy config vocabulary, detector registry (ordering /
@@ -84,11 +115,13 @@ Design passes R1–R8 complete; core design ratified through D39. Docs
   assemble executor + multi-hash ingest throughput.
 - API shape for M5 (axum routes ↔ Svelte, codegen via datboi-api crate) —
   can wait until M4 wraps (post-D50 numbering).
-- **transform@2 streaming world** (D46/D50; interaction model ruled D51, WIT drafted, gate green — freeze pends the 4 GB executor exit test): streams as
-  resources in our own `types` interface, empty-linker property
-  preserved, determinism gate extended to @2 — plus the D49
-  seek-equivalence property test (random ranges == slices of full
-  materialization, boundaries ±1) for declared-seekable components.
+- ~~transform@2 streaming world~~ **FROZEN 2026-07-07** (D51 status):
+  executor landed (datboi-exec), full-size exit test green, D49
+  quarantine machinery integration-tested against a planted seek bug.
+- **M3 next chunks**: xf-deflate wasm component (unblocks wild-zip
+  rebuild recipes from the trial analyzer's positives), ECM analyzer,
+  7z/rar ingest, aggregation (NFS-bench-gated). Eviction + FastCDC
+  chunking + trial-recompression discovery shipped 2026-07-07.
 
 ## Resolved
 

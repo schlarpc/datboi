@@ -30,8 +30,10 @@ use crate::identity::{self, Identity, PublicKey};
 use crate::object::{self, ObjectKind};
 
 pub const ALIASES_VERSION: u32 = 1;
+pub const ANALYSIS_VERSION: u32 = 1;
 pub const STATESNAP_VERSION: u32 = 1;
 const ALIASES_HEADER: &[u8] = b"datboi/aliases/1\n";
+const ANALYSIS_HEADER: &[u8] = b"datboi/analysis/1\n";
 const STATESNAP_HEADER: &[u8] = b"datboi/statesnap/1\n";
 
 /// Highest permitted alias fanout: one shard per leading-byte value.
@@ -47,19 +49,32 @@ const ROWKEY_MD5: u64 = 4;
 const ROWKEY_SHA1: u64 = 5;
 const ROWKEY_SHA256: u64 = 6;
 
+// analysis batch: {1: rows}; row {1: blob blake3, 2: analyzer blake3,
+// 3: outcome (0 negative / 1 positive), ?4: detail text}.
+const ANKEY_ROWS: u64 = 1;
+const ANROW_BLOB: u64 = 1;
+const ANROW_ANALYZER: u64 = 2;
+const ANROW_OUTCOME: u64 = 3;
+const ANROW_DETAIL: u64 = 4;
+
 // statesnap envelope: {1: payload bstr, 2: public key, 3: signature}.
 const ENVKEY_PAYLOAD: u64 = 1;
 const ENVKEY_PUBLIC_KEY: u64 = 2;
 const ENVKEY_SIGNATURE: u64 = 3;
 
 // payload: {1: sequence, 2: created_at, 3: sources, 4: alias_fanout,
-// 5: alias_batches}; source {1: provider, 2: system, 3: dat blob,
-// 4: imported_at}.
+// 5: alias_batches, ?6: analysis_fanout, ?7: analysis_batches}; source
+// {1: provider, 2: system, 3: dat blob, 4: imported_at}. Keys 6/7 are
+// omitted together when no analysis provenance exists (one encoding per
+// value: a present-but-zero fanout is rejected) — pre-D48 snapshots
+// decode unchanged.
 const PAYKEY_SEQUENCE: u64 = 1;
 const PAYKEY_CREATED_AT: u64 = 2;
 const PAYKEY_SOURCES: u64 = 3;
 const PAYKEY_ALIAS_FANOUT: u64 = 4;
 const PAYKEY_ALIAS_BATCHES: u64 = 5;
+const PAYKEY_ANALYSIS_FANOUT: u64 = 6;
+const PAYKEY_ANALYSIS_BATCHES: u64 = 7;
 const SRCKEY_PROVIDER: u64 = 1;
 const SRCKEY_SYSTEM: u64 = 2;
 const SRCKEY_DAT_BLOB: u64 = 3;
@@ -149,6 +164,95 @@ impl AliasBatch {
     }
 }
 
+/// One analyzer-provenance fact (D48): what `analyzer` (identity hash —
+/// a component hash for wasm analyzers, a tagged version hash for native
+/// ones) concluded about `blob`'s bytes. Negative results are the whole
+/// point: recovery must not re-pay expensive analysis that found nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalysisRow {
+    pub blob: Blake3,
+    pub analyzer: Blake3,
+    /// `false` = analyzed, nothing found; `true` = discovery (recipes or
+    /// claims were minted — those live as ordinary CAS objects).
+    pub positive: bool,
+    /// Optional analyzer-owned annotation (why negative, what was found).
+    pub detail: Option<String>,
+}
+
+/// One analysis batch: rows strictly ascending by (blob, analyzer).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AnalysisBatch {
+    pub rows: Vec<AnalysisRow>,
+}
+
+impl AnalysisBatch {
+    /// Encode to canonical object bytes (sorted here; duplicates rejected).
+    pub fn encode(&self) -> Result<Vec<u8>, SnapshotError> {
+        let mut rows = self.rows.clone();
+        rows.sort_by_key(|r| (r.blob, r.analyzer));
+        if rows
+            .windows(2)
+            .any(|w| (w[0].blob, w[0].analyzer) == (w[1].blob, w[1].analyzer))
+        {
+            return Err(SnapshotError::Invalid(
+                "duplicate (blob, analyzer) in analysis batch",
+            ));
+        }
+        if rows
+            .iter()
+            .any(|r| r.detail.as_ref().is_some_and(String::is_empty))
+        {
+            return Err(SnapshotError::Invalid("empty analysis detail"));
+        }
+        let body = cbor::encode(&Value::Map(vec![(
+            ANKEY_ROWS,
+            Value::Array(rows.iter().map(analysis_row_to_value).collect()),
+        )]))
+        .expect("single constant key");
+        let mut out = Vec::with_capacity(ANALYSIS_HEADER.len() + body.len());
+        out.extend_from_slice(ANALYSIS_HEADER);
+        out.extend_from_slice(&body);
+        Ok(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, SnapshotError> {
+        let body = expect_object(
+            bytes,
+            ObjectKind::AnalysisBatch,
+            ANALYSIS_VERSION,
+            "analysis",
+        )?;
+        let value = cbor::decode(body)?;
+        let mut rows = None;
+        for (key, val) in as_map(&value)? {
+            match *key {
+                ANKEY_ROWS => {
+                    let Value::Array(items) = val else {
+                        return Err(SnapshotError::Invalid("rows must be an array"));
+                    };
+                    rows = Some(
+                        items
+                            .iter()
+                            .map(analysis_row_from_value)
+                            .collect::<Result<Vec<_>, _>>()?,
+                    );
+                }
+                _ => return Err(SnapshotError::Invalid("unknown analysis batch key")),
+            }
+        }
+        let rows: Vec<AnalysisRow> = rows.ok_or(SnapshotError::Invalid("missing rows"))?;
+        if rows
+            .windows(2)
+            .any(|w| (w[0].blob, w[0].analyzer) >= (w[1].blob, w[1].analyzer))
+        {
+            return Err(SnapshotError::Invalid(
+                "analysis rows not strictly ascending",
+            ));
+        }
+        Ok(Self { rows })
+    }
+}
+
 /// A dat source reference: everything `recover` needs to replay
 /// `dat import` of the current revision from its CAS blob.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +282,12 @@ pub struct SnapshotPayload {
     /// by [`alias_shard`]. Empty shards still reference a (tiny, shared)
     /// empty-batch blob — fixed-length keeps the format shape trivial.
     pub alias_batches: Vec<Blake3>,
+    /// Analysis-provenance shards (D48), same discipline as aliases;
+    /// sharded by the row's *blob* hash via [`alias_shard`]. Zero fanout
+    /// (with an empty batch list) means "no provenance in this snapshot"
+    /// and encodes as the fields being absent.
+    pub analysis_fanout: usize,
+    pub analysis_batches: Vec<Blake3>,
 }
 
 impl SnapshotPayload {
@@ -187,6 +297,12 @@ impl SnapshotPayload {
         }
         if self.alias_batches.len() != self.alias_fanout {
             return Err(SnapshotError::Invalid("alias batch count != fanout"));
+        }
+        if self.analysis_fanout > MAX_ALIAS_FANOUT {
+            return Err(SnapshotError::Invalid("analysis fanout must be 0..=256"));
+        }
+        if self.analysis_batches.len() != self.analysis_fanout {
+            return Err(SnapshotError::Invalid("analysis batch count != fanout"));
         }
         let sorted = self
             .sources
@@ -215,14 +331,29 @@ impl SnapshotPayload {
             .iter()
             .map(|h| Value::Bytes(h.0.to_vec()))
             .collect();
-        Ok(cbor::encode(&Value::Map(vec![
+        let mut entries = vec![
             (PAYKEY_SEQUENCE, Value::Uint(self.sequence)),
             (PAYKEY_CREATED_AT, Value::Uint(self.created_at)),
             (PAYKEY_SOURCES, Value::Array(sources)),
             (PAYKEY_ALIAS_FANOUT, Value::Uint(self.alias_fanout as u64)),
             (PAYKEY_ALIAS_BATCHES, Value::Array(batches)),
-        ]))
-        .expect("field keys are distinct constants"))
+        ];
+        if self.analysis_fanout > 0 {
+            entries.push((
+                PAYKEY_ANALYSIS_FANOUT,
+                Value::Uint(self.analysis_fanout as u64),
+            ));
+            entries.push((
+                PAYKEY_ANALYSIS_BATCHES,
+                Value::Array(
+                    self.analysis_batches
+                        .iter()
+                        .map(|h| Value::Bytes(h.0.to_vec()))
+                        .collect(),
+                ),
+            ));
+        }
+        Ok(cbor::encode(&Value::Map(entries)).expect("field keys are distinct constants"))
     }
 
     /// Encode and sign: the signature covers `header || payload` bytes
@@ -314,6 +445,7 @@ fn payload_from_bytes(bytes: &[u8]) -> Result<SnapshotPayload, SnapshotError> {
     let value = cbor::decode(bytes)?;
     let (mut sequence, mut created_at, mut sources, mut fanout, mut batches) =
         (None, None, None, None, None);
+    let (mut analysis_fanout, mut analysis_batches) = (None, None);
     for (key, val) in as_map(&value)? {
         match *key {
             PAYKEY_SEQUENCE => sequence = Some(as_uint(val)?),
@@ -342,8 +474,30 @@ fn payload_from_bytes(bytes: &[u8]) -> Result<SnapshotPayload, SnapshotError> {
                 };
                 batches = Some(items.iter().map(as_hash).collect::<Result<Vec<_>, _>>()?);
             }
+            PAYKEY_ANALYSIS_FANOUT => {
+                let raw = as_uint(val)?;
+                let parsed = usize::try_from(raw)
+                    .map_err(|_| SnapshotError::Invalid("analysis fanout out of range"))?;
+                if parsed == 0 {
+                    // Zero encodes as absence; present-but-zero would be a
+                    // second encoding of the same value.
+                    return Err(SnapshotError::Invalid("analysis fanout present but zero"));
+                }
+                analysis_fanout = Some(parsed);
+            }
+            PAYKEY_ANALYSIS_BATCHES => {
+                let Value::Array(items) = val else {
+                    return Err(SnapshotError::Invalid("analysis batches must be an array"));
+                };
+                analysis_batches = Some(items.iter().map(as_hash).collect::<Result<Vec<_>, _>>()?);
+            }
             _ => return Err(SnapshotError::Invalid("unknown payload key")),
         }
+    }
+    if analysis_fanout.is_some() != analysis_batches.is_some() {
+        return Err(SnapshotError::Invalid(
+            "analysis fanout and batches must appear together",
+        ));
     }
     Ok(SnapshotPayload {
         sequence: sequence.ok_or(SnapshotError::Invalid("missing sequence"))?,
@@ -351,6 +505,49 @@ fn payload_from_bytes(bytes: &[u8]) -> Result<SnapshotPayload, SnapshotError> {
         sources: sources.ok_or(SnapshotError::Invalid("missing sources"))?,
         alias_fanout: fanout.ok_or(SnapshotError::Invalid("missing alias fanout"))?,
         alias_batches: batches.ok_or(SnapshotError::Invalid("missing alias batches"))?,
+        analysis_fanout: analysis_fanout.unwrap_or(0),
+        analysis_batches: analysis_batches.unwrap_or_default(),
+    })
+}
+
+fn analysis_row_to_value(row: &AnalysisRow) -> Value {
+    let mut entries = vec![
+        (ANROW_BLOB, Value::Bytes(row.blob.0.to_vec())),
+        (ANROW_ANALYZER, Value::Bytes(row.analyzer.0.to_vec())),
+        (ANROW_OUTCOME, Value::Uint(u64::from(row.positive))),
+    ];
+    if let Some(detail) = &row.detail {
+        entries.push((ANROW_DETAIL, Value::Text(detail.clone())));
+    }
+    Value::Map(entries)
+}
+
+fn analysis_row_from_value(value: &Value) -> Result<AnalysisRow, SnapshotError> {
+    let (mut blob, mut analyzer, mut outcome, mut detail) = (None, None, None, None);
+    for (key, val) in as_map(value)? {
+        match *key {
+            ANROW_BLOB => blob = Some(as_hash(val)?),
+            ANROW_ANALYZER => analyzer = Some(as_hash(val)?),
+            ANROW_OUTCOME => match as_uint(val)? {
+                0 => outcome = Some(false),
+                1 => outcome = Some(true),
+                _ => return Err(SnapshotError::Invalid("outcome must be 0 or 1")),
+            },
+            ANROW_DETAIL => {
+                let text = as_text(val)?;
+                if text.is_empty() {
+                    return Err(SnapshotError::Invalid("empty analysis detail"));
+                }
+                detail = Some(text.to_owned());
+            }
+            _ => return Err(SnapshotError::Invalid("unknown analysis row key")),
+        }
+    }
+    Ok(AnalysisRow {
+        blob: blob.ok_or(SnapshotError::Invalid("row missing blob"))?,
+        analyzer: analyzer.ok_or(SnapshotError::Invalid("row missing analyzer"))?,
+        positive: outcome.ok_or(SnapshotError::Invalid("row missing outcome"))?,
+        detail,
     })
 }
 
@@ -517,6 +714,17 @@ mod tests {
                 Blake3::compute(&batch_a.encode().expect("valid")),
                 Blake3::compute(&batch_b.encode().expect("valid")),
             ],
+            analysis_fanout: 0,
+            analysis_batches: Vec::new(),
+        }
+    }
+
+    fn analysis_row(seed: u8, positive: bool) -> AnalysisRow {
+        AnalysisRow {
+            blob: Blake3::compute(&[seed]),
+            analyzer: Blake3::compute(b"datboi-analyzer:noop/1"),
+            positive,
+            detail: (!positive).then(|| "nothing found".to_owned()),
         }
     }
 
@@ -541,6 +749,49 @@ mod tests {
         assert_eq!(
             Blake3::compute(&batch_bytes).to_hex(),
             "716e5970588c9642c147bb8ae993db8f89027892edba90403644504ba623d62f"
+        );
+    }
+
+    /// The golden vector above has NO analysis fields — pre-D48 snapshot
+    /// bytes must decode and re-encode unchanged. This test covers the
+    /// extended payload and the analysis batch codec.
+    #[test]
+    fn analysis_batches_round_trip_and_extend_the_payload() {
+        let batch = AnalysisBatch {
+            rows: vec![analysis_row(2, true), analysis_row(1, false)],
+        };
+        let bytes = batch.encode().expect("valid");
+        assert!(bytes.starts_with(b"datboi/analysis/1\n"));
+        let decoded = AnalysisBatch::decode(&bytes).expect("decodes");
+        let mut expected = batch.rows.clone();
+        expected.sort_by_key(|r| (r.blob, r.analyzer));
+        assert_eq!(decoded.rows, expected);
+
+        // Duplicate (blob, analyzer) rejected.
+        let dup = AnalysisBatch {
+            rows: vec![analysis_row(1, false), analysis_row(1, true)],
+        };
+        assert_eq!(
+            dup.encode(),
+            Err(SnapshotError::Invalid(
+                "duplicate (blob, analyzer) in analysis batch"
+            ))
+        );
+
+        let id = Identity::from_seed([42u8; 32]);
+        let mut payload = golden_payload();
+        payload.analysis_fanout = 1;
+        payload.analysis_batches = vec![Blake3::compute(&bytes)];
+        let encoded = payload.encode_signed(&id).expect("valid");
+        let decoded = StateSnapshot::decode(&encoded).expect("decodes");
+        assert_eq!(decoded.payload, payload);
+
+        // Mismatched fanout/batches rejected.
+        let mut bad = payload;
+        bad.analysis_batches.clear();
+        assert_eq!(
+            bad.encode_signed(&id),
+            Err(SnapshotError::Invalid("analysis batch count != fanout"))
         );
     }
 

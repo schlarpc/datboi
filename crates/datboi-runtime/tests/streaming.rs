@@ -1,9 +1,10 @@
-//! The M2 gate for the DRAFT `datboi:transform@2` streaming world
-//! (D46/D49): determinism, the exact-read contract, bounded memory, and
+//! The M2 gate for the `datboi:transform@2` streaming world (D46/D49):
+//! determinism, the exact-read contract, bounded memory, and
 //! seek-equivalence. Same fixture discipline as the @1 gate — committed
 //! component bytes pinned by blake3, golden output anchors for
-//! cross-architecture agreement. The world freezes when this gate plus the
-//! ~4 GB exit test stay green.
+//! cross-architecture agreement. The world FROZE 2026-07-07 when this
+//! gate plus the full-size exit test (datboi-exec tests/gate.rs) went
+//! green; from here, updating the fixture is a format event.
 
 use std::io::{Cursor, Write};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -16,7 +17,7 @@ use datboi_runtime::{Limits, RuntimeError, SeekClass};
 const COMPONENT: &[u8] = include_bytes!("fixtures/xf_reference_stream.wasm");
 
 /// blake3 of the fixture — the identity a recipe would pin.
-const COMPONENT_BLAKE3: &str = "246befd45265972ca45fe256392506b598084fd37ad2a30822ba42280004c076";
+const COMPONENT_BLAKE3: &str = "cc5ec3fd13761e6c9b94bfc01534d0cca2f5a6ecb6eb1ed0c8019fbdafa6bbea";
 
 /// blake3 of `run("byteswap")` over [`pattern`]`(1 << 20 | 5)` — the
 /// cross-architecture anchor.

@@ -1,4 +1,5 @@
-//! Host for the DRAFT `datboi:transform@2` streaming world (D46/D49).
+//! Host for the frozen `datboi:transform@2` streaming world (D46/D49,
+//! frozen 2026-07-07 after the M2 exit test — see the WIT header).
 //!
 //! Same determinism doctrine as the @1 host, plus the stream layer:
 //!
@@ -22,7 +23,7 @@ use crate::{Limits, RuntimeError, SeekClass};
 // The generated `call_serve_range` mirrors the WIT's flat 7-arg shape.
 #[allow(clippy::too_many_arguments)]
 mod bindings {
-    // Host bindings for the DRAFT v2 world; host resources map to the
+    // Host bindings for the v2 world; host resources map to the
     // entry types below.
     wasmtime::component::bindgen!({
         world: "transform-stream",

@@ -12,7 +12,9 @@ use datboi_catalog::{ImportOptions, audit, diff_source, export_dat, import_dat};
 use datboi_core::alias::AliasHasher;
 use datboi_core::object::{self, ObjectKind};
 use datboi_core::recipe::{Op, Recipe};
-use datboi_core::snapshot::{AliasBatch, SnapshotPayload, SourceRef, StateSnapshot, alias_shard};
+use datboi_core::snapshot::{
+    AliasBatch, AnalysisBatch, SnapshotPayload, SourceRef, StateSnapshot, alias_shard,
+};
 use datboi_index::recipes::NewRecipe;
 use datboi_index::types::{Namespace as NsRow, OpKind, RecipeSource, Residency, SeekClass};
 use datboi_ingest::{IngestReport, Ingester};
@@ -546,13 +548,47 @@ pub fn snapshot(env: Env, json: bool) -> anyhow::Result<ExitCode> {
         alias_batches.push(hash);
     }
 
+    // Analysis provenance batches (D48), sharded by the row's blob hash
+    // with the same fanout/dedup behavior as aliases. Omitted entirely
+    // while no analyzer has ever run (fields absent from the payload).
+    let analysis_rows_all = env.db.list_analysis_rows()?;
+    let analysis_row_count = analysis_rows_all.len() as u64;
+    let mut analysis_batches = Vec::new();
+    if !analysis_rows_all.is_empty() {
+        let mut shards: Vec<Vec<datboi_core::snapshot::AnalysisRow>> =
+            vec![Vec::new(); ALIAS_FANOUT];
+        for row in analysis_rows_all {
+            shards[alias_shard(&row.blob, ALIAS_FANOUT)].push(row);
+        }
+        for rows in shards {
+            let bytes = AnalysisBatch { rows }.encode()?;
+            let (hash, aliases, outcome) = env.store.put_new(Namespace::Meta, bytes.as_slice())?;
+            if outcome == datboi_store_fs::PutOutcome::Stored {
+                new_batch_blobs += 1;
+            }
+            let blob_id =
+                env.db
+                    .upsert_blob(&hash, Some(aliases.size), NsRow::Meta, Residency::Resident)?;
+            env.db.insert_aliases(blob_id, &aliases)?;
+            env.db.set_verified(blob_id, now)?;
+            analysis_batches.push(hash);
+        }
+    }
+
     let sequence = env.db.next_snapshot_seq()?;
+    let analysis_fanout = if analysis_batches.is_empty() {
+        0
+    } else {
+        ALIAS_FANOUT
+    };
     let payload = SnapshotPayload {
         sequence: u64::try_from(sequence).unwrap_or(0),
         created_at: u64::try_from(now).unwrap_or(0),
         sources,
         alias_fanout: ALIAS_FANOUT,
         alias_batches,
+        analysis_fanout,
+        analysis_batches,
     };
     let bytes = payload.encode_signed(&identity)?;
     let (hash, aliases, _outcome) = env.store.put_new(Namespace::Meta, bytes.as_slice())?;
@@ -576,6 +612,7 @@ pub fn snapshot(env: Env, json: bool) -> anyhow::Result<ExitCode> {
                 "sources": payload.sources.len(),
                 "alias_rows": alias_rows,
                 "alias_batches": ALIAS_FANOUT,
+                "analysis_rows": analysis_row_count,
                 "new_batch_blobs": new_batch_blobs,
             })
         );
@@ -587,6 +624,151 @@ pub fn snapshot(env: Env, json: bool) -> anyhow::Result<ExitCode> {
         );
     }
     Ok(ExitCode::SUCCESS)
+}
+
+// ---- evict / materialize (M3: the residency planner surface) ----
+
+/// Evict recipe-covered literals until at most `target_bytes` of
+/// resident data remain. Every drop passes the D25/D21 safety rules in
+/// datboi-exec; `--dry-run` reports the plan without deleting.
+pub fn evict(
+    env: Env,
+    target_bytes: u64,
+    license: bool,
+    dry_run: bool,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let exec = datboi_exec::Executor::new(&env.store, datboi_exec::ExecConfig::default())?;
+    if dry_run {
+        let mut evictable: Vec<(String, u64)> = Vec::new();
+        let mut blocked: u64 = 0;
+        for candidate in env.db.list_eviction_candidates()? {
+            if env.db.is_evictable(candidate.blob_id)? {
+                evictable.push((candidate.hash.to_hex(), candidate.size.unwrap_or(0)));
+            } else {
+                blocked += 1;
+            }
+        }
+        let reclaimable: u64 = evictable.iter().map(|(_, s)| s).sum();
+        if json {
+            println!(
+                "{}",
+                json!({
+                    "dry_run": true,
+                    "evictable": evictable.len(),
+                    "reclaimable_bytes": reclaimable,
+                    "blocked": blocked,
+                    "blobs": evictable.iter().map(|(h, s)| json!({"hash": h, "bytes": s})).collect::<Vec<_>>(),
+                })
+            );
+        } else {
+            println!(
+                "dry run: {} blob(s) evictable, {reclaimable} byte(s) reclaimable, {blocked} candidate(s) blocked by grounding",
+                evictable.len()
+            );
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let report = exec.evict_covered(&env.db, target_bytes, license)?;
+    if json {
+        println!(
+            "{}",
+            json!({
+                "evicted": report.evicted,
+                "bytes_reclaimed": report.bytes_reclaimed,
+                "replays": report.replays,
+                "blocked": report.blocked.iter().map(|(h, why)| json!({
+                    "hash": h.to_hex(),
+                    "reason": format!("{why:?}"),
+                })).collect::<Vec<_>>(),
+            })
+        );
+    } else {
+        println!(
+            "evicted {} blob(s), reclaimed {} byte(s) ({} licensing replay(s), {} blocked)",
+            report.evicted,
+            report.bytes_reclaimed,
+            report.replays,
+            report.blocked.len()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Rematerialize a blob by replaying its recipe route (D25 machinery in
+/// reverse: recipes serve bytes back).
+pub fn materialize(env: Env, hash_hex: &str, json: bool) -> anyhow::Result<ExitCode> {
+    let hash: datboi_core::hash::Blake3 = hash_hex
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{hash_hex:?} is not a blake3 hex hash"))?;
+    let exec = datboi_exec::Executor::new(&env.store, datboi_exec::ExecConfig::default())?;
+    exec.materialize(&env.db, &hash)?;
+    if json {
+        println!("{}", json!({"materialized": hash.to_hex()}));
+    } else {
+        println!("materialized {hash}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+// ---- sweep ----
+
+/// One refinement sweep round (D45): enqueue unanalyzed data blobs for
+/// the named analyzer (dat-blind), bump dat-matched priorities
+/// (dat-aware ordering, D47), process up to `limit` items, and record
+/// provenance including negatives (D48).
+pub fn sweep(
+    mut env: Env,
+    analyzer_name: &str,
+    limit: usize,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let mut analyzer: Box<dyn datboi_ingest::refine::Analyzer> = match analyzer_name {
+        "noop" | "noop/1" => Box::new(datboi_ingest::refine::NoopAnalyzer),
+        "chunk" | "fastcdc" => Box::new(datboi_ingest::analyzers::ChunkAnalyzer),
+        "deflate-trial" => Box::new(datboi_ingest::analyzers::DeflateTrialAnalyzer),
+        other => {
+            anyhow::bail!("unknown analyzer {other:?} (available: noop, chunk, deflate-trial)")
+        }
+    };
+    let report =
+        datboi_ingest::refine::run_sweep(&mut env.db, &env.store, analyzer.as_mut(), limit)?;
+    let remaining = env.db.sweep_queue_len(&analyzer.id())?;
+    if json {
+        println!(
+            "{}",
+            json!({
+                "analyzer": analyzer.name(),
+                "analyzer_id": analyzer.id().to_hex(),
+                "enqueued": report.enqueued,
+                "analyzed": report.analyzed,
+                "positive": report.positive,
+                "negative": report.negative,
+                "errors": report.errors.iter().map(|(h, e)| json!({"blob": h.to_hex(), "error": e})).collect::<Vec<_>>(),
+                "queue_remaining": remaining,
+            })
+        );
+    } else {
+        println!(
+            "sweep {}: {} enqueued, {} analyzed ({} positive, {} negative), {} error(s), {} queued",
+            analyzer.name(),
+            report.enqueued,
+            report.analyzed,
+            report.positive,
+            report.negative,
+            report.errors.len(),
+            remaining
+        );
+        for (hash, error) in &report.errors {
+            println!("error: {hash}: {error}");
+        }
+    }
+    Ok(if report.errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
 }
 
 // ---- recover ----
@@ -704,6 +886,7 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
     // OUR identity (an attacker who can write meta/ can mint self-consistent
     // snapshots under their own key, so an unpinned signature proves nothing).
     let mut dats_reimported: u64 = 0;
+    let mut analysis_restored: u64 = 0;
     let mut snapshot_seq: Option<u64> = None;
     let mut snapshot_note: &str =
         "no usable state snapshot: re-run `datboi dat import` for each dat to restore audits";
@@ -742,6 +925,32 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
                     )?;
                     dats_reimported += 1;
                 }
+                // Analysis provenance (D48): restore rows from the
+                // snapshot's batches so recovery never re-pays expensive
+                // analysis — negatives included. Rows for blobs the scan
+                // didn't find are skipped (bytes gone ⇒ provenance moot).
+                for batch_hash in &snap.payload.analysis_batches {
+                    let Some(mut file) = env.store.get(Namespace::Meta, batch_hash)? else {
+                        eprintln!(
+                            "warning: snapshot references analysis batch {batch_hash} but it is not in the store"
+                        );
+                        continue;
+                    };
+                    let mut bytes = Vec::new();
+                    file.read_to_end(&mut bytes)?;
+                    match AnalysisBatch::decode(&bytes) {
+                        Ok(batch) => {
+                            for row in &batch.rows {
+                                if env.db.restore_analysis_row(row, now_unix())? {
+                                    analysis_restored += 1;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("warning: analysis batch {batch_hash} does not decode: {e}");
+                        }
+                    }
+                }
                 // Sequence monotonicity survives the nuke: re-seed the log
                 // so the next mint continues from here instead of reusing
                 // this snapshot's sequence.
@@ -771,6 +980,7 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
                 "foreign_files": foreign,
                 "snapshot_seq": snapshot_seq,
                 "dats_reimported": dats_reimported,
+                "analysis_restored": analysis_restored,
                 "corrupt": corrupt,
                 "notes": notes,
             })
@@ -781,6 +991,7 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
         if let Some(seq) = snapshot_seq {
             println!("snapshot used      {seq:>8}");
             println!("dats re-imported   {dats_reimported:>8}");
+            println!("analysis restored  {analysis_restored:>8}");
         }
         if meta_unknown > 0 {
             println!("other meta objects {meta_unknown:>8}");

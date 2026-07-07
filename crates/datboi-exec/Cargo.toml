@@ -1,6 +1,6 @@
 [package]
-name = "datboi-ingest"
-description = "M1 ingest pipeline: rescan cache, streaming store+hash, zip members-as-claims, skipper dual identities"
+name = "datboi-exec"
+description = "Streaming recipe executor: operator trees, spill rule, replay licensing (D25), range serving (D49)"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,16 +9,17 @@ repository.workspace = true
 
 [dependencies]
 datboi-core.workspace = true
-datboi-formats.workspace = true
 datboi-index.workspace = true
+datboi-runtime.workspace = true
 datboi-store-fs.workspace = true
-fastcdc = "4.0.1"
 flate2.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 crc32fast.workspace = true
-tempfile.workspace = true
+datboi-ingest.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

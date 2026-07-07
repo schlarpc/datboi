@@ -1,8 +1,11 @@
 /// datboi:transform@2 — the STREAMING profile (D46, D49, ruled 2026-07-06).
 ///
-/// STATUS: DRAFT. Freezes when the M2 determinism + seek-equivalence gate
-/// is green and the 4 GB bounded-memory exit test passes (the same
-/// discipline that froze @1). Until then fields may change.
+/// STATUS: FROZEN 2026-07-07 (D51). The determinism + seek-equivalence
+/// gate is green and the M2 exit test passed at full size: a 3.9 GiB zip
+/// member replayed in bounded memory (<512 MiB peak RSS), verified both
+/// sequentially and through seeked recipe-served ranges. Like @1, this
+/// world is now immutable forever; streaming improvements (e.g. native
+/// wasip3 streams) become a future @3 world, never a revision here.
 ///
 /// A sibling of the frozen whole-buffer `datboi:transform@1`, never a
 /// replacement (D7/D41): which world a component targets is recipe

@@ -1,0 +1,969 @@
+//! Streaming recipe executor (docs/70-recipes.md Execution, D25/D46/D51).
+//!
+//! The executor turns "I want the bytes of X" into a pull-based operator
+//! tree over resident literals: O(chunk) memory per node, spill to a
+//! bounded temp file only where random access is demanded of a
+//! non-seekable node (the spill rule). Two consumption modes:
+//!
+//! - [`Executor::replay`] — execute one recipe and materialize ALL its
+//!   claimed outputs into the store, verifying every hash and building
+//!   bao outboards in the same pass ([`Store::put_with_obao`]). Success
+//!   advances the recipe to `ReplayedLocal` — the D25 licensing event
+//!   that permits literal drops. Claim-level failures (wrong bytes,
+//!   guest trap, guest error) poison the recipe to `Failed`;
+//!   infrastructure failures (missing inputs, I/O) leave state alone.
+//! - [`Executor::open_stream`] — a sequential reader over a route,
+//!   storing nothing (serving surfaces, spills, analyzers).
+//!
+//! Wasm composition (the D51 accepted cost): each streaming guest runs on
+//! its own thread, connected through bounded [`pipe`]s; backpressure is
+//! thread suspension the guest cannot observe. Output bytes are a pure
+//! function of input bytes for every node kind, so scheduling cannot
+//! affect results — determinism needs no cooperative scheduler.
+
+pub mod evict;
+pub mod pipe;
+pub mod random;
+
+use std::collections::HashMap;
+use std::io::{self, Cursor, Read, Seek, Write};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use datboi_core::assemble::AssembleParams;
+use datboi_core::cbor::{self, Value};
+use datboi_core::hash::Blake3;
+use datboi_core::recipe::{Op, Recipe};
+use datboi_index::{Db, IndexError, Residency, VerifyState};
+use datboi_runtime::stream::{
+    RangeRead, SequentialInput, StreamHost, StreamInput, StreamTransform,
+};
+use datboi_runtime::{Limits, RuntimeError, TransformHost};
+use datboi_store_fs::{Namespace as StoreNs, PutOutcome, Store, StoreError};
+
+use crate::random::{AssembleRandom, FileRandom, SeqOverRandom, WindowSeq};
+
+/// deflate-decompress@1 window params (shared vocabulary with ingest —
+/// the op owns this schema, docs/70-recipes.md).
+const DEFLATE_PARAM_OFFSET: u64 = 1;
+const DEFLATE_PARAM_LEN: u64 = 2;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ExecError {
+    #[error("no materializable route to {0}")]
+    NoRoute(Blake3),
+    #[error("recipe {0} is poisoned (Failed); it will not be re-run")]
+    Poisoned(i64),
+    #[error("operator tree exceeds depth limit")]
+    Depth,
+    #[error("recipe cycle detected at {0}")]
+    Cycle(Blake3),
+    #[error("unsupported op: {0}")]
+    UnsupportedOp(String),
+    #[error("invalid recipe structure: {0}")]
+    Malformed(String),
+    #[error("wasm input exceeds whole-buffer cap ({size} > {cap})")]
+    BufferCap { size: u64, cap: u64 },
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error(transparent)]
+    Index(#[from] IndexError),
+    #[error(transparent)]
+    Runtime(#[from] RuntimeError),
+    #[error("i/o during execution: {0}")]
+    Io(#[from] io::Error),
+    #[error("no outboard for {0}: recipe-served range reads require one (D49)")]
+    MissingOutboard(Blake3),
+    #[error("range verification failed for {hash}: {detail}")]
+    RangeVerifyFailed { hash: Blake3, detail: String },
+}
+
+impl ExecError {
+    /// Does this failure indict the *claim* (recipe poisoned, D25) rather
+    /// than the environment (retryable)?
+    #[must_use]
+    pub fn is_claim_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Store(StoreError::HashMismatch { .. })
+                | Self::Malformed(_)
+                | Self::Runtime(RuntimeError::Trap(_) | RuntimeError::Transform(_))
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecConfig {
+    /// Per-run wasm resource ceilings.
+    pub limits: Limits,
+    /// Whole-buffer cap for @1 inputs/outputs (the profile buffers whole
+    /// blobs by design — D41; anything bigger belongs in @2).
+    pub max_buffer: u64,
+    /// Operator-tree depth guard (docs/70-recipes.md safety).
+    pub max_depth: usize,
+    /// Where spill files live; defaults to the OS temp dir.
+    pub spill_dir: Option<PathBuf>,
+}
+
+impl Default for ExecConfig {
+    fn default() -> Self {
+        Self {
+            limits: Limits::default(),
+            max_buffer: 256 << 20,
+            max_depth: 1024,
+            spill_dir: None,
+        }
+    }
+}
+
+/// Report of one recipe replay.
+#[derive(Debug)]
+pub struct ReplayReport {
+    pub recipe_id: i64,
+    /// (output hash, whether this replay published it or it already
+    /// existed) in recipe order.
+    pub outputs: Vec<(Blake3, PutOutcome)>,
+}
+
+/// A resolved, executable route to one output. Holds data only (no DB
+/// borrows), so readers built from it are `'static + Send`.
+enum Plan {
+    Literal { hash: Blake3, len: u64 },
+    Op(Box<OpPlan>),
+}
+
+struct OpPlan {
+    op: OpImpl,
+    /// Which claimed output this plan produces.
+    output_ix: usize,
+    outputs: Vec<(Blake3, u64)>,
+    children: Vec<Plan>,
+}
+
+enum OpImpl {
+    Assemble(AssembleParams),
+    /// deflate window over input 0.
+    Deflate {
+        offset: u64,
+        len: u64,
+    },
+    Wasm2 {
+        transform: Arc<StreamTransform>,
+        component: Blake3,
+        op: String,
+        params: Vec<u8>,
+        seek: datboi_runtime::SeekClass,
+        random_access_inputs: Vec<u32>,
+    },
+    Wasm1 {
+        component: Vec<u8>,
+        op: String,
+        params: Vec<u8>,
+    },
+}
+
+impl Plan {
+    fn len(&self) -> u64 {
+        match self {
+            Self::Literal { len, .. } => *len,
+            Self::Op(op) => op.outputs[op.output_ix].1,
+        }
+    }
+}
+
+pub struct Executor<'s> {
+    store: &'s Store,
+    stream_host: Arc<StreamHost>,
+    v1_host: TransformHost,
+    config: ExecConfig,
+    /// Compiled @2 components by hash — the D51 load/run split.
+    components: Mutex<HashMap<Blake3, Arc<StreamTransform>>>,
+}
+
+impl<'s> Executor<'s> {
+    /// # Errors
+    /// If wasmtime rejects the deterministic configuration.
+    pub fn new(store: &'s Store, config: ExecConfig) -> Result<Self, ExecError> {
+        Ok(Self {
+            store,
+            stream_host: Arc::new(StreamHost::new(config.limits)?),
+            v1_host: TransformHost::new(config.limits)?,
+            config,
+            components: Mutex::new(HashMap::new()),
+        })
+    }
+
+    // ---- public entry points ----
+
+    /// Replay one recipe end to end (the D25 licensing pass): all claimed
+    /// outputs are materialized into the store with outboards and their
+    /// hashes verified. Advances the verify state on success; poisons the
+    /// recipe on claim-level failure.
+    ///
+    /// # Errors
+    /// Claim failures, missing inputs ([`ExecError::NoRoute`]), or I/O.
+    pub fn replay(&self, db: &Db, recipe_id: i64) -> Result<ReplayReport, ExecError> {
+        let row = db.recipe_by_id(recipe_id)?;
+        if row.verify == VerifyState::Failed {
+            return Err(ExecError::Poisoned(recipe_id));
+        }
+        let recipe = self.load_recipe(db, recipe_id)?;
+        let result = self.execute_to_store(db, &recipe);
+        match result {
+            Ok(outputs) => {
+                if row.verify != VerifyState::ReplayedLocal {
+                    db.set_verify_state(recipe_id, VerifyState::ReplayedLocal, now_unix(), None)?;
+                }
+                for (output, (hash, _)) in recipe.outputs.iter().zip(&outputs) {
+                    let id = db.upsert_blob(
+                        hash,
+                        Some(output.size),
+                        datboi_index::Namespace::Data,
+                        Residency::Resident,
+                    )?;
+                    db.set_verified(id, now_unix())?;
+                }
+                Ok(ReplayReport { recipe_id, outputs })
+            }
+            Err(e) => {
+                if e.is_claim_failure() {
+                    db.set_verify_state(
+                        recipe_id,
+                        VerifyState::Failed,
+                        now_unix(),
+                        Some((&e.to_string(), None)),
+                    )?;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Materialize `hash` into the store if it isn't already resident:
+    /// picks a route and replays the covering recipe (which stores every
+    /// sibling output too — one execution verifies all, docs/70-recipes.md).
+    ///
+    /// # Errors
+    /// [`ExecError::NoRoute`] when no non-poisoned recipe chain grounds
+    /// out in resident literals.
+    pub fn materialize(&self, db: &Db, hash: &Blake3) -> Result<(), ExecError> {
+        if self.is_resident(db, hash)? {
+            return Ok(());
+        }
+        let Some(row) = db.blob_by_hash(hash)? else {
+            return Err(ExecError::NoRoute(*hash));
+        };
+        let mut last_err = None;
+        for recipe in db.recipes_for_output(row.blob_id)? {
+            if recipe.verify == VerifyState::Failed {
+                continue;
+            }
+            match self.replay(db, recipe.recipe_id) {
+                Ok(_) => return Ok(()),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or(ExecError::NoRoute(*hash)))
+    }
+
+    /// A sequential verified-source reader over the best route to `hash`,
+    /// storing nothing. (Range serving with D49 output-bao verification
+    /// is `serve_range`.)
+    ///
+    /// # Errors
+    /// [`ExecError::NoRoute`] when nothing resolves.
+    pub fn open_stream(&self, db: &Db, hash: &Blake3) -> Result<Box<dyn Read + Send>, ExecError> {
+        let plan = self.plan(db, hash, 0, &mut Vec::new())?;
+        self.open_sequential(&plan)
+    }
+
+    /// Serve `offset..offset+len` (clamped) of `hash` — the D49 range
+    /// path. Resident literals with an outboard get verified reads;
+    /// recipe-served ranges are ALWAYS verified against the output's
+    /// outboard, whatever produced them:
+    ///
+    /// - affine builtin routes translate arithmetically (no
+    ///   materialization);
+    /// - declared-seekable, non-quarantined wasm components serve through
+    ///   `serve-range`;
+    /// - everything else (opaque routes, quarantined components) spills
+    ///   through the known-good sequential path first.
+    ///
+    /// A verification mismatch never returns bytes. If the producer was a
+    /// wasm seek path, the component's seekability is quarantined (rule
+    /// 3) so the next read takes the sequential route.
+    ///
+    /// NOTE (pended D49 amendment, open-questions.md): verification here
+    /// is unconditionally output-bao. The candidate carve-out for
+    /// locally-minted pure-builtin affine routes would slot in as a
+    /// policy check where `verify_window` is called.
+    ///
+    /// # Errors
+    /// [`ExecError::MissingOutboard`] when no sidecar exists yet,
+    /// [`ExecError::RangeVerifyFailed`] (the EIO class) on mismatch.
+    pub fn serve_range(
+        &self,
+        db: &Db,
+        hash: &Blake3,
+        offset: u64,
+        len: u64,
+    ) -> Result<Vec<u8>, ExecError> {
+        use datboi_store_fs::obao;
+
+        // Resident literal: verified read when the tree exists, plain
+        // read otherwise (D4's cheap default governs literals; D49's
+        // mandate is about recipe-served bytes).
+        if self.is_resident(db, hash)? {
+            if self.store.get_obao(StoreNs::Data, hash)?.is_some() {
+                return Ok(self
+                    .store
+                    .read_range_verified(StoreNs::Data, hash, offset, len)?);
+            }
+            let file = self
+                .store
+                .get(StoreNs::Data, hash)?
+                .ok_or(ExecError::NoRoute(*hash))?;
+            let mut src = FileRandom::new(file)?;
+            let total = src.len();
+            let start = offset.min(total);
+            let end = offset.saturating_add(len).min(total);
+            let mut buf = vec![0u8; usize::try_from(end - start).expect("range fits memory")];
+            random::read_at_exact(&mut src, start, &mut buf)?;
+            return Ok(buf);
+        }
+
+        let row = db.blob_by_hash(hash)?.ok_or(ExecError::NoRoute(*hash))?;
+        let total = row
+            .size
+            .ok_or_else(|| ExecError::Malformed("blob size unknown".into()))?;
+        // Evicted small blobs (≤ one chunk group) have an empty outboard
+        // by construction; the store can only infer that from a resident
+        // file, so decide from the indexed size here.
+        let sidecar = if obao::outboard_size(total) == 0 {
+            Vec::new()
+        } else {
+            self.store
+                .get_obao(StoreNs::Data, hash)?
+                .ok_or(ExecError::MissingOutboard(*hash))?
+        };
+        let start = offset.min(total);
+        let end = offset.saturating_add(len).min(total);
+        // Group-aligned window: bao validates whole 16 KiB groups.
+        let astart = start - start % obao::GROUP_BYTES;
+        let aend = end
+            .checked_next_multiple_of(obao::GROUP_BYTES)
+            .unwrap_or(u64::MAX)
+            .min(total);
+
+        let plan = self.plan(db, hash, 0, &mut Vec::new())?;
+        let (window, via_component) = self.produce_range(db, &plan, astart, aend)?;
+        if window.len() as u64 != aend - astart {
+            let detail = format!(
+                "producer yielded {} bytes for a {}-byte window",
+                window.len(),
+                aend - astart
+            );
+            if let Some(component) = via_component {
+                db.quarantine_seek(&component, now_unix(), &detail)?;
+            }
+            return Err(ExecError::RangeVerifyFailed {
+                hash: *hash,
+                detail,
+            });
+        }
+        match obao::verify_window(total, hash, &sidecar, astart, &window) {
+            Ok(()) => {
+                let lo = usize::try_from(start - astart).expect("window fits memory");
+                let n = usize::try_from(end - start).expect("window fits memory");
+                Ok(window[lo..lo + n].to_vec())
+            }
+            Err(e) => {
+                if let Some(component) = via_component {
+                    // D49 rule 3: seekability quarantine for the
+                    // implicated component hash. The claim itself stays
+                    // trusted (sequential replay proved it).
+                    db.quarantine_seek(&component, now_unix(), &e.to_string())?;
+                }
+                Err(ExecError::RangeVerifyFailed {
+                    hash: *hash,
+                    detail: e.to_string(),
+                })
+            }
+        }
+    }
+
+    /// Produce blob bytes `astart..aend` from a plan, reporting which
+    /// wasm component's seek path produced them (None = sequential /
+    /// arithmetic route).
+    fn produce_range(
+        &self,
+        db: &Db,
+        plan: &Plan,
+        astart: u64,
+        aend: u64,
+    ) -> Result<(Vec<u8>, Option<Blake3>), ExecError> {
+        let read_via = |src: &mut dyn RangeRead| -> Result<Vec<u8>, ExecError> {
+            let mut buf = vec![0u8; usize::try_from(aend - astart).expect("window fits memory")];
+            random::read_at_exact(src, astart, &mut buf)?;
+            Ok(buf)
+        };
+        if let Plan::Op(op_plan) = plan {
+            match &op_plan.op {
+                OpImpl::Assemble(params) => {
+                    let children = self.open_children_random(&op_plan.children)?;
+                    let mut node = AssembleRandom::new(params.clone(), children)
+                        .map_err(ExecError::Malformed)?;
+                    return Ok((read_via(&mut node)?, None));
+                }
+                OpImpl::Wasm2 {
+                    transform,
+                    component,
+                    op,
+                    params,
+                    seek,
+                    ..
+                } if *seek != datboi_runtime::SeekClass::Opaque
+                    && !db.is_seek_quarantined(component)? =>
+                {
+                    // serve-range contract: ALL inputs random-access.
+                    let mut inputs: Vec<Box<dyn RangeRead>> =
+                        Vec::with_capacity(op_plan.children.len());
+                    for child in &op_plan.children {
+                        inputs.push(self.open_random(child)?);
+                    }
+                    let sink = VecSink::default();
+                    self.stream_host.serve_range(
+                        transform,
+                        op,
+                        params,
+                        inputs,
+                        datboi_runtime::stream::RangeRequest {
+                            output_ix: u32::try_from(op_plan.output_ix)
+                                .expect("output count fits u32"),
+                            offset: astart,
+                            len: aend - astart,
+                        },
+                        Box::new(sink.clone()),
+                    )?;
+                    // Length is checked by the caller before verification
+                    // (a short window is a seek-path failure too).
+                    return Ok((sink.take(), Some(*component)));
+                }
+                _ => {}
+            }
+        }
+        // Sequential fallback: spill, then window out of the spill.
+        let mut spilled = self.spill(plan)?;
+        Ok((read_via(spilled.as_mut())?, None))
+    }
+
+    // ---- planning ----
+
+    fn is_resident(&self, db: &Db, hash: &Blake3) -> Result<bool, ExecError> {
+        Ok(match db.blob_by_hash(hash)? {
+            Some(row) => {
+                row.residency == Residency::Resident && self.store.has(StoreNs::Data, hash)
+            }
+            // Not indexed: the store may still hold it (recovery windows).
+            None => self.store.has(StoreNs::Data, hash),
+        })
+    }
+
+    fn plan(
+        &self,
+        db: &Db,
+        hash: &Blake3,
+        depth: usize,
+        visiting: &mut Vec<Blake3>,
+    ) -> Result<Plan, ExecError> {
+        if depth > self.config.max_depth {
+            return Err(ExecError::Depth);
+        }
+        if visiting.contains(hash) {
+            return Err(ExecError::Cycle(*hash));
+        }
+        if let Some(len) = self.store.len(StoreNs::Data, hash)? {
+            return Ok(Plan::Literal { hash: *hash, len });
+        }
+        let Some(row) = db.blob_by_hash(hash)? else {
+            return Err(ExecError::NoRoute(*hash));
+        };
+        visiting.push(*hash);
+        let mut last_err = None;
+        for recipe_row in db.recipes_for_output(row.blob_id)? {
+            if recipe_row.verify == VerifyState::Failed {
+                continue;
+            }
+            match self.plan_recipe(db, recipe_row.recipe_id, hash, depth, visiting) {
+                Ok(plan) => {
+                    visiting.pop();
+                    return Ok(plan);
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+        visiting.pop();
+        Err(last_err.unwrap_or(ExecError::NoRoute(*hash)))
+    }
+
+    fn plan_recipe(
+        &self,
+        db: &Db,
+        recipe_id: i64,
+        target: &Blake3,
+        depth: usize,
+        visiting: &mut Vec<Blake3>,
+    ) -> Result<Plan, ExecError> {
+        let recipe = self.load_recipe(db, recipe_id)?;
+        let output_ix = recipe
+            .outputs
+            .iter()
+            .position(|o| o.hash == *target)
+            .ok_or_else(|| ExecError::Malformed("recipe row does not claim target".into()))?;
+        let op = self.resolve_op(&recipe)?;
+        let mut children = Vec::with_capacity(recipe.inputs.len());
+        for input in &recipe.inputs {
+            children.push(self.plan(db, &input.hash, depth + 1, visiting)?);
+        }
+        Ok(Plan::Op(Box::new(OpPlan {
+            op,
+            output_ix,
+            outputs: recipe.outputs.iter().map(|o| (o.hash, o.size)).collect(),
+            children,
+        })))
+    }
+
+    fn load_recipe(&self, db: &Db, recipe_id: i64) -> Result<Recipe, ExecError> {
+        let hash = db.recipe_object_hash(recipe_id)?;
+        let mut bytes = Vec::new();
+        self.store
+            .get(StoreNs::Meta, &hash)?
+            .ok_or(ExecError::NoRoute(hash))?
+            .read_to_end(&mut bytes)?;
+        Recipe::decode(&bytes).map_err(|e| ExecError::Malformed(e.to_string()))
+    }
+
+    fn resolve_op(&self, recipe: &Recipe) -> Result<OpImpl, ExecError> {
+        match &recipe.op {
+            Op::Builtin { name, major } => match (name.as_str(), major) {
+                ("assemble", 1) => Ok(OpImpl::Assemble(
+                    AssembleParams::decode(&recipe.params)
+                        .map_err(|e| ExecError::Malformed(e.to_string()))?,
+                )),
+                ("deflate-decompress", 1) => {
+                    let (offset, len) = decode_window(&recipe.params)?;
+                    Ok(OpImpl::Deflate { offset, len })
+                }
+                (name, major) => Err(ExecError::UnsupportedOp(format!("{name}@{major}"))),
+            },
+            Op::Wasm {
+                component,
+                world,
+                export,
+            } => {
+                if world.starts_with("datboi:transform@2") {
+                    let transform = self.load_component(component)?;
+                    let descriptor = self.stream_host.describe(&transform, export)?;
+                    Ok(OpImpl::Wasm2 {
+                        transform,
+                        component: *component,
+                        op: export.clone(),
+                        params: recipe.params.clone(),
+                        seek: descriptor.seek,
+                        random_access_inputs: descriptor.random_access_inputs,
+                    })
+                } else if world.starts_with("datboi:transform@1") {
+                    let mut bytes = Vec::new();
+                    self.store
+                        .get(StoreNs::Data, component)?
+                        .ok_or(ExecError::NoRoute(*component))?
+                        .read_to_end(&mut bytes)?;
+                    Ok(OpImpl::Wasm1 {
+                        component: bytes,
+                        op: export.clone(),
+                        params: recipe.params.clone(),
+                    })
+                } else {
+                    Err(ExecError::UnsupportedOp(world.clone()))
+                }
+            }
+        }
+    }
+
+    fn load_component(&self, hash: &Blake3) -> Result<Arc<StreamTransform>, ExecError> {
+        if let Some(t) = self.components.lock().expect("component cache").get(hash) {
+            return Ok(Arc::clone(t));
+        }
+        let mut bytes = Vec::new();
+        self.store
+            .get(StoreNs::Data, hash)?
+            .ok_or(ExecError::NoRoute(*hash))?
+            .read_to_end(&mut bytes)?;
+        let compiled = Arc::new(self.stream_host.load(&bytes)?);
+        self.components
+            .lock()
+            .expect("component cache")
+            .insert(*hash, Arc::clone(&compiled));
+        Ok(compiled)
+    }
+
+    // ---- opening plans as streams ----
+
+    fn open_sequential(&self, plan: &Plan) -> Result<Box<dyn Read + Send>, ExecError> {
+        match plan {
+            Plan::Literal { hash, .. } => {
+                let file = self
+                    .store
+                    .get(StoreNs::Data, hash)?
+                    .ok_or(ExecError::NoRoute(*hash))?;
+                Ok(Box::new(io::BufReader::new(file)))
+            }
+            Plan::Op(op_plan) => match &op_plan.op {
+                OpImpl::Assemble(_) | OpImpl::Deflate { .. } | OpImpl::Wasm1 { .. } => {
+                    self.open_builtin_or_v1_sequential(op_plan)
+                }
+                OpImpl::Wasm2 {
+                    transform,
+                    op,
+                    params,
+                    random_access_inputs,
+                    ..
+                } => {
+                    let inputs = self.open_wasm2_inputs(&op_plan.children, random_access_inputs)?;
+                    let n_outputs = op_plan.outputs.len();
+                    let mut sinks: Vec<Box<dyn Write + Send>> = Vec::with_capacity(n_outputs);
+                    let mut reader = None;
+                    let mut handle = None;
+                    for ix in 0..n_outputs {
+                        if ix == op_plan.output_ix {
+                            let (w, r, h) = pipe::pipe();
+                            sinks.push(Box::new(w));
+                            reader = Some(r);
+                            handle = Some(h);
+                        } else {
+                            // Unconsumed sibling outputs of a mid-tree node
+                            // are discarded; verification happens at the
+                            // consuming materialization (D4).
+                            sinks.push(Box::new(io::sink()));
+                        }
+                    }
+                    let (reader, handle) = (
+                        reader.expect("output_ix in range"),
+                        handle.expect("output_ix in range"),
+                    );
+                    let host = Arc::clone(&self.stream_host);
+                    let transform = Arc::clone(transform);
+                    let (op, params) = (op.clone(), params.clone());
+                    std::thread::spawn(move || {
+                        if let Err(e) = host.run(&transform, &op, &params, inputs, sinks) {
+                            handle.fail(format!("streaming transform failed: {e}"));
+                        }
+                    });
+                    Ok(Box::new(reader))
+                }
+            },
+        }
+    }
+
+    fn open_builtin_or_v1_sequential(
+        &self,
+        op_plan: &OpPlan,
+    ) -> Result<Box<dyn Read + Send>, ExecError> {
+        match &op_plan.op {
+            OpImpl::Assemble(params) => {
+                let children = self.open_children_random(&op_plan.children)?;
+                let node =
+                    AssembleRandom::new(params.clone(), children).map_err(ExecError::Malformed)?;
+                Ok(Box::new(SeqOverRandom::new(Box::new(node))))
+            }
+            OpImpl::Deflate { offset, len } => {
+                let container = self.open_random(&op_plan.children[0])?;
+                Ok(Box::new(flate2::read::DeflateDecoder::new(WindowSeq::new(
+                    container, *offset, *len,
+                ))))
+            }
+            OpImpl::Wasm1 {
+                component,
+                op,
+                params,
+            } => {
+                let outputs = self.run_wasm1(op_plan, component, op, params)?;
+                Ok(Box::new(Cursor::new(
+                    outputs.into_iter().nth(op_plan.output_ix).expect("checked"),
+                )))
+            }
+            OpImpl::Wasm2 { .. } => unreachable!("handled by open_sequential"),
+        }
+    }
+
+    fn open_children_random(
+        &self,
+        children: &[Plan],
+    ) -> Result<Vec<Box<dyn RangeRead>>, ExecError> {
+        children.iter().map(|c| self.open_random(c)).collect()
+    }
+
+    fn open_wasm2_inputs(
+        &self,
+        children: &[Plan],
+        random_access_inputs: &[u32],
+    ) -> Result<Vec<StreamInput>, ExecError> {
+        let mut inputs = Vec::with_capacity(children.len());
+        for (ix, child) in children.iter().enumerate() {
+            let ix32 = u32::try_from(ix).expect("input count fits u32");
+            if random_access_inputs.contains(&ix32) {
+                inputs.push(StreamInput::RandomAccess(self.open_random(child)?));
+            } else {
+                inputs.push(StreamInput::Sequential(SequentialInput {
+                    reader: self.open_sequential(child)?,
+                    len: child.len(),
+                }));
+            }
+        }
+        Ok(inputs)
+    }
+
+    /// Random access over a plan node. Affine nodes translate; everything
+    /// else spills to a temp file first (the spill rule: correctness
+    /// first, the planner treats spills as cost).
+    fn open_random(&self, plan: &Plan) -> Result<Box<dyn RangeRead>, ExecError> {
+        match plan {
+            Plan::Literal { hash, .. } => {
+                let file = self
+                    .store
+                    .get(StoreNs::Data, hash)?
+                    .ok_or(ExecError::NoRoute(*hash))?;
+                Ok(Box::new(FileRandom::new(file)?))
+            }
+            Plan::Op(op_plan) => match &op_plan.op {
+                OpImpl::Assemble(params) => {
+                    let children = self.open_children_random(&op_plan.children)?;
+                    Ok(Box::new(
+                        AssembleRandom::new(params.clone(), children)
+                            .map_err(ExecError::Malformed)?,
+                    ))
+                }
+                _ => self.spill(plan),
+            },
+        }
+    }
+
+    fn spill(&self, plan: &Plan) -> Result<Box<dyn RangeRead>, ExecError> {
+        let mut file = match &self.config.spill_dir {
+            Some(dir) => tempfile::tempfile_in(dir)?,
+            None => tempfile::tempfile()?,
+        };
+        let mut reader = self.open_sequential(plan)?;
+        let written = io::copy(&mut reader, &mut file)?;
+        if written != plan.len() {
+            return Err(ExecError::Malformed(format!(
+                "spill produced {written} bytes, claim says {}",
+                plan.len()
+            )));
+        }
+        file.rewind()?;
+        Ok(Box::new(FileRandom::new(file)?))
+    }
+
+    // ---- materializing executions ----
+
+    /// Execute `recipe` and stream every claimed output into the store
+    /// (hash-verified, outboard built — [`Store::put_with_obao`]).
+    fn execute_to_store(
+        &self,
+        db: &Db,
+        recipe: &Recipe,
+    ) -> Result<Vec<(Blake3, PutOutcome)>, ExecError> {
+        let op = self.resolve_op(recipe)?;
+        let mut children = Vec::with_capacity(recipe.inputs.len());
+        for input in &recipe.inputs {
+            children.push(self.plan(db, &input.hash, 1, &mut Vec::new())?);
+        }
+        let outputs: Vec<(Blake3, u64)> = recipe.outputs.iter().map(|o| (o.hash, o.size)).collect();
+        match &op {
+            OpImpl::Assemble(_) | OpImpl::Deflate { .. } => {
+                if outputs.len() != 1 {
+                    return Err(ExecError::Malformed(
+                        "single-output builtin claims multiple outputs".into(),
+                    ));
+                }
+                let plan = OpPlan {
+                    op,
+                    output_ix: 0,
+                    outputs: outputs.clone(),
+                    children,
+                };
+                let reader = self.open_builtin_or_v1_sequential(&plan)?;
+                let outcome =
+                    self.store
+                        .put_with_obao(StoreNs::Data, outputs[0].0, outputs[0].1, reader)?;
+                Ok(vec![(outputs[0].0, outcome)])
+            }
+            OpImpl::Wasm1 {
+                component,
+                op: opname,
+                params,
+            } => {
+                let plan = OpPlan {
+                    op: OpImpl::Wasm1 {
+                        component: component.clone(),
+                        op: opname.clone(),
+                        params: params.clone(),
+                    },
+                    output_ix: 0,
+                    outputs: outputs.clone(),
+                    children,
+                };
+                let blobs = self.run_wasm1(&plan, component, opname, params)?;
+                let mut results = Vec::with_capacity(outputs.len());
+                for ((hash, size), bytes) in outputs.iter().zip(blobs) {
+                    let outcome = self.store.put_with_obao(
+                        StoreNs::Data,
+                        *hash,
+                        *size,
+                        Cursor::new(bytes),
+                    )?;
+                    results.push((*hash, outcome));
+                }
+                Ok(results)
+            }
+            OpImpl::Wasm2 {
+                transform,
+                op: opname,
+                params,
+                random_access_inputs,
+                ..
+            } => {
+                let inputs = self.open_wasm2_inputs(&children, random_access_inputs)?;
+                let mut sinks: Vec<Box<dyn Write + Send>> = Vec::with_capacity(outputs.len());
+                let mut readers = Vec::with_capacity(outputs.len());
+                for _ in &outputs {
+                    let (w, r, h) = pipe::pipe();
+                    sinks.push(Box::new(w));
+                    readers.push((r, h));
+                }
+                let host = Arc::clone(&self.stream_host);
+                let transform = Arc::clone(transform);
+                let (opname, params) = (opname.clone(), params.clone());
+                std::thread::scope(|scope| {
+                    let handles: Vec<pipe::PipeHandle> =
+                        readers.iter().map(|(_, h)| h.clone()).collect();
+                    let guest =
+                        scope.spawn(move || host.run(&transform, &opname, &params, inputs, sinks));
+                    let consumers: Vec<_> = readers
+                        .into_iter()
+                        .zip(&outputs)
+                        .map(|((reader, _), (hash, size))| {
+                            let (hash, size) = (*hash, *size);
+                            scope.spawn(move || {
+                                self.store.put_with_obao(StoreNs::Data, hash, size, reader)
+                            })
+                        })
+                        .collect();
+                    let guest_result = guest.join().expect("guest thread never panics");
+                    if let Err(e) = &guest_result {
+                        for h in &handles {
+                            h.fail(format!("streaming transform failed: {e}"));
+                        }
+                    }
+                    let mut results = Vec::with_capacity(outputs.len());
+                    let mut first_err: Option<ExecError> = None;
+                    for (consumer, (hash, _)) in consumers.into_iter().zip(&outputs) {
+                        match consumer.join().expect("consumer thread never panics") {
+                            Ok(outcome) => results.push((*hash, outcome)),
+                            Err(e) => {
+                                first_err.get_or_insert(e.into());
+                            }
+                        }
+                    }
+                    // The guest's own error explains a consumer failure
+                    // better than the downstream hash mismatch does.
+                    if let Err(e) = guest_result {
+                        return Err(e.into());
+                    }
+                    match first_err {
+                        Some(e) => Err(e),
+                        None => Ok(results),
+                    }
+                })
+            }
+        }
+    }
+
+    fn run_wasm1(
+        &self,
+        op_plan: &OpPlan,
+        component: &[u8],
+        op: &str,
+        params: &[u8],
+    ) -> Result<Vec<Vec<u8>>, ExecError> {
+        let mut buffers = Vec::with_capacity(op_plan.children.len());
+        let mut total = 0u64;
+        for child in &op_plan.children {
+            let size = child.len();
+            total = total.saturating_add(size);
+            if size > self.config.max_buffer || total > self.config.max_buffer {
+                return Err(ExecError::BufferCap {
+                    size: size.max(total),
+                    cap: self.config.max_buffer,
+                });
+            }
+            let mut buf = Vec::with_capacity(usize::try_from(size).expect("capped"));
+            self.open_sequential(child)?.read_to_end(&mut buf)?;
+            buffers.push(buf);
+        }
+        let outputs = self.v1_host.run(component, op, params, &buffers)?;
+        if outputs.len() != op_plan.outputs.len() {
+            return Err(ExecError::Malformed(format!(
+                "@1 transform produced {} outputs, recipe claims {}",
+                outputs.len(),
+                op_plan.outputs.len()
+            )));
+        }
+        Ok(outputs)
+    }
+}
+
+/// Shared Vec sink: the host consumes it as `Box<dyn Write + Send>`, the
+/// caller keeps a handle to collect the bytes.
+#[derive(Clone, Default)]
+struct VecSink(Arc<Mutex<Vec<u8>>>);
+
+impl VecSink {
+    fn take(&self) -> Vec<u8> {
+        std::mem::take(&mut self.0.lock().expect("sink mutex"))
+    }
+}
+
+impl Write for VecSink {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().expect("sink mutex").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn decode_window(params: &[u8]) -> Result<(u64, u64), ExecError> {
+    let Ok(Value::Map(entries)) = cbor::decode(params) else {
+        return Err(ExecError::Malformed("deflate params must be a map".into()));
+    };
+    let field = |key: u64| -> Result<u64, ExecError> {
+        match entries.iter().find(|(k, _)| *k == key) {
+            Some((_, Value::Uint(n))) => Ok(*n),
+            _ => Err(ExecError::Malformed("deflate window field missing".into())),
+        }
+    };
+    if entries.len() != 2 {
+        return Err(ExecError::Malformed("deflate params: extra fields".into()));
+    }
+    Ok((field(DEFLATE_PARAM_OFFSET)?, field(DEFLATE_PARAM_LEN)?))
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}

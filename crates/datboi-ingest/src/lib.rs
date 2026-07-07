@@ -25,6 +25,8 @@
 //! re-processes the file; every write here is a content-addressed upsert,
 //! so re-processing is idempotent (at-least-once semantics).
 
+pub mod analyzers;
+pub mod refine;
 pub mod zip;
 
 use std::fs::{self, File};
@@ -529,38 +531,54 @@ impl<'a> Ingester<'a> {
         inputs: &[(u32, i64, Option<&str>)],
         outputs: &[(u32, i64, u64, Option<&str>)],
     ) -> Result<(), IngestError> {
-        let encoded = recipe
-            .encode()
-            .map_err(|e| IngestError::Recipe(e.to_string()))?;
-        let recipe_hash = Blake3::compute(&encoded);
-        self.store
-            .put(StoreNs::Meta, recipe_hash, encoded.as_slice())?;
-        let recipe_blob_id = self.db.upsert_blob(
-            &recipe_hash,
-            Some(encoded.len() as u64),
-            IndexNs::Meta,
-            Residency::Resident,
-        )?;
-        if recipe_row_exists(self.db, recipe_blob_id)? {
-            return Ok(()); // re-ingest of already-claimed content
-        }
-        let recipe_id = self.db.insert_recipe(&NewRecipe {
-            blob_id: recipe_blob_id,
-            op_kind: OpKind::Builtin,
-            op_name,
-            seek_class: seek,
-            source: RecipeSource::LocalIngest,
-            inputs,
-            outputs,
-        })?;
-        self.db.set_verify_state(
-            recipe_id,
-            datboi_index::VerifyState::Verified,
-            now_unix(),
-            None,
-        )?;
+        mint_recipe(self.store, self.db, recipe, op_name, seek, inputs, outputs)?;
         Ok(())
     }
+}
+
+/// Publish a recipe object (meta namespace) and index it as Verified —
+/// shared by the ingest pass and refinement analyzers (both mint claims
+/// about bytes they just hashed, D4). Idempotent by content address.
+/// Returns the recipe row id (existing or new).
+pub(crate) fn mint_recipe(
+    store: &Store,
+    db: &mut Db,
+    recipe: &Recipe,
+    op_name: &str,
+    seek: SeekClass,
+    inputs: &[(u32, i64, Option<&str>)],
+    outputs: &[(u32, i64, u64, Option<&str>)],
+) -> Result<i64, IngestError> {
+    let encoded = recipe
+        .encode()
+        .map_err(|e| IngestError::Recipe(e.to_string()))?;
+    let recipe_hash = Blake3::compute(&encoded);
+    store.put(StoreNs::Meta, recipe_hash, encoded.as_slice())?;
+    let recipe_blob_id = db.upsert_blob(
+        &recipe_hash,
+        Some(encoded.len() as u64),
+        IndexNs::Meta,
+        Residency::Resident,
+    )?;
+    if let Some(existing) = recipe_row_id(db, recipe_blob_id)? {
+        return Ok(existing); // re-mint of already-claimed content
+    }
+    let recipe_id = db.insert_recipe(&NewRecipe {
+        blob_id: recipe_blob_id,
+        op_kind: OpKind::Builtin,
+        op_name,
+        seek_class: seek,
+        source: RecipeSource::LocalIngest,
+        inputs,
+        outputs,
+    })?;
+    db.set_verify_state(
+        recipe_id,
+        datboi_index::VerifyState::Verified,
+        now_unix(),
+        None,
+    )?;
+    Ok(recipe_id)
 }
 
 /// Load every detector XML in a directory; unparsable files are reported,
@@ -599,13 +617,14 @@ fn builtin(name_at_major: &str) -> Op {
     }
 }
 
-/// Idempotency guard for re-ingest: the recipe row is UNIQUE on its blob.
+/// Idempotency guard for re-mints: the recipe row is UNIQUE on its blob.
 /// (Queries through `Db::cache()`; no direct rusqlite dependency needed.)
-fn recipe_row_exists(db: &Db, recipe_blob_id: i64) -> Result<bool, datboi_index::IndexError> {
+fn recipe_row_id(db: &Db, recipe_blob_id: i64) -> Result<Option<i64>, datboi_index::IndexError> {
     let mut stmt = db
         .cache()
-        .prepare_cached("SELECT 1 FROM recipe WHERE blob_id = ?1")?;
-    Ok(stmt.exists((recipe_blob_id,))?)
+        .prepare_cached("SELECT recipe_id FROM recipe WHERE blob_id = ?1")?;
+    let mut rows = stmt.query((recipe_blob_id,))?;
+    Ok(rows.next()?.map(|row| row.get(0)).transpose()?)
 }
 
 /// Hash one member by streaming out of the stored container. Returns a

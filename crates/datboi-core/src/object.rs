@@ -10,6 +10,9 @@ pub enum ObjectKind {
     ViewSnapshot,
     StateSnapshot,
     AliasBatch,
+    /// Analyzer-provenance batch (D48): sharded rows of
+    /// bytes × analyzer → outcome, referenced from state snapshots.
+    AnalysisBatch,
 }
 
 impl ObjectKind {
@@ -20,6 +23,7 @@ impl ObjectKind {
             Self::ViewSnapshot => "viewsnap",
             Self::StateSnapshot => "statesnap",
             Self::AliasBatch => "aliases",
+            Self::AnalysisBatch => "analysis",
         }
     }
 }
@@ -41,6 +45,7 @@ pub fn sniff(bytes: &[u8]) -> Option<(ObjectKind, u32, usize)> {
         "viewsnap" => ObjectKind::ViewSnapshot,
         "statesnap" => ObjectKind::StateSnapshot,
         "aliases" => ObjectKind::AliasBatch,
+        "analysis" => ObjectKind::AnalysisBatch,
         _ => return None,
     };
     // Strict: version is a bare decimal integer, no leading zeros or signs.

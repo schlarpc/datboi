@@ -93,7 +93,7 @@ fn schema_and_pragmas() {
         let version: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, datboi_index::schema::SCHEMA_VERSION);
     }
     // Reopen is idempotent (existing files pass validation).
     drop(db);

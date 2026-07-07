@@ -1,0 +1,614 @@
+//! Executor integration: replay licensing (D25), streaming composition
+//! (D51 threads+pipes), the spill rule, and claim poisoning — over real
+//! store + index instances and the committed @2 reference component.
+
+use std::io::Write as _;
+
+use datboi_core::assemble::{AssembleParams, Segment};
+use datboi_core::cbor::{self, Value};
+use datboi_core::hash::Blake3;
+use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe};
+use datboi_exec::{ExecConfig, ExecError, Executor};
+use datboi_index::recipes::NewRecipe;
+use datboi_index::{
+    Db, Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass, VerifyState,
+};
+use datboi_store_fs::{Namespace as StoreNs, Store, StoreError};
+use flate2::Compression;
+use flate2::write::DeflateEncoder;
+
+/// The same committed fixture the runtime gate pins (D51).
+const COMPONENT: &[u8] =
+    include_bytes!("../../datboi-runtime/tests/fixtures/xf_reference_stream.wasm");
+
+struct World {
+    _dir: tempfile::TempDir,
+    store: Store,
+    db: Db,
+}
+
+fn world() -> World {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(dir.path().join("store")).expect("store");
+    let db = Db::open(dir.path()).expect("db");
+    World {
+        _dir: dir,
+        store,
+        db,
+    }
+}
+
+fn pattern(len: usize) -> Vec<u8> {
+    let mut state: u64 = 0x243F_6A88_85A3_08D3;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 24) as u8
+        })
+        .collect()
+}
+
+impl World {
+    /// Store a literal and index it Resident.
+    fn put_literal(&mut self, bytes: &[u8]) -> (Blake3, i64) {
+        let hash = Blake3::compute(bytes);
+        self.store.put(StoreNs::Data, hash, bytes).expect("put");
+        let id = self
+            .db
+            .upsert_blob(
+                &hash,
+                Some(bytes.len() as u64),
+                IndexNs::Data,
+                Residency::Resident,
+            )
+            .expect("blob row");
+        (hash, id)
+    }
+
+    /// Index a claimed-but-absent output identity.
+    fn claim_absent(&mut self, bytes: &[u8]) -> (Blake3, i64) {
+        let hash = Blake3::compute(bytes);
+        let id = self
+            .db
+            .upsert_blob(
+                &hash,
+                Some(bytes.len() as u64),
+                IndexNs::Data,
+                Residency::Absent,
+            )
+            .expect("blob row");
+        (hash, id)
+    }
+
+    /// Publish a recipe object + index rows (Pending), mirroring what
+    /// ingest/analyzers mint.
+    fn mint_recipe(
+        &mut self,
+        recipe: &Recipe,
+        op_name: &str,
+        op_kind: OpKind,
+        seek: SeekClass,
+        inputs: &[(u32, i64)],
+        outputs: &[(u32, i64, u64)],
+    ) -> i64 {
+        let encoded = recipe.encode().expect("valid recipe");
+        let recipe_hash = Blake3::compute(&encoded);
+        self.store
+            .put(StoreNs::Meta, recipe_hash, encoded.as_slice())
+            .expect("recipe blob");
+        let recipe_blob_id = self
+            .db
+            .upsert_blob(
+                &recipe_hash,
+                Some(encoded.len() as u64),
+                IndexNs::Meta,
+                Residency::Resident,
+            )
+            .expect("recipe blob row");
+        let inputs: Vec<(u32, i64, Option<&str>)> =
+            inputs.iter().map(|(p, id)| (*p, *id, None)).collect();
+        let outputs: Vec<(u32, i64, u64, Option<&str>)> = outputs
+            .iter()
+            .map(|(o, id, s)| (*o, *id, *s, None))
+            .collect();
+        self.db
+            .insert_recipe(&NewRecipe {
+                blob_id: recipe_blob_id,
+                op_kind,
+                op_name,
+                seek_class: seek,
+                source: RecipeSource::LocalIngest,
+                inputs: &inputs,
+                outputs: &outputs,
+            })
+            .expect("recipe row")
+    }
+}
+
+fn deflate_window_params(offset: u64, len: u64) -> Vec<u8> {
+    cbor::encode(&Value::Map(vec![
+        (1, Value::Uint(offset)),
+        (2, Value::Uint(len)),
+    ]))
+    .expect("params")
+}
+
+fn byteswap(bytes: &[u8]) -> Vec<u8> {
+    let mut out = bytes.to_vec();
+    for pair in out.chunks_exact_mut(2) {
+        pair.swap(0, 1);
+    }
+    out
+}
+
+#[test]
+fn replays_deflate_window_recipe_and_licenses_drop() {
+    let mut w = world();
+    let member = pattern(200_000);
+    let mut enc = DeflateEncoder::new(Vec::new(), Compression::default());
+    enc.write_all(&member).expect("deflate");
+    let compressed = enc.finish().expect("deflate finish");
+    // Container: junk prefix + deflate stream + junk suffix — the zip
+    // member shape (one windowed recipe over the container, D16 window
+    // amendment).
+    let mut container = b"local header junk".to_vec();
+    let offset = container.len() as u64;
+    container.extend_from_slice(&compressed);
+    container.extend_from_slice(b"trailing central directory junk");
+
+    let (container_hash, container_id) = w.put_literal(&container);
+    let (member_hash, member_id) = w.claim_absent(&member);
+    let recipe = Recipe {
+        op: Op::Builtin {
+            name: "deflate-decompress".into(),
+            major: 1,
+        },
+        inputs: vec![InputRef {
+            hash: container_hash,
+            role: None,
+        }],
+        outputs: vec![OutputRef {
+            hash: member_hash,
+            size: member.len() as u64,
+            name: Some("member.bin".into()),
+        }],
+        params: deflate_window_params(offset, compressed.len() as u64),
+    };
+    let recipe_id = w.mint_recipe(
+        &recipe,
+        "deflate-decompress@1",
+        OpKind::Builtin,
+        SeekClass::Opaque,
+        &[(0, container_id)],
+        &[(0, member_id, member.len() as u64)],
+    );
+
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+    let report = exec.replay(&w.db, recipe_id).expect("replays");
+    assert_eq!(report.outputs.len(), 1);
+
+    // The member is now resident, verified, outboard built.
+    assert!(w.store.has(StoreNs::Data, &member_hash));
+    assert!(
+        w.store
+            .get_obao(StoreNs::Data, &member_hash)
+            .expect("obao")
+            .is_some()
+    );
+    assert_eq!(
+        w.store
+            .read_range_verified(StoreNs::Data, &member_hash, 150_000, 1024)
+            .expect("verified range"),
+        &member[150_000..151_024]
+    );
+    let row = w.db.recipe_by_id(recipe_id).expect("row");
+    assert_eq!(
+        row.verify,
+        VerifyState::ReplayedLocal,
+        "D25 license granted"
+    );
+    let blob = w.db.blob_by_hash(&member_hash).expect("q").expect("row");
+    assert_eq!(blob.residency, Residency::Resident);
+
+    // Replay is idempotent (stream re-verified, store unchanged).
+    let report = exec.replay(&w.db, recipe_id).expect("re-replays");
+    assert!(matches!(
+        report.outputs[0].1,
+        datboi_store_fs::PutOutcome::AlreadyPresent
+    ));
+}
+
+#[test]
+fn lying_claim_poisons_the_recipe_and_publishes_nothing() {
+    let mut w = world();
+    let (container_hash, container_id) = w.put_literal(&pattern(50_000));
+    // Claim: bytes 100..2100 of the container hash to something they don't.
+    let lie = Blake3::compute(b"this is not what the slice hashes to");
+    let lie_id =
+        w.db.upsert_blob(&lie, Some(2000), IndexNs::Data, Residency::Absent)
+            .expect("row");
+    let recipe = Recipe {
+        op: Op::Builtin {
+            name: "assemble".into(),
+            major: 1,
+        },
+        inputs: vec![InputRef {
+            hash: container_hash,
+            role: None,
+        }],
+        outputs: vec![OutputRef {
+            hash: lie,
+            size: 2000,
+            name: None,
+        }],
+        params: AssembleParams {
+            segments: vec![Segment::BlobRange {
+                input_ix: 0,
+                offset: 100,
+                len: 2000,
+            }],
+        }
+        .encode()
+        .expect("params"),
+    };
+    let recipe_id = w.mint_recipe(
+        &recipe,
+        "assemble@1",
+        OpKind::Builtin,
+        SeekClass::Affine,
+        &[(0, container_id)],
+        &[(0, lie_id, 2000)],
+    );
+
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+    let err = exec.replay(&w.db, recipe_id).expect_err("claim is false");
+    assert!(
+        err.is_claim_failure(),
+        "hash mismatch indicts the claim: {err}"
+    );
+    assert!(
+        matches!(err, ExecError::Store(StoreError::HashMismatch { .. })),
+        "{err}"
+    );
+    assert!(!w.store.has(StoreNs::Data, &lie), "nothing published");
+    let row = w.db.recipe_by_id(recipe_id).expect("row");
+    assert_eq!(row.verify, VerifyState::Failed, "poisoned (D25)");
+    // Poisoned recipes refuse to re-run.
+    assert!(matches!(
+        exec.replay(&w.db, recipe_id),
+        Err(ExecError::Poisoned(_))
+    ));
+}
+
+#[test]
+fn wasm2_recipe_replays_and_streams() {
+    let mut w = world();
+    let input = pattern(300_000);
+    let swapped = byteswap(&input);
+
+    let (component_hash, _) = w.put_literal(COMPONENT);
+    let (input_hash, input_id) = w.put_literal(&input);
+    let (swapped_hash, swapped_id) = w.claim_absent(&swapped);
+
+    let recipe = Recipe {
+        op: Op::Wasm {
+            component: component_hash,
+            world: "datboi:transform@2".into(),
+            export: "byteswap".into(),
+        },
+        inputs: vec![InputRef {
+            hash: input_hash,
+            role: None,
+        }],
+        outputs: vec![OutputRef {
+            hash: swapped_hash,
+            size: swapped.len() as u64,
+            name: None,
+        }],
+        params: Vec::new(),
+    };
+    let recipe_id = w.mint_recipe(
+        &recipe,
+        "wasm:byteswap",
+        OpKind::Wasm,
+        SeekClass::Affine,
+        &[(0, input_id)],
+        &[(0, swapped_id, swapped.len() as u64)],
+    );
+
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+    exec.replay(&w.db, recipe_id).expect("replays");
+    assert!(w.store.has(StoreNs::Data, &swapped_hash));
+    assert_eq!(
+        w.db.recipe_by_id(recipe_id).expect("row").verify,
+        VerifyState::ReplayedLocal
+    );
+}
+
+/// The composition shape D51 accepted thread costs for: an assemble
+/// node whose child is a streaming wasm output that is NOT resident —
+/// the executor streams through the guest (pipe) and spills for the
+/// assemble node's random access, storing only the final output.
+#[test]
+fn composed_route_streams_through_wasm_without_storing_intermediates() {
+    let mut w = world();
+    let input = pattern(150_000);
+    let swapped = byteswap(&input);
+    let tail = pattern(5000);
+    let mut fin = swapped.clone();
+    fin.extend_from_slice(&tail);
+
+    let (component_hash, _) = w.put_literal(COMPONENT);
+    let (input_hash, input_id) = w.put_literal(&input);
+    let (tail_hash, tail_id) = w.put_literal(&tail);
+    let (swapped_hash, swapped_id) = w.claim_absent(&swapped);
+    let (final_hash, final_id) = w.claim_absent(&fin);
+
+    let swap_recipe = Recipe {
+        op: Op::Wasm {
+            component: component_hash,
+            world: "datboi:transform@2".into(),
+            export: "byteswap".into(),
+        },
+        inputs: vec![InputRef {
+            hash: input_hash,
+            role: None,
+        }],
+        outputs: vec![OutputRef {
+            hash: swapped_hash,
+            size: swapped.len() as u64,
+            name: None,
+        }],
+        params: Vec::new(),
+    };
+    w.mint_recipe(
+        &swap_recipe,
+        "wasm:byteswap",
+        OpKind::Wasm,
+        SeekClass::Affine,
+        &[(0, input_id)],
+        &[(0, swapped_id, swapped.len() as u64)],
+    );
+
+    let concat_recipe = Recipe {
+        op: Op::Builtin {
+            name: "assemble".into(),
+            major: 1,
+        },
+        inputs: vec![
+            InputRef {
+                hash: swapped_hash,
+                role: None,
+            },
+            InputRef {
+                hash: tail_hash,
+                role: None,
+            },
+        ],
+        outputs: vec![OutputRef {
+            hash: final_hash,
+            size: fin.len() as u64,
+            name: None,
+        }],
+        params: AssembleParams {
+            segments: vec![
+                Segment::BlobRange {
+                    input_ix: 0,
+                    offset: 0,
+                    len: swapped.len() as u64,
+                },
+                Segment::BlobRange {
+                    input_ix: 1,
+                    offset: 0,
+                    len: tail.len() as u64,
+                },
+            ],
+        }
+        .encode()
+        .expect("params"),
+    };
+    let concat_id = w.mint_recipe(
+        &concat_recipe,
+        "assemble@1",
+        OpKind::Builtin,
+        SeekClass::Affine,
+        &[(0, swapped_id), (1, tail_id)],
+        &[(0, final_id, fin.len() as u64)],
+    );
+
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+    exec.materialize(&w.db, &final_hash).expect("materializes");
+    assert!(w.store.has(StoreNs::Data, &final_hash), "final stored");
+    assert!(
+        !w.store.has(StoreNs::Data, &swapped_hash),
+        "intermediate streamed, never stored"
+    );
+    assert_eq!(
+        w.db.recipe_by_id(concat_id).expect("row").verify,
+        VerifyState::ReplayedLocal
+    );
+    // Read back and compare.
+    let mut got = Vec::new();
+    std::io::Read::read_to_end(
+        &mut w
+            .store
+            .get(StoreNs::Data, &final_hash)
+            .expect("get")
+            .expect("present"),
+        &mut got,
+    )
+    .expect("read");
+    assert_eq!(got, fin);
+
+    // open_stream serves the still-absent intermediate without storing it.
+    let mut streamed = Vec::new();
+    std::io::Read::read_to_end(
+        &mut exec.open_stream(&w.db, &swapped_hash).expect("route"),
+        &mut streamed,
+    )
+    .expect("read");
+    assert_eq!(streamed, swapped);
+    assert!(!w.store.has(StoreNs::Data, &swapped_hash));
+}
+
+impl World {
+    /// Simulate eviction the way M3's planner will do it: literal file
+    /// deleted, `.obao` sidecar kept (D49 rule 1), residency flipped.
+    fn evict(&self, hash: &Blake3) {
+        let path = self
+            ._dir
+            .path()
+            .join("store")
+            .join(datboi_store_fs::layout::blob_path(StoreNs::Data, hash));
+        std::fs::remove_file(&path).expect("literal existed");
+        let id = self.db.get_blob_id(hash).expect("q").expect("indexed");
+        self.db
+            .set_residency(id, Residency::EvictedCovered)
+            .expect("residency");
+    }
+}
+
+#[test]
+fn served_ranges_verify_after_eviction() {
+    let mut w = world();
+    let input = pattern(120_000);
+    let swapped = byteswap(&input);
+
+    let (component_hash, _) = w.put_literal(COMPONENT);
+    let (input_hash, input_id) = w.put_literal(&input);
+    let (swapped_hash, swapped_id) = w.claim_absent(&swapped);
+    let recipe = Recipe {
+        op: Op::Wasm {
+            component: component_hash,
+            world: "datboi:transform@2".into(),
+            export: "byteswap".into(),
+        },
+        inputs: vec![InputRef {
+            hash: input_hash,
+            role: None,
+        }],
+        outputs: vec![OutputRef {
+            hash: swapped_hash,
+            size: swapped.len() as u64,
+            name: None,
+        }],
+        params: Vec::new(),
+    };
+    let recipe_id = w.mint_recipe(
+        &recipe,
+        "wasm:byteswap",
+        OpKind::Wasm,
+        SeekClass::Affine,
+        &[(0, input_id)],
+        &[(0, swapped_id, swapped.len() as u64)],
+    );
+
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+    exec.replay(&w.db, recipe_id).expect("replay licenses");
+    w.evict(&swapped_hash);
+    assert!(!w.store.has(StoreNs::Data, &swapped_hash));
+    assert!(
+        w.store
+            .get_obao(StoreNs::Data, &swapped_hash)
+            .expect("q")
+            .is_some(),
+        "outboard survives eviction (D49 rule 1)"
+    );
+
+    // Ranges at awkward offsets, all served via the wasm seek path and
+    // verified against the output outboard.
+    for (offset, len) in [
+        (0u64, 100u64),
+        (16 * 1024 - 1, 3),
+        (99_990, 50),
+        (119_999, 10),
+    ] {
+        let got = exec
+            .serve_range(&w.db, &swapped_hash, offset, len)
+            .expect("verified serve");
+        let start = usize::try_from(offset.min(swapped.len() as u64)).expect("small");
+        let end = (start + usize::try_from(len).expect("small")).min(swapped.len());
+        assert_eq!(got, &swapped[start..end], "range {offset}+{len}");
+    }
+    assert!(
+        !w.db.is_seek_quarantined(&component_hash).expect("q"),
+        "honest component stays trusted"
+    );
+}
+
+#[test]
+fn lying_seek_path_is_quarantined_and_falls_back() {
+    let mut w = world();
+    let payload = pattern(80_000);
+    let swapped = byteswap(&payload);
+
+    let (component_hash, _) = w.put_literal(COMPONENT);
+    let (payload_hash, payload_id) = w.put_literal(&payload);
+    let (swapped_hash, swapped_id) = w.claim_absent(&swapped);
+    let recipe = Recipe {
+        op: Op::Wasm {
+            component: component_hash,
+            world: "datboi:transform@2".into(),
+            export: "byteswap-lying-range".into(),
+        },
+        inputs: vec![InputRef {
+            hash: payload_hash,
+            role: None,
+        }],
+        outputs: vec![OutputRef {
+            hash: swapped_hash,
+            size: swapped.len() as u64,
+            name: None,
+        }],
+        params: Vec::new(),
+    };
+    let recipe_id = w.mint_recipe(
+        &recipe,
+        "wasm:byteswap-lying-range",
+        OpKind::Wasm,
+        SeekClass::Affine,
+        &[(0, payload_id)],
+        &[(0, swapped_id, swapped.len() as u64)],
+    );
+
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+    // Sequential run is honest: the claim replays and licenses (this is
+    // exactly why claim-level verification can't catch seek bugs — D49).
+    exec.replay(&w.db, recipe_id)
+        .expect("honest sequential replay");
+    w.evict(&swapped_hash);
+
+    // First seeked read: the lying window fails output-bao verification;
+    // no bytes are surfaced; the component's seekability is quarantined.
+    let err = exec
+        .serve_range(&w.db, &swapped_hash, 4096, 100)
+        .expect_err("lie caught");
+    assert!(
+        matches!(err, ExecError::RangeVerifyFailed { .. }),
+        "EIO class, never bytes: {err}"
+    );
+    assert!(
+        w.db.is_seek_quarantined(&component_hash).expect("q"),
+        "seek quarantine recorded (D49 rule 3)"
+    );
+
+    // Second read: planner treats the route as opaque — the known-good
+    // sequential path (spill) serves it, verified, correct.
+    let got = exec
+        .serve_range(&w.db, &swapped_hash, 4096, 100)
+        .expect("sequential fallback");
+    assert_eq!(got, &swapped[4096..4196]);
+}
+
+#[test]
+fn no_route_is_a_clean_error() {
+    let w = world();
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+    let missing = Blake3::compute(b"nobody claims me");
+    assert!(matches!(
+        exec.materialize(&w.db, &missing),
+        Err(ExecError::NoRoute(_))
+    ));
+}

@@ -7,7 +7,8 @@
 
 /// Bumped only on incompatible schema changes. cache.db migration policy
 /// is "drop and rebuild"; state.db gets real migrations forever (D37).
-pub const SCHEMA_VERSION: u32 = 1;
+/// v2: seek_quarantine (D49), analysis + sweep_queue (D45/D48).
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// `application_id` magics: "dtbc" / "dtbs" as big-endian ASCII.
 pub const CACHE_APP_ID: u32 = 0x6474_6263;
@@ -200,6 +201,45 @@ CREATE TABLE entry_audit (
   computed_at   INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
 
+-- D49 rule 3: component hashes whose *seek path* produced bytes that
+-- failed output-bao verification. Sequential replay is unaffected; the
+-- planner serves reads through the known-good sequential path (spill) for
+-- these until a fixed component ships under a new hash. Cache-grade on
+-- purpose: losing the row costs one more detected-and-refused bad serve,
+-- never wrong bytes (the per-read bao check is what actually protects).
+CREATE TABLE seek_quarantine (
+  component      BLOB PRIMARY KEY,
+  quarantined_at INTEGER NOT NULL,
+  reason         TEXT NOT NULL
+) STRICT, WITHOUT ROWID;
+
+-- D45/D48: analyzer provenance, INCLUDING negative results — which
+-- analyzer identity ran over which bytes and what it concluded. Pure
+-- function of bytes × analyzer, so cache-grade; batched into signed
+-- snapshots so bare-NAS recovery doesn't re-pay expensive negatives.
+CREATE TABLE analysis (
+  blob_id     INTEGER NOT NULL REFERENCES blob(blob_id),
+  analyzer    BLOB NOT NULL,
+  outcome     INTEGER NOT NULL,
+  detail      TEXT,
+  analyzed_at INTEGER NOT NULL,
+  PRIMARY KEY (blob_id, analyzer)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX analysis_by_analyzer ON analysis(analyzer);
+
+-- D45/D47: the refinement sweep queue. Scheduling state only (never
+-- truth): rows are (candidate × analyzer) pairs awaiting a sweep, with
+-- dat-aware priority allowed by D47 (claims stay dat-blind; ordering may
+-- not).
+CREATE TABLE sweep_queue (
+  blob_id     INTEGER NOT NULL REFERENCES blob(blob_id),
+  analyzer    BLOB NOT NULL,
+  priority    INTEGER NOT NULL DEFAULT 0,
+  enqueued_at INTEGER NOT NULL,
+  PRIMARY KEY (blob_id, analyzer)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX sweep_by_priority ON sweep_queue(priority DESC, enqueued_at);
+
 CREATE TABLE peer (
   peer_id   INTEGER PRIMARY KEY,
   node_id   BLOB NOT NULL UNIQUE,
@@ -218,6 +258,9 @@ CREATE INDEX ph_by_blob ON peer_have(blob_id);
 
 /// Truncation order for cache rebuild: children before parents (FKs on).
 pub const CACHE_TABLES_CHILD_FIRST: &[&str] = &[
+    "sweep_queue",
+    "analysis",
+    "seek_quarantine",
     "entry_audit",
     "identity_status",
     "annotation",

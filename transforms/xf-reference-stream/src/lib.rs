@@ -1,4 +1,4 @@
-//! Streaming reference transform for the `datboi:transform@2` DRAFT world:
+//! Streaming reference transform for the frozen `datboi:transform@2` world:
 //! the swap family, `concat`, and a read-contract probe. Its job is to
 //! prove the pull-in/push-out ABI and feed the M2 determinism +
 //! seek-equivalence gates (D46/D49) — production traffic uses builtins.
@@ -18,6 +18,11 @@
 //!   deliberately awkward sizes and *verifying the exact-read contract*
 //!   (`read(n)` returns n unless EOF): the gate test for determinism
 //!   layer 2.
+//! - `byteswap-lying-range` — the seek-path-bug simulation D49 exists
+//!   for: `run` is an honest byteswap (claims verify, replay licenses),
+//!   but `serve-range` flips the first byte of every window. The output-
+//!   bao check must catch it and quarantine this component's seekability
+//!   (D49 rule 3); it must never surface bytes.
 //!
 //! Range math (`swap_range_window`, `concat_spans`) is pure and
 //! host-tested; boundary off-by-ones are exactly what D49 expects to find.
@@ -112,7 +117,7 @@ pub fn concat_spans(input_lens: &[u64], offset: u64, len: u64) -> Vec<(usize, u6
 /// page-straddling), cycled deterministically.
 pub const PROBE_SIZES: [u32; 8] = [1, 3, 7, 64, 251, 4093, 65537, 13];
 
-/// Component glue for the DRAFT `datboi:transform@2` world; wasm32-only so
+/// Component glue for the frozen `datboi:transform@2` world; wasm32-only so
 /// host-side tests of the pure range math build natively.
 #[cfg(target_arch = "wasm32")]
 #[allow(unsafe_code)]
@@ -216,6 +221,21 @@ mod component {
                     let n = src.read(u32::MAX).len();
                     Err(format!("host failed to trap a {n}-byte greedy read"))
                 }
+                // Honest byteswap; the lie lives in serve-range.
+                "byteswap-lying-range" => {
+                    let (src, out) = one_in_one_out(&inputs, &outputs)?;
+                    loop {
+                        let mut chunk = src.read(CHUNK as u32);
+                        let eof = chunk.len() < CHUNK;
+                        swap_chunk("byteswap", &mut chunk);
+                        if !chunk.is_empty() {
+                            out.write(&chunk);
+                        }
+                        if eof {
+                            return Ok(());
+                        }
+                    }
+                }
                 "read-contract-probe" => {
                     let (src, out) = one_in_one_out(&inputs, &outputs)?;
                     let total = src.len();
@@ -263,6 +283,10 @@ mod component {
                     "no output {output_ix}: everything here is 1-output"
                 ));
             }
+            // The planted D49 seek bug rides the byteswap range logic.
+            let lie = op == "byteswap-lying-range";
+            let op = if lie { "byteswap".to_string() } else { op };
+            let mut first_write = lie;
             if let Some(group) = group_of(&op) {
                 let [input] = &inputs[..] else {
                     return Err(format!("expected 1 input, got {}", inputs.len()));
@@ -291,6 +315,10 @@ mod component {
                     let lo = out_start.saturating_sub(chunk_start).min(take);
                     let hi = (out_start + want).saturating_sub(chunk_start).min(take);
                     if hi > lo {
+                        if first_write {
+                            chunk[lo as usize] ^= 0x01;
+                            first_write = false;
+                        }
                         out.write(&chunk[lo as usize..hi as usize]);
                         produced += hi - lo;
                     }

@@ -14,6 +14,7 @@ repository = "https://github.com/schlarpc/datboi"
 [workspace.dependencies]
 datboi-catalog = { path = "crates/datboi-catalog" }
 datboi-core = { path = "crates/datboi-core" }
+datboi-exec = { path = "crates/datboi-exec" }
 datboi-formats = { path = "crates/datboi-formats" }
 datboi-index = { path = "crates/datboi-index" }
 datboi-ingest = { path = "crates/datboi-ingest" }

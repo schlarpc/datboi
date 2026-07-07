@@ -12,6 +12,7 @@ anyhow.workspace = true
 clap.workspace = true
 datboi-catalog.workspace = true
 datboi-core.workspace = true
+datboi-exec.workspace = true
 datboi-formats.workspace = true
 datboi-index.workspace = true
 datboi-ingest.workspace = true

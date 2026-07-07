@@ -67,6 +67,44 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Evict recipe-covered literals to reclaim space (D25/D27): only
+    /// blobs reconstructible through locally-replayed recipes grounded in
+    /// retained literals are dropped; outboards are kept so evicted
+    /// content still serves verified range reads (D49).
+    Evict {
+        /// Resident data bytes to keep (0 = evict everything evictable).
+        #[arg(long, default_value_t = 0)]
+        target_bytes: u64,
+        /// Replay not-yet-licensed recipe routes first (CPU for bytes).
+        #[arg(long)]
+        license: bool,
+        /// Report what would be evicted without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rematerialize an evicted or claimed blob into the store by
+    /// replaying its cheapest recipe route.
+    Materialize {
+        /// Blob hash (blake3 hex).
+        hash: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run one background refinement sweep round (D45): analyze stored
+    /// blobs with the named analyzer, recording provenance (including
+    /// negative results) for the fixpoint.
+    Sweep {
+        /// Analyzer name (currently: noop).
+        #[arg(long, default_value = "noop")]
+        analyzer: String,
+        /// Maximum items to analyze this round.
+        #[arg(long, default_value_t = 10_000)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
     /// Re-hash stored blobs and report corruption.
     Scrub {
         /// Percentage of blobs to check (deterministic sample by hash).
@@ -192,6 +230,18 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Recover { json } => cmds::recover(cli.global.open()?, json),
         Command::Snapshot { json } => cmds::snapshot(cli.global.open()?, json),
+        Command::Evict {
+            target_bytes,
+            license,
+            dry_run,
+            json,
+        } => cmds::evict(cli.global.open()?, target_bytes, license, dry_run, json),
+        Command::Materialize { hash, json } => cmds::materialize(cli.global.open()?, &hash, json),
+        Command::Sweep {
+            analyzer,
+            limit,
+            json,
+        } => cmds::sweep(cli.global.open()?, &analyzer, limit, json),
         Command::Scrub { sample, json } => cmds::scrub(&cli.global.open()?, sample, json),
         Command::Status { json } => cmds::status(&cli.global.open()?, json),
     }

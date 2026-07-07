@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 
+use datboi_core::hash::Blake3;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::types::{OpKind, RecipeSource, SeekClass, VerifyState};
@@ -111,6 +112,57 @@ impl Db {
         Ok(out)
     }
 
+    /// The hash of the recipe *object blob* — what the executor decodes
+    /// from meta/ to get op, params, and claimed inputs/outputs (the DB
+    /// rows are the queryable projection, the object is the truth).
+    pub fn recipe_object_hash(&self, recipe_id: i64) -> Result<Blake3, IndexError> {
+        let hash: [u8; 32] = self
+            .cache()
+            .query_row(
+                "SELECT b.hash FROM recipe r JOIN blob b ON b.blob_id = r.blob_id
+                 WHERE r.recipe_id = ?1",
+                params![recipe_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(IndexError::RecipeNotFound(recipe_id))?;
+        Ok(Blake3(hash))
+    }
+
+    /// One recipe row by id.
+    pub fn recipe_by_id(&self, recipe_id: i64) -> Result<RecipeRow, IndexError> {
+        let row = self
+            .cache()
+            .query_row(
+                "SELECT recipe_id, blob_id, op_kind, op_name, seek_class, verify, source
+                 FROM recipe WHERE recipe_id = ?1",
+                params![recipe_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or(IndexError::RecipeNotFound(recipe_id))?;
+        let (recipe_id, blob_id, op_kind, op_name, seek_class, verify, source) = row;
+        Ok(RecipeRow {
+            recipe_id,
+            blob_id,
+            op_kind: OpKind::from_code(op_kind)?,
+            op_name,
+            seek_class: SeekClass::from_code(seek_class)?,
+            verify: VerifyState::from_code(verify)?,
+            source: RecipeSource::from_code(source)?,
+        })
+    }
+
     /// Advance the verify state machine. Illegal transitions (including
     /// anything out of the `Failed` poison state) are rejected (D25).
     /// `Failed` requires an error message; the peer that supplied a
@@ -153,6 +205,89 @@ impl Db {
             ],
         )?;
         Ok(())
+    }
+
+    /// Resident data blobs claimed as output by at least one
+    /// ReplayedLocal recipe — the eviction candidate pool, biggest
+    /// reclaim first. Pre-grounding: the planner still runs
+    /// [`Db::is_evictable`] per pick (dropping one candidate can strand
+    /// another — order matters, sets don't).
+    pub fn list_eviction_candidates(&self) -> Result<Vec<crate::BlobRow>, IndexError> {
+        let mut stmt = self.cache().prepare_cached(
+            "SELECT DISTINCT b.blob_id, b.hash, b.size, b.namespace, b.residency
+             FROM blob b
+             JOIN recipe_output ro ON ro.blob_id = b.blob_id
+             JOIN recipe r ON r.recipe_id = ro.recipe_id
+             WHERE b.namespace = 0 AND b.residency = 0 AND r.verify = 3
+             ORDER BY b.size DESC, b.hash",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, [u8; 32]>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(blob_id, hash, size, ns, residency)| {
+                Ok(crate::BlobRow {
+                    blob_id,
+                    hash: Blake3(hash),
+                    size: size.map(|s| u64::try_from(s).expect("sizes stored non-negative")),
+                    namespace: crate::Namespace::from_code(ns)?,
+                    residency: crate::Residency::from_code(residency)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Quarantine a component hash's SEEK path (D49 rule 3): its
+    /// serve-range output failed output-bao verification. Idempotent
+    /// (first reason wins). Sequential replay stays trusted — the claim
+    /// itself was proven by full materialization.
+    pub fn quarantine_seek(
+        &self,
+        component: &Blake3,
+        at_unix: i64,
+        reason: &str,
+    ) -> Result<(), IndexError> {
+        self.cache().execute(
+            "INSERT OR IGNORE INTO seek_quarantine (component, quarantined_at, reason)
+             VALUES (?1, ?2, ?3)",
+            params![component.0.as_slice(), at_unix, reason],
+        )?;
+        Ok(())
+    }
+
+    pub fn is_seek_quarantined(&self, component: &Blake3) -> Result<bool, IndexError> {
+        let mut stmt = self
+            .cache()
+            .prepare_cached("SELECT 1 FROM seek_quarantine WHERE component = ?1")?;
+        Ok(stmt.exists(params![component.0.as_slice()])?)
+    }
+
+    /// All quarantined components with reasons (status surface).
+    pub fn list_seek_quarantined(&self) -> Result<Vec<(Blake3, i64, String)>, IndexError> {
+        let mut stmt = self.cache().prepare_cached(
+            "SELECT component, quarantined_at, reason FROM seek_quarantine ORDER BY component",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, [u8; 32]>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(c, at, r)| (Blake3(c), at, r))
+            .collect())
     }
 
     /// The D21 grounding fixpoint: blobs reconstructible from retained

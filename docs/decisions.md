@@ -604,12 +604,18 @@ The streaming world's shape, ruled after adversarial review:
    (`load`) and instantiate per run (~µs) — the executor replays
    thousands of recipes against a handful of pinned components.
 
-Status: WIT is DRAFT (transforms/wit/v2); the M2 gate is green — 13
-tests: golden anchors, N-run identity, 64 MiB streamed through an
-8 MiB guest, seek-equivalence for swaps and concat (±1 at group
-boundaries, input joins, EOF), greedy-read trap, fuel trap, ambient
-imports still refused (the linker carries exactly our types interface).
-Freeze happens with the ~4 GB exit test once the executor lands.
+Status: **FROZEN 2026-07-07.** The streaming executor landed
+(datboi-exec: operator trees, spill rule, threads+pipes composition per
+item 1's accepted cost) and the M2 exit test passed at full size: a
+3.9 GiB zip member (zip32 ceiling; zip64 is deliberately out of M1
+ingest scope) replayed in bounded memory (<512 MiB peak RSS asserted
+via VmHWM), hash-verified with the bao outboard built in the same pass,
+then served by seeked recipe-route range reads under mandatory
+output-bao verification (D49). The runtime gate stays green (13 tests);
+the reference guest additionally carries `byteswap-lying-range`, a
+planted seek-path bug that the D49 quarantine machinery is
+integration-tested against. As with @1, the fixture hash is pinned and
+updating it is now a format event.
 
 *Rejected:* host-driven update/finish (single-implicit-input shape),
 "read up to n" semantics (nondeterminism by buffering), wasi:io streams

@@ -58,7 +58,10 @@ recovery-equivalence as a property test.
 
 ## Milestones
 
-- **M2 — "The engine streams"** (platform; split from the old fat M2 by
+- **M2 — "The engine streams"** — **COMPLETE 2026-07-07**: exit test
+  green at full size (3.9 GiB member, bounded memory, sequential +
+  seeked, verified); @2 frozen; fixpoint skeleton survives the recovery
+  drill with a no-op sweep. (platform; split from the old fat M2 by
   D50): `datboi:transform@2` streaming world designed and **frozen**
   (D46: streams as resources in our own `types` interface,
   empty-linker sandbox preserved); streaming executor integration +
@@ -74,10 +77,15 @@ recovery-equivalence as a property test.
   verified, both sequential and seeked; a no-op analyzer sweep records
   provenance and survives bare-NAS recovery.
 - **M3 — "The NAS gets smaller"** (features on that platform):
-  residency planner + eviction (D21/D25/D27), **aggregation (D36,
-  still NFS-bench-gated)**, FastCDC chunking, TorrentZip + wild-zip
-  rebuild discovery (D24), 7z/rar input, ECM. First real wasm
-  transforms in anger.
+  residency planner + eviction (D21/D25/D27) — *shipped 2026-07-07*;
+  FastCDC chunking — *shipped* (analyzer through the fixpoint;
+  cross-image dedup + evict + verified serving proven end to end);
+  wild-zip rebuild *discovery* — *skeleton shipped* (miniz trial
+  recompression with provenance, no rebuild recipes until the
+  `xf-deflate` wasm component lands); **remaining**: the `xf-deflate`
+  component + recipe minting, TorrentZip (needs a zlib-exact
+  compressor — research owed), **aggregation (D36, still
+  NFS-bench-gated — bench machine unavailable)**, 7z/rar input, ECM.
 - **M4 — "The NAS becomes useful"**: views/snapshots/profiles (D33),
   1G1R + retool clonelists, MAME merge-mode rendering + device_ref
   closure + softlist fidelity (D31 deferred set), HTTP/WebDAV, SD sync,
