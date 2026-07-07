@@ -1,6 +1,6 @@
 # Open questions & active research
 
-Design passes R1–R8 complete; core design ratified through D39. Docs
+Design passes R1–R8 complete; decisions ratified through D52. Docs
 00–90 are the record.
 
 ## Flagged for ruling (raised 2026-07-07, M2/M3 build session)
@@ -129,29 +129,36 @@ Design passes R1–R8 complete; core design ratified through D39. Docs
 
 ## Next sessions (pick up here)
 
-- ~~Repo bootstrap~~ done 2026-07-03: flake (crane + rust-overlay,
-  rust-flake pattern) + host workspace (6 crates) + transforms workspace
-  (wit draft + xf-reference) + checks (build/clippy/fmt/nextest × 2
-  workspaces + wasm lane). 8 unit tests green.
-- ~~WIT world sketch~~ drafted at transforms/wit/transform.wit — marked
-  DRAFT; frozen by M1 prototype 3 (determinism PoC).
-- ~~CLI surface draft~~ docs/85-cli.md.
-- **M1 prototype 1** (NFS store benchmark): DEFERRED — current dev
-  machine isn't the NFS-bearing one. Shard fanout stays provisional
-  (2×256); run the benchmark (spec in 90-roadmap.md) before declaring the
-  on-disk format stable.
-- **M1 prototype 2** (in progress): recipe canonical-CBOR codec +
-  assemble executor + multi-hash ingest throughput.
-- API shape for M5 (axum routes ↔ Svelte, codegen via datboi-api crate) —
-  can wait until M4 wraps (post-D50 numbering).
-- ~~transform@2 streaming world~~ **FROZEN 2026-07-07** (D51 status):
-  executor landed (datboi-exec), full-size exit test green, D49
-  quarantine machinery integration-tested against a planted seek bug.
-- **M3 next chunks**: xf-deflate wasm component (unblocks wild-zip
-  rebuild recipes from the trial analyzer's positives), ECM analyzer,
-  7z/rar ingest, aggregation (NFS-bench-gated). Eviction + FastCDC
-  chunking + trial-recompression discovery shipped 2026-07-07.
+**Position as of 2026-07-07**: M1 complete (additive ingest+audit,
+recovery drill in CI). **M2 complete** — transform@2 FROZEN, streaming
+executor (datboi-exec: replay licensing, spill rule, serve_range with
+D49 output-bao verify + seek quarantine), obao machinery (D52),
+fixpoint skeleton (provenance incl. negatives, snapshot batches,
+recovery drill green), full-size exit test passed (3.9 GiB member,
+bounded memory). **M3 partial** — shipped: eviction + residency
+planner (evict_covered), FastCDC ChunkAnalyzer (dedup→evict→serve
+proven e2e), deflate-trial discovery analyzer (provenance only), cache
+migration ladder. CLI: ingest/dat/audit/export/recover/snapshot/
+scrub/status/sweep/evict/materialize.
+
+Priority order:
+
+1. **preflate spike → ruling** (see "Deflate rebuild" above): verify
+   preflate-rs builds for wasm32-unknown-unknown under the empty
+   linker; measure corrections on a TorrentZip corpus; then rule, mint
+   xf-preflate (@2 world), and replace the deflate-trial analyzer's
+   match-hunting with preflate splitting. This is the wild-zip shrink
+   unlock.
+2. **Quarantine attribution refinement** (work item above; small).
+3. **Fast recovery / metadata-only rebuild** (work item above;
+   parallelism tuning wants the M1 NFS bench, but the structure can
+   land first).
+4. Remaining M3 analyzers: ECM, 7z/rar ingest.
+5. **M1 NFS store benchmark** — still DEFERRED (dev machine isn't the
+   NFS-bearing one); gates aggregation (D36), freezes shard fanout,
+   tunes the recovery walk.
+6. Rule the pended D49 affine carve-out no later than M4 views work.
 
 ## Resolved
 
-See [decisions.md](decisions.md) (D1–D50).
+See [decisions.md](decisions.md) (D1–D52).
