@@ -433,3 +433,20 @@ consumed).
 *Rejected:* inline alias table (fat permanent garbage), no aliases in
 snapshot (amends D22, makes future fast-recovery impossible), unsigned
 snapshots (recovery root must be authenticated).
+
+## D44 — CHD header matches grade as `probable` (2026-07-06)
+
+M1 reads CHD v5 headers only (no decompression): the internal sha1 that
+MAME disk claims reference is a *self-attestation* by whatever wrote the
+file. Ruled: header matches surface as **probable**, the same bucket as
+crc+size-only evidence — audits over disk-bearing sets stay "incomplete"
+until a decompressing verify exists (M2 chdman-port component upgrades
+matches to have-verified). Mechanism: declared sha1s live in a separate
+alias namespace (`AliasAlgo::ChdSha1` — they must never answer real sha1
+lookups), and unification links them at `BASIS_DECLARED`, below
+crc+size. *Overruled objection (assistant recommended have-claimed):*
+treating the embedded chdman attestation as claim-grade would let CHD
+sets reach "complete" in M1 and matches what other rom managers do; the
+ruling favors strictness — a truncated CHD with an intact header must
+not audit as have. Unsupported CHD versions (v1–v4) are stored as opaque
+bytes and reported.

@@ -4,6 +4,7 @@
 //! losslessly into the canonical Entry/RomClaim model; unknown attributes
 //! are preserved in attrs maps.
 
+pub mod chd;
 pub mod cmpro;
 pub mod listxml;
 pub mod logiqx;

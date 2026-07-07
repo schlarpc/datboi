@@ -518,3 +518,48 @@ fn dat_diff_categories() {
         .code(0)
         .stdout(predicate::str::contains("no changes"));
 }
+
+/// CHD v5 header audit (D44): a stored .chd whose header declares the disk
+/// claim's internal sha1 audits as `probable` — evidence, never
+/// have-verified, because nothing decompressed the payload to check the
+/// declaration.
+#[test]
+fn chd_header_match_is_probable() {
+    let u = Universe::new();
+    fs::create_dir_all(u.src()).unwrap();
+
+    // A fake v5 CHD: real header, garbage payload. The declared internal
+    // sha1 is what the dat references; the file's own hashes match nothing.
+    let internal_sha1 = [0xCD; 20];
+    let mut chd = datboi_formats::chd::synth_v5(1 << 20, [0xAB; 20], internal_sha1);
+    chd.extend_from_slice(&vec![0x5A; 4096]);
+    fs::write(u.src().join("game.chd"), &chd).unwrap();
+    u.cmd().arg("ingest").arg(u.src()).assert().success();
+
+    let dat_path = u.root.path().join("disks.dat");
+    fs::write(
+        &dat_path,
+        dat_xml(
+            "disks",
+            &format!(
+                r#"<game name="DiskGame"><description>DiskGame</description><disk name="game" sha1="{}"/></game>"#,
+                hex(&internal_sha1),
+            ),
+        ),
+    )
+    .unwrap();
+    u.cmd()
+        .args(["dat", "import"])
+        .arg(&dat_path)
+        .args(["--provider", "test", "--system", "disks"])
+        .assert()
+        .success();
+
+    let (audit, code) = audit_json(&u, "test/disks");
+    assert_eq!(code, Some(1), "probable is not complete (D39)");
+    let t = &audit["totals"];
+    assert_eq!(t["required"], 1);
+    assert_eq!(t["probable"], 1, "header match must grade as probable");
+    assert_eq!(t["have_verified"], 0);
+    assert_eq!(t["missing"], 0);
+}

@@ -104,6 +104,8 @@ pub struct IngestReport {
     pub files_unchanged: usize,
     pub files_stored: usize,
     pub files_already_present: usize,
+    /// CHD v5 files whose declared internal sha1 was recorded.
+    pub chd_v5: usize,
     pub members_claimed: usize,
     pub detector_hits: usize,
     /// Files over `skipper_cap` that were not detector-evaluated.
@@ -216,9 +218,13 @@ impl<'a> Ingester<'a> {
             .store
             .get(StoreNs::Data, &hash)?
             .expect("just published");
-        let mut head = [0u8; 4];
+        // One head read serves both container sniffs (zip magic is 4 bytes,
+        // a CHD v5 header is 124).
+        let mut head = [0u8; datboi_formats::chd::CHD_V5_HEADER_LEN];
         let head_len = read_head(&mut blob, &mut head).map_err(|e| IngestError::io(path, e))?;
-        if zip::looks_like_zip(&head[..head_len]) {
+        if let Some(chd) = datboi_formats::chd::parse_header(&head[..head_len]) {
+            self.process_chd(path, blob_id, &chd, report)?;
+        } else if zip::looks_like_zip(&head[..head_len]) {
             if let Err(e) = self.process_zip(path, &hash, blob_id, &mut blob, report) {
                 report.errors.push((path.to_owned(), e.to_string()));
             }
@@ -242,6 +248,37 @@ impl<'a> Ingester<'a> {
     }
 
     /// Claim every supported member of a stored zip container.
+    /// CHD v5: record the header's declared internal sha1 (the identity
+    /// MAME disk claims reference). Header-only — the declaration grades as
+    /// `probable` in audit (D44) until a decompressing verify exists (M2).
+    fn process_chd(
+        &mut self,
+        path: &Path,
+        blob_id: i64,
+        chd: &datboi_formats::chd::ChdHeader,
+        report: &mut IngestReport,
+    ) -> Result<(), IngestError> {
+        match chd {
+            datboi_formats::chd::ChdHeader::V5(v5) => {
+                self.db.insert_declared_chd_sha1(blob_id, &v5.sha1)?;
+                report.chd_v5 += 1;
+                if v5.has_parent() {
+                    report.notes.push(format!(
+                        "{}: delta CHD (has a parent); recorded, but standalone rebuild is impossible",
+                        path.display()
+                    ));
+                }
+            }
+            datboi_formats::chd::ChdHeader::Unsupported { version } => {
+                report.notes.push(format!(
+                    "{}: CHD v{version} header not supported (v5 only); stored as opaque bytes",
+                    path.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn process_zip(
         &mut self,
         path: &Path,
@@ -630,7 +667,7 @@ impl Read for Window<'_> {
     }
 }
 
-fn read_head(file: &mut File, head: &mut [u8; 4]) -> std::io::Result<usize> {
+fn read_head(file: &mut File, head: &mut [u8]) -> std::io::Result<usize> {
     let mut filled = 0;
     while filled < head.len() {
         match file.read(&mut head[filled..]) {

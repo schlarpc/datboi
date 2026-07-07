@@ -21,6 +21,11 @@ pub const BASIS_SHA256: i64 = 3;
 pub const BASIS_SHA1: i64 = 2;
 pub const BASIS_MD5: i64 = 1;
 pub const BASIS_CRC_SIZE: i64 = 0;
+/// A container header's self-declaration (CHD internal sha1, D44):
+/// evidence about content we never hashed ourselves. Grades as `probable`
+/// in rollups, exactly like crc+size — the declaration is checkable only
+/// by decompressing (M2).
+pub const BASIS_DECLARED: i64 = -1;
 
 /// The partial hash tuple of a claim or identity row.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -313,6 +318,21 @@ pub fn link_identities_to_blobs(db: &Db, identity_ids: &[i64]) -> Result<(), Cat
                     "INSERT OR IGNORE INTO identity_blob (identity_id, blob_id, basis)
                      VALUES (?1, ?2, ?3)",
                     params![identity_id, blob_id, strength],
+                )?;
+            }
+        }
+
+        // CHD declared-sha1 pass (D44): a sizeless sha1-bearing identity is
+        // the shape of a disk claim; link any stored CHD whose header
+        // declares that sha1, at declared (probable) grade. `blob_matches`
+        // is deliberately skipped — the declaration describes decompressed
+        // content, so the blob's real alias tuple can never corroborate it.
+        if let (Some(sha1), None) = (&tuple.sha1, &tuple.size) {
+            for blob_id in db.alias_lookup(AliasAlgo::ChdSha1, sha1)? {
+                tx.execute(
+                    "INSERT OR IGNORE INTO identity_blob (identity_id, blob_id, basis)
+                     VALUES (?1, ?2, ?3)",
+                    params![identity_id, blob_id, BASIS_DECLARED],
                 )?;
             }
         }

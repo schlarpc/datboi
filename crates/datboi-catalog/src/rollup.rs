@@ -63,7 +63,7 @@ pub fn refresh_rollups(db: &mut Db, computed_at: i64) -> Result<(), CatalogError
                       THEN 3
                     WHEN ph.blob_id IS NOT NULL
                       THEN 2
-                    WHEN ib.basis = 0 AND (b.residency = 0
+                    WHEN ib.basis <= 0 AND (b.residency = 0
                          OR b.blob_id IN (SELECT blob_id FROM temp.g_verified))
                       THEN 1
                     ELSE 0

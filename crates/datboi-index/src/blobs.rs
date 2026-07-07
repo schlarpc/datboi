@@ -86,6 +86,21 @@ impl Db {
         Ok(())
     }
 
+    /// Record a CHD header's declared internal sha1 for a stored blob
+    /// (AliasAlgo::ChdSha1 — see the enum docs for why this is a separate
+    /// namespace from real sha1 aliases).
+    pub fn insert_declared_chd_sha1(
+        &self,
+        blob_id: i64,
+        sha1: &[u8; 20],
+    ) -> Result<(), IndexError> {
+        self.cache().execute(
+            "INSERT OR IGNORE INTO alias (algo, digest, blob_id) VALUES (?1, ?2, ?3)",
+            params![AliasAlgo::ChdSha1.code(), sha1.as_slice(), blob_id],
+        )?;
+        Ok(())
+    }
+
     /// All blobs a dat-hash digest resolves to (multi-hit tolerant; the
     /// caller matches on the dat's full hash set, D2).
     pub fn alias_lookup(&self, algo: AliasAlgo, digest: &[u8]) -> Result<Vec<i64>, IndexError> {

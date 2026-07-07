@@ -89,11 +89,17 @@ db_enum! {
 
 db_enum! {
     /// Alias hash algorithm (D22). blake3 is never an alias — it is the key.
+    /// `ChdSha1` is a separate namespace on purpose: it records what a CHD
+    /// v5 *header declares* its internal sha1 to be — an attestation about
+    /// decompressed content, not a hash of the blob's bytes — so it must
+    /// never answer a real sha1 lookup (D44: declared evidence caps at
+    /// `probable`).
     AliasAlgo {
         Crc32 = 1,
         Md5 = 2,
         Sha1 = 3,
         Sha256 = 4,
+        ChdSha1 = 5,
     }
 }
 
