@@ -100,8 +100,10 @@ recovery-equivalence as a property test.
   (D14 stage 2), holdings channels + peer-availability audit state (D34),
   tickets.
 - **M7+ — frontier**: platform rebuild long tail (CHD/RVZ/NSZ, D12 key
-  flows), read-only SMB1 server (D32), curated channels, waddup ZKP
-  swarms, browser emulator cores.
+  flows; 7z-LZMA pinned-encoder param discovery rides here — same
+  C-to-wasm component lane, design recorded in open-questions),
+  read-only SMB1 server (D32), curated channels, waddup ZKP swarms,
+  browser emulator cores.
 
 Ordering rationale: risk-retirement × usefulness-to-the-single-NAS-user;
 p2p is late because it needs store + recipes + views to be worth sharing.

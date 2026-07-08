@@ -145,31 +145,27 @@ ingest, aggregation (NFS-bench-gated).
 Priority order:
 
 1. Remaining M3 analyzer: ECM.
-2. **7z rebuild via pinned-encoder parameter discovery** (research
-   CONCLUDED 2026-07-07; design owed, no D-number yet). Findings: NO
-   preflate-analog exists for LZMA anywhere (incl. the repack scene —
-   xtool does zstd/oodle/lz4 but not LZMA; precomp has no xz support;
-   Shelwien's lzmarec keeps the LZ token stream, never plaintext).
-   Corrections fundamentally don't transfer: the adaptive range coder
-   makes divergence global, so corrections would mean predicting the
-   optimal parse exactly = reimplementing the encoder. BUT parameter
-   discovery is VIABLE for LZMA in a way it never was for zlib:
-   encoding is deterministic per encoder-version+params and stable
-   across multi-year version families (SDK 9.04–17.01 byte-identical
-   to each other; 18.06–21.x likewise — encode.su thread 4187), and
-   headers already carry lc/lp/pb/dict. Candidate design: keep the 7z
-   header blob literal, decode folder payloads to plaintext, re-encode
-   against a small pinned matrix (2–3 vendored encoder families ×
-   {fast,normal} × fb ∈ {32,64,273} × LZMA2 chunk layout) with
-   incremental-compare early abort; hit → recipe pins
-   (encoder-id, params) — a dozen bytes; miss → container stays
-   literal. No diff-patch middle path (xtool removed theirs: diffs are
-   bimodal). PPMd-in-7z and bzip2-in-7z are near-free bonuses (frozen
-   implementations, no parse decisions). Rust angle: wrap the vendored
-   C encoders (7-Zip SDK public domain / liblzma 0BSD) — bit-compat is
-   the requirement and the C code is the spec. Does NOT contradict
-   D53's rejection of param discovery for zlib: zlib's churn is
-   per-build; LZMA's stability is per-era.
+2. **7z rebuild via pinned-encoder parameter discovery — DEFERRED to
+   the M7 rebuild long tail** (ruled 2026-07-07). Research concluded:
+   no preflate-analog exists for LZMA anywhere; corrections can't
+   transfer (adaptive range coder makes divergence global — predicting
+   the optimal parse exactly IS the encoder); but param discovery is
+   viable in a way it never was for zlib — LZMA encoding is
+   deterministic per encoder-version+params and byte-stable across
+   multi-year version families (SDK 9.04–17.01 identical; 18.06–21.x
+   identical; encode.su thread 4187). Candidate design (recorded for
+   M7): header blob literal; re-encode plaintext against a small
+   pinned matrix (2–3 vendored encoder families × {fast,normal} × fb ∈
+   {32,64,273} × LZMA2 chunk layout) with incremental-compare early
+   abort; hit → recipe pins (encoder-id, params); miss → literal; no
+   diff-patch middle path. PPMd/bzip2-in-7z near-free bonuses. Needs a
+   C-to-wasm lane (7-Zip SDK compiled to wasm32-unknown-unknown) — the
+   same infrastructure M7's CHD/RVZ/NSZ work wants, which is why it
+   slots there. Deferral is structurally free: the fixpoint re-covers
+   today's corpus whenever the analyzer lands. Interim hedges: the
+   `status` literal-only counter (shipped) sizes the tax; an opt-in
+   drop-containers-without-routes policy is a future discussion (byte-
+   destroying, so never a default).
 3. **RAR rebuild: confirmed infeasible, permanently literal.** No
    recompressor exists for v3/v5; the encoder is closed and the unrar
    license forbids using its source to recreate compression. The

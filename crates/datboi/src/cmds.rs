@@ -1298,6 +1298,19 @@ pub fn status(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
     for t in tables {
         counts.push((t, table_count(t)?));
     }
+    // Literal-only bytes: resident data with no non-failed rebuild route.
+    // The number that sizes the "can't shrink this yet" tax (7z/rar
+    // containers, unanalyzed blobs) — watch it fall as analyzers land.
+    let literal_only: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(b.size), 0) FROM blob b
+         WHERE b.namespace = 0 AND b.residency = 0
+           AND NOT EXISTS (
+             SELECT 1 FROM recipe_output ro
+             JOIN recipe r ON r.recipe_id = ro.recipe_id
+             WHERE ro.blob_id = b.blob_id AND r.verify != 2)",
+        [],
+        |r| r.get(0),
+    )?;
     let mut sources: Vec<(String, String, Option<i64>)> = Vec::new();
     let mut stmt = conn.prepare(
         "SELECT s.provider, s.system, MAX(r.imported_at)
@@ -1316,6 +1329,7 @@ pub fn status(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
                     .map(|(ns, c, b)| json!({"namespace": ns.dir(), "blobs": c, "bytes": b}))
                     .collect::<Vec<_>>(),
                 "db": counts.iter().map(|(t, c)| json!({"table": t, "rows": c})).collect::<Vec<_>>(),
+                "literal_only_bytes": literal_only,
                 "sources": sources.iter()
                     .map(|(p, s, at)| json!({"provider": p, "system": s, "last_import": at}))
                     .collect::<Vec<_>>(),
@@ -1328,6 +1342,7 @@ pub fn status(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
         for (t, c) in &counts {
             println!("{t:<17} {c:>8} rows");
         }
+        println!("literal-only      {literal_only:>8} bytes (no rebuild route yet)");
         for (p, s, at) in &sources {
             println!(
                 "{p}/{s}  last import {}",
