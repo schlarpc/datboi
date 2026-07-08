@@ -565,7 +565,10 @@ pub(crate) fn mint_recipe(
     }
     let recipe_id = db.insert_recipe(&NewRecipe {
         blob_id: recipe_blob_id,
-        op_kind: OpKind::Builtin,
+        op_kind: match recipe.op {
+            datboi_core::recipe::Op::Builtin { .. } => OpKind::Builtin,
+            datboi_core::recipe::Op::Wasm { .. } => OpKind::Wasm,
+        },
         op_name,
         seek_class: seek,
         source: RecipeSource::LocalIngest,

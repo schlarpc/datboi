@@ -5,7 +5,7 @@ use std::io::Write as _;
 
 use datboi_core::hash::Blake3;
 use datboi_index::{AnalysisOutcome, Db, Namespace as IndexNs, Residency};
-use datboi_ingest::analyzers::DeflateTrialAnalyzer;
+use datboi_ingest::analyzers::PreflateZipAnalyzer;
 use datboi_ingest::refine::{Analyzer, run_sweep};
 use datboi_store_fs::{Namespace as StoreNs, Store};
 use flate2::Compression;
@@ -87,34 +87,34 @@ fn zip_with_member(payload: &[u8], compressed: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn deflate_trial_discovers_rebuildability_and_records_negatives() {
+fn preflate_split_mints_rebuild_recipes_and_records_negatives() {
     let (_dir, store, mut db) = world();
-    let payload: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    let payload: Vec<u8> = (0..100_000u32)
+        .map(|i| (i % 251) as u8 ^ (i / 997) as u8)
+        .collect();
 
-    // A zip whose member WAS produced by our deflate (miniz level 6):
-    // trial must rediscover it.
-    let ours = {
+    // Any zlib-family deflate splits — the compressor no longer needs to
+    // be ours (D53). miniz level 6 here; production streams are wild.
+    let compressed = {
         let mut enc = DeflateEncoder::new(Vec::new(), Compression::new(6));
         enc.write_all(&payload).expect("deflate");
         enc.finish().expect("finish")
     };
-    let (rebuildable_hash, rebuildable_id) = put(&store, &db, &zip_with_member(&payload, &ours));
+    let (rebuildable_hash, rebuildable_id) = put(
+        &store,
+        &db,
+        &zip_with_member(&payload, &compressed),
+    );
 
-    // A zip whose member deflate stream came from "somewhere else": a
-    // valid stream miniz won't emit (stored/no-compression deflate
-    // blocks). Trial must record the negative.
-    let foreign = {
-        let mut enc = DeflateEncoder::new(Vec::new(), Compression::none());
-        enc.write_all(&payload).expect("deflate");
-        enc.finish().expect("finish")
-    };
-    assert_ne!(foreign, ours);
-    let (literal_hash, literal_id) = put(&store, &db, &zip_with_member(&payload, &foreign));
+    // A zip with a truncated member stream: inflates up to a point, then
+    // the split fails deterministically — the negative D48 records.
+    let truncated = &compressed[..compressed.len() - 4];
+    let (literal_hash, literal_id) = put(&store, &db, &zip_with_member(&payload, truncated));
 
     // A non-zip blob: negative, cheap.
     let (_plain_hash, plain_id) = put(&store, &db, b"just bytes, not a container");
 
-    let mut analyzer = DeflateTrialAnalyzer;
+    let mut analyzer = PreflateZipAnalyzer::new();
     let report = run_sweep(&mut db, &store, &mut analyzer, 1000).expect("sweep");
     assert_eq!(report.errors.len(), 0, "{:?}", report.errors);
     assert_eq!(report.analyzed, 3);
@@ -125,7 +125,7 @@ fn deflate_trial_discovers_rebuildability_and_records_negatives() {
     assert_eq!(
         db.analysis_outcome(rebuildable_id, &id).expect("q"),
         Some(AnalysisOutcome::Positive),
-        "{rebuildable_hash} was made by our deflate — rediscovered"
+        "{rebuildable_hash} splits: recipes minted"
     );
     assert_eq!(
         db.analysis_outcome(literal_id, &id).expect("q"),
@@ -137,11 +137,36 @@ fn deflate_trial_discovers_rebuildability_and_records_negatives() {
         Some(AnalysisOutcome::Negative)
     );
 
-    // Level-none trick note: Compression::none() emits stored deflate
-    // blocks — a legal stream our LEVELS search never reproduces, which
-    // is exactly the "foreign compressor" shape.
+    // The split's products are all in the store: member plaintext (alias-
+    // indexed for dat audit), the corrections blob, the skeleton, and the
+    // pinned component itself.
+    let plaintext_hash = Blake3::compute(&payload);
+    assert!(store.has(StoreNs::Data, &plaintext_hash), "plaintext stored");
+    assert!(
+        store.has(StoreNs::Data, &PreflateZipAnalyzer::component_hash()),
+        "component published as an ordinary CAS blob"
+    );
+    let plaintext_row = db
+        .blob_by_hash(&plaintext_hash)
+        .expect("q")
+        .expect("plaintext indexed");
+    assert_eq!(plaintext_row.residency, Residency::Resident);
 
-    // Nothing re-pays: the next sweep is a no-op.
+    // The container's rebuild route exists: an assemble recipe claims it.
+    let container_row = db
+        .blob_by_hash(&rebuildable_hash)
+        .expect("q")
+        .expect("container row");
+    let recipes = db.recipes_for_output(container_row.blob_id).expect("q");
+    assert!(
+        !recipes.is_empty(),
+        "container is recipe-covered after the sweep"
+    );
+
+    // A second sweep sees only the new products; none are zips, so all
+    // negative — and a third finds nothing (the fixpoint at rest).
     let again = run_sweep(&mut db, &store, &mut analyzer, 1000).expect("sweep");
-    assert_eq!(again.analyzed, 0, "fixpoint at rest");
+    assert_eq!(again.positive, 0, "no zips among split products");
+    let rest = run_sweep(&mut db, &store, &mut analyzer, 1000).expect("sweep");
+    assert_eq!(rest.analyzed, 0, "fixpoint at rest");
 }

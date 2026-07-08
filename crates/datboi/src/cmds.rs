@@ -641,12 +641,15 @@ pub fn evict(
     let exec = datboi_exec::Executor::new(&env.store, datboi_exec::ExecConfig::default())?;
     if dry_run {
         let mut evictable: Vec<(String, u64)> = Vec::new();
-        let mut blocked: u64 = 0;
+        let mut blocked: Vec<(String, Vec<String>)> = Vec::new();
         for candidate in env.db.list_eviction_candidates()? {
             if env.db.is_evictable(candidate.blob_id)? {
                 evictable.push((candidate.hash.to_hex(), candidate.size.unwrap_or(0)));
             } else {
-                blocked += 1;
+                blocked.push((
+                    candidate.hash.to_hex(),
+                    exec.explain_eviction(&env.db, &candidate.hash)?,
+                ));
             }
         }
         let reclaimable: u64 = evictable.iter().map(|(_, s)| s).sum();
@@ -657,20 +660,36 @@ pub fn evict(
                     "dry_run": true,
                     "evictable": evictable.len(),
                     "reclaimable_bytes": reclaimable,
-                    "blocked": blocked,
+                    "blocked": blocked.iter().map(|(h, why)| json!({
+                        "hash": h,
+                        "reasons": why,
+                    })).collect::<Vec<_>>(),
                     "blobs": evictable.iter().map(|(h, s)| json!({"hash": h, "bytes": s})).collect::<Vec<_>>(),
                 })
             );
         } else {
             println!(
-                "dry run: {} blob(s) evictable, {reclaimable} byte(s) reclaimable, {blocked} candidate(s) blocked by grounding",
-                evictable.len()
+                "dry run: {} blob(s) evictable, {reclaimable} byte(s) reclaimable, {} candidate(s) blocked",
+                evictable.len(),
+                blocked.len()
             );
+            for (hash, reasons) in &blocked {
+                println!("  blocked {hash}:");
+                for reason in reasons {
+                    println!("    - {reason}");
+                }
+            }
         }
         return Ok(ExitCode::SUCCESS);
     }
 
     let report = exec.evict_covered(&env.db, target_bytes, license)?;
+    // Every blocked blob gets its reasons spelled out — "0 evicted" with
+    // no explanation is how a residency planner loses trust.
+    let mut blocked: Vec<(String, Vec<String>)> = Vec::with_capacity(report.blocked.len());
+    for (hash, _why) in &report.blocked {
+        blocked.push((hash.to_hex(), exec.explain_eviction(&env.db, hash)?));
+    }
     if json {
         println!(
             "{}",
@@ -678,9 +697,9 @@ pub fn evict(
                 "evicted": report.evicted,
                 "bytes_reclaimed": report.bytes_reclaimed,
                 "replays": report.replays,
-                "blocked": report.blocked.iter().map(|(h, why)| json!({
-                    "hash": h.to_hex(),
-                    "reason": format!("{why:?}"),
+                "blocked": blocked.iter().map(|(h, why)| json!({
+                    "hash": h,
+                    "reasons": why,
                 })).collect::<Vec<_>>(),
             })
         );
@@ -690,8 +709,14 @@ pub fn evict(
             report.evicted,
             report.bytes_reclaimed,
             report.replays,
-            report.blocked.len()
+            blocked.len()
         );
+        for (hash, reasons) in &blocked {
+            println!("  blocked {hash}:");
+            for reason in reasons {
+                println!("    - {reason}");
+            }
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -727,7 +752,7 @@ pub fn sweep(
     let mut analyzer: Box<dyn datboi_ingest::refine::Analyzer> = match analyzer_name {
         "noop" | "noop/1" => Box::new(datboi_ingest::refine::NoopAnalyzer),
         "chunk" | "fastcdc" => Box::new(datboi_ingest::analyzers::ChunkAnalyzer),
-        "deflate-trial" => Box::new(datboi_ingest::analyzers::DeflateTrialAnalyzer),
+        "preflate" | "preflate-split" => Box::new(datboi_ingest::analyzers::PreflateZipAnalyzer::new()),
         other => {
             anyhow::bail!("unknown analyzer {other:?} (available: noop, chunk, deflate-trial)")
         }

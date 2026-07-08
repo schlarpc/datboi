@@ -163,15 +163,98 @@ impl<'s> Executor<'s> {
                 }
             }
             if !licensed {
+                report.blocked.push((hash, Blocked::NeedsReplay));
                 continue;
             }
-            if let EvictOutcome::Evicted { bytes_reclaimed } = self.evict(db, &hash)? {
-                report.evicted += 1;
-                report.bytes_reclaimed += bytes_reclaimed;
-                resident = resident.saturating_sub(bytes_reclaimed);
+            match self.evict(db, &hash)? {
+                EvictOutcome::Evicted { bytes_reclaimed } => {
+                    report.evicted += 1;
+                    report.bytes_reclaimed += bytes_reclaimed;
+                    resident = resident.saturating_sub(bytes_reclaimed);
+                }
+                // Licensed and STILL blocked: this must be visible, not
+                // silently skipped (a replay ran and nothing happened —
+                // exactly the report a human needs to see explained).
+                EvictOutcome::Blocked(why) => report.blocked.push((hash, why)),
             }
         }
         Ok(report)
+    }
+
+    /// Human-readable account of why `hash` won't evict right now: which
+    /// routes exist, their license states, and — for licensed routes —
+    /// the first input whose own grounding fails. The normie-facing
+    /// counterpart of [`Db::is_evictable`]'s bare boolean.
+    ///
+    /// # Errors
+    /// Index failures only; unknown blobs explain themselves.
+    pub fn explain_eviction(&self, db: &Db, hash: &Blake3) -> Result<Vec<String>, ExecError> {
+        let Some(row) = db.blob_by_hash(hash)? else {
+            return Ok(vec!["unknown blob: nothing indexed under this hash".into()]);
+        };
+        if row.residency != Residency::Resident {
+            return Ok(vec![format!(
+                "not resident ({:?}): there are no local bytes to evict",
+                row.residency
+            )]);
+        }
+        let recipes = db.recipes_for_output(row.blob_id)?;
+        if recipes.is_empty() {
+            return Ok(vec![
+                "no recipe claims these bytes: nothing could rebuild them after a drop".into(),
+            ]);
+        }
+        if db.is_evictable(row.blob_id)? {
+            return Ok(vec!["evictable now: a licensed route grounds it".into()]);
+        }
+        let grounded = db.grounded_set()?;
+        let mut lines = Vec::new();
+        for recipe in &recipes {
+            match recipe.verify {
+                VerifyState::Failed => lines.push(format!(
+                    "route via {} recipe #{}: poisoned (a replay produced wrong bytes); it will never license",
+                    recipe.op_name, recipe.recipe_id
+                )),
+                VerifyState::Verified => lines.push(format!(
+                    "route via {} recipe #{}: not yet licensed — run a replay (evict --license does this) to prove it rebuilds on this host",
+                    recipe.op_name, recipe.recipe_id
+                )),
+                VerifyState::ReplayedLocal => {
+                    // Licensed but the chain below it doesn't ground:
+                    // name the offending input(s).
+                    let mut offenders = Vec::new();
+                    for input in db.recipe_inputs(recipe.recipe_id)? {
+                        if !grounded.contains(&input.blob_id) {
+                            offenders.push(format!(
+                                "input {}{} {} ({:?})",
+                                input.position,
+                                input.role.map(|r| format!(" [{r}]")).unwrap_or_default(),
+                                input.hash.to_hex(),
+                                input.residency
+                            ));
+                        }
+                    }
+                    if offenders.is_empty() {
+                        lines.push(format!(
+                            "route via {} recipe #{}: licensed, but dropping this literal would break its own grounding (mutually-dependent recipes, D21)",
+                            recipe.op_name, recipe.recipe_id
+                        ));
+                    } else {
+                        lines.push(format!(
+                            "route via {} recipe #{}: licensed, but these inputs are not rebuildable without the evicted bytes: {}",
+                            recipe.op_name,
+                            recipe.recipe_id,
+                            offenders.join(", ")
+                        ));
+                    }
+                }
+                VerifyState::Pending => lines.push(format!(
+                    "route via {} recipe #{}: pending — this claim has never been verified; replay it first",
+                    recipe.op_name, recipe.recipe_id
+                )),
+            }
+        }
+        Ok(lines)
     }
 }
 

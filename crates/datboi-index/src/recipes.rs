@@ -23,6 +23,17 @@ pub struct NewRecipe<'a> {
     pub outputs: &'a [(u32, i64, u64, Option<&'a str>)],
 }
 
+/// One input of a recipe, joined with its blob row — the explainability
+/// projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecipeInputRow {
+    pub position: u32,
+    pub blob_id: i64,
+    pub hash: Blake3,
+    pub residency: crate::Residency,
+    pub role: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecipeRow {
     pub recipe_id: i64,
@@ -107,6 +118,41 @@ impl Db {
                 seek_class: SeekClass::from_code(seek_class)?,
                 verify: VerifyState::from_code(verify)?,
                 source: RecipeSource::from_code(source)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// A recipe's inputs with each blob's hash, residency, and role —
+    /// the explainability projection ("why won't this route license?").
+    pub fn recipe_inputs(&self, recipe_id: i64) -> Result<Vec<RecipeInputRow>, IndexError> {
+        let mut stmt = self.cache().prepare_cached(
+            "SELECT ri.position, ri.blob_id, b.hash, b.residency, ri.role
+             FROM recipe_input ri JOIN blob b ON b.blob_id = ri.blob_id
+             WHERE ri.recipe_id = ?1
+             ORDER BY ri.position",
+        )?;
+        let rows = stmt.query_map(params![recipe_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, [u8; 32]>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (position, blob_id, hash, residency, role) = row?;
+            out.push(RecipeInputRow {
+                position: u32::try_from(position).map_err(|_| IndexError::Decode {
+                    what: "input position",
+                    code: position,
+                })?,
+                blob_id,
+                hash: Blake3(hash),
+                residency: crate::Residency::from_code(residency)?,
+                role,
             });
         }
         Ok(out)

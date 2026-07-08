@@ -47,7 +47,19 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
   matters: upstream issue / patch the fixed 4096-chain ceiling in
   complevel_estimator, or a fallback corrections codec. Revisit when
   wild-corpus hit rates are measurable (M3 sweep telemetry).
-- **Sequential assemble over opaque children spills today**: the
+- **xf- policy is creeping into core crates** (watch item, raised
+  2026-07-07 during the xf-preflate build-out): the component boundary
+  isolates *replay* (framing format owned by the component hash; the
+  executor knows nothing about preflate), but discovery is native and
+  coupled — datboi-ingest links preflate-rs directly and runs it
+  UNSANDBOXED over wild bytes (the D5 sandbox protects replay only),
+  and the datboi-runtime gate — nominally about the @2 world — now
+  pins a specific component fixture. Consistent with D23 (analyzers
+  are the policy tier) but worth watching: if a third native analyzer
+  dependency lands, consider (a) analyzers-as-wasm-components (the
+  identity convention already anticipates component hashes), (b) a
+  separate conformance test crate for shipped components, (c) at
+  minimum a hardened/fuzzed parsing path for wild containers.
   executor opens assemble children random-access, so a sequential read
   of concat-of-derived (e.g. concat over decompressed members) spills
   each derived child even though pure sequential streaming would do.

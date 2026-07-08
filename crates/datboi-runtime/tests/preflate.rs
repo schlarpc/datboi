@@ -18,7 +18,7 @@ use datboi_runtime::stream::{
 };
 use datboi_runtime::{Limits, RuntimeError, SeekClass};
 
-const COMPONENT: &[u8] = include_bytes!("fixtures/xf_preflate.wasm");
+const COMPONENT: &[u8] = include_bytes!("../../../transforms/dist/xf_preflate.wasm");
 
 /// blake3 of the fixture — the identity a recipe would pin.
 const COMPONENT_BLAKE3: &str = "e6887e76978539632f031d7e4d81be0a6614911c4ca36d0b2c5d662da87fc47b";

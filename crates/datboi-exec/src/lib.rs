@@ -139,6 +139,25 @@ struct OpPlan {
     output_ix: usize,
     outputs: Vec<(Blake3, u64)>,
     children: Vec<Plan>,
+    /// The recipe row this node executes (None for synthetic top-level
+    /// nodes built inside `execute_to_store`, whose id the caller holds).
+    /// A successful parent replay licenses these children too (D25): they
+    /// ran on this host and the parent's claim check transitively pinned
+    /// their outputs.
+    recipe_id: Option<i64>,
+}
+
+impl Plan {
+    fn collect_recipe_ids(&self, out: &mut Vec<i64>) {
+        if let Self::Op(op) = self {
+            if let Some(id) = op.recipe_id {
+                out.push(id);
+            }
+            for child in &op.children {
+                child.collect_recipe_ids(out);
+            }
+        }
+    }
 }
 
 enum OpImpl {
@@ -209,11 +228,30 @@ impl<'s> Executor<'s> {
             return Err(ExecError::Poisoned(recipe_id));
         }
         let recipe = self.load_recipe(db, recipe_id)?;
-        let result = self.execute_to_store(db, &recipe);
+        let mut participants = Vec::new();
+        let result = self.execute_to_store(db, &recipe, &mut participants);
         match result {
             Ok(outputs) => {
                 if row.verify != VerifyState::ReplayedLocal {
                     db.set_verify_state(recipe_id, VerifyState::ReplayedLocal, now_unix(), None)?;
+                }
+                // License the recipes that executed inside this replay
+                // (D25): each ran on this host, and the top-level claim
+                // check transitively verified their outputs — a child
+                // producing wrong bytes cannot yield the parent's hash.
+                for child_id in participants {
+                    if child_id == recipe_id {
+                        continue;
+                    }
+                    let child = db.recipe_by_id(child_id)?;
+                    if child.verify == VerifyState::Verified {
+                        db.set_verify_state(
+                            child_id,
+                            VerifyState::ReplayedLocal,
+                            now_unix(),
+                            None,
+                        )?;
+                    }
                 }
                 for (output, (hash, _)) in recipe.outputs.iter().zip(&outputs) {
                     let id = db.upsert_blob(
@@ -531,6 +569,7 @@ impl<'s> Executor<'s> {
             output_ix,
             outputs: recipe.outputs.iter().map(|o| (o.hash, o.size)).collect(),
             children,
+            recipe_id: Some(recipe_id),
         })))
     }
 
@@ -774,11 +813,14 @@ impl<'s> Executor<'s> {
         &self,
         db: &Db,
         recipe: &Recipe,
+        participants: &mut Vec<i64>,
     ) -> Result<Vec<(Blake3, PutOutcome)>, ExecError> {
         let op = self.resolve_op(recipe)?;
         let mut children = Vec::with_capacity(recipe.inputs.len());
         for input in &recipe.inputs {
-            children.push(self.plan(db, &input.hash, 1, &mut Vec::new())?);
+            let child = self.plan(db, &input.hash, 1, &mut Vec::new())?;
+            child.collect_recipe_ids(participants);
+            children.push(child);
         }
         let outputs: Vec<(Blake3, u64)> = recipe.outputs.iter().map(|o| (o.hash, o.size)).collect();
         match &op {
@@ -793,6 +835,7 @@ impl<'s> Executor<'s> {
                     output_ix: 0,
                     outputs: outputs.clone(),
                     children,
+                    recipe_id: None,
                 };
                 let reader = self.open_builtin_or_v1_sequential(&plan)?;
                 let outcome =
@@ -814,6 +857,7 @@ impl<'s> Executor<'s> {
                     output_ix: 0,
                     outputs: outputs.clone(),
                     children,
+                    recipe_id: None,
                 };
                 let blobs = self.run_wasm1(&plan, component, opname, params)?;
                 let mut results = Vec::with_capacity(outputs.len());
