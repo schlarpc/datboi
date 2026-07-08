@@ -21,7 +21,7 @@ use datboi_runtime::{Limits, RuntimeError, SeekClass};
 const COMPONENT: &[u8] = include_bytes!("../../../transforms/dist/xf_preflate.wasm");
 
 /// blake3 of the fixture — the identity a recipe would pin.
-const COMPONENT_BLAKE3: &str = "2c35595b095eeabbe3d35db0a1f486971b6796592384be8b36a0ab03aa0e418d";
+const COMPONENT_BLAKE3: &str = "07cf20529af4c8d2edfae717409ab2625260ac388a5ce0ccf5b7c37f715edf82";
 
 const MEMBER: &[u8] = include_bytes!("fixtures/preflate_member.deflate");
 const CORRECTIONS: &[u8] = include_bytes!("fixtures/preflate_corrections.bin");

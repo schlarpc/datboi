@@ -106,21 +106,29 @@
       # One stamped component per crate (D54 attribution): identity
       # metadata rides IN the artifact as execution-inert custom sections,
       # and the loader refuses components without it. `revision` is the
-      # crate source's store hash — content-scoped, so unrelated repo
-      # commits cannot churn component bytes.
+      # GIT TREE HASH of the crate source (computed with `git write-tree`
+      # over the build inputs — no .git needed): content-scoped, so
+      # unrelated repo commits cannot churn component bytes, and
+      # verifiable by anyone with git — no nix required:
+      #   git rev-parse <commit>:transforms/<crate>
       transformPackageFor = system: crate:
         let
           craneLib = craneLibFor system;
           pkgs = pkgsFor system;
           args = wasmCrateArgsFor system crate;
           crateToml = builtins.fromTOML (builtins.readFile (./transforms + "/${crate}/Cargo.toml"));
-          srcHash = builtins.substring 11 32 (toString args.src);
           moduleName = builtins.replaceStrings [ "-" ] [ "_" ] crate;
         in
         craneLib.buildPackage (args // {
           cargoArtifacts = craneLib.buildDepsOnly args;
-          nativeBuildInputs = [ pkgs.wasm-tools ];
+          nativeBuildInputs = [ pkgs.wasm-tools pkgs.gitMinimal ];
           installPhaseCommand = ''
+            # Revision = git tree hash of the pristine source (the store
+            # copy, not the build dir — target/ must not leak in).
+            export GIT_DIR="$TMPDIR/rev-git" GIT_INDEX_FILE="$TMPDIR/rev-index"
+            git init -q "$GIT_DIR"
+            git --work-tree=${args.src} add -A
+            tree=$(git write-tree)
             mkdir -p $out/lib
             wasm-tools component new \
               target/wasm32-unknown-unknown/release/${moduleName}.wasm \
@@ -131,7 +139,7 @@
               --authors ${nixpkgs.lib.escapeShellArg (builtins.head crateToml.package.authors)} \
               --licenses ${nixpkgs.lib.escapeShellArg crateToml.package.license} \
               --source "https://github.com/schlarpc/datboi/tree/main/transforms/${crate}" \
-              --revision "src:${srcHash}" \
+              --revision "tree:$tree" \
               -o "$out/lib/${moduleName}.wasm"
           '';
         });

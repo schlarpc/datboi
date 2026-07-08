@@ -690,10 +690,13 @@ flake's install phase (`wasm-tools metadata add`), and the hosts REFUSE
 to load a component missing the minimal set {name, description, source,
 revision}: an anonymous func is opaque and hard to reason about, and a
 pinned hash must always be traceable to what it is and where it came
-from. The `revision` is the crate source's nix store hash (`src:…`),
-NOT a git rev: content-scoped, so unrelated repo commits cannot churn
-component bytes and any commit with the crate unchanged reproduces the
-artifact byte-exactly. **Isolation**: each transform is a standalone
+from. The `revision` is the GIT TREE HASH of the crate source
+(`tree:…`, computed in-derivation with `git write-tree` — no .git
+needed), NOT a commit rev: content-scoped, so unrelated repo commits
+cannot churn component bytes, and — unlike a nix store hash —
+verifiable by anyone with git alone:
+`git rev-parse <commit>:transforms/<crate>` equals the stamp for every
+commit where the crate is unchanged. **Isolation**: each transform is a standalone
 cargo workspace with its own lockfile, built as its own nix derivation
 from exactly {crate dir + frozen ../wit} — ruled after observing a
 sibling's bytes shift through shared dependency resolution (adding
@@ -704,8 +707,10 @@ component is now one directory. Enforcement lives in
 required fields are four known custom sections; no wasm-metadata
 dependency). All four dist/fixture components re-minted and re-pinned;
 the pre-D54 reference-stream build is kept as `unstamped.wasm` for the
-refusal gate. *Rejected:* git-rev stamping (per-commit churn breaks
-reproduce-from-any-commit), warning instead of refusing (a warning is
+refusal gate. *Rejected:* commit-rev stamping (per-commit churn breaks
+reproduce-from-any-commit), nix-store-hash stamping (opaque and
+recomputable only with nix — the first cut of this ruling, replaced
+same-day), warning instead of refusing (a warning is
 policy nobody reads; the corpus lives forever), one shared workspace
 with canonical-at-mint bytes (tolerable but makes "reproducible"
 mean "from one blessed commit only").

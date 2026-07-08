@@ -15,7 +15,7 @@ fn stamped_component_parses_the_required_set() {
     assert_eq!(a.name, "datboi:xf-reference-stream");
     assert!(a.description.contains("Streaming reference transform"));
     assert!(a.source.contains("github.com/schlarpc/datboi"));
-    assert!(a.revision.starts_with("src:"), "{}", a.revision);
+    assert!(a.revision.starts_with("tree:"), "{}", a.revision);
 }
 
 #[test]
