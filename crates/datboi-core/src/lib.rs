@@ -10,3 +10,4 @@ pub mod identity;
 pub mod object;
 pub mod recipe;
 pub mod snapshot;
+pub mod viewsnap;
