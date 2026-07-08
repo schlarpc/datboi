@@ -126,34 +126,41 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
 
 ## Next sessions (pick up here)
 
-**Position as of 2026-07-07**: M1 complete (additive ingest+audit,
-recovery drill in CI). **M2 complete** — transform@2 FROZEN, streaming
-executor (datboi-exec: replay licensing, spill rule, serve_range with
-D49 output-bao verify + seek quarantine), obao machinery (D52),
-fixpoint skeleton (provenance incl. negatives, snapshot batches,
-recovery drill green), full-size exit test passed (3.9 GiB member,
-bounded memory). **M3 partial** — shipped: eviction + residency
-planner (evict_covered), FastCDC ChunkAnalyzer (dedup→evict→serve
-proven e2e), deflate-trial discovery analyzer (provenance only), cache
-migration ladder. CLI: ingest/dat/audit/export/recover/snapshot/
-scrub/status/sweep/evict/materialize.
+**Position as of 2026-07-07 (evening session)**: M1/M2 complete. **M3
+nearly complete** — shipped this session on top of eviction/chunking:
+wild-zip rebuild for real (D53: xf-preflate @2 component, preflate
+splitting with PARTIAL coverage, per-member recreate + container
+assemble recipes; an 11 MB real-world git-archive zip evicts and
+rematerializes bit-exact through 489 wasm recipes), a second component
+(xf-cso, exercising CBOR params / per-op seek classes /
+random-access-inputs / in-guest compression), child-recipe licensing
+on parent replay, size-scaled fuel (fuel exhaustion never poisons),
+quarantine attribution (corrupt inputs don't defame components),
+eviction explainability (explain_eviction + CLI reasons), the pipe
+verdict-race fix, sweep residency filter, and fast recovery
+(metadata-only walk + scrub back-fill). Remaining M3: ECM, 7z/rar
+ingest, aggregation (NFS-bench-gated).
 
 Priority order:
 
-1. **xf-preflate build-out** (spike done, ruled as D53): mint the @2
-   component, replace the deflate-trial analyzer's match-hunting with
-   preflate splitting + recipe minting. This is the wild-zip shrink
-   unlock.
-2. **Quarantine attribution refinement** (work item above; small).
-3. **Fast recovery / metadata-only rebuild** (work item above;
-   parallelism tuning wants the M1 NFS bench, but the structure can
-   land first).
-4. Remaining M3 analyzers: ECM, 7z/rar ingest.
-5. **M1 NFS store benchmark** — still DEFERRED (dev machine isn't the
+1. Remaining M3 analyzers: ECM, 7z/rar ingest.
+2. **Component attribution stamping** (decision owed, evidence in
+   hand): `wasm-tools metadata add` embeds name/description/authors/
+   license/source/revision as execution-inert custom sections — but
+   they change the component hash, so the stamping convention should
+   be ruled BEFORE any real corpus pins recipes. Candidate: stamp in
+   the flake install phase from crate metadata + git rev.
+3. **Recipe rehabilitation** (work item): `Failed` is terminal, but
+   this session produced a wrongly-poisoned recipe via the (now fixed)
+   pipe race — there is no operator path to un-poison a recipe whose
+   poisoning was a host bug. Candidate: `scrub --rehabilitate` that
+   re-replays Failed recipes and clears state on success.
+4. **M1 NFS store benchmark** — still DEFERRED (dev machine isn't the
    NFS-bearing one); gates aggregation (D36), freezes shard fanout,
-   tunes the recovery walk.
-6. Rule the pended D49 affine carve-out no later than M4 views work.
+   tunes the recovery walk (currently 8 workers).
+5. Rule the pended D49 affine carve-out no later than M4 views work.
+6. M4 views (80-views.md): shares-as-projections, images-as-recipes.
 
 ## Resolved
 
-See [decisions.md](decisions.md) (D1–D52).
+See [decisions.md](decisions.md) (D1–D53).
