@@ -16,6 +16,9 @@ fastcdc = "4.0.1"
 flate2.workspace = true
 blake3.workspace = true
 preflate-rs = "=0.7.6"
+# Native twin of the shipped component: the analyzer classifies with the
+# same code the component rebuilds with (verify-at-discovery).
+xf-ecm = { path = "../../transforms/xf-ecm" }
 # 7z member extraction (pure Rust). Container rebuild recipes wait on an
 # LZMA-class transform; ingest extracts members as first-class blobs.
 sevenz-rust2 = "0.21"

@@ -19,6 +19,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 crc32fast.workspace = true
+xf-ecm = { path = "../../transforms/xf-ecm" }
 datboi-ingest.workspace = true
 proptest.workspace = true
 

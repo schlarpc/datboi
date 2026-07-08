@@ -3,6 +3,11 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# The transforms are standalone workspaces (D54); excluding them lets
+# host crates path-depend on a transform's PURE logic (gates cross-check
+# wasm vs native, analyzers reuse classify/rebuild) without merging the
+# dependency graphs that keep component bytes reproducible.
+exclude = ["transforms"]
 
 [workspace.package]
 version = "0.1.0"

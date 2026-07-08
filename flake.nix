@@ -76,7 +76,7 @@
       # bytes through shared dependency resolution. The reproducibility
       # boundary is one crate directory plus the frozen ../wit.
 
-      wasmCrateNames = [ "xf-cso" "xf-preflate" "xf-reference" "xf-reference-stream" ];
+      wasmCrateNames = [ "xf-cso" "xf-ecm" "xf-preflate" "xf-reference" "xf-reference-stream" ];
 
       # The shared frozen WIT, staged next to the unpacked crate so the
       # guests' `../wit/v2` path resolves.

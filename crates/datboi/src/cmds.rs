@@ -754,6 +754,7 @@ pub fn sweep(
         "noop" | "noop/1" => Box::new(datboi_ingest::refine::NoopAnalyzer),
         "chunk" | "fastcdc" => Box::new(datboi_ingest::analyzers::ChunkAnalyzer),
         "preflate" | "preflate-split" => Box::new(datboi_ingest::analyzers::PreflateZipAnalyzer::new()),
+        "ecm" => Box::new(datboi_ingest::analyzers::EcmAnalyzer::new()),
         other => {
             anyhow::bail!("unknown analyzer {other:?} (available: noop, chunk, deflate-trial)")
         }

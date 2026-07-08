@@ -722,3 +722,269 @@ impl Analyzer for ChunkAnalyzer {
         })
     }
 }
+
+/// The canonical `xf-ecm` component, embedded like xf-preflate's.
+pub const XF_ECM_WASM: &[u8] = include_bytes!("../../../transforms/dist/xf_ecm.wasm");
+
+/// CD sector regeneration discovery (the ECM idea; M3's last analyzer).
+/// Scans a blob on the 2352-byte grid; every sector that REGENERATES
+/// BIT-EXACTLY (verify-at-discovery, via the same crate the component is
+/// built from) is stripped of its sync/EDC/ECC; everything else stays a
+/// literal run. One recipe, no container assemble: the recreate output
+/// IS the whole image. ~12.8% direct savings on PSX-era bins, and the
+/// stripped payload chunks/dedupes better downstream.
+pub struct EcmAnalyzer {
+    component_published: bool,
+}
+
+impl EcmAnalyzer {
+    /// Grid policy is part of the identity: a resync-capable v2 would be
+    /// a new analyzer.
+    const VERSIONED_NAME: &'static str = "ecm-ecma130-2352grid/1";
+
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            component_published: false,
+        }
+    }
+
+    /// blake3 of the embedded component — the hash recreate recipes pin.
+    #[must_use]
+    pub fn component_hash() -> Blake3 {
+        Blake3::compute(XF_ECM_WASM)
+    }
+
+    fn ensure_component(&mut self, store: &Store, db: &mut Db) -> Result<i64, String> {
+        let hash = Self::component_hash();
+        if !self.component_published {
+            store
+                .put(StoreNs::Data, hash, XF_ECM_WASM)
+                .map_err(|e| e.to_string())?;
+            self.component_published = true;
+        }
+        db.upsert_blob(
+            &hash,
+            Some(XF_ECM_WASM.len() as u64),
+            IndexNs::Data,
+            Residency::Resident,
+        )
+        .map_err(|e| e.to_string())
+    }
+}
+
+impl Default for EcmAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Streaming ECM splitter: walks the blob on the sector grid, emits
+/// stripped bytes as a `Read` (driving `Store::put_new` in one pass),
+/// and accumulates run-length layout records on the side.
+struct EcmSplitReader<'a> {
+    src: &'a mut std::fs::File,
+    remaining: u64,
+    records: Vec<xf_ecm::LayoutRecord>,
+    sectors: [u64; 4], // by kind; [0] counts literal BYTES
+    pending: Vec<u8>,
+    pending_pos: usize,
+}
+
+impl<'a> EcmSplitReader<'a> {
+    fn new(src: &'a mut std::fs::File, size: u64) -> Self {
+        Self {
+            src,
+            remaining: size,
+            records: Vec::new(),
+            sectors: [0; 4],
+            pending: Vec::new(),
+            pending_pos: 0,
+        }
+    }
+
+    fn push_run(&mut self, kind: u8, count: u32) {
+        if let Some(last) = self.records.last_mut()
+            && last.kind == kind
+            && let Some(merged) = last.count.checked_add(count)
+        {
+            last.count = merged;
+        } else {
+            self.records.push(xf_ecm::LayoutRecord { kind, count });
+        }
+    }
+
+    fn advance(&mut self) -> std::io::Result<()> {
+        use std::io::Read as _;
+        let take = self.remaining.min(xf_ecm::SECTOR as u64);
+        if take == 0 {
+            return Ok(());
+        }
+        let mut raw = vec![0u8; usize::try_from(take).expect("sector-bounded")];
+        self.src.read_exact(&mut raw)?;
+        self.remaining -= take;
+        match xf_ecm::classify_sector(&raw) {
+            Some((kind, stripped)) => {
+                self.push_run(kind, 1);
+                self.sectors[usize::from(kind)] += 1;
+                self.pending = stripped;
+            }
+            None => {
+                self.push_run(0, u32::try_from(raw.len()).expect("sector-bounded"));
+                self.sectors[0] += raw.len() as u64;
+                self.pending = raw;
+            }
+        }
+        self.pending_pos = 0;
+        Ok(())
+    }
+}
+
+impl std::io::Read for EcmSplitReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        while self.pending_pos == self.pending.len() {
+            if self.remaining == 0 {
+                return Ok(0);
+            }
+            self.advance()?;
+        }
+        let n = (self.pending.len() - self.pending_pos).min(buf.len());
+        buf[..n].copy_from_slice(&self.pending[self.pending_pos..self.pending_pos + n]);
+        self.pending_pos += n;
+        Ok(n)
+    }
+}
+
+impl Analyzer for EcmAnalyzer {
+    fn name(&self) -> &'static str {
+        Self::VERSIONED_NAME
+    }
+
+    fn id(&self) -> Blake3 {
+        analyzer_tag(Self::VERSIONED_NAME)
+    }
+
+    fn analyze(
+        &mut self,
+        item: &SweepItem,
+        store: &Store,
+        db: &mut Db,
+    ) -> Result<AnalysisResult, String> {
+        use std::io::Read;
+
+        let Some(mut file) = store
+            .get(StoreNs::Data, &item.hash)
+            .map_err(|e| e.to_string())?
+        else {
+            return Err("blob not resident".into());
+        };
+        let size = item
+            .size
+            .or_else(|| store.len(StoreNs::Data, &item.hash).ok().flatten())
+            .ok_or("blob size unknown")?;
+        if size < xf_ecm::SECTOR as u64 {
+            return Ok(AnalysisResult {
+                outcome: AnalysisOutcome::Negative,
+                detail: Some("smaller than one raw CD sector".into()),
+            });
+        }
+        // Cheap gate: a bin's first sector starts with the sync pattern.
+        let mut head = [0u8; 12];
+        file.read_exact(&mut head).map_err(|e| e.to_string())?;
+        if head != xf_ecm::SYNC {
+            return Ok(AnalysisResult {
+                outcome: AnalysisOutcome::Negative,
+                detail: Some("no CD sync pattern at offset 0".into()),
+            });
+        }
+        use std::io::{Seek, SeekFrom};
+        file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+
+        let mut reader = EcmSplitReader::new(&mut file, size);
+        let (stripped_hash, aliases, _) = store
+            .put_new(StoreNs::Data, &mut reader)
+            .map_err(|e| e.to_string())?;
+        let regenerable: u64 = reader.sectors[1] + reader.sectors[2] + reader.sectors[3];
+        if regenerable == 0 {
+            // Sync at 0 but nothing verified — scrambled or nonstandard.
+            // The stripped blob equals the original; harmless orphan row.
+            return Ok(AnalysisResult {
+                outcome: AnalysisOutcome::Negative,
+                detail: Some("sync present but no sector regenerates bit-exactly".into()),
+            });
+        }
+        let mut layout = Vec::with_capacity(reader.records.len() * 5);
+        for r in &reader.records {
+            layout.extend_from_slice(&xf_ecm::encode_record(*r));
+        }
+        let layout_hash = Blake3::compute(&layout);
+        store
+            .put(StoreNs::Data, layout_hash, layout.as_slice())
+            .map_err(|e| e.to_string())?;
+
+        let component_hash = Self::component_hash();
+        self.ensure_component(store, db)?;
+        let stripped_id = db
+            .upsert_blob(
+                &stripped_hash,
+                Some(aliases.size),
+                IndexNs::Data,
+                Residency::Resident,
+            )
+            .map_err(|e| e.to_string())?;
+        let layout_id = db
+            .upsert_blob(
+                &layout_hash,
+                Some(layout.len() as u64),
+                IndexNs::Data,
+                Residency::Resident,
+            )
+            .map_err(|e| e.to_string())?;
+        let recipe = Recipe {
+            op: Op::Wasm {
+                component: component_hash,
+                world: "datboi:transform@2".into(),
+                export: "recreate".into(),
+            },
+            inputs: vec![
+                InputRef {
+                    hash: layout_hash,
+                    role: Some("skeleton".into()),
+                },
+                InputRef {
+                    hash: stripped_hash,
+                    role: None,
+                },
+            ],
+            outputs: vec![OutputRef {
+                hash: item.hash,
+                size,
+                name: None,
+            }],
+            params: Vec::new(),
+        };
+        crate::mint_recipe(
+            store,
+            db,
+            &recipe,
+            "xf-ecm/recreate",
+            SeekClass::ManifestSeekable,
+            &[(0, layout_id, Some("skeleton")), (1, stripped_id, None)],
+            &[(0, item.blob_id, size, None)],
+        )
+        .map_err(|e| e.to_string())?;
+
+        Ok(AnalysisResult {
+            outcome: AnalysisOutcome::Positive,
+            detail: Some(format!(
+                "regenerable: {regenerable} sector(s) (m1 {}, m2f1 {}, m2f2 {}), {} literal byte(s); stripped {} B + layout {} B replace {size} B",
+                reader.sectors[1],
+                reader.sectors[2],
+                reader.sectors[3],
+                reader.sectors[0],
+                aliases.size,
+                layout.len()
+            )),
+        })
+    }
+}

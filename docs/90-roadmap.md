@@ -76,7 +76,8 @@ recovery-equivalence as a property test.
   **Exit test**: a ~4 GB zip member replays in bounded memory,
   verified, both sequential and seeked; a no-op analyzer sweep records
   provenance and survives bare-NAS recovery.
-- **M3 — "The NAS gets smaller"** (features on that platform):
+- **M3 — "The NAS gets smaller"** — **COMPLETE 2026-07-07** (modulo
+  the indefinitely-deferred bench items below):
   residency planner + eviction (D21/D25/D27) — *shipped 2026-07-07*;
   FastCDC chunking — *shipped* (analyzer through the fixpoint;
   cross-image dedup + evict + verified serving proven end to end);
@@ -91,7 +92,10 @@ recovery-equivalence as a property test.
   aggregation (D36) + the NFS bench — *indefinitely deferred
   2026-07-07* (local runs can't answer NFS questions; fanout
   frozen-by-default, aggregation stays possible as an additive layer);
-  **remaining**: ECM wiring (core shipped).
+  ECM — *shipped 2026-07-07* (xf-ecm component: ECMA-130 EDC/RS-ECC
+  regeneration, manifest-seekable serve-range; EcmAnalyzer splits on
+  the 2352 grid with verify-at-discovery, damaged sectors ride as
+  literal runs; e2e split→license→evict→serve gate green).
 - **M4 — "The NAS becomes useful"**: views/snapshots/profiles (D33),
   1G1R + retool clonelists, MAME merge-mode rendering + device_ref
   closure + softlist fidelity (D31 deferred set), HTTP/WebDAV, SD sync,

@@ -144,21 +144,13 @@ ingest, aggregation (NFS-bench-gated).
 
 Priority order:
 
-1. **ECM build-out** (IN PROGRESS 2026-07-07 — core shipped, wiring
-   owed): transforms/xf-ecm exists and is green — EDC/RS-ECC sector
-   regeneration (ECMA-130), classify-by-regeneration (verify at
-   discovery, like preflate), run-length layout format v1,
-   manifest-seekable serve-range. REMAINING: (a) add "xf-ecm" to
-   flake.nix wasmCrateNames, nix-remint, copy to transforms/dist,
-   gate in datboi-runtime/tests (pin hash + roundtrip + D49
-   seek-equivalence); (b) EcmAnalyzer in datboi-ingest (mirror
-   PreflateZipAnalyzer: scan sectors via classify_sector, runs →
-   layout blob + stripped blob via put_new, mint recreate recipe —
-   NOTE single recipe, no container assemble needed: the output IS the
-   whole bin); (c) e2e shrink test (bin → sweep → evict → serve
-   ranges). Caveat recorded: EDC/ECC implemented from ECMA-130, tested
-   self-consistently; validate against a real disc sector when the NAS
-   corpus is reachable — a spec bug costs coverage, never corruption.
+1. ~~ECM build-out~~ shipped 2026-07-07 — **M3 COMPLETE**. Caveat
+   carried: EDC/ECC implemented from ECMA-130 and self-consistency
+   tested (wasm-vs-native equivalence gate); validate against a real
+   disc sector when the NAS corpus is reachable — verify-at-discovery
+   means a spec bug costs coverage, never bytes. Next build target:
+   **M4 views** (rule the reified-views design + D49 affine carve-out
+   first — see "Open (design work, ratify before M4 views)").
 2. **7z rebuild via pinned-encoder parameter discovery — DEFERRED to
    the M7 rebuild long tail** (ruled 2026-07-07). Research concluded:
    no preflate-analog exists for LZMA anywhere; corrections can't
