@@ -54,6 +54,7 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
   identity convention already anticipates component hashes), (b) a
   separate conformance test crate for shipped components, (c) at
   minimum a hardened/fuzzed parsing path for wild containers.
+- **Sequential assemble over opaque children spills today**: the
   executor opens assemble children random-access, so a sequential read
   of concat-of-derived (e.g. concat over decompressed members) spills
   each derived child even though pure sequential streaming would do.
