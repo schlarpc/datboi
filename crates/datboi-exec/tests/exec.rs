@@ -684,6 +684,101 @@ fn corrupt_input_mismatch_does_not_quarantine_the_component() {
     );
 }
 
+/// Rehabilitation: a WRONGLY-poisoned recipe (the pipe-race class of
+/// host bug) exits `Failed` through exactly one door — a verified
+/// re-execution — while a genuinely bad claim stays poisoned.
+#[test]
+fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
+    let mut w = world();
+    let input = pattern(50_000);
+    let swapped = byteswap(&input);
+
+    // A perfectly good recipe, poisoned by fiat (simulating the host bug).
+    let (component_hash, _) = w.put_literal(COMPONENT);
+    let (input_hash, input_id) = w.put_literal(&input);
+    let (swapped_hash, swapped_id) = w.claim_absent(&swapped);
+    let good = Recipe {
+        op: Op::Wasm {
+            component: component_hash,
+            world: "datboi:transform@2".into(),
+            export: "byteswap".into(),
+        },
+        inputs: vec![InputRef {
+            hash: input_hash,
+            role: None,
+        }],
+        outputs: vec![OutputRef {
+            hash: swapped_hash,
+            size: swapped.len() as u64,
+            name: None,
+        }],
+        params: Vec::new(),
+    };
+    let good_id = w.mint_recipe(
+        &good,
+        "wasm:byteswap",
+        OpKind::Wasm,
+        SeekClass::Affine,
+        &[(0, input_id)],
+        &[(0, swapped_id, swapped.len() as u64)],
+    );
+    w.db.set_verify_state(good_id, VerifyState::Failed, 0, Some(("simulated host bug", None)))
+        .expect("poison by fiat");
+
+    // A genuinely bad claim: same op, wrong claimed output hash.
+    let bogus = Blake3::compute(b"never these bytes");
+    let (_, bogus_id) = w.claim_absent(b"never these bytes");
+    let bad = Recipe {
+        op: Op::Wasm {
+            component: component_hash,
+            world: "datboi:transform@2".into(),
+            export: "byteswap".into(),
+        },
+        inputs: vec![InputRef {
+            hash: input_hash,
+            role: None,
+        }],
+        outputs: vec![OutputRef {
+            hash: bogus,
+            size: 17,
+            name: None,
+        }],
+        params: Vec::new(),
+    };
+    let bad_id = w.mint_recipe(
+        &bad,
+        "wasm:byteswap",
+        OpKind::Wasm,
+        SeekClass::Affine,
+        &[(0, input_id)],
+        &[(0, bogus_id, 17)],
+    );
+    w.db.set_verify_state(bad_id, VerifyState::Failed, 0, Some(("real poison", None)))
+        .expect("poison");
+
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+
+    // Poisoned recipes refuse ordinary replay...
+    assert!(matches!(
+        exec.replay(&w.db, good_id),
+        Err(ExecError::Poisoned(_))
+    ));
+    // ...but rehabilitation re-executes and clears the wrong poison.
+    exec.rehabilitate(&w.db, good_id).expect("rehabilitated");
+    assert_eq!(
+        w.db.recipe_by_id(good_id).expect("row").verify,
+        VerifyState::ReplayedLocal
+    );
+    assert!(w.store.has(StoreNs::Data, &swapped_hash));
+
+    // The genuinely bad claim fails re-execution and stays poisoned.
+    assert!(exec.rehabilitate(&w.db, bad_id).is_err());
+    assert_eq!(
+        w.db.recipe_by_id(bad_id).expect("row").verify,
+        VerifyState::Failed
+    );
+}
+
 #[test]
 fn no_route_is_a_clean_error() {
     let w = world();

@@ -281,6 +281,45 @@ impl<'s> Executor<'s> {
         }
     }
 
+    /// Attempt to rehabilitate one poisoned recipe: re-execute it, and
+    /// if every claimed output verifies, clear the poison to
+    /// `ReplayedLocal`. The escape hatch for wrong poisonings (host
+    /// bugs, since-repaired environments) — `Failed` stays terminal for
+    /// every other path. A failing re-execution leaves the row Failed.
+    ///
+    /// # Errors
+    /// Execution failures (the recipe stays poisoned); index/store I/O.
+    pub fn rehabilitate(&self, db: &Db, recipe_id: i64) -> Result<ReplayReport, ExecError> {
+        let row = db.recipe_by_id(recipe_id)?;
+        if row.verify != VerifyState::Failed {
+            // Nothing to rehabilitate; treat as an ordinary replay.
+            return self.replay(db, recipe_id);
+        }
+        let recipe = self.load_recipe(db, recipe_id)?;
+        let mut participants = Vec::new();
+        let outputs = self.execute_to_store(db, &recipe, &mut participants)?;
+        db.rehabilitate_recipe(recipe_id, now_unix())?;
+        for child_id in participants {
+            if child_id == recipe_id {
+                continue;
+            }
+            let child = db.recipe_by_id(child_id)?;
+            if child.verify == VerifyState::Verified {
+                db.set_verify_state(child_id, VerifyState::ReplayedLocal, now_unix(), None)?;
+            }
+        }
+        for (output, (hash, _)) in recipe.outputs.iter().zip(&outputs) {
+            let id = db.upsert_blob(
+                hash,
+                Some(output.size),
+                datboi_index::Namespace::Data,
+                Residency::Resident,
+            )?;
+            db.set_verified(id, now_unix())?;
+        }
+        Ok(ReplayReport { recipe_id, outputs })
+    }
+
     /// Materialize `hash` into the store if it isn't already resident:
     /// picks a route and replays the covering recipe (which stores every
     /// sibling output too — one execution verifies all, docs/70-recipes.md).

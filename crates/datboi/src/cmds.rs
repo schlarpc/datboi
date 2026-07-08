@@ -1177,7 +1177,7 @@ fn ensure_blob(db: &datboi_index::Db, hash: &datboi_core::hash::Blake3) -> anyho
 
 // ---- scrub ----
 
-pub fn scrub(env: &Env, sample_pct: u8, json: bool) -> anyhow::Result<ExitCode> {
+pub fn scrub(env: &Env, sample_pct: u8, rehabilitate: bool, json: bool) -> anyhow::Result<ExitCode> {
     let pct = sample_pct.min(100);
     let now = now_unix();
     let mut checked: u64 = 0;
@@ -1220,16 +1220,38 @@ pub fn scrub(env: &Env, sample_pct: u8, json: bool) -> anyhow::Result<ExitCode> 
             }
         }
     }
+    // Rehabilitation (D54-era work item): re-execute poisoned recipes;
+    // a verified re-replay is the one sanctioned exit from Failed.
+    let mut rehabilitated: Vec<i64> = Vec::new();
+    let mut still_failed: Vec<(i64, String)> = Vec::new();
+    if rehabilitate {
+        let exec = datboi_exec::Executor::new(&env.store, datboi_exec::ExecConfig::default())?;
+        for recipe_id in env.db.list_failed_recipes()? {
+            match exec.rehabilitate(&env.db, recipe_id) {
+                Ok(_) => rehabilitated.push(recipe_id),
+                Err(e) => still_failed.push((recipe_id, e.to_string())),
+            }
+        }
+    }
+
     if json {
         println!(
             "{}",
             json!({
                 "sample_pct": pct, "checked": checked, "refreshed": refreshed,
+                "rehabilitated": rehabilitated,
+                "still_failed": still_failed.iter().map(|(id, e)| json!({"recipe": id, "error": e})).collect::<Vec<_>>(),
                 "corrupt": corrupt, "missing": missing,
             })
         );
     } else {
         println!("checked {checked} blobs ({pct}% sample), {refreshed} rows refreshed");
+        for id in &rehabilitated {
+            println!("rehabilitated recipe #{id}");
+        }
+        for (id, e) in &still_failed {
+            println!("recipe #{id} stays poisoned: {e}");
+        }
         for h in &corrupt {
             println!("CORRUPT: {h}");
         }

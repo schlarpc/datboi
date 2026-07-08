@@ -110,6 +110,10 @@ enum Command {
         /// Percentage of blobs to check (deterministic sample by hash).
         #[arg(long, default_value_t = 100)]
         sample: u8,
+        /// Re-execute poisoned (Failed) recipes; a verified re-replay
+        /// clears the poison — the escape hatch for wrong poisonings.
+        #[arg(long)]
+        rehabilitate: bool,
         #[arg(long)]
         json: bool,
     },
@@ -242,7 +246,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             limit,
             json,
         } => cmds::sweep(cli.global.open()?, &analyzer, limit, json),
-        Command::Scrub { sample, json } => cmds::scrub(&cli.global.open()?, sample, json),
+        Command::Scrub {
+            sample,
+            rehabilitate,
+            json,
+        } => cmds::scrub(&cli.global.open()?, sample, rehabilitate, json),
         Command::Status { json } => cmds::status(&cli.global.open()?, json),
     }
 }

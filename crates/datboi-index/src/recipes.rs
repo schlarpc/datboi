@@ -253,6 +253,40 @@ impl Db {
         Ok(())
     }
 
+    /// Every poisoned recipe — the rehabilitation candidate pool.
+    pub fn list_failed_recipes(&self) -> Result<Vec<i64>, IndexError> {
+        let mut stmt = self
+            .cache()
+            .prepare_cached("SELECT recipe_id FROM recipe WHERE verify = 2 ORDER BY recipe_id")?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, i64>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Rehabilitation: the ONE sanctioned exit from `Failed`, reserved
+    /// for the case where a successful re-replay just proved the
+    /// poisoning wrong (a host bug — e.g. the fixed pipe verdict race —
+    /// or a since-repaired environment). Deliberately not a
+    /// [`Db::set_verify_state`] transition: the ordinary state machine
+    /// keeps `Failed` terminal so nothing exits poison casually; this
+    /// method demands the caller assert a completed, verified replay.
+    pub fn rehabilitate_recipe(&self, recipe_id: i64, at_unix: i64) -> Result<(), IndexError> {
+        let row = self.recipe_by_id(recipe_id)?;
+        if row.verify != VerifyState::Failed {
+            return Err(IndexError::IllegalTransition {
+                from: row.verify,
+                to: VerifyState::ReplayedLocal,
+            });
+        }
+        self.cache().execute(
+            "UPDATE recipe SET verify = ?2, verified_at = ?3, fail_error = NULL, fail_peer = NULL
+             WHERE recipe_id = ?1",
+            params![recipe_id, VerifyState::ReplayedLocal.code(), at_unix],
+        )?;
+        Ok(())
+    }
+
     /// Resident data blobs claimed as output by at least one
     /// ReplayedLocal recipe — the eviction candidate pool, biggest
     /// reclaim first. Pre-grounding: the planner still runs
