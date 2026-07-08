@@ -10,15 +10,29 @@
 
 use std::io::{self, Read, Write};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 /// Queue bound in chunks. Writers hand over whole chunks (guests write
 /// ≤ MAX_READ-sized pieces; builtins write ≤ 64 KiB), so worst-case
 /// buffering is small and fixed per pipe.
 const DEPTH: usize = 4;
 
+#[derive(Default)]
+struct State {
+    error: Option<String>,
+    /// The producer's verdict is in (success or failure). Readers that
+    /// hit channel-disconnect WAIT for this before choosing EOF vs
+    /// error: the writer drops inside the producer call, BEFORE the
+    /// producer thread can record its failure — deciding at disconnect
+    /// time would race a guest trap into a clean-looking short stream
+    /// (observed in the wild as "spill produced 0 bytes" poisoning a
+    /// perfectly good recipe).
+    finished: bool,
+}
+
 struct Shared {
-    error: Mutex<Option<String>>,
+    state: Mutex<State>,
+    done: Condvar,
 }
 
 /// Create a connected (writer, reader, handle) triple. The handle
@@ -27,7 +41,8 @@ struct Shared {
 pub fn pipe() -> (PipeWriter, PipeReader, PipeHandle) {
     let (tx, rx) = sync_channel(DEPTH);
     let shared = Arc::new(Shared {
-        error: Mutex::new(None),
+        state: Mutex::new(State::default()),
+        done: Condvar::new(),
     });
     (
         PipeWriter { tx },
@@ -48,9 +63,43 @@ pub struct PipeHandle {
 
 impl PipeHandle {
     /// Mark the stream failed; the reader reports this instead of EOF.
+    /// Also marks the producer finished.
     pub fn fail(&self, message: impl Into<String>) {
-        let mut slot = self.shared.error.lock().expect("pipe mutex");
-        slot.get_or_insert(message.into());
+        let mut state = self.shared.state.lock().expect("pipe mutex");
+        state.error.get_or_insert(message.into());
+        state.finished = true;
+        self.shared.done.notify_all();
+    }
+
+    /// Mark the producer finished (successfully unless `fail` was called).
+    pub fn finish(&self) {
+        let mut state = self.shared.state.lock().expect("pipe mutex");
+        state.finished = true;
+        self.shared.done.notify_all();
+    }
+
+    /// Guard that calls [`PipeHandle::finish`] on drop — put one at the
+    /// top of every producer thread so a panic (or any early exit) still
+    /// resolves the reader's wait instead of deadlocking it.
+    #[must_use]
+    pub fn finish_on_drop(&self) -> FinishGuard {
+        FinishGuard {
+            handle: self.clone(),
+        }
+    }
+}
+
+pub struct FinishGuard {
+    handle: PipeHandle,
+}
+
+impl Drop for FinishGuard {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.handle.fail("producer thread panicked");
+        } else {
+            self.handle.finish();
+        }
     }
 }
 
@@ -99,10 +148,15 @@ impl Read for PipeReader {
                     self.pos = 0;
                 }
                 Err(_) => {
-                    // Producer gone: failed producers surface their error,
-                    // finished ones EOF.
-                    let slot = self.shared.error.lock().expect("pipe mutex");
-                    return match slot.as_ref() {
+                    // Producer's writer is gone — but its VERDICT may
+                    // still be in flight (the writer drops inside the
+                    // producer call, before the thread records failure).
+                    // Wait for it; only then choose error vs EOF.
+                    let mut state = self.shared.state.lock().expect("pipe mutex");
+                    while !state.finished {
+                        state = self.shared.done.wait(state).expect("pipe mutex");
+                    }
+                    return match state.error.as_ref() {
                         Some(msg) => Err(io::Error::other(msg.clone())),
                         None => Ok(0),
                     };
@@ -122,8 +176,9 @@ mod tests {
 
     #[test]
     fn round_trips_and_backpressures() {
-        let (mut w, mut r, _h) = pipe();
+        let (mut w, mut r, h) = pipe();
         let producer = std::thread::spawn(move || {
+            let _finished = h.finish_on_drop();
             for i in 0..100u8 {
                 w.write_all(&[i; 1000]).expect("write");
             }

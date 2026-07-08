@@ -301,7 +301,6 @@ impl Analyzer for PreflateZipAnalyzer {
             .collect();
         ranges.sort_unstable();
         let mut prev_end = 0u64;
-        let mut skeleton_len = 0u64;
         for &(start, len, _) in &ranges {
             if start < prev_end || start.checked_add(len).is_none_or(|e| e > container_size) {
                 return Ok(AnalysisResult {
@@ -309,21 +308,16 @@ impl Analyzer for PreflateZipAnalyzer {
                     detail: Some("overlapping or out-of-bounds member ranges".into()),
                 });
             }
-            skeleton_len += start - prev_end;
             prev_end = start + len;
         }
-        skeleton_len += container_size - prev_end;
-        if skeleton_len > SKELETON_LIMIT {
-            return Ok(AnalysisResult {
-                outcome: AnalysisOutcome::Negative,
-                detail: Some(format!(
-                    "skeleton would be {skeleton_len} bytes (> {SKELETON_LIMIT}); container stays literal"
-                )),
-            });
-        }
 
-        // ---- split every member (all-or-nothing, D24) ----
-        let mut splits: Vec<MemberSplit> = Vec::with_capacity(ranges.len());
+        // ---- split members: PARTIAL COVERAGE (refined from
+        // all-or-nothing after real-corpus evidence — a single estimator
+        // failure out of hundreds must not condemn the container). A
+        // member that refuses to split simply stays literal INSIDE the
+        // skeleton; the D24 tax shrinks to exactly the refusing bytes.
+        let mut covered: Vec<(u64, u64, MemberSplit)> = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
         for &(start, len, ix) in &ranges {
             file.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
             let mut reader = SplitReader::new(&mut file, len);
@@ -347,37 +341,55 @@ impl Analyzer for PreflateZipAnalyzer {
                         .put(StoreNs::Data, corrections_hash, reader.corrections.as_slice())
                         .map_err(|e| e.to_string())?;
                     let stream_hash = Blake3(*reader.stream_hasher.finalize().as_bytes());
-                    splits.push(MemberSplit {
-                        stream_hash,
-                        corrections_hash,
-                        corrections_len: reader.corrections.len() as u64,
-                        plaintext_hash,
-                        plaintext_len: aliases.size,
-                    });
+                    covered.push((
+                        start,
+                        len,
+                        MemberSplit {
+                            stream_hash,
+                            corrections_hash,
+                            corrections_len: reader.corrections.len() as u64,
+                            plaintext_hash,
+                            plaintext_len: aliases.size,
+                        },
+                    ));
                 }
                 Err(e) => {
-                    // Deterministic split refusals are the D48 negative
-                    // this analyzer exists to record; real I/O stays an
-                    // analyzer error (retryable).
+                    // Deterministic split refusals feed the D48 record;
+                    // real I/O stays an analyzer error (retryable).
                     if let Some(msg) = reader.fail.take() {
-                        return Ok(AnalysisResult {
-                            outcome: AnalysisOutcome::Negative,
-                            detail: Some(format!(
-                                "member {:?}: {msg}; container stays literal (D24)",
-                                deflate_members[ix].name
-                            )),
-                        });
+                        failures.push(format!("{:?}: {msg}", deflate_members[ix].name));
+                    } else {
+                        return Err(e.to_string());
                     }
-                    return Err(e.to_string());
                 }
             }
         }
+        if covered.is_empty() {
+            return Ok(AnalysisResult {
+                outcome: AnalysisOutcome::Negative,
+                detail: Some(format!(
+                    "no member splits; container stays literal (D24). {}",
+                    summarize_failures(&failures)
+                )),
+            });
+        }
+        let skeleton_len =
+            container_size - covered.iter().map(|&(_, len, _)| len).sum::<u64>();
+        if skeleton_len > SKELETON_LIMIT {
+            return Ok(AnalysisResult {
+                outcome: AnalysisOutcome::Negative,
+                detail: Some(format!(
+                    "skeleton would be {skeleton_len} bytes (> {SKELETON_LIMIT}); container stays literal"
+                )),
+            });
+        }
 
-        // ---- skeleton: every byte outside member data, in order ----
+        // ---- skeleton: every byte outside SPLIT member data, in order
+        // (refused members ride along as literal skeleton ranges) ----
         let mut skeleton = Vec::with_capacity(usize::try_from(skeleton_len).unwrap_or(0));
         let mut gaps: Vec<(u64, u64)> = Vec::new(); // (container offset, len)
         let mut prev_end = 0u64;
-        for &(start, len, _) in &ranges {
+        for &(start, len, _) in &covered {
             if start > prev_end {
                 gaps.push((prev_end, start - prev_end));
             }
@@ -405,11 +417,11 @@ impl Analyzer for PreflateZipAnalyzer {
             )
             .map_err(|e| e.to_string())?;
 
-        // ---- mint: one recreate recipe per member ----
+        // ---- mint: one recreate recipe per split member ----
         let component_id = self.ensure_component(store, db)?;
         let component_hash = Self::component_hash();
-        let mut stream_ids: Vec<i64> = Vec::with_capacity(splits.len());
-        for (&(_, stream_len, _), split) in ranges.iter().zip(&splits) {
+        let mut stream_ids: Vec<i64> = Vec::with_capacity(covered.len());
+        for &(_, stream_len, ref split) in &covered {
             let corrections_id = db
                 .upsert_blob(
                     &split.corrections_hash,
@@ -484,7 +496,7 @@ impl Analyzer for PreflateZipAnalyzer {
         }];
         let mut input_rows: Vec<(u32, i64, Option<&str>)> =
             vec![(0, skeleton_id, Some("skeleton"))];
-        for (ix, split) in splits.iter().enumerate() {
+        for (ix, (_, _, split)) in covered.iter().enumerate() {
             inputs.push(InputRef {
                 hash: split.stream_hash,
                 role: None,
@@ -498,7 +510,8 @@ impl Analyzer for PreflateZipAnalyzer {
         let mut segments: Vec<Segment> = Vec::new();
         let mut skel_off = 0u64;
         let mut prev_end = 0u64;
-        for (range_ix, &(start, len, _)) in ranges.iter().enumerate() {
+        for (range_ix, (start, len, _)) in covered.iter().enumerate() {
+            let (start, len) = (*start, *len);
             if start > prev_end {
                 segments.push(Segment::BlobRange {
                     input_ix: 0,
@@ -547,17 +560,38 @@ impl Analyzer for PreflateZipAnalyzer {
         )
         .map_err(|e| e.to_string())?;
 
-        let corr_total: u64 = splits.iter().map(|s| s.corrections_len).sum();
-        let pt_total: u64 = splits.iter().map(|s| s.plaintext_len).sum();
+        let corr_total: u64 = covered.iter().map(|(_, _, s)| s.corrections_len).sum();
+        let pt_total: u64 = covered.iter().map(|(_, _, s)| s.plaintext_len).sum();
+        let refused = if failures.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; {} member(s) stay literal in the skeleton ({})",
+                failures.len(),
+                summarize_failures(&failures)
+            )
+        };
         Ok(AnalysisResult {
             outcome: AnalysisOutcome::Positive,
             detail: Some(format!(
-                "rebuildable: {} member(s) split; plaintext {pt_total} B, corrections {corr_total} B, skeleton {} B",
-                splits.len(),
+                "rebuildable: {}/{} member(s) split; plaintext {pt_total} B, corrections {corr_total} B, skeleton {} B{refused}",
+                covered.len(),
+                deflate_members.len(),
                 skeleton.len()
             )),
         })
     }
+}
+
+/// First few split-refusal notes, count of the rest — provenance detail,
+/// not a log dump.
+fn summarize_failures(failures: &[String]) -> String {
+    const SHOW: usize = 3;
+    let mut s = failures.iter().take(SHOW).cloned().collect::<Vec<_>>().join("; ");
+    if failures.len() > SHOW {
+        s.push_str(&format!("; +{} more", failures.len() - SHOW));
+    }
+    s
 }
 
 /// Content-defined chunking analyzer: splits big opaque blobs into

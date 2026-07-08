@@ -192,6 +192,10 @@ impl Db {
     }
 
     /// Next `limit` queue items for `analyzer`, highest priority first.
+    /// Non-resident blobs (zip member claims, peer-advertised hashes)
+    /// stay QUEUED but are never picked: analyzing them is impossible
+    /// until bytes exist, and erroring on each every sweep is noise.
+    /// Rematerialization makes them eligible again automatically.
     pub fn next_sweep_items(
         &self,
         analyzer: &Blake3,
@@ -200,7 +204,7 @@ impl Db {
         let mut stmt = self.cache().prepare_cached(
             "SELECT q.blob_id, b.hash, b.size, q.priority
              FROM sweep_queue q JOIN blob b ON b.blob_id = q.blob_id
-             WHERE q.analyzer = ?1
+             WHERE q.analyzer = ?1 AND b.residency = 0
              ORDER BY q.priority DESC, q.enqueued_at, q.blob_id
              LIMIT ?2",
         )?;

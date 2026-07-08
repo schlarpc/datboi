@@ -751,6 +751,7 @@ impl<'s> Executor<'s> {
                     let (op, params) = (op.clone(), params.clone());
                     let fuel = fuel_budget(&op_plan.children, &op_plan.outputs);
                     std::thread::spawn(move || {
+                        let _finished = handle.finish_on_drop();
                         if let Err(e) =
                             host.run_fueled(&transform, &op, &params, inputs, sinks, Some(fuel))
                         {
@@ -966,10 +967,13 @@ impl<'s> Executor<'s> {
                         })
                         .collect();
                     let guest_result = guest.join().expect("guest thread never panics");
-                    if let Err(e) = &guest_result {
-                        for h in &handles {
+                    for h in &handles {
+                        // Verdict first, then finish: consumers blocked at
+                        // channel-disconnect wait for it (pipe race fix).
+                        if let Err(e) = &guest_result {
                             h.fail(format!("streaming transform failed: {e}"));
                         }
+                        h.finish();
                     }
                     let mut results = Vec::with_capacity(outputs.len());
                     let mut first_err: Option<ExecError> = None;
@@ -1051,13 +1055,15 @@ impl Write for VecSink {
 }
 
 /// Fuel budget for one wasm2 execution, scaled with the recipe's
-/// declared byte sizes (measured: xf-preflate recreate needs ~52
-/// fuel/plaintext byte; 256 gives ~5x headroom). Deterministic — a pure
-/// function of recipe claims — so a fuel trap is as reproducible as any
-/// other trap, and a flat default no longer chokes multi-GiB members
-/// while runaway guests still die early on small recipes.
+/// declared byte sizes. Measured on xf-preflate recreate: ~52
+/// fuel/plaintext byte on ordinary text/binary, but ~875/byte on a
+/// match-dense high-entropy tracker module from a real corpus — the
+/// hash-chain walk dominates and varies by an order of magnitude.
+/// 4096/byte gives ~4.7x headroom over the worst observed case; fuel
+/// exists only to kill runaways, so generosity here costs nothing.
+/// Deterministic — a pure function of recipe claims.
 const FUEL_BASE: u64 = 1 << 24;
-const FUEL_PER_BYTE: u64 = 256;
+const FUEL_PER_BYTE: u64 = 4096;
 
 fn fuel_budget(children: &[Plan], outputs: &[(Blake3, u64)]) -> u64 {
     let bytes = children
