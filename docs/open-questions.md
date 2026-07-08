@@ -195,9 +195,20 @@ Priority order:
    pipe race — there is no operator path to un-poison a recipe whose
    poisoning was a host bug. Candidate: `scrub --rehabilitate` that
    re-replays Failed recipes and clears state on success.
-6. **M1 NFS store benchmark** — still DEFERRED (dev machine isn't the
-   NFS-bearing one); gates aggregation (D36), freezes shard fanout,
-   tunes the recovery walk (currently 8 workers).
+6. **M1 NFS store benchmark + aggregation (D36) — INDEFINITELY
+   DEFERRED** (ruled 2026-07-07). A local-SSD run cannot answer what
+   the bench gates (NFS metadata round-trips are the whole case for
+   aggregation and the fanout freeze), so no bench until the NFS
+   machine exists. Accepted consequence: the 2-level×256 fanout is
+   frozen-by-default at first real corpus; aggregation stays available
+   later as an additive layer; recovery walk stays at 8 workers. A
+   local scale-smoke (50k blobs, MAME-ish histogram) DID run to catch
+   algorithmic pathologies in our own code: ingest is linear
+   (~890 files/s, fsync-per-blob dominated, as designed); recovery was
+   SQLite-autocommit-bound, fixed by batching the rebuild passes in
+   transactions — fast recover 13.7s → 2.5s per 50k (~20k blobs/s ⇒
+   DB side of a 10M-blob recovery ≈ 8 min; the NFS walk then dominates,
+   which is the part the deferred bench would tune).
 7. Rule the pended D49 affine carve-out no later than M4 views work.
 8. M4 views (80-views.md): shares-as-projections, images-as-recipes.
 

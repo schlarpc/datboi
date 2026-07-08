@@ -86,10 +86,12 @@ recovery-equivalence as a property test.
   and fully covered — the zlib-exact-compressor research question is
   DEAD, and 7z-made streams stay literal per the open issue);
   7z/rar input — *shipped 2026-07-07* (extraction-based: members
-  become resident alias-indexed blobs, containers stay literal until
-  an LZMA-class rebuild transform exists — prior-art research in
-  flight); **remaining**: **aggregation (D36, still NFS-bench-gated —
-  bench machine unavailable)**, ECM.
+  become resident alias-indexed blobs, containers stay literal — LZMA
+  param-discovery deferred to M7, RAR permanently literal);
+  aggregation (D36) + the NFS bench — *indefinitely deferred
+  2026-07-07* (local runs can't answer NFS questions; fanout
+  frozen-by-default, aggregation stays possible as an additive layer);
+  **remaining**: ECM wiring (core shipped).
 - **M4 — "The NAS becomes useful"**: views/snapshots/profiles (D33),
   1G1R + retool clonelists, MAME merge-mode rendering + device_ref
   closure + softlist fidelity (D31 deferred set), HTTP/WebDAV, SD sync,

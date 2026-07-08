@@ -904,6 +904,12 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
     // data/: fast metadata-only walk when a snapshot authenticates
     // (aliases restored from its batches below; verification demoted to
     // scrub), full-read re-hash otherwise.
+    // Batched: per-row autocommits dominate recovery wall-clock (the
+    // smoke bench measured ~9s of fsync churn per 50k rows). One
+    // transaction for the whole data pass — a crash mid-pass re-runs
+    // recover from the truncate anyway. (The meta pass stays unbatched:
+    // insert_recipe manages its own transaction.)
+    let tx = env.db.cache().unchecked_transaction()?;
     if selected.is_some() {
         fast_walk = true;
         for item in env.store.list_parallel(Namespace::Data, RECOVER_WALK_WORKERS) {
@@ -963,6 +969,8 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
         }
     }
 
+    tx.commit()?;
+
     {
         {
             if let Some((snap_hash, snap)) = selected {
@@ -972,6 +980,7 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
                 // Rows for vanished blobs are skipped; blobs newer than
                 // the snapshot get aliases from the next scrub.
                 if fast_walk {
+                    let tx = env.db.cache().unchecked_transaction()?;
                     for batch_hash in &snap.payload.alias_batches {
                         let Some(mut file) = env.store.get(Namespace::Meta, batch_hash)? else {
                             eprintln!(
@@ -995,6 +1004,7 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
                             }
                         }
                     }
+                    tx.commit()?;
                 }
                 for source in &snap.payload.sources {
                     let Some(mut file) = env.store.get(Namespace::Data, &source.dat_blob)? else {
