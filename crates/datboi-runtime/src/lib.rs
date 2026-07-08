@@ -108,6 +108,22 @@ pub enum RuntimeError {
     Transform(String),
 }
 
+impl RuntimeError {
+    /// True when the failure is fuel exhaustion — a *policy* outcome
+    /// (the budget was too small), not evidence against the claim. Fuel
+    /// budgets may be retuned; a recipe must not be poisoned for one.
+    #[must_use]
+    pub fn is_fuel_exhaustion(&self) -> bool {
+        match self {
+            Self::Trap(e) => matches!(
+                e.downcast_ref::<wasmtime::Trap>(),
+                Some(wasmtime::Trap::OutOfFuel)
+            ),
+            _ => false,
+        }
+    }
+}
+
 struct HostState {
     limits: StoreLimits,
 }

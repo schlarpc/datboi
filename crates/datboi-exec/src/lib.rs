@@ -81,15 +81,18 @@ pub enum ExecError {
 
 impl ExecError {
     /// Does this failure indict the *claim* (recipe poisoned, D25) rather
-    /// than the environment (retryable)?
+    /// than the environment (retryable)? Fuel exhaustion is neither —
+    /// it's a policy outcome (budget too small), so it stays retryable:
+    /// poisoning would make a fuel-policy retune unable to rescue the
+    /// recipe.
     #[must_use]
     pub fn is_claim_failure(&self) -> bool {
-        matches!(
-            self,
-            Self::Store(StoreError::HashMismatch { .. })
-                | Self::Malformed(_)
-                | Self::Runtime(RuntimeError::Trap(_) | RuntimeError::Transform(_))
-        )
+        match self {
+            Self::Store(StoreError::HashMismatch { .. }) | Self::Malformed(_) => true,
+            Self::Runtime(e @ RuntimeError::Trap(_)) => !e.is_fuel_exhaustion(),
+            Self::Runtime(RuntimeError::Transform(_)) => true,
+            _ => false,
+        }
     }
 }
 
@@ -522,7 +525,7 @@ impl<'s> Executor<'s> {
                         inputs.push(self.open_random(child)?);
                     }
                     let sink = VecSink::default();
-                    self.stream_host.serve_range(
+                    self.stream_host.serve_range_fueled(
                         transform,
                         op,
                         params,
@@ -534,6 +537,7 @@ impl<'s> Executor<'s> {
                             len: aend - astart,
                         },
                         Box::new(sink.clone()),
+                        Some(fuel_budget(&op_plan.children, &op_plan.outputs)),
                     )?;
                     // Length is checked by the caller before verification
                     // (a short window is a seek-path failure too).
@@ -745,8 +749,11 @@ impl<'s> Executor<'s> {
                     let host = Arc::clone(&self.stream_host);
                     let transform = Arc::clone(transform);
                     let (op, params) = (op.clone(), params.clone());
+                    let fuel = fuel_budget(&op_plan.children, &op_plan.outputs);
                     std::thread::spawn(move || {
-                        if let Err(e) = host.run(&transform, &op, &params, inputs, sinks) {
+                        if let Err(e) =
+                            host.run_fueled(&transform, &op, &params, inputs, sinks, Some(fuel))
+                        {
                             handle.fail(format!("streaming transform failed: {e}"));
                         }
                     });
@@ -941,11 +948,13 @@ impl<'s> Executor<'s> {
                 let host = Arc::clone(&self.stream_host);
                 let transform = Arc::clone(transform);
                 let (opname, params) = (opname.clone(), params.clone());
+                let fuel = fuel_budget(&children, &outputs);
                 std::thread::scope(|scope| {
                     let handles: Vec<pipe::PipeHandle> =
                         readers.iter().map(|(_, h)| h.clone()).collect();
-                    let guest =
-                        scope.spawn(move || host.run(&transform, &opname, &params, inputs, sinks));
+                    let guest = scope.spawn(move || {
+                        host.run_fueled(&transform, &opname, &params, inputs, sinks, Some(fuel))
+                    });
                     let consumers: Vec<_> = readers
                         .into_iter()
                         .zip(&outputs)
@@ -1039,6 +1048,24 @@ impl Write for VecSink {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
+}
+
+/// Fuel budget for one wasm2 execution, scaled with the recipe's
+/// declared byte sizes (measured: xf-preflate recreate needs ~52
+/// fuel/plaintext byte; 256 gives ~5x headroom). Deterministic — a pure
+/// function of recipe claims — so a fuel trap is as reproducible as any
+/// other trap, and a flat default no longer chokes multi-GiB members
+/// while runaway guests still die early on small recipes.
+const FUEL_BASE: u64 = 1 << 24;
+const FUEL_PER_BYTE: u64 = 256;
+
+fn fuel_budget(children: &[Plan], outputs: &[(Blake3, u64)]) -> u64 {
+    let bytes = children
+        .iter()
+        .map(Plan::len)
+        .fold(0u64, u64::saturating_add)
+        .saturating_add(outputs.iter().map(|(_, s)| *s).fold(0u64, u64::saturating_add));
+    FUEL_BASE.saturating_add(bytes.saturating_mul(FUEL_PER_BYTE))
 }
 
 /// DFS for the wasm2 node running `component`; returns its children —

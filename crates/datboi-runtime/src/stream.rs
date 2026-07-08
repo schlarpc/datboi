@@ -230,7 +230,7 @@ impl StreamHost {
         })
     }
 
-    fn store(&self) -> Result<Store<HostState>, RuntimeError> {
+    fn store(&self, fuel: Option<u64>) -> Result<Store<HostState>, RuntimeError> {
         let limits = StoreLimitsBuilder::new()
             .memory_size(self.limits.memory)
             .build();
@@ -243,7 +243,7 @@ impl StreamHost {
         );
         store.limiter(|s| &mut s.limits);
         store
-            .set_fuel(self.limits.fuel)
+            .set_fuel(fuel.unwrap_or(self.limits.fuel))
             .map_err(RuntimeError::Component)?;
         Ok(store)
     }
@@ -280,7 +280,7 @@ impl StreamHost {
         transform: &StreamTransform,
         op: &str,
     ) -> Result<crate::Descriptor, RuntimeError> {
-        let mut store = self.store()?;
+        let mut store = self.store(None)?;
         let transform = self.instantiate(&mut store, transform)?;
         let d = transform
             .call_describe(&mut store, op)
@@ -311,7 +311,26 @@ impl StreamHost {
         inputs: Vec<StreamInput>,
         sinks: Vec<Box<dyn Write + Send>>,
     ) -> Result<(), RuntimeError> {
-        let mut store = self.store()?;
+        self.run_fueled(transform, op, params, inputs, sinks, None)
+    }
+
+    /// [`StreamHost::run`] with an explicit fuel budget — the executor
+    /// scales fuel with a recipe's declared byte sizes so multi-GiB
+    /// members don't trap on a flat default while runaway guests still
+    /// die. `None` uses [`Limits::fuel`].
+    ///
+    /// # Errors
+    /// As [`StreamHost::run`].
+    pub fn run_fueled(
+        &self,
+        transform: &StreamTransform,
+        op: &str,
+        params: &[u8],
+        inputs: Vec<StreamInput>,
+        sinks: Vec<Box<dyn Write + Send>>,
+        fuel: Option<u64>,
+    ) -> Result<(), RuntimeError> {
+        let mut store = self.store(fuel)?;
         let transform = self.instantiate(&mut store, transform)?;
 
         let mut input_handles = Vec::with_capacity(inputs.len());
@@ -369,7 +388,26 @@ impl StreamHost {
         range: RangeRequest,
         sink: Box<dyn Write + Send>,
     ) -> Result<(), RuntimeError> {
-        let mut store = self.store()?;
+        self.serve_range_fueled(transform, op, params, inputs, range, sink, None)
+    }
+
+    /// [`StreamHost::serve_range`] with an explicit fuel budget; `None`
+    /// uses [`Limits::fuel`].
+    ///
+    /// # Errors
+    /// As [`StreamHost::run`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn serve_range_fueled(
+        &self,
+        transform: &StreamTransform,
+        op: &str,
+        params: &[u8],
+        inputs: Vec<Box<dyn RangeRead>>,
+        range: RangeRequest,
+        sink: Box<dyn Write + Send>,
+        fuel: Option<u64>,
+    ) -> Result<(), RuntimeError> {
+        let mut store = self.store(fuel)?;
         let transform = self.instantiate(&mut store, transform)?;
 
         let mut input_handles = Vec::with_capacity(inputs.len());
