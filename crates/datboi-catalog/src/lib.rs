@@ -21,6 +21,7 @@ pub mod export;
 pub mod import;
 pub mod rollup;
 pub mod unify;
+pub mod views;
 
 pub use audit::{AuditReport, EntryAudit, audit};
 pub use diff::{DatDiff, diff_source};
@@ -28,6 +29,7 @@ pub use export::export_dat;
 pub use import::{ImportOptions, ImportReport, import_dat};
 pub use rollup::refresh_rollups;
 pub use unify::relink_all;
+pub use views::{EvalReport, ViewDef, define_view, evaluate_view, get_view, list_views};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CatalogError {
@@ -43,6 +45,8 @@ pub enum CatalogError {
     Xml(#[from] quick_xml::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error("corrupt {0} record")]
+    Corrupt(&'static str),
     #[error("export: {0}")]
     Export(String),
     #[error("unknown dat source {provider}/{system}")]

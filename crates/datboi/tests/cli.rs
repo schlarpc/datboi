@@ -733,3 +733,83 @@ fn dat_fetch_imports_zipped_and_bare() {
         .code(2)
         .stderr(predicate::str::contains("redump/<system-slug>"));
 }
+
+/// M4 views: define → eval → manifest over a real ingest+dat, with the
+/// D33 tag flip and a re-eval producing a new snapshot after holdings
+/// change.
+#[test]
+fn view_define_eval_manifest() {
+    let u = Universe::new();
+    fs::create_dir_all(u.src()).unwrap();
+    let alpha = b"alpha rom content".as_slice();
+    let beta = b"beta rom content!".as_slice();
+    fs::write(u.src().join("alpha.gba"), alpha).unwrap();
+    u.cmd().arg("ingest").arg(u.src()).assert().success();
+
+    let games = format!(
+        r#"  <game name="Alpha"><description>Alpha</description>{}</game>
+  <game name="Beta"><description>Beta</description>{}</game>"#,
+        rom_xml("alpha.gba", alpha),
+        rom_xml("beta.gba", beta),
+    );
+    let dat_path = u.root.path().join("fixture.dat");
+    fs::write(&dat_path, dat_xml("Test GBA", &games)).unwrap();
+    u.cmd()
+        .args(["dat", "import"])
+        .arg(&dat_path)
+        .args(["--provider", "test", "--system", "gba"])
+        .assert()
+        .success();
+
+    u.cmd()
+        .args(["view", "define", "everdrive", "test/gba"])
+        .args(["--template", "{entry}/{name}"])
+        .assert()
+        .success();
+
+    // Only alpha is held: one row, one missing claim.
+    let eval = u
+        .cmd()
+        .args(["view", "eval", "everdrive", "--json"])
+        .assert()
+        .success();
+    let out: serde_json::Value =
+        serde_json::from_slice(&eval.get_output().stdout).expect("json");
+    assert_eq!(out["rows"], 1);
+    assert_eq!(out["missing_claims"], 1);
+    let snap1 = out["snapshot"].as_str().unwrap().to_owned();
+
+    let manifest = u
+        .cmd()
+        .args(["view", "manifest", "everdrive", "--json"])
+        .assert()
+        .success();
+    let m: serde_json::Value =
+        serde_json::from_slice(&manifest.get_output().stdout).expect("json");
+    assert_eq!(m["snapshot"], snap1.as_str());
+    assert_eq!(m["rows"][0]["path"], "Alpha/alpha.gba");
+    assert_eq!(m["rows"][0]["seek"], 0, "resident literal reads affinely");
+
+    // Ingest beta; re-eval flips the tag to a NEW snapshot with 2 rows.
+    fs::write(u.src().join("beta.gba"), beta).unwrap();
+    u.cmd().arg("ingest").arg(u.src()).assert().success();
+    let eval2 = u
+        .cmd()
+        .args(["view", "eval", "everdrive", "--json"])
+        .assert()
+        .success();
+    let out2: serde_json::Value =
+        serde_json::from_slice(&eval2.get_output().stdout).expect("json");
+    assert_eq!(out2["rows"], 2);
+    assert_eq!(out2["missing_claims"], 0);
+    assert_ne!(out2["snapshot"], snap1.as_str(), "D33: new snapshot, tag flipped");
+
+    let list = u
+        .cmd()
+        .args(["view", "list", "--json"])
+        .assert()
+        .success();
+    let l: serde_json::Value = serde_json::from_slice(&list.get_output().stdout).expect("json");
+    assert_eq!(l["views"][0]["name"], "everdrive");
+    assert_eq!(l["views"][0]["snapshot"], out2["snapshot"]);
+}

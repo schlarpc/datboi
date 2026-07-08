@@ -105,6 +105,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Filesystem views (M4, 80-views.md): define policies, evaluate
+    /// them into immutable snapshots, list what exists.
+    View {
+        #[command(subcommand)]
+        cmd: ViewCommand,
+    },
     /// Re-hash stored blobs and report corruption.
     Scrub {
         /// Percentage of blobs to check (deterministic sample by hash).
@@ -189,6 +195,38 @@ fn main() -> ExitCode {
     }
 }
 
+#[derive(clap::Subcommand)]
+enum ViewCommand {
+    /// Define (or replace) a named view over one dat source.
+    Define {
+        name: String,
+        /// <provider>/<system> of the dat source to project.
+        source: String,
+        /// Layout template; placeholders {entry} and {name}.
+        #[arg(long, default_value = "{name}")]
+        template: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Evaluate a view into an immutable snapshot and flip its tag (D33).
+    Eval {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List defined views and their current snapshots.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a view's current manifest.
+    Manifest {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.command {
         Command::Serve => {
@@ -241,6 +279,19 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             json,
         } => cmds::evict(cli.global.open()?, target_bytes, license, dry_run, json),
         Command::Materialize { hash, json } => cmds::materialize(cli.global.open()?, &hash, json),
+        Command::View { cmd } => match cmd {
+            ViewCommand::Define {
+                name,
+                source,
+                template,
+                json,
+            } => cmds::view_define(&cli.global.open()?, &name, &source, &template, json),
+            ViewCommand::Eval { name, json } => cmds::view_eval(cli.global.open()?, &name, json),
+            ViewCommand::List { json } => cmds::view_list(&cli.global.open()?, json),
+            ViewCommand::Manifest { name, json } => {
+                cmds::view_manifest(&cli.global.open()?, &name, json)
+            }
+        },
         Command::Sweep {
             analyzer,
             limit,

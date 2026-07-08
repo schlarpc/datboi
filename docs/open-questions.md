@@ -127,7 +127,22 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
 
 ## Next sessions (pick up here)
 
-**Position as of 2026-07-07 (evening session)**: M1/M2 complete. **M3
+**Position as of 2026-07-07 (late session)**: **M1/M2/M3 COMPLETE**
+(bench-gated items indefinitely deferred by ruling). **M4 started** —
+shipped: `datboi/viewsnap/1` (canonical manifest object, golden-pinned),
+view definitions (state.db config KV) + evaluation (relink → rollups →
+have(verified) claims → layout template with deterministic collision
+suffixes → snapshot mint), the D33 flip as a `view/<name>` tag move
+(doubles as the D27 GC root), CLI `view define/eval/list/manifest` with
+an e2e test. NEXT: HTTP Range serving of snapshots (axum in
+datboi-server: resolve tag → manifest → executor serve_range; then
+WebDAV via dav-server), 1G1R selection + profiles, and the two rulings
+owed before image synthesis (reified views + D49 affine carve-out).
+Note: view defs/tags don't yet ride the statesnap payload — recovery
+loses them (additive payload key later; same class as the existing
+tag/config gap).
+
+**Previous position (2026-07-07 evening session)**: M1/M2 complete. **M3
 nearly complete** — shipped this session on top of eviction/chunking:
 wild-zip rebuild for real (D53: xf-preflate @2 component, preflate
 splitting with PARTIAL coverage, per-member recreate + container

@@ -1363,3 +1363,116 @@ pub fn status(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
     }
     Ok(ExitCode::SUCCESS)
 }
+
+// ---- views (M4: definitions, evaluation, manifests) ----
+
+pub fn view_define(
+    env: &Env,
+    name: &str,
+    source: &str,
+    template: &str,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let (provider, system) = split_source(source)?;
+    let def = datboi_catalog::ViewDef {
+        name: name.to_owned(),
+        provider: provider.to_owned(),
+        system: system.to_owned(),
+        template: template.to_owned(),
+    };
+    datboi_catalog::define_view(&env.db, &def)?;
+    if json {
+        println!(
+            "{}",
+            json!({"view": name, "source": source, "template": template})
+        );
+    } else {
+        println!("defined view {name} over {source} (template {template:?})");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn view_eval(mut env: Env, name: &str, json: bool) -> anyhow::Result<ExitCode> {
+    let def = datboi_catalog::get_view(&env.db, name)?
+        .with_context(|| format!("view {name:?} is not defined"))?;
+    let report = datboi_catalog::evaluate_view(&mut env.db, &env.store, &def, now_unix())?;
+    if json {
+        println!(
+            "{}",
+            json!({
+                "view": name,
+                "snapshot": report.snapshot.to_hex(),
+                "rows": report.rows,
+                "missing_claims": report.missing,
+                "disambiguated": report.disambiguated,
+            })
+        );
+    } else {
+        println!(
+            "view {name}: snapshot {} ({} row(s), {} claim(s) missing, {} path(s) disambiguated)",
+            report.snapshot, report.rows, report.missing, report.disambiguated
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn view_list(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
+    let mut items = Vec::new();
+    for name in datboi_catalog::list_views(&env.db)? {
+        let snap = env.db.get_tag(&format!("view/{name}"))?;
+        items.push((name, snap));
+    }
+    if json {
+        println!(
+            "{}",
+            json!({"views": items.iter().map(|(n, s)| json!({
+                "name": n,
+                "snapshot": s.map(|h| h.to_hex()),
+            })).collect::<Vec<_>>()})
+        );
+    } else if items.is_empty() {
+        println!("no views defined");
+    } else {
+        for (name, snap) in &items {
+            println!(
+                "{name}  {}",
+                snap.map_or_else(|| "(never evaluated)".into(), |h| h.to_hex())
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn view_manifest(env: &Env, name: &str, json: bool) -> anyhow::Result<ExitCode> {
+    let snap_hash = env
+        .db
+        .get_tag(&format!("view/{name}"))?
+        .with_context(|| format!("view {name:?} has no snapshot; run `view eval {name}`"))?;
+    let mut bytes = Vec::new();
+    env.store
+        .get(Namespace::Meta, &snap_hash)?
+        .with_context(|| format!("snapshot blob {snap_hash} missing from meta/"))?
+        .read_to_end(&mut bytes)?;
+    let snap = datboi_core::viewsnap::ViewSnapshot::decode(&bytes)
+        .map_err(|e| anyhow::anyhow!("snapshot does not decode: {e}"))?;
+    if json {
+        println!(
+            "{}",
+            json!({
+                "view": name,
+                "snapshot": snap_hash.to_hex(),
+                "created_at": snap.created_at,
+                "rows": snap.rows.iter().map(|r| json!({
+                    "path": r.path, "hash": r.hash.to_hex(),
+                    "size": r.size, "seek": r.seek,
+                })).collect::<Vec<_>>(),
+            })
+        );
+    } else {
+        println!("view {name} snapshot {snap_hash} ({} rows)", snap.rows.len());
+        for r in &snap.rows {
+            println!("{:>12}  {}  {}", r.size, r.hash, r.path);
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}

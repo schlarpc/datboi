@@ -63,6 +63,17 @@ impl Db {
         Ok(())
     }
 
+    /// All config rows whose key starts with `prefix` (key order).
+    pub fn config_list_prefix(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>, IndexError> {
+        let mut stmt = self.state().prepare_cached(
+            "SELECT key, value FROM config WHERE substr(key, 1, length(?1)) = ?1 ORDER BY key",
+        )?;
+        let rows = stmt
+            .query_map(params![prefix], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn config_get(&self, key: &str) -> Result<Option<Vec<u8>>, IndexError> {
         Ok(self
             .state()
