@@ -17,13 +17,10 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
   re-import; byte-reading demoted to background scrub that refreshes
   `verified_at`. Tune the walk parallelism with the M1 NFS bench
   numbers when the bench machine exists.
-- **Quarantine attribution refinement** (work item, accepted
-  2026-07-07): `serve_range` quarantines a component on ANY
-  window-verify failure through its seek path, including failures
-  actually caused by corrupt *inputs*. Safe but defamatory. Refinement:
-  on mismatch, verify the route's inputs (input-side bao / re-hash)
-  before writing the quarantine row; only an inputs-clean mismatch
-  indicts the component. Slot: `Executor::serve_range`'s error arm.
+- ~~Quarantine attribution refinement~~ shipped 2026-07-07:
+  `serve_range` mismatches re-hash the implicated route's literal
+  leaves first; only an inputs-clean mismatch quarantines the
+  component, corrupt inputs get named in the error instead.
 - **Analyzer identity for native analyzers**: implemented as
   `blake3("datboi-analyzer:<name>/<version>")` tags with parameters
   baked into the name (e.g. `fastcdc-v2020-nc2-64k-256k-1m/1`). Wasm

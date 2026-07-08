@@ -402,9 +402,7 @@ impl<'s> Executor<'s> {
                 window.len(),
                 aend - astart
             );
-            if let Some(component) = via_component {
-                db.quarantine_seek(&component, now_unix(), &detail)?;
-            }
+            let detail = self.attribute_seek_failure(db, &plan, via_component, &detail)?;
             return Err(ExecError::RangeVerifyFailed {
                 hash: *hash,
                 detail,
@@ -417,18 +415,71 @@ impl<'s> Executor<'s> {
                 Ok(window[lo..lo + n].to_vec())
             }
             Err(e) => {
-                if let Some(component) = via_component {
-                    // D49 rule 3: seekability quarantine for the
-                    // implicated component hash. The claim itself stays
-                    // trusted (sequential replay proved it).
-                    db.quarantine_seek(&component, now_unix(), &e.to_string())?;
-                }
+                let detail =
+                    self.attribute_seek_failure(db, &plan, via_component, &e.to_string())?;
                 Err(ExecError::RangeVerifyFailed {
                     hash: *hash,
-                    detail: e.to_string(),
+                    detail,
                 })
             }
         }
+    }
+
+    /// Attribution for a window-verify failure (D49 rule 3, refined): a
+    /// mismatch through a component's seek path only indicts the
+    /// component when its route inputs are CLEAN — so re-hash every
+    /// literal grounding the implicated node before writing the
+    /// quarantine row. Corrupt inputs would fail any producer; defaming
+    /// the component for them would silently degrade every future read
+    /// to the spill path. Returns the (possibly annotated) detail.
+    fn attribute_seek_failure(
+        &self,
+        db: &Db,
+        plan: &Plan,
+        via_component: Option<Blake3>,
+        detail: &str,
+    ) -> Result<String, ExecError> {
+        let Some(component) = via_component else {
+            return Ok(detail.to_string());
+        };
+        let mut dirty: Vec<Blake3> = Vec::new();
+        if let Some(children) = find_wasm2_children(plan, &component) {
+            let mut leaves = Vec::new();
+            for child in children {
+                collect_literal_leaves(child, &mut leaves);
+            }
+            for (leaf_hash, _) in leaves {
+                if !self.literal_matches_address(&leaf_hash)? {
+                    dirty.push(leaf_hash);
+                }
+            }
+        }
+        if dirty.is_empty() {
+            // Inputs clean: the seek path itself lied. Quarantine (the
+            // claim stays trusted — sequential replay proved it).
+            db.quarantine_seek(&component, now_unix(), detail)?;
+            Ok(detail.to_string())
+        } else {
+            let dirty_list = dirty
+                .iter()
+                .map(Blake3::to_hex)
+                .collect::<Vec<_>>()
+                .join(", ");
+            Ok(format!(
+                "{detail}; corrupt route input(s) [{dirty_list}] — component not quarantined"
+            ))
+        }
+    }
+
+    /// Slow, certain integrity check reserved for the mismatch path:
+    /// stream the resident literal and compare against its address.
+    fn literal_matches_address(&self, hash: &Blake3) -> Result<bool, ExecError> {
+        let Some(mut file) = self.store.get(StoreNs::Data, hash)? else {
+            return Ok(false); // vanished mid-read: certainly not clean
+        };
+        let mut hasher = blake3::Hasher::new();
+        io::copy(&mut file, &mut hasher)?;
+        Ok(Blake3(*hasher.finalize().as_bytes()) == *hash)
     }
 
     /// Produce blob bytes `astart..aend` from a plan, reporting which
@@ -987,6 +1038,35 @@ impl Write for VecSink {
     }
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+/// DFS for the wasm2 node running `component`; returns its children —
+/// the inputs whose integrity decides quarantine attribution.
+fn find_wasm2_children<'p>(plan: &'p Plan, component: &Blake3) -> Option<&'p [Plan]> {
+    let Plan::Op(op_plan) = plan else {
+        return None;
+    };
+    if let OpImpl::Wasm2 { component: c, .. } = &op_plan.op
+        && c == component
+    {
+        return Some(&op_plan.children);
+    }
+    op_plan
+        .children
+        .iter()
+        .find_map(|child| find_wasm2_children(child, component))
+}
+
+/// Literal leaves grounding a plan subtree.
+fn collect_literal_leaves(plan: &Plan, out: &mut Vec<(Blake3, u64)>) {
+    match plan {
+        Plan::Literal { hash, len } => out.push((*hash, *len)),
+        Plan::Op(op_plan) => {
+            for child in &op_plan.children {
+                collect_literal_leaves(child, out);
+            }
+        }
     }
 }
 

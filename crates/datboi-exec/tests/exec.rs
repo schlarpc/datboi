@@ -602,6 +602,88 @@ fn lying_seek_path_is_quarantined_and_falls_back() {
     assert_eq!(got, &swapped[4096..4196]);
 }
 
+/// Quarantine attribution (D49 rule 3, refined): a window-verify failure
+/// caused by a CORRUPT INPUT must not defame the component. Same honest
+/// component as `served_ranges_verify_after_eviction`, but the input
+/// literal rots on disk after licensing — the seeked read fails, names
+/// the corrupt input, and the component stays trusted.
+#[test]
+fn corrupt_input_mismatch_does_not_quarantine_the_component() {
+    let mut w = world();
+    let input = pattern(120_000);
+    let swapped = byteswap(&input);
+
+    let (component_hash, _) = w.put_literal(COMPONENT);
+    let (input_hash, input_id) = w.put_literal(&input);
+    let (swapped_hash, swapped_id) = w.claim_absent(&swapped);
+    let recipe = Recipe {
+        op: Op::Wasm {
+            component: component_hash,
+            world: "datboi:transform@2".into(),
+            export: "byteswap".into(),
+        },
+        inputs: vec![InputRef {
+            hash: input_hash,
+            role: None,
+        }],
+        outputs: vec![OutputRef {
+            hash: swapped_hash,
+            size: swapped.len() as u64,
+            name: None,
+        }],
+        params: Vec::new(),
+    };
+    let recipe_id = w.mint_recipe(
+        &recipe,
+        "wasm:byteswap",
+        OpKind::Wasm,
+        SeekClass::Affine,
+        &[(0, input_id)],
+        &[(0, swapped_id, swapped.len() as u64)],
+    );
+
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+    exec.replay(&w.db, recipe_id).expect("replay licenses");
+    w.evict(&swapped_hash);
+
+    // Rot the input literal in place (bit flip mid-file). The index and
+    // recipes still describe the clean bytes.
+    let path = w
+        ._dir
+        .path()
+        .join("store")
+        .join(datboi_store_fs::layout::blob_path(
+            StoreNs::Data,
+            &input_hash,
+        ));
+    let mut bytes = std::fs::read(&path).expect("read literal");
+    // Inside the window the seeked read will pull (affine route reads
+    // only what it needs — corruption elsewhere is invisible to it).
+    bytes[4_100] ^= 0xFF;
+    std::fs::write(&path, &bytes).expect("rot literal");
+
+    let err = exec
+        .serve_range(&w.db, &swapped_hash, 4096, 100)
+        .expect_err("mismatch surfaces as an error, never bytes");
+    match &err {
+        ExecError::RangeVerifyFailed { detail, .. } => {
+            assert!(
+                detail.contains(&input_hash.to_hex()),
+                "detail names the corrupt input: {detail}"
+            );
+            assert!(
+                detail.contains("not quarantined"),
+                "detail says the component was spared: {detail}"
+            );
+        }
+        other => panic!("expected RangeVerifyFailed, got {other}"),
+    }
+    assert!(
+        !w.db.is_seek_quarantined(&component_hash).expect("q"),
+        "corrupt inputs must not indict the component"
+    );
+}
+
 #[test]
 fn no_route_is_a_clean_error() {
     let w = world();
