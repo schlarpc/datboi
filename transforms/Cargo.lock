@@ -434,6 +434,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "xf-cso"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "xf-preflate"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,23 @@
+[package]
+name = "xf-cso"
+description = "CSO v1 (CISO) codec for the frozen datboi:transform@2 world: deterministic compress (pinned miniz_oxide), streaming decompress, manifest-seekable range serving through the block index"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# THE compressor: exact-pinned because its output bytes are the recipe
+# claim. The component hash is the real pin; the exact requirement keeps
+# rebuilds from silently floating.
+miniz_oxide = "=0.8.9"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen = { version = "0.46", default-features = false, features = ["macros", "realloc"] }
+
+[lints]
+workspace = true
