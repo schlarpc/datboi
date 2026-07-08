@@ -798,17 +798,28 @@ pub fn sweep(
 
 // ---- recover ----
 
-/// M1 recovery scope (D15, documented in command help): rebuilds the
-/// blob index (with recomputed aliases — one full read pass over data/)
-/// and the recipe index from meta/ objects. Recovered recipes have no
-/// verification provenance, so they re-enter as Pending and re-verify
-/// lazily. If the newest state snapshot verifies under this instance's
-/// identity key, catalog tables come back automatically by replaying
-/// `dat import` from the snapshot's CAS dat blobs; without a key (or a
-/// snapshot), re-run `datboi dat import` by hand. The full re-hash pass
-/// already rebuilds the alias table, so the snapshot's alias batches are
-/// not consulted here — they exist for the future fast-recovery path
-/// that skips the read pass and lets scrub re-verify lazily.
+/// Fast-walk parallelism. Structure is what matters now; the number gets
+/// tuned by the M1 NFS bench (90-roadmap.md) when the bench machine
+/// exists.
+const RECOVER_WALK_WORKERS: usize = 8;
+
+/// Recovery (D15): rebuilds the blob index and the recipe index from
+/// the store. Two data-pass modes:
+///
+/// * **fast (default when a snapshot authenticates)** — a parallel
+///   metadata-only walk: hash from the file name, size from stat, no
+///   bytes read. Aliases come back from the snapshot's sharded alias
+///   batches (D43); blobs the batches don't cover (ingested after the
+///   snapshot) get theirs from the next `scrub`, which also refreshes
+///   `verified_at` — byte verification is demoted to scrub, not paid
+///   at recovery time. Days-over-NFS becomes minutes.
+/// * **full-read (fallback)** — without an identity key or a verifying
+///   snapshot, the original one-pass re-hash rebuilds aliases from the
+///   bytes themselves.
+///
+/// Recovered recipes have no verification provenance, so they re-enter
+/// as Pending and re-verify lazily. Catalog tables come back by
+/// replaying `dat import` from the snapshot's CAS dat blobs.
 pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
     env.db.truncate_cache()?;
     let now = now_unix();
@@ -817,52 +828,8 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
     let mut corrupt: Vec<String> = Vec::new();
     let mut foreign: u64 = 0;
 
-    // data/: re-hash every blob (verifies while rebuilding aliases).
-    for item in env.store.list(Namespace::Data) {
-        match item {
-            Ok((hash, _size)) => {
-                let mut file = env
-                    .store
-                    .get(Namespace::Data, &hash)?
-                    .context("listed blob vanished mid-recover")?;
-                let mut hasher = AliasHasher::new();
-                let mut buf = vec![0u8; 64 * 1024];
-                loop {
-                    let n = file.read(&mut buf)?;
-                    if n == 0 {
-                        break;
-                    }
-                    hasher.update(&buf[..n]);
-                }
-                let aliases = hasher.finalize();
-                if aliases.blake3 != hash {
-                    corrupt.push(hash.to_hex());
-                    // Index the row (the file exists) but grant it no
-                    // verification and no aliases.
-                    env.db.upsert_blob(
-                        &hash,
-                        Some(aliases.size),
-                        NsRow::Data,
-                        Residency::Resident,
-                    )?;
-                    continue;
-                }
-                let blob_id = env.db.upsert_blob(
-                    &hash,
-                    Some(aliases.size),
-                    NsRow::Data,
-                    Residency::Resident,
-                )?;
-                env.db.insert_aliases(blob_id, &aliases)?;
-                env.db.set_verified(blob_id, now)?;
-                blobs += 1;
-            }
-            Err(StoreError::Foreign { .. }) => foreign += 1,
-            Err(e) => return Err(e.into()),
-        }
-    }
-
-    // meta/: recipes and other structured objects.
+    // meta/: recipes and other structured objects (bytes must be parsed
+    // anyway, and meta is small — this pass stays a verifying read).
     let mut recipes: u64 = 0;
     let mut meta_unknown: u64 = 0;
     let mut snapshot_candidates: Vec<(datboi_core::hash::Blake3, Vec<u8>)> = Vec::new();
@@ -912,22 +879,122 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
     // snapshots under their own key, so an unpinned signature proves nothing).
     let mut dats_reimported: u64 = 0;
     let mut analysis_restored: u64 = 0;
+    let mut aliases_restored: u64 = 0;
     let mut snapshot_seq: Option<u64> = None;
+    let mut fast_walk = false;
     let mut snapshot_note: &str =
         "no usable state snapshot: re-run `datboi dat import` for each dat to restore audits";
-    match crate::config::load_identity(&env.db_dir)? {
+    let selected = match crate::config::load_identity(&env.db_dir)? {
         None => {
             snapshot_note = "no identity key: cannot authenticate snapshots; \
                 re-run `datboi dat import` for each dat to restore audits";
+            None
         }
         Some(identity) => {
             let pk = identity.public_key();
-            let best = snapshot_candidates
+            snapshot_candidates
                 .iter()
                 .filter_map(|(hash, b)| Some((*hash, StateSnapshot::decode(b).ok()?)))
                 .filter(|(_, snap)| snap.verify(&pk).is_ok())
-                .max_by_key(|(_, snap)| snap.payload.sequence);
-            if let Some((snap_hash, snap)) = best {
+                .max_by_key(|(_, snap)| snap.payload.sequence)
+        }
+    };
+
+    // data/: fast metadata-only walk when a snapshot authenticates
+    // (aliases restored from its batches below; verification demoted to
+    // scrub), full-read re-hash otherwise.
+    if selected.is_some() {
+        fast_walk = true;
+        for item in env.store.list_parallel(Namespace::Data, RECOVER_WALK_WORKERS) {
+            match item {
+                Ok((hash, size)) => {
+                    env.db
+                        .upsert_blob(&hash, Some(size), NsRow::Data, Residency::Resident)?;
+                    blobs += 1;
+                }
+                Err(StoreError::Foreign { .. }) => foreign += 1,
+                Err(e) => return Err(e.into()),
+            }
+        }
+    } else {
+        for item in env.store.list(Namespace::Data) {
+            match item {
+                Ok((hash, _size)) => {
+                    let mut file = env
+                        .store
+                        .get(Namespace::Data, &hash)?
+                        .context("listed blob vanished mid-recover")?;
+                    let mut hasher = AliasHasher::new();
+                    let mut buf = vec![0u8; 64 * 1024];
+                    loop {
+                        let n = file.read(&mut buf)?;
+                        if n == 0 {
+                            break;
+                        }
+                        hasher.update(&buf[..n]);
+                    }
+                    let aliases = hasher.finalize();
+                    if aliases.blake3 != hash {
+                        corrupt.push(hash.to_hex());
+                        // Index the row (the file exists) but grant it no
+                        // verification and no aliases.
+                        env.db.upsert_blob(
+                            &hash,
+                            Some(aliases.size),
+                            NsRow::Data,
+                            Residency::Resident,
+                        )?;
+                        continue;
+                    }
+                    let blob_id = env.db.upsert_blob(
+                        &hash,
+                        Some(aliases.size),
+                        NsRow::Data,
+                        Residency::Resident,
+                    )?;
+                    env.db.insert_aliases(blob_id, &aliases)?;
+                    env.db.set_verified(blob_id, now)?;
+                    blobs += 1;
+                }
+                Err(StoreError::Foreign { .. }) => foreign += 1,
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+
+    {
+        {
+            if let Some((snap_hash, snap)) = selected {
+                // Alias restore (D43, the fast-walk counterpart of the
+                // full-read pass): batch rows for blobs the walk found
+                // get their alias tuples back without reading bytes.
+                // Rows for vanished blobs are skipped; blobs newer than
+                // the snapshot get aliases from the next scrub.
+                if fast_walk {
+                    for batch_hash in &snap.payload.alias_batches {
+                        let Some(mut file) = env.store.get(Namespace::Meta, batch_hash)? else {
+                            eprintln!(
+                                "warning: snapshot references alias batch {batch_hash} but it is not in the store"
+                            );
+                            continue;
+                        };
+                        let mut bytes = Vec::new();
+                        file.read_to_end(&mut bytes)?;
+                        match AliasBatch::decode(&bytes) {
+                            Ok(batch) => {
+                                for tuple in &batch.rows {
+                                    if let Some(row) = env.db.blob_by_hash(&tuple.blake3)? {
+                                        env.db.insert_aliases(row.blob_id, tuple)?;
+                                        aliases_restored += 1;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("warning: alias batch {batch_hash} does not decode: {e}");
+                            }
+                        }
+                    }
+                }
                 for source in &snap.payload.sources {
                     let Some(mut file) = env.store.get(Namespace::Data, &source.dat_blob)? else {
                         eprintln!(
@@ -1004,6 +1071,8 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
                 "meta_other": meta_unknown,
                 "foreign_files": foreign,
                 "snapshot_seq": snapshot_seq,
+                "fast_walk": fast_walk,
+                "aliases_restored": aliases_restored,
                 "dats_reimported": dats_reimported,
                 "analysis_restored": analysis_restored,
                 "corrupt": corrupt,
@@ -1017,6 +1086,10 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
             println!("snapshot used      {seq:>8}");
             println!("dats re-imported   {dats_reimported:>8}");
             println!("analysis restored  {analysis_restored:>8}");
+            println!("aliases restored   {aliases_restored:>8}");
+        }
+        if fast_walk {
+            println!("mode: fast (metadata-only walk; run `datboi scrub` to re-verify bytes)");
         }
         if meta_unknown > 0 {
             println!("other meta objects {meta_unknown:>8}");
@@ -1106,12 +1179,14 @@ fn ensure_blob(db: &datboi_index::Db, hash: &datboi_core::hash::Blake3) -> anyho
 
 pub fn scrub(env: &Env, sample_pct: u8, json: bool) -> anyhow::Result<ExitCode> {
     let pct = sample_pct.min(100);
+    let now = now_unix();
     let mut checked: u64 = 0;
+    let mut refreshed: u64 = 0;
     let mut corrupt: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     for ns in [Namespace::Data, Namespace::Meta] {
         for item in env.store.list(ns) {
-            let (hash, _) = match item {
+            let (hash, size) = match item {
                 Ok(pair) => pair,
                 Err(StoreError::Foreign { .. }) => continue,
                 Err(e) => return Err(e.into()),
@@ -1122,10 +1197,26 @@ pub fn scrub(env: &Env, sample_pct: u8, json: bool) -> anyhow::Result<ExitCode> 
                 continue;
             }
             checked += 1;
-            match env.store.verify(ns, &hash)? {
-                VerifyOutcome::Valid => {}
-                VerifyOutcome::Corrupt { .. } => corrupt.push(hash.to_hex()),
-                VerifyOutcome::Missing => missing.push(hash.to_hex()),
+            // The same read computes the full alias tuple, so scrub is
+            // also fast-recovery's back-fill: blobs indexed by the
+            // metadata-only walk get aliases + verified_at here.
+            match env.store.verify_with_aliases(ns, &hash)? {
+                (VerifyOutcome::Valid, aliases) => {
+                    let ns_row = match ns {
+                        Namespace::Data => NsRow::Data,
+                        Namespace::Meta => NsRow::Meta,
+                    };
+                    let blob_id =
+                        env.db
+                            .upsert_blob(&hash, Some(size), ns_row, Residency::Resident)?;
+                    if let Some(aliases) = &aliases {
+                        env.db.insert_aliases(blob_id, aliases)?;
+                    }
+                    env.db.set_verified(blob_id, now)?;
+                    refreshed += 1;
+                }
+                (VerifyOutcome::Corrupt { .. }, _) => corrupt.push(hash.to_hex()),
+                (VerifyOutcome::Missing, _) => missing.push(hash.to_hex()),
             }
         }
     }
@@ -1133,12 +1224,12 @@ pub fn scrub(env: &Env, sample_pct: u8, json: bool) -> anyhow::Result<ExitCode> 
         println!(
             "{}",
             json!({
-                "sample_pct": pct, "checked": checked,
+                "sample_pct": pct, "checked": checked, "refreshed": refreshed,
                 "corrupt": corrupt, "missing": missing,
             })
         );
     } else {
-        println!("checked {checked} blobs ({pct}% sample)");
+        println!("checked {checked} blobs ({pct}% sample), {refreshed} rows refreshed");
         for h in &corrupt {
             println!("CORRUPT: {h}");
         }

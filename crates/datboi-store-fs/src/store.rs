@@ -300,6 +300,110 @@ impl Store {
         }
     }
 
+    /// [`Store::list`] fanned out over worker threads — the fast-recovery
+    /// walk (metadata only: hash from the file name, size from stat; no
+    /// bytes read). Workers split at the first shard level (256 dirs);
+    /// results stream through a bounded channel in no particular order.
+    /// `workers` is clamped to 1..=64; tuning waits on the M1 NFS bench.
+    pub fn list_parallel(
+        &self,
+        ns: Namespace,
+        workers: usize,
+    ) -> std::sync::mpsc::IntoIter<Result<(Blake3, u64), StoreError>> {
+        let workers = workers.clamp(1, 64);
+        let (tx, rx) = std::sync::mpsc::sync_channel(1024);
+        let root = self.root.join(ns.dir());
+        // One pass to enumerate first-level shard dirs; anything odd at
+        // this level is reported through the channel like list() would.
+        let mut shard_dirs: Vec<PathBuf> = Vec::new();
+        match fs::read_dir(&root) {
+            Ok(rd) => {
+                for entry in rd {
+                    match entry {
+                        Ok(e) if e.file_type().map(|t| t.is_dir()).unwrap_or(false) => {
+                            shard_dirs.push(e.path());
+                        }
+                        Ok(e) => {
+                            let _ = tx.send(Err(StoreError::Foreign { path: e.path() }));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(StoreError::io(&root, e)));
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(Err(StoreError::io(&root, e)));
+                return rx.into_iter();
+            }
+        }
+        let shards = std::sync::Arc::new(std::sync::Mutex::new(shard_dirs));
+        for _ in 0..workers {
+            let shards = std::sync::Arc::clone(&shards);
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                loop {
+                    let Some(dir) = shards.lock().expect("shard queue").pop() else {
+                        return;
+                    };
+                    let mut iter = ListIter {
+                        stack: match fs::read_dir(&dir) {
+                            Ok(rd) => vec![rd],
+                            Err(e) => {
+                                let _ = tx.send(Err(StoreError::io(&dir, e)));
+                                continue;
+                            }
+                        },
+                        pending_error: None,
+                    };
+                    for item in &mut iter {
+                        if tx.send(item).is_err() {
+                            return; // consumer gone
+                        }
+                    }
+                }
+            });
+        }
+        drop(tx); // workers hold the remaining senders
+        rx.into_iter()
+    }
+
+    /// [`Store::verify`] that also recomputes the full alias tuple in
+    /// the same read — the scrub upgrade path: fast recovery indexes
+    /// blobs without reading them, and scrub back-fills aliases +
+    /// verification with this. `None` tuple unless the blob is Valid.
+    pub fn verify_with_aliases(
+        &self,
+        ns: Namespace,
+        hash: &Blake3,
+    ) -> Result<(VerifyOutcome, Option<datboi_core::alias::AliasTuple>), StoreError> {
+        let Some(mut file) = self.get(ns, hash)? else {
+            return Ok((VerifyOutcome::Missing, None));
+        };
+        let path = self.blob_path(ns, hash);
+        let mut hasher = datboi_core::alias::AliasHasher::new();
+        let mut buf = vec![0u8; CHUNK];
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => hasher.update(&buf[..n]),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(StoreError::io(&path, e)),
+            }
+        }
+        let aliases = hasher.finalize();
+        if aliases.blake3 == *hash {
+            Ok((VerifyOutcome::Valid, Some(aliases)))
+        } else {
+            Ok((
+                VerifyOutcome::Corrupt {
+                    actual: aliases.blake3,
+                },
+                None,
+            ))
+        }
+    }
+
     /// Re-hash one blob (scrub primitive).
     pub fn verify(&self, ns: Namespace, hash: &Blake3) -> Result<VerifyOutcome, StoreError> {
         let Some(mut file) = self.get(ns, hash)? else {
