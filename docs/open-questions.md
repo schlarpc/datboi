@@ -144,26 +144,52 @@ ingest, aggregation (NFS-bench-gated).
 
 Priority order:
 
-1. Remaining M3 analyzer: ECM (7z/rar ingest shipped 2026-07-07;
-   LZMA-class recompression prior-art research in flight — if a
-   preflate-analog exists, 7z containers get rebuild recipes and stop
-   paying double storage).
-2. **Component attribution stamping** (decision owed, evidence in
+1. Remaining M3 analyzer: ECM.
+2. **7z rebuild via pinned-encoder parameter discovery** (research
+   CONCLUDED 2026-07-07; design owed, no D-number yet). Findings: NO
+   preflate-analog exists for LZMA anywhere (incl. the repack scene —
+   xtool does zstd/oodle/lz4 but not LZMA; precomp has no xz support;
+   Shelwien's lzmarec keeps the LZ token stream, never plaintext).
+   Corrections fundamentally don't transfer: the adaptive range coder
+   makes divergence global, so corrections would mean predicting the
+   optimal parse exactly = reimplementing the encoder. BUT parameter
+   discovery is VIABLE for LZMA in a way it never was for zlib:
+   encoding is deterministic per encoder-version+params and stable
+   across multi-year version families (SDK 9.04–17.01 byte-identical
+   to each other; 18.06–21.x likewise — encode.su thread 4187), and
+   headers already carry lc/lp/pb/dict. Candidate design: keep the 7z
+   header blob literal, decode folder payloads to plaintext, re-encode
+   against a small pinned matrix (2–3 vendored encoder families ×
+   {fast,normal} × fb ∈ {32,64,273} × LZMA2 chunk layout) with
+   incremental-compare early abort; hit → recipe pins
+   (encoder-id, params) — a dozen bytes; miss → container stays
+   literal. No diff-patch middle path (xtool removed theirs: diffs are
+   bimodal). PPMd-in-7z and bzip2-in-7z are near-free bonuses (frozen
+   implementations, no parse decisions). Rust angle: wrap the vendored
+   C encoders (7-Zip SDK public domain / liblzma 0BSD) — bit-compat is
+   the requirement and the C code is the spec. Does NOT contradict
+   D53's rejection of param discovery for zlib: zlib's churn is
+   per-build; LZMA's stability is per-era.
+3. **RAR rebuild: confirmed infeasible, permanently literal.** No
+   recompressor exists for v3/v5; the encoder is closed and the unrar
+   license forbids using its source to recreate compression. The
+   extraction-based ingest is the final answer for rar.
+4. **Component attribution stamping** (decision owed, evidence in
    hand): `wasm-tools metadata add` embeds name/description/authors/
    license/source/revision as execution-inert custom sections — but
    they change the component hash, so the stamping convention should
    be ruled BEFORE any real corpus pins recipes. Candidate: stamp in
    the flake install phase from crate metadata + git rev.
-3. **Recipe rehabilitation** (work item): `Failed` is terminal, but
+5. **Recipe rehabilitation** (work item): `Failed` is terminal, but
    this session produced a wrongly-poisoned recipe via the (now fixed)
    pipe race — there is no operator path to un-poison a recipe whose
    poisoning was a host bug. Candidate: `scrub --rehabilitate` that
    re-replays Failed recipes and clears state on success.
-4. **M1 NFS store benchmark** — still DEFERRED (dev machine isn't the
+6. **M1 NFS store benchmark** — still DEFERRED (dev machine isn't the
    NFS-bearing one); gates aggregation (D36), freezes shard fanout,
    tunes the recovery walk (currently 8 workers).
-5. Rule the pended D49 affine carve-out no later than M4 views work.
-6. M4 views (80-views.md): shares-as-projections, images-as-recipes.
+7. Rule the pended D49 affine carve-out no later than M4 views work.
+8. M4 views (80-views.md): shares-as-projections, images-as-recipes.
 
 ## Resolved
 
