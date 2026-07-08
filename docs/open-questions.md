@@ -33,29 +33,20 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
   chunks every data blob ≥ 4 MiB. Molten with the D45 config
   vocabulary; also interacts with "don't chunk blobs that already have
   cheaper routes."
-- **Deflate rebuild: preflate, not parameter discovery** (researched
-  2026-07-07; RECOMMENDATION, not yet ruled). Prior art review found
-  the compressor-matching frame is obsolete: **preflate**
-  (deus-libri/preflate; Rust port `preflate-rs` 0.7.x, Microsoft,
-  Apache-2.0, `forbid(unsafe)`, built for exact-binary cloud storage)
-  reconstructs ANY valid deflate stream bit-exactly from plaintext + a
-  small corrections blob — no compressor identification needed.
-  Measured corrections overhead vs uncompressed: zlib 0.01–0.08%
-  (i.e. TorrentZip too), zlib-ng ≤1.07%, libdeflate ≤1.51%,
-  miniz ≤2.7%. Related: precomp (zlib-param brute force only),
-  reflate, grittibanzli — all subsumed. This would make effectively
-  EVERY wild zip rebuildable (kills most of the D24 stays-literal tax):
-  recipe = xf-preflate(corrections blob {role: skeleton}, member
-  plaintext) → container bytes; corrections are ordinary CAS inputs, so
-  determinism needs only the pinned component (preflate version churn
-  can't break old recipes — D5 holds by construction). The zlib-exact
-  compressor path is DEAD: zlib-rs has had output-determinism bugs and
-  zlib-ng guarantees reproducibility only within one identical build.
-  Work owed before ruling: verify preflate-rs compiles for
-  wasm32-unknown-unknown (deps: cabac, bitcode) under the empty-linker
-  rule; measure corrections size on real TorrentZip corpora; decide
-  @1 vs @2 world for xf-preflate (members are big → @2); replace the
-  deflate-trial analyzer's match-hunting with preflate splitting.
+- ~~Deflate rebuild: preflate, not parameter discovery~~ ruled
+  2026-07-07 as **D53** after the spike (wasm build verified, zero
+  imports; TorrentZip corpus bit-exact at ≈0.002% corrections):
+  xf-preflate targets the @2 streaming world; estimator failures fall
+  back to stays-literal.
+- **preflate coverage gap on unmodeled compressors** (open issue,
+  accepted with D53 as an optimization): preflate-rs 0.7.6 cleanly
+  errors on deflate streams whose match-finder fits none of its
+  modeled compressors — 7-Zip's deflate encoder reproducibly fails at
+  every level, and some real-world zips fail per-member. Those
+  containers keep paying the D24 stays-literal tax. Paths if it ever
+  matters: upstream issue / patch the fixed 4096-chain ceiling in
+  complevel_estimator, or a fallback corrections codec. Revisit when
+  wild-corpus hit rates are measurable (M3 sweep telemetry).
 - **Sequential assemble over opaque children spills today**: the
   executor opens assemble children random-access, so a sequential read
   of concat-of-derived (e.g. concat over decompressed members) spills
@@ -143,11 +134,9 @@ scrub/status/sweep/evict/materialize.
 
 Priority order:
 
-1. **preflate spike → ruling** (see "Deflate rebuild" above): verify
-   preflate-rs builds for wasm32-unknown-unknown under the empty
-   linker; measure corrections on a TorrentZip corpus; then rule, mint
-   xf-preflate (@2 world), and replace the deflate-trial analyzer's
-   match-hunting with preflate splitting. This is the wild-zip shrink
+1. **xf-preflate build-out** (spike done, ruled as D53): mint the @2
+   component, replace the deflate-trial analyzer's match-hunting with
+   preflate splitting + recipe minting. This is the wild-zip shrink
    unlock.
 2. **Quarantine attribution refinement** (work item above; small).
 3. **Fast recovery / metadata-only rebuild** (work item above;

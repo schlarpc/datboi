@@ -1,0 +1,30 @@
+[package]
+name = "xf-preflate"
+description = "Deflate-stream recreation for the frozen datboi:transform@2 world (D53): rebuilds a member's raw deflate bytes bit-exactly from its plaintext plus a framed preflate corrections blob"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The recreate path only; the split side runs natively in the analyzer.
+# Version pinned exactly: the component hash in recipes is the real pin,
+# but an exact requirement keeps rebuilds from silently floating.
+preflate-rs = "=0.7.6"
+
+# Guest bindings only for the wasm component; host-native unit tests build
+# without them.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen = { version = "0.46", default-features = false, features = ["macros", "realloc"] }
+
+[dev-dependencies]
+# Test-only deterministic in-process compressor to synthesize deflate
+# streams; production streams come from the wild.
+miniz_oxide = "0.8"
+
+[lints]
+workspace = true

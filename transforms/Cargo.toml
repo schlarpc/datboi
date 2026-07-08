@@ -2,7 +2,7 @@
 # target (wasm32-unknown-unknown, D42) and profiles differ (docs/50-infra.md).
 [workspace]
 resolver = "2"
-members = ["xf-reference", "xf-reference-stream"]
+members = ["xf-preflate", "xf-reference", "xf-reference-stream"]
 
 [workspace.package]
 version = "0.1.0"

@@ -639,3 +639,43 @@ stream nicely but iroh can't serve it), the original bao crate's 1 KiB
 tree (4× sidecar bytes for verification granularity nothing needs),
 inline-in-DB outboards (violates D15 — the tree must survive DB loss
 with the bytes it protects).
+
+## D53 — Wild-zip rebuild rides preflate splitting, streaming @2 (2026-07-07)
+
+Ruled after the preflate spike. The deflate-rebuild path is
+**preflate**, not compressor matching: `preflate-rs` 0.7.6 (Microsoft,
+Apache-2.0, pure Rust) reconstructs a deflate stream bit-exactly from
+its plaintext plus a small corrections blob — no compressor
+identification, no level search. Spike evidence: compiles for
+wasm32-unknown-unknown with ZERO imports (D42 empty-linker holds; 293
+KiB core module, componentizes, and runs under wasmtime with
+native-identical corrections output); TorrentZip-faithful (zlib -9)
+streams reconstruct 100% bit-exact, corrections ≈0.002% of plaintext at
+20 MiB with a ~0.5 KiB fixed floor per stream (irrelevant at CAS
+granularity — corrections are ordinary blobs); Info-ZIP works at every
+level. Deps (bitcode, cabac, byteorder, default-boxed, deranged) are
+pure Rust; version churn cannot break old recipes because the component
+hash is pinned in the recipe (D5 by construction).
+
+`xf-preflate` targets the **@2 streaming world** (members are big;
+`RecreateStreamProcessor` carries only the 32 KiB dictionary between
+chunks, so memory is bounded). Recipe shape: per-member `recreate` —
+inputs corrections `{role: skeleton}` + member plaintext → the member's
+raw deflate stream, **opaque** seek class; the container is an ordinary
+`assemble@1` over literal zip-structure segments + rebuilt streams, so
+range serving of the *container* still works through assemble's affine
+math (materializing only the members a range touches).
+
+**Coverage gap, accepted as an optimization issue**: preflate-rs 0.7.6
+hard-errors (`NoCompressionCandidates`, complevel_estimator's fixed
+4096-chain ceiling) on streams whose match-finding fits none of its
+modeled compressors — reproduced deterministically with 7-Zip's deflate
+encoder at every level; one real firmware zip failed on 3 of 7 members.
+The failure is a clean error, so the analyzer records a D48 negative
+and the container stays literal (the D24 tax persists exactly there).
+Tracked in open-questions.md; TorrentZip — the curated standard — is
+zlib and fully covered. *Rejected:* zlib-exact compressor components
+(zlib-rs has had output-determinism bugs; zlib-ng guarantees
+reproducibility only within one identical build), miniz trial
+recompression as the primary path (near-zero hit rate on scene zips;
+subsumed by preflate).
