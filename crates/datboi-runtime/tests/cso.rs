@@ -15,7 +15,7 @@ use datboi_runtime::{Limits, RuntimeError, SeekClass};
 const COMPONENT: &[u8] = include_bytes!("../../../transforms/dist/xf_cso.wasm");
 
 /// blake3 of the fixture — the identity a recipe would pin.
-const COMPONENT_BLAKE3: &str = "29f77eb2aa56a06519ae7f7dfe7b6e7de280f17cdf5a790a044246b4c025f8c4";
+const COMPONENT_BLAKE3: &str = "38a7ac0625bfe64d1845c4a968b98ccf1757924f2546f1e775eef93adb4d034c";
 
 /// A fake disc image: repetitive spans (compress well), a high-entropy
 /// span (forces stored-raw blocks), and a non-block-aligned tail.

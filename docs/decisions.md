@@ -679,3 +679,33 @@ zlib and fully covered. *Rejected:* zlib-exact compressor components
 reproducibility only within one identical build), miniz trial
 recompression as the primary path (near-zero hit rate on scene zips;
 subsumed by preflate).
+
+## D54 — Component attribution: stamped at build, enforced at load; one crate = one lockfile (2026-07-07)
+
+Two rulings in one format event (the pre-corpus window where hash churn
+is free). **Attribution**: every component carries its identity IN-BAND
+as execution-inert custom sections — name, description, authors,
+license, source URL, and a content-scoped revision — stamped by the
+flake's install phase (`wasm-tools metadata add`), and the hosts REFUSE
+to load a component missing the minimal set {name, description, source,
+revision}: an anonymous func is opaque and hard to reason about, and a
+pinned hash must always be traceable to what it is and where it came
+from. The `revision` is the crate source's nix store hash (`src:…`),
+NOT a git rev: content-scoped, so unrelated repo commits cannot churn
+component bytes and any commit with the crate unchanged reproduces the
+artifact byte-exactly. **Isolation**: each transform is a standalone
+cargo workspace with its own lockfile, built as its own nix derivation
+from exactly {crate dir + frozen ../wit} — ruled after observing a
+sibling's bytes shift through shared dependency resolution (adding
+xf-preflate re-ordered function indices in xf-reference-stream via a
+lockfile `syn` disambiguation). The reproducibility boundary of a
+component is now one directory. Enforcement lives in
+`datboi-runtime::attribution` (hand-rolled ~60-line section walk — the
+required fields are four known custom sections; no wasm-metadata
+dependency). All four dist/fixture components re-minted and re-pinned;
+the pre-D54 reference-stream build is kept as `unstamped.wasm` for the
+refusal gate. *Rejected:* git-rev stamping (per-commit churn breaks
+reproduce-from-any-commit), warning instead of refusing (a warning is
+policy nobody reads; the corpus lives forever), one shared workspace
+with canonical-at-mint bytes (tolerable but makes "reproducible"
+mean "from one blessed commit only").

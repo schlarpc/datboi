@@ -256,6 +256,11 @@ impl StreamHost {
     /// # Errors
     /// If the bytes are not a valid component.
     pub fn load(&self, component_bytes: &[u8]) -> Result<StreamTransform, RuntimeError> {
+        // D54: anonymous components don't load — identity metadata is
+        // required in-band so any pinned hash can be traced to a name,
+        // description, source, and content revision.
+        crate::attribution::parse_attribution(component_bytes)
+            .map_err(|e| RuntimeError::Component(anyhow::anyhow!(e)))?;
         Ok(StreamTransform {
             component: Component::from_binary(&self.engine, component_bytes)
                 .map_err(RuntimeError::Component)?,

@@ -17,7 +17,7 @@ use datboi_runtime::{Limits, RuntimeError, SeekClass};
 const COMPONENT: &[u8] = include_bytes!("fixtures/xf_reference_stream.wasm");
 
 /// blake3 of the fixture — the identity a recipe would pin.
-const COMPONENT_BLAKE3: &str = "cc5ec3fd13761e6c9b94bfc01534d0cca2f5a6ecb6eb1ed0c8019fbdafa6bbea";
+const COMPONENT_BLAKE3: &str = "52e98dac5525e252d74d3dbf75ac1deab834f18979818bdcba67d1cdbeb861b4";
 
 /// blake3 of `run("byteswap")` over [`pattern`]`(1 << 20 | 5)` — the
 /// cross-architecture anchor.
@@ -360,10 +360,18 @@ fn unknown_op_and_bad_arity_are_transform_errors() {
 #[test]
 fn ambient_imports_still_refused() {
     // The @2 linker carries OUR types interface and nothing else: a
-    // component demanding WASI must still fail to link.
-    let wasi_wanting =
-        wat::parse_str(r#"(component (import "wasi:cli/environment@0.2.6" (instance)))"#)
-            .expect("valid wat");
+    // component demanding WASI must still fail to link. Stamped inline
+    // (D54 attribution fires before linking, and this test is about the
+    // LINKER): the component-name payload is subsection 0 wrapping "t".
+    let wasi_wanting = wat::parse_str(
+        r#"(component
+             (import "wasi:cli/environment@0.2.6" (instance))
+             (@custom "component-name" "\00\02\01t")
+             (@custom "description" "test")
+             (@custom "source" "test")
+             (@custom "revision" "src:test"))"#,
+    )
+    .expect("valid wat");
     let (host, _) = shared();
     let err = (|| host.describe(&host.load(&wasi_wanting)?, "anything"))()
         .expect_err("ambient import must be unlinkable at load or link");

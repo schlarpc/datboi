@@ -24,6 +24,7 @@ mod bindings {
 
 use bindings::Transform;
 
+pub mod attribution;
 pub mod stream;
 
 /// The deterministic engine configuration (D5) shared by the @1 and @2
@@ -208,6 +209,9 @@ impl TransformHost {
         params: &[u8],
         inputs: &[Vec<u8>],
     ) -> Result<Vec<Vec<u8>>, RuntimeError> {
+        // D54: anonymous components don't run.
+        crate::attribution::parse_attribution(component_bytes)
+            .map_err(|e| RuntimeError::Component(anyhow::anyhow!(e)))?;
         let mut store = self.store()?;
         let transform = self.instantiate(&mut store, component_bytes)?;
         transform

@@ -1,11 +1,11 @@
 [package]
 name = "xf-reference-stream"
 description = "Streaming reference transform for the datboi:transform@2 DRAFT world: swap family + concat + read-contract probe, exercised by the M2 determinism and seek-equivalence gates"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
-repository.workspace = true
+version = "0.1.0"
+edition = "2024"
+authors = ["Chaz Schlarp"]
+license = "MIT"
+repository = "https://github.com/schlarpc/datboi"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -15,5 +15,20 @@ crate-type = ["cdylib", "rlib"]
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wit-bindgen = { version = "0.46", default-features = false, features = ["macros", "realloc"] }
 
-[lints]
-workspace = true
+# Standalone workspace ON PURPOSE (D54): each transform builds against its
+# own lockfile so sibling crates can't perturb its bytes through shared
+# dependency resolution — component identity must be reproducible from
+# this directory alone (plus ../wit).
+[workspace]
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+# Transforms are content-addressed artifacts: favor small, stable output.
+opt-level = "s"
+lto = true
+strip = true

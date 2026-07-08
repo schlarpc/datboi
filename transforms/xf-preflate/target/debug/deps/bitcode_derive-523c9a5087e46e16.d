@@ -1,0 +1,10 @@
+/home/schlarpc/datboi/transforms/xf-preflate/target/debug/deps/bitcode_derive-523c9a5087e46e16.d: /home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/lib.rs /home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/attribute.rs /home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/bound.rs /home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/decode.rs /home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/encode.rs /home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/shared.rs
+
+/home/schlarpc/datboi/transforms/xf-preflate/target/debug/deps/libbitcode_derive-523c9a5087e46e16.so: /home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/lib.rs /home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/attribute.rs /home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/bound.rs /home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/decode.rs /home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/encode.rs /home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/shared.rs
+
+/home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/lib.rs:
+/home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/attribute.rs:
+/home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/bound.rs:
+/home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/decode.rs:
+/home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/encode.rs:
+/home/schlarpc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitcode_derive-0.6.9/src/shared.rs:

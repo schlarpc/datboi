@@ -69,14 +69,29 @@
         let craneLib = craneLibFor system;
         in craneLib.buildDepsOnly (hostArgsFor system);
 
-      # ---- transforms workspace (transforms/, wasm32-wasip2) ----
+      # ---- transforms (transforms/xf-*, wasm32-unknown-unknown) ----
+      #
+      # Each transform is a STANDALONE workspace with its own lockfile
+      # (D54): sibling crates must not be able to perturb a component's
+      # bytes through shared dependency resolution. The reproducibility
+      # boundary is one crate directory plus the frozen ../wit.
 
-      wasmArgsFor = system:
+      wasmCrateNames = [ "xf-cso" "xf-preflate" "xf-reference" "xf-reference-stream" ];
+
+      # The shared frozen WIT, staged next to the unpacked crate so the
+      # guests' `../wit/v2` path resolves.
+      witStageFor = system: ''
+        cp -r ${srcFor system ./transforms/wit} $NIX_BUILD_TOP/wit
+        chmod -R u+w $NIX_BUILD_TOP/wit
+      '';
+
+      wasmCrateArgsFor = system: crate:
         {
-          src = srcFor system ./transforms;
+          src = srcFor system (./transforms + "/${crate}");
           strictDeps = true;
-          pname = "datboi-transforms";
+          pname = crate;
           version = "0.1.0";
+          cargoLock = ./transforms + "/${crate}/Cargo.lock";
           # unknown-unknown, NOT wasip2: components must import nothing (D5
           # empty-import determinism contract), and wasip2's std wires WASI
           # shims into every component. Core modules are componentized with
@@ -85,22 +100,41 @@
           # Wasm artifacts are data, not executables to test here; the host
           # runs them under the determinism gate instead.
           doCheck = false;
+          postUnpack = witStageFor system;
         };
 
-      wasmDepsFor = system:
-        let craneLib = craneLibFor system;
-        in craneLib.buildDepsOnly (wasmArgsFor system);
-
-      # Transforms built natively so their unit tests run under nextest
-      # (transform logic is target-independent; wasm artifacts are checked
-      # by building them, tested by the host determinism gate later).
-      wasmHostTestArgsFor = system:
-        {
-          src = srcFor system ./transforms;
-          strictDeps = true;
-          pname = "datboi-transforms-host";
-          version = "0.1.0";
-        };
+      # One stamped component per crate (D54 attribution): identity
+      # metadata rides IN the artifact as execution-inert custom sections,
+      # and the loader refuses components without it. `revision` is the
+      # crate source's store hash — content-scoped, so unrelated repo
+      # commits cannot churn component bytes.
+      transformPackageFor = system: crate:
+        let
+          craneLib = craneLibFor system;
+          pkgs = pkgsFor system;
+          args = wasmCrateArgsFor system crate;
+          crateToml = builtins.fromTOML (builtins.readFile (./transforms + "/${crate}/Cargo.toml"));
+          srcHash = builtins.substring 11 32 (toString args.src);
+          moduleName = builtins.replaceStrings [ "-" ] [ "_" ] crate;
+        in
+        craneLib.buildPackage (args // {
+          cargoArtifacts = craneLib.buildDepsOnly args;
+          nativeBuildInputs = [ pkgs.wasm-tools ];
+          installPhaseCommand = ''
+            mkdir -p $out/lib
+            wasm-tools component new \
+              target/wasm32-unknown-unknown/release/${moduleName}.wasm \
+              -o stamped-input.wasm
+            wasm-tools metadata add stamped-input.wasm \
+              --name "datboi:${crate}" \
+              --description ${nixpkgs.lib.escapeShellArg crateToml.package.description} \
+              --authors ${nixpkgs.lib.escapeShellArg (builtins.head crateToml.package.authors)} \
+              --licenses ${nixpkgs.lib.escapeShellArg crateToml.package.license} \
+              --source "https://github.com/schlarpc/datboi/tree/main/transforms/${crate}" \
+              --revision "src:${srcHash}" \
+              -o "$out/lib/${moduleName}.wasm"
+          '';
+        });
 
     in
     {
@@ -108,7 +142,6 @@
         let
           craneLib = craneLibFor system;
           hostArgs = hostArgsFor system;
-          wasmArgs = wasmArgsFor system;
         in
         {
           default = craneLib.buildPackage (hostArgs // {
@@ -118,19 +151,12 @@
 
           datboi = self.packages.${system}.default;
 
-          transforms = craneLib.buildPackage (wasmArgs // {
-            cargoArtifacts = wasmDepsFor system;
-            nativeBuildInputs = [ (pkgsFor system).wasm-tools ];
-            # Each cdylib is a core module; componentize it so the package
-            # contents are real `datboi:transform` components — the
-            # content-addressed artifacts recipes pin (D5/D6).
-            installPhaseCommand = ''
-              mkdir -p $out/lib
-              for m in target/wasm32-unknown-unknown/release/*.wasm; do
-                wasm-tools component new "$m" -o "$out/lib/$(basename "$m")"
-              done
-            '';
-          });
+          # All stamped components in one lib/ — the artifacts recipes
+          # pin (D5/D6/D54).
+          transforms = (pkgsFor system).symlinkJoin {
+            name = "datboi-transforms";
+            paths = map (transformPackageFor system) wasmCrateNames;
+          };
         });
 
       checks = eachSystem (system:
@@ -158,15 +184,26 @@
             partitionType = "count";
           });
 
-          transforms-test =
-            let wasmHostArgs = wasmHostTestArgsFor system;
+        } // nixpkgs.lib.listToAttrs (map
+          # Transform unit tests run natively per crate (logic is
+          # target-independent; wasm artifacts are exercised by the host
+          # determinism gates).
+          (crate:
+            let
+              args = builtins.removeAttrs (wasmCrateArgsFor system crate)
+                [ "CARGO_BUILD_TARGET" "doCheck" ] // {
+                pname = "${crate}-host";
+              };
             in
-            craneLib.cargoNextest (wasmHostArgs // {
-              cargoArtifacts = craneLib.buildDepsOnly wasmHostArgs;
-              partitions = 1;
-              partitionType = "count";
-            });
-        });
+            {
+              name = "${crate}-test";
+              value = craneLib.cargoNextest (args // {
+                cargoArtifacts = craneLib.buildDepsOnly args;
+                partitions = 1;
+                partitionType = "count";
+              });
+            })
+          wasmCrateNames));
 
       devShells = eachSystem (system:
         let

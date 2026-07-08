@@ -18,7 +18,7 @@ use datboi_runtime::{Limits, RuntimeError, SeekClass, TransformHost};
 const COMPONENT: &[u8] = include_bytes!("fixtures/xf_reference.wasm");
 
 /// blake3 of the fixture itself — the identity a recipe would pin (D5/D6).
-const COMPONENT_BLAKE3: &str = "2f0ae65b86ec6022018209719a8b20c1e2a23f617f97645a7a988707d5a7c942";
+const COMPONENT_BLAKE3: &str = "17cb41e3cf78ebbbef79db198a88d19e6f2ccb7e222db71d9678e4334e5bfbdc";
 
 /// blake3 of `run("bitswap", [], [PATTERN])[0]` — the cross-arch anchor.
 const BITSWAP_OUTPUT_BLAKE3: &str =
