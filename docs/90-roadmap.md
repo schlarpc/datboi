@@ -85,8 +85,11 @@ recovery-equivalence as a property test.
   recipes, e2e split→license→evict→rebuild gate; TorrentZip is zlib
   and fully covered — the zlib-exact-compressor research question is
   DEAD, and 7z-made streams stay literal per the open issue);
-  **remaining**: **aggregation (D36, still NFS-bench-gated — bench
-  machine unavailable)**, 7z/rar input, ECM.
+  7z/rar input — *shipped 2026-07-07* (extraction-based: members
+  become resident alias-indexed blobs, containers stay literal until
+  an LZMA-class rebuild transform exists — prior-art research in
+  flight); **remaining**: **aggregation (D36, still NFS-bench-gated —
+  bench machine unavailable)**, ECM.
 - **M4 — "The NAS becomes useful"**: views/snapshots/profiles (D33),
   1G1R + retool clonelists, MAME merge-mode rendering + device_ref
   closure + softlist fidelity (D31 deferred set), HTTP/WebDAV, SD sync,

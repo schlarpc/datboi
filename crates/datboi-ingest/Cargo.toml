@@ -16,11 +16,17 @@ fastcdc = "4.0.1"
 flate2.workspace = true
 blake3.workspace = true
 preflate-rs = "=0.7.6"
+# 7z member extraction (pure Rust). Container rebuild recipes wait on an
+# LZMA-class transform; ingest extracts members as first-class blobs.
+sevenz-rust2 = "0.21"
+# rar member extraction (vendored unrar C++; extraction-only use, which
+# is what its license permits).
+tempfile.workspace = true
+unrar = "0.5"
 thiserror.workspace = true
 
 [dev-dependencies]
 crc32fast.workspace = true
-tempfile.workspace = true
 
 [lints]
 workspace = true

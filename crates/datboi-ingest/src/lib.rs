@@ -26,6 +26,7 @@
 //! so re-processing is idempotent (at-least-once semantics).
 
 pub mod analyzers;
+pub mod archive;
 pub mod refine;
 pub mod zip;
 
@@ -109,6 +110,8 @@ pub struct IngestReport {
     /// CHD v5 files whose declared internal sha1 was recorded.
     pub chd_v5: usize,
     pub members_claimed: usize,
+    /// 7z/rar members extracted into the CAS as resident blobs.
+    pub members_extracted: usize,
     pub detector_hits: usize,
     /// Files over `skipper_cap` that were not detector-evaluated.
     pub skipper_skipped_large: usize,
@@ -230,6 +233,14 @@ impl<'a> Ingester<'a> {
             if let Err(e) = self.process_zip(path, &hash, blob_id, &mut blob, report) {
                 report.errors.push((path.to_owned(), e.to_string()));
             }
+        } else if archive::looks_like_7z(&head[..head_len]) {
+            if let Err(e) = self.process_7z(&mut blob, report) {
+                report.errors.push((path.to_owned(), e));
+            }
+        } else if archive::looks_like_rar(&head[..head_len]) {
+            if let Err(e) = self.process_rar(&canonical, report) {
+                report.errors.push((path.to_owned(), e));
+            }
         } else if !self.detectors.is_empty() {
             if size <= self.config.skipper_cap {
                 blob.seek(SeekFrom::Start(0))
@@ -277,6 +288,50 @@ impl<'a> Ingester<'a> {
                     path.display()
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// Extract every 7z member into the CAS (see the archive module docs
+    /// for why extraction, not claims: no LZMA-class rebuild transform
+    /// exists yet, so the container stays literal and the members become
+    /// first-class resident blobs).
+    fn process_7z(&mut self, blob: &mut File, report: &mut IngestReport) -> Result<(), String> {
+        let store = self.store;
+        let mut stored: Vec<(datboi_core::alias::AliasTuple, String)> = Vec::new();
+        archive::extract_7z(blob, |name, reader| {
+            let (_, aliases, _) = store
+                .put_new(StoreNs::Data, reader)
+                .map_err(|e| format!("storing member {name:?}: {e}"))?;
+            stored.push((aliases, name.to_owned()));
+            Ok(())
+        })?;
+        for (aliases, _name) in &stored {
+            self.record_resident_blob(&aliases.blake3, aliases)
+                .map_err(|e| e.to_string())?;
+            report.members_extracted += 1;
+        }
+        Ok(())
+    }
+
+    /// Extract every rar member into the CAS. The unrar library opens by
+    /// path, so this reads the SOURCE file (same bytes we just hashed and
+    /// stored) and spools members through the store's tmp dir.
+    fn process_rar(&mut self, source: &Path, report: &mut IngestReport) -> Result<(), String> {
+        let spool = tempfile::tempdir().map_err(|e| format!("spool dir: {e}"))?;
+        let store = self.store;
+        let mut stored: Vec<datboi_core::alias::AliasTuple> = Vec::new();
+        archive::extract_rar(source, spool.path(), |name, file| {
+            let (_, aliases, _) = store
+                .put_new(StoreNs::Data, file)
+                .map_err(|e| format!("storing member {name:?}: {e}"))?;
+            stored.push(aliases);
+            Ok(())
+        })?;
+        for aliases in &stored {
+            self.record_resident_blob(&aliases.blake3, aliases)
+                .map_err(|e| e.to_string())?;
+            report.members_extracted += 1;
         }
         Ok(())
     }

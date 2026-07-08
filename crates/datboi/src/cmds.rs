@@ -98,6 +98,7 @@ fn print_ingest(r: &IngestReport) {
     println!("stored             {:>8}", r.files_stored);
     println!("already present    {:>8}", r.files_already_present);
     println!("members claimed    {:>8}", r.members_claimed);
+    println!("members extracted  {:>8}", r.members_extracted);
     println!("detector hits      {:>8}", r.detector_hits);
     if r.skipper_skipped_large > 0 {
         println!(

@@ -143,7 +143,10 @@ ingest, aggregation (NFS-bench-gated).
 
 Priority order:
 
-1. Remaining M3 analyzers: ECM, 7z/rar ingest.
+1. Remaining M3 analyzer: ECM (7z/rar ingest shipped 2026-07-07;
+   LZMA-class recompression prior-art research in flight — if a
+   preflate-analog exists, 7z containers get rebuild recipes and stop
+   paying double storage).
 2. **Component attribution stamping** (decision owed, evidence in
    hand): `wasm-tools metadata add` embeds name/description/authors/
    license/source/revision as execution-inert custom sections — but
