@@ -10,8 +10,10 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+bytes.workspace = true
 datboi-core.workspace = true
 datboi-exec.workspace = true
+dav-server.workspace = true
 datboi-index.workspace = true
 datboi-store-fs.workspace = true
 futures-core.workspace = true

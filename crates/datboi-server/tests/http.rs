@@ -124,6 +124,19 @@ fn get(
     panic!("server never came up at {addr}");
 }
 
+/// PROPFIND with the given Depth; empty body = allprop.
+fn propfind(addr: SocketAddr, path: &str, depth: &str) -> (u16, ureq::Response) {
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let req = agent
+        .request("PROPFIND", &format!("http://{addr}{path}"))
+        .set("Depth", depth);
+    match req.call() {
+        Ok(resp) => (resp.status(), resp),
+        Err(ureq::Error::Status(code, resp)) => (code, resp),
+        Err(e) => panic!("propfind transport error: {e}"),
+    }
+}
+
 fn body(resp: ureq::Response) -> Vec<u8> {
     let mut out = Vec::new();
     use std::io::Read as _;
@@ -245,6 +258,53 @@ fn http_surface_end_to_end() {
     assert_eq!(get(f.addr, "/view/nope/", &[]).0, 404);
     assert_eq!(get(f.addr, "/view/test/Alpha/nope.bin", &[]).0, 404);
     assert_eq!(get(f.addr, "/view/test/Alpha/alpha.gba/", &[]).0, 404);
+
+    // ---- WebDAV surface (same trees, protocol via dav-server) ----
+
+    // PROPFIND depth 1 on the DAV root lists views as collections
+    let (status, resp) = propfind(f.addr, "/dav/", "1");
+    assert_eq!(status, 207);
+    let xml = resp.into_string().expect("xml");
+    assert!(xml.contains("test") && xml.contains("collection"), "{xml}");
+
+    // PROPFIND on a file carries the size and the content-hash ETag
+    let (status, resp) = propfind(f.addr, "/dav/test/Alpha/alpha.gba", "0");
+    assert_eq!(status, 207);
+    let xml = resp.into_string().expect("xml");
+    assert!(xml.contains("17"), "getcontentlength: {xml}");
+    assert!(
+        xml.contains(&Blake3::compute(ALPHA).to_hex()),
+        "content-hash etag: {xml}"
+    );
+
+    // GET + Range through the DAV mount uses the same verified path
+    let (status, resp) = get(f.addr, "/dav/test/Alpha/alpha.gba", &[]);
+    assert_eq!(status, 200);
+    assert_eq!(body(resp), ALPHA);
+    let (status, resp) = get(
+        f.addr,
+        "/dav/test/Alpha/alpha.gba",
+        &[("Range", "bytes=2-5")],
+    );
+    assert_eq!(status, 206);
+    assert_eq!(body(resp), &ALPHA[2..6]);
+
+    // read-only: writes are rejected at the method set
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let put = agent
+        .put(&format!("http://{}/dav/test/Alpha/alpha.gba", f.addr))
+        .send_bytes(b"overwrite");
+    match put {
+        Err(ureq::Error::Status(code, _)) => assert_eq!(code, 405),
+        other => panic!("PUT must be refused, got {other:?}"),
+    }
+    let mkcol = agent
+        .request("MKCOL", &format!("http://{}/dav/test/newdir", f.addr))
+        .call();
+    match mkcol {
+        Err(ureq::Error::Status(code, _)) => assert_eq!(code, 405),
+        other => panic!("MKCOL must be refused, got {other:?}"),
+    }
 
     // multi-window streaming: full body and a window-straddling range
     let big = big_bytes();

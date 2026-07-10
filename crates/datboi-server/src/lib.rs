@@ -10,6 +10,7 @@
 //! resolved snapshot), and `/snap/<hash>/…` addresses any snapshot
 //! immutably.
 
+mod dav;
 mod http;
 mod vfs;
 

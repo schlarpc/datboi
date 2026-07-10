@@ -6,9 +6,12 @@
 //! path prefixes — there are no directory objects to get out of sync.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use datboi_core::hash::Blake3;
 use datboi_core::viewsnap::ViewSnapshot;
+
+use crate::App;
 
 /// What a serving surface needs to know about one manifest row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +36,90 @@ pub(crate) struct ViewIndex {
 pub(crate) struct Listing {
     pub dirs: Vec<String>,
     pub files: Vec<(String, RowMeta)>,
+}
+
+/// Why a tree lookup failed — each serving surface maps these to its
+/// own status vocabulary (HTTP statuses, DAV FsErrors).
+#[derive(Debug)]
+pub(crate) enum LookupError {
+    NoSuchView,
+    /// The snapshot object is not in the meta store.
+    SnapshotMissing,
+    Corrupt(String),
+    Internal(String),
+}
+
+impl std::fmt::Display for LookupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSuchView => write!(f, "no such view"),
+            Self::SnapshotMissing => write!(f, "snapshot not in store"),
+            Self::Corrupt(detail) => write!(f, "snapshot does not decode: {detail}"),
+            Self::Internal(detail) => write!(f, "{detail}"),
+        }
+    }
+}
+
+/// All `view/<name>` tags as (name, snapshot hash), the serving roots.
+pub(crate) fn view_tags(app: &App) -> Result<Vec<(String, Blake3)>, LookupError> {
+    let db = app.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tags = db
+        .list_tags()
+        .map_err(|e| LookupError::Internal(e.to_string()))?;
+    Ok(tags
+        .into_iter()
+        .filter_map(|(name, hash)| name.strip_prefix("view/").map(|n| (n.to_owned(), hash)))
+        .collect())
+}
+
+/// Resolve a view name through its tag (the per-request D33 read).
+pub(crate) fn view_index(app: &App, name: &str) -> Result<Arc<ViewIndex>, LookupError> {
+    let snapshot = {
+        let db = app.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        db.get_tag(&format!("view/{name}"))
+            .map_err(|e| LookupError::Internal(e.to_string()))?
+    };
+    snapshot_index(app, snapshot.ok_or(LookupError::NoSuchView)?)
+}
+
+/// Load (or hit the cache for) a snapshot's decoded manifest.
+pub(crate) fn snapshot_index(
+    app: &App,
+    snapshot: Blake3,
+) -> Result<Arc<ViewIndex>, LookupError> {
+    if let Some(idx) = app
+        .manifests
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&snapshot)
+    {
+        return Ok(Arc::clone(idx));
+    }
+    let mut bytes = Vec::new();
+    {
+        use std::io::Read as _;
+        let Some(mut file) = app
+            .store
+            .get(datboi_store_fs::Namespace::Meta, &snapshot)
+            .map_err(|e| LookupError::Internal(e.to_string()))?
+        else {
+            return Err(LookupError::SnapshotMissing);
+        };
+        file.read_to_end(&mut bytes)
+            .map_err(|e| LookupError::Internal(e.to_string()))?;
+    }
+    let snap =
+        ViewSnapshot::decode(&bytes).map_err(|e| LookupError::Corrupt(e.to_string()))?;
+    let idx = Arc::new(ViewIndex::from_snapshot(snapshot, snap));
+    let mut cache = app
+        .manifests
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cache.len() >= 64 {
+        cache.clear(); // immutable entries: dropping only costs a re-decode
+    }
+    cache.insert(snapshot, Arc::clone(&idx));
+    Ok(idx)
 }
 
 impl ViewIndex {

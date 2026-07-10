@@ -21,19 +21,23 @@ use axum::body::{Body, Bytes};
 use axum::extract::{Path as UrlPath, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
-use axum::routing::get;
+use axum::routing::{any, get};
 use datboi_core::hash::Blake3;
-use datboi_core::viewsnap::ViewSnapshot;
 use serde_json::json;
 
 use crate::App;
-use crate::vfs::{RowMeta, ViewIndex};
+use crate::vfs::{self, LookupError, RowMeta, ViewIndex};
 
 /// Streamed responses move through the verified range path in windows
 /// of this size (a multiple of the 16 KiB bao group).
 const WINDOW: u64 = 8 << 20;
 
 pub(crate) fn router(app: Arc<App>) -> Router {
+    let dav = crate::dav::handler(Arc::clone(&app));
+    let dav_route = move |req: axum::extract::Request| {
+        let dav = dav.clone();
+        async move { dav.handle(req).await.map(Body::new) }
+    };
     Router::new()
         .route("/", get(root))
         .route("/healthz", get(|| async { "ok" }))
@@ -44,6 +48,9 @@ pub(crate) fn router(app: Arc<App>) -> Router {
         .route("/snap/{hash}", get(snap_bare))
         .route("/snap/{hash}/", get(snap_root))
         .route("/snap/{hash}/{*path}", get(snap_path))
+        .route("/dav", any(dav_route.clone()))
+        .route("/dav/", any(dav_route.clone()))
+        .route("/dav/{*path}", any(dav_route))
         .with_state(app)
 }
 
@@ -51,7 +58,8 @@ pub(crate) fn router(app: Arc<App>) -> Router {
 
 async fn root(State(app): State<Arc<App>>) -> Response {
     run_blocking(move || {
-        let views = list_view_tags(&app)?;
+        let views = vfs::view_tags(&app)
+            .map_err(|e| map_lookup(&e, StatusCode::INTERNAL_SERVER_ERROR))?;
         let mut body = String::from(
             "<!doctype html><meta charset=\"utf-8\"><title>datboi</title><h1>datboi views</h1><ul>",
         );
@@ -71,7 +79,8 @@ async fn root(State(app): State<Arc<App>>) -> Response {
 
 async fn views_json(State(app): State<Arc<App>>) -> Response {
     run_blocking(move || {
-        let views = list_view_tags(&app)?;
+        let views = vfs::view_tags(&app)
+            .map_err(|e| map_lookup(&e, StatusCode::INTERNAL_SERVER_ERROR))?;
         let items: Vec<_> = views
             .iter()
             .map(|(name, snapshot)| json!({"name": name, "snapshot": snapshot.to_hex()}))
@@ -147,7 +156,8 @@ async fn serve_tree(
     run_blocking(move || {
         let (idx, immutable, url_base) = match &tree {
             TreeRef::View(name) => (
-                resolve_view(&app, name)?,
+                vfs::view_index(&app, name)
+                    .map_err(|e| map_lookup(&e, StatusCode::INTERNAL_SERVER_ERROR))?,
                 false,
                 format!("/view/{}", enc_seg(name)),
             ),
@@ -156,7 +166,8 @@ async fn serve_tree(
                     .parse()
                     .map_err(|_| text(StatusCode::BAD_REQUEST, "not a snapshot hash"))?;
                 (
-                    load_index(&app, hash, StatusCode::NOT_FOUND)?,
+                    vfs::snapshot_index(&app, hash)
+                        .map_err(|e| map_lookup(&e, StatusCode::NOT_FOUND))?,
                     true,
                     format!("/snap/{hex}"),
                 )
@@ -208,67 +219,17 @@ fn tree_response(
 
 // ---- resolution (blocking context) ----
 
-fn list_view_tags(app: &App) -> Result<Vec<(String, Blake3)>, Response> {
-    let db = app.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let tags = db.list_tags().map_err(internal)?;
-    Ok(tags
-        .into_iter()
-        .filter_map(|(name, hash)| {
-            name.strip_prefix("view/").map(|n| (n.to_owned(), hash))
-        })
-        .collect())
-}
-
-fn resolve_view(app: &App, name: &str) -> Result<Arc<ViewIndex>, Response> {
-    let snapshot = {
-        let db = app.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        db.get_tag(&format!("view/{name}")).map_err(internal)?
-    };
-    let Some(snapshot) = snapshot else {
-        return Err(text(StatusCode::NOT_FOUND, "no such view"));
-    };
-    // A tagged snapshot whose blob is missing is server-side damage,
-    // not a client mistake — hence 500 here vs 404 for /snap/<hash>.
-    load_index(app, snapshot, StatusCode::INTERNAL_SERVER_ERROR)
-}
-
-fn load_index(
-    app: &App,
-    snapshot: Blake3,
-    missing: StatusCode,
-) -> Result<Arc<ViewIndex>, Response> {
-    if let Some(idx) = app
-        .manifests
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&snapshot)
-    {
-        return Ok(Arc::clone(idx));
+/// Map a shared-VFS lookup failure to a status. `missing` distinguishes
+/// a client-supplied snapshot hash (404) from a tagged snapshot whose
+/// blob is gone — server-side damage, 500.
+fn map_lookup(e: &LookupError, missing: StatusCode) -> Response {
+    match e {
+        LookupError::NoSuchView => text(StatusCode::NOT_FOUND, "no such view"),
+        LookupError::SnapshotMissing => text(missing, "snapshot not in store"),
+        LookupError::Corrupt(_) | LookupError::Internal(_) => {
+            text(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
+        }
     }
-    let mut bytes = Vec::new();
-    {
-        use std::io::Read as _;
-        let Some(mut file) = app
-            .store
-            .get(datboi_store_fs::Namespace::Meta, &snapshot)
-            .map_err(internal)?
-        else {
-            return Err(text(missing, "snapshot not in store"));
-        };
-        file.read_to_end(&mut bytes).map_err(internal)?;
-    }
-    let snap = ViewSnapshot::decode(&bytes)
-        .map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &format!("snapshot does not decode: {e}")))?;
-    let idx = Arc::new(ViewIndex::from_snapshot(snapshot, snap));
-    let mut cache = app
-        .manifests
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if cache.len() >= 64 {
-        cache.clear(); // immutable entries: dropping is only a re-decode
-    }
-    cache.insert(snapshot, Arc::clone(&idx));
-    Ok(idx)
 }
 
 // ---- file serving (blocking context) ----
@@ -622,10 +583,6 @@ async fn run_blocking(
             &format!("request task failed: {join}"),
         ),
     }
-}
-
-fn internal(e: impl std::fmt::Display) -> Response {
-    text(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
 }
 
 fn text(status: StatusCode, msg: &str) -> Response {

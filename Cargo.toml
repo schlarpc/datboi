@@ -34,8 +34,14 @@ assert_cmd = "2"
 # runtime; client subcommands stay blocking (ureq).
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 blake3 = "1"
+# Named directly because dav-server's traits speak bytes::Bytes.
+bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 crc32fast = "1"
+# WebDAV protocol engine over our snapshot VFS (docs/80-views.md names
+# the stack). No default features: localfs/memfs backends stay out —
+# the only filesystem is the view manifest.
+dav-server = { version = "0.11", default-features = false }
 # ed25519 signs the state snapshot (D15 recovery root); the keypair is also
 # the future server/iroh identity. Signing is deterministic (RFC 8032), so a
 # fixed seed + payload yields a fixed signature — golden-testable.
