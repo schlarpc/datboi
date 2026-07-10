@@ -761,7 +761,9 @@ pub fn sweep(
     let mut analyzer: Box<dyn datboi_ingest::refine::Analyzer> = match analyzer_name {
         "noop" | "noop/1" => Box::new(datboi_ingest::refine::NoopAnalyzer),
         "chunk" | "fastcdc" => Box::new(datboi_ingest::analyzers::ChunkAnalyzer),
-        "preflate" | "preflate-split" => Box::new(datboi_ingest::analyzers::PreflateZipAnalyzer::new()),
+        "preflate" | "preflate-split" => {
+            Box::new(datboi_ingest::analyzers::PreflateZipAnalyzer::new())
+        }
         "ecm" => Box::new(datboi_ingest::analyzers::EcmAnalyzer::new()),
         other => {
             anyhow::bail!("unknown analyzer {other:?} (available: noop, chunk, deflate-trial)")
@@ -921,7 +923,10 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
     let tx = env.db.cache().unchecked_transaction()?;
     if selected.is_some() {
         fast_walk = true;
-        for item in env.store.list_parallel(Namespace::Data, RECOVER_WALK_WORKERS) {
+        for item in env
+            .store
+            .list_parallel(Namespace::Data, RECOVER_WALK_WORKERS)
+        {
             match item {
                 Ok((hash, size)) => {
                     env.db
@@ -1209,7 +1214,12 @@ fn ensure_blob(db: &datboi_index::Db, hash: &datboi_core::hash::Blake3) -> anyho
 
 // ---- scrub ----
 
-pub fn scrub(env: &Env, sample_pct: u8, rehabilitate: bool, json: bool) -> anyhow::Result<ExitCode> {
+pub fn scrub(
+    env: &Env,
+    sample_pct: u8,
+    rehabilitate: bool,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
     let pct = sample_pct.min(100);
     let now = now_unix();
     let mut checked: u64 = 0;
@@ -1487,10 +1497,16 @@ pub fn view_eval(mut env: Env, name: &str, json: bool) -> anyhow::Result<ExitCod
             extras.push_str(&format!(", {families} famil(ies)"));
         }
         if report.skipped_oversize > 0 {
-            extras.push_str(&format!(", {} oversize row(s) SKIPPED", report.skipped_oversize));
+            extras.push_str(&format!(
+                ", {} oversize row(s) SKIPPED",
+                report.skipped_oversize
+            ));
         }
         if report.overfull_dirs > 0 {
-            extras.push_str(&format!(", {} dir(s) over the profile entry cap", report.overfull_dirs));
+            extras.push_str(&format!(
+                ", {} dir(s) over the profile entry cap",
+                report.overfull_dirs
+            ));
         }
         println!(
             "view {name}: snapshot {} ({} row(s), {} claim(s) missing, {} path(s) disambiguated{extras})",
@@ -1531,7 +1547,10 @@ pub fn view_list(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
 fn load_view_snapshot(
     env: &Env,
     name: &str,
-) -> anyhow::Result<(datboi_core::hash::Blake3, datboi_core::viewsnap::ViewSnapshot)> {
+) -> anyhow::Result<(
+    datboi_core::hash::Blake3,
+    datboi_core::viewsnap::ViewSnapshot,
+)> {
     let snap_hash = env
         .db
         .get_tag(&format!("view/{name}"))?
@@ -1562,7 +1581,10 @@ pub fn view_manifest(env: &Env, name: &str, json: bool) -> anyhow::Result<ExitCo
             })
         );
     } else {
-        println!("view {name} snapshot {snap_hash} ({} rows)", snap.rows.len());
+        println!(
+            "view {name} snapshot {snap_hash} ({} rows)",
+            snap.rows.len()
+        );
         for r in &snap.rows {
             println!("{:>12}  {}  {}", r.size, r.hash, r.path);
         }
@@ -1600,7 +1622,13 @@ pub fn view_sync(
     let mut existing: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     let mut dirs: Vec<PathBuf> = Vec::new();
     if target.is_dir() {
-        walk_target(target, &mut String::new(), &mut existing, &mut dirs, dry_run)?;
+        walk_target(
+            target,
+            &mut String::new(),
+            &mut existing,
+            &mut dirs,
+            dry_run,
+        )?;
     }
 
     let (mut written, mut skipped, mut bytes_written) = (0usize, 0usize, 0u64);
@@ -1723,8 +1751,8 @@ fn write_row_verified(
         name.push(SYNC_TMP_SUFFIX);
         dest.with_file_name(name)
     };
-    let mut out = std::fs::File::create(&tmp)
-        .with_context(|| format!("creating {}", tmp.display()))?;
+    let mut out =
+        std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
     let result = (|| -> anyhow::Result<()> {
         use std::io::Write as _;
         let mut off = 0u64;

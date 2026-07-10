@@ -365,7 +365,9 @@ pub fn evaluate_view(
         }],
         rows,
     };
-    let encoded = snap.encode().map_err(|_| CatalogError::Corrupt("viewsnap"))?;
+    let encoded = snap
+        .encode()
+        .map_err(|_| CatalogError::Corrupt("viewsnap"))?;
     let hash = Blake3::compute(&encoded);
     store.put(StoreNs::Meta, hash, encoded.as_slice())?;
     db.upsert_blob(
@@ -444,7 +446,13 @@ fn seek_class_of(db: &Db, hash: &Blake3) -> Result<u8, CatalogError> {
 fn sanitize_component(s: &str) -> String {
     let cleaned: String = s
         .chars()
-        .map(|c| if c == '/' || c == '\\' || c == '\0' { '_' } else { c })
+        .map(|c| {
+            if c == '/' || c == '\\' || c == '\0' {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     match cleaned.as_str() {
         "" | "." | ".." => "_".into(),

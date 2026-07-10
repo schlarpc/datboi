@@ -50,7 +50,11 @@ fn zip_two_members(members: &[(&str, &[u8], &[u8])]) -> Vec<u8> {
         out.extend_from_slice(&8u16.to_le_bytes());
         out.extend_from_slice(&[0; 4]);
         out.extend_from_slice(&crc.to_le_bytes());
-        out.extend_from_slice(&u32::try_from(compressed.len()).expect("small").to_le_bytes());
+        out.extend_from_slice(
+            &u32::try_from(compressed.len())
+                .expect("small")
+                .to_le_bytes(),
+        );
         out.extend_from_slice(&u32::try_from(payload.len()).expect("small").to_le_bytes());
         out.extend_from_slice(&u16::try_from(name.len()).expect("small").to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes());
@@ -64,7 +68,11 @@ fn zip_two_members(members: &[(&str, &[u8], &[u8])]) -> Vec<u8> {
         central.extend_from_slice(&8u16.to_le_bytes());
         central.extend_from_slice(&[0; 4]);
         central.extend_from_slice(&crc.to_le_bytes());
-        central.extend_from_slice(&u32::try_from(compressed.len()).expect("small").to_le_bytes());
+        central.extend_from_slice(
+            &u32::try_from(compressed.len())
+                .expect("small")
+                .to_le_bytes(),
+        );
         central.extend_from_slice(&u32::try_from(payload.len()).expect("small").to_le_bytes());
         central.extend_from_slice(&u16::try_from(name.len()).expect("small").to_le_bytes());
         central.extend_from_slice(&[0; 12]);
@@ -97,10 +105,7 @@ fn preflate_sweep_licenses_evicts_and_rebuilds_bit_exact() {
     let rom_b = pattern(1 << 20 | 137, 0x1111_2222_3333_4444);
     let comp_a = deflate(&rom_a, 9);
     let comp_b = deflate(&rom_b, 6);
-    let container = zip_two_members(&[
-        ("a.rom", &rom_a, &comp_a),
-        ("b.rom", &rom_b, &comp_b),
-    ]);
+    let container = zip_two_members(&[("a.rom", &rom_a, &comp_a), ("b.rom", &rom_b, &comp_b)]);
     let container_hash = Blake3::compute(&container);
     store
         .put(StoreNs::Data, container_hash, container.as_slice())

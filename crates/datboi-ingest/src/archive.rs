@@ -55,8 +55,7 @@ pub fn extract_7z(
             if entry.is_directory() {
                 return Ok(true);
             }
-            sink(&entry.name, reader)
-                .map_err(|e| sevenz_rust2::Error::Other(e.into()))?;
+            sink(&entry.name, reader).map_err(|e| sevenz_rust2::Error::Other(e.into()))?;
             members.push(ExtractedMember {
                 name: entry.name.clone(),
                 size: entry.size,

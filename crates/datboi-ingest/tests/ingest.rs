@@ -413,8 +413,7 @@ fn zip_bomb_lying_size_is_refused_cheaply() {
     let lie = 10u32.to_le_bytes();
     bytes[22..26].copy_from_slice(&lie); // local header uncomp_size
     let eocd = bytes.len() - 22;
-    let cd_off =
-        u32::from_le_bytes(bytes[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
+    let cd_off = u32::from_le_bytes(bytes[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
     bytes[cd_off + 24..cd_off + 28].copy_from_slice(&lie); // CD uncomp_size
     let bomb_path = world.src.parent().unwrap().join("bomb.zip");
     fs::write(&bomb_path, &bytes).expect("write");
@@ -451,12 +450,10 @@ fn overlapping_members_refuse_all_claims() {
     // Point the SECOND central entry's local header at the first's:
     // both members now claim the same raw span.
     let eocd = bytes.len() - 22;
-    let cd_off =
-        u32::from_le_bytes(bytes[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
+    let cd_off = u32::from_le_bytes(bytes[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
     let first_entry_len = 46 + "one.rom".len();
     let second_local_offset_at = cd_off + first_entry_len + 42;
-    bytes[second_local_offset_at..second_local_offset_at + 4]
-        .copy_from_slice(&0u32.to_le_bytes());
+    bytes[second_local_offset_at..second_local_offset_at + 4].copy_from_slice(&0u32.to_le_bytes());
     let overlap_path = world.src.parent().unwrap().join("overlap.zip");
     fs::write(&overlap_path, &bytes).expect("write");
 

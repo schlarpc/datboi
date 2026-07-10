@@ -100,11 +100,8 @@ fn preflate_split_mints_rebuild_recipes_and_records_negatives() {
         enc.write_all(&payload).expect("deflate");
         enc.finish().expect("finish")
     };
-    let (rebuildable_hash, rebuildable_id) = put(
-        &store,
-        &db,
-        &zip_with_member(&payload, &compressed),
-    );
+    let (rebuildable_hash, rebuildable_id) =
+        put(&store, &db, &zip_with_member(&payload, &compressed));
 
     // A zip with a truncated member stream: inflates up to a point, then
     // the split fails deterministically — the negative D48 records.
@@ -141,7 +138,10 @@ fn preflate_split_mints_rebuild_recipes_and_records_negatives() {
     // indexed for dat audit), the corrections blob, the skeleton, and the
     // pinned component itself.
     let plaintext_hash = Blake3::compute(&payload);
-    assert!(store.has(StoreNs::Data, &plaintext_hash), "plaintext stored");
+    assert!(
+        store.has(StoreNs::Data, &plaintext_hash),
+        "plaintext stored"
+    );
     assert!(
         store.has(StoreNs::Data, &PreflateZipAnalyzer::component_hash()),
         "component published as an ordinary CAS blob"

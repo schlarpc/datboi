@@ -813,8 +813,7 @@ fn view_1g1r_and_profile() {
         .args(["view", "eval", "shelf", "--json"])
         .assert()
         .success();
-    let out: serde_json::Value =
-        serde_json::from_slice(&eval.get_output().stdout).expect("json");
+    let out: serde_json::Value = serde_json::from_slice(&eval.get_output().stdout).expect("json");
     assert_eq!(out["families"], 2);
     assert_eq!(out["rows"], 2);
     let manifest = u
@@ -822,8 +821,7 @@ fn view_1g1r_and_profile() {
         .args(["view", "manifest", "shelf", "--json"])
         .assert()
         .success();
-    let m: serde_json::Value =
-        serde_json::from_slice(&manifest.get_output().stdout).expect("json");
+    let m: serde_json::Value = serde_json::from_slice(&manifest.get_output().stdout).expect("json");
     let paths: Vec<&str> = m["rows"]
         .as_array()
         .unwrap()
@@ -843,17 +841,13 @@ fn view_1g1r_and_profile() {
     // region — that's what re-eval is for.
     fs::write(u.src().join("usa.gba"), usa).unwrap();
     u.cmd().arg("ingest").arg(u.src()).assert().success();
-    u.cmd()
-        .args(["view", "eval", "shelf"])
-        .assert()
-        .success();
+    u.cmd().args(["view", "eval", "shelf"]).assert().success();
     let manifest = u
         .cmd()
         .args(["view", "manifest", "shelf", "--json"])
         .assert()
         .success();
-    let m: serde_json::Value =
-        serde_json::from_slice(&manifest.get_output().stdout).expect("json");
+    let m: serde_json::Value = serde_json::from_slice(&manifest.get_output().stdout).expect("json");
     let paths: Vec<&str> = m["rows"]
         .as_array()
         .unwrap()
@@ -921,7 +915,11 @@ fn view_sync_incremental() {
     assert!(!card.exists(), "dry-run must not create the target");
 
     // first sync writes; second is a no-op
-    u.cmd().args(["view", "sync", "card"]).arg(&card).assert().success();
+    u.cmd()
+        .args(["view", "sync", "card"])
+        .arg(&card)
+        .assert()
+        .success();
     assert_eq!(fs::read(card.join("Alpha/alpha.gba")).unwrap(), alpha);
     let out = u
         .cmd()
@@ -931,7 +929,10 @@ fn view_sync_incremental() {
         .assert()
         .success();
     let v: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
-    assert_eq!((v["written"].as_u64(), v["skipped"].as_u64()), (Some(0), Some(1)));
+    assert_eq!(
+        (v["written"].as_u64(), v["skipped"].as_u64()),
+        (Some(0), Some(1))
+    );
 
     // --verify catches silent same-size corruption on the card
     fs::write(card.join("Alpha/alpha.gba"), b"XXXXX rom content").unwrap();
@@ -1005,8 +1006,7 @@ fn view_define_eval_manifest() {
         .args(["view", "eval", "everdrive", "--json"])
         .assert()
         .success();
-    let out: serde_json::Value =
-        serde_json::from_slice(&eval.get_output().stdout).expect("json");
+    let out: serde_json::Value = serde_json::from_slice(&eval.get_output().stdout).expect("json");
     assert_eq!(out["rows"], 1);
     assert_eq!(out["missing_claims"], 1);
     let snap1 = out["snapshot"].as_str().unwrap().to_owned();
@@ -1016,8 +1016,7 @@ fn view_define_eval_manifest() {
         .args(["view", "manifest", "everdrive", "--json"])
         .assert()
         .success();
-    let m: serde_json::Value =
-        serde_json::from_slice(&manifest.get_output().stdout).expect("json");
+    let m: serde_json::Value = serde_json::from_slice(&manifest.get_output().stdout).expect("json");
     assert_eq!(m["snapshot"], snap1.as_str());
     assert_eq!(m["rows"][0]["path"], "Alpha/alpha.gba");
     assert_eq!(m["rows"][0]["seek"], 0, "resident literal reads affinely");
@@ -1030,17 +1029,16 @@ fn view_define_eval_manifest() {
         .args(["view", "eval", "everdrive", "--json"])
         .assert()
         .success();
-    let out2: serde_json::Value =
-        serde_json::from_slice(&eval2.get_output().stdout).expect("json");
+    let out2: serde_json::Value = serde_json::from_slice(&eval2.get_output().stdout).expect("json");
     assert_eq!(out2["rows"], 2);
     assert_eq!(out2["missing_claims"], 0);
-    assert_ne!(out2["snapshot"], snap1.as_str(), "D33: new snapshot, tag flipped");
+    assert_ne!(
+        out2["snapshot"],
+        snap1.as_str(),
+        "D33: new snapshot, tag flipped"
+    );
 
-    let list = u
-        .cmd()
-        .args(["view", "list", "--json"])
-        .assert()
-        .success();
+    let list = u.cmd().args(["view", "list", "--json"]).assert().success();
     let l: serde_json::Value = serde_json::from_slice(&list.get_output().stdout).expect("json");
     assert_eq!(l["views"][0]["name"], "everdrive");
     assert_eq!(l["views"][0]["snapshot"], out2["snapshot"]);

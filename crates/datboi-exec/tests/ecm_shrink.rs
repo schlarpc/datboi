@@ -90,10 +90,11 @@ fn ecm_sweep_licenses_evicts_and_serves_ranges() {
         (89 * SECTOR as u64 + 2300, 200), // regenerable -> damaged boundary
         (bin.len() as u64 - 64, 200),     // EOF clamp
     ] {
-        let got = exec.serve_range(&db, &bin_hash, offset, len).expect("range");
+        let got = exec
+            .serve_range(&db, &bin_hash, offset, len)
+            .expect("range");
         let start = usize::try_from(offset.min(bin.len() as u64)).expect("small");
-        let end =
-            usize::try_from(offset.saturating_add(len).min(bin.len() as u64)).expect("small");
+        let end = usize::try_from(offset.saturating_add(len).min(bin.len() as u64)).expect("small");
         assert_eq!(got, &bin[start..end], "window {offset}+{len}");
     }
     assert!(

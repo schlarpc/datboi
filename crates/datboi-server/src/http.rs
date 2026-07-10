@@ -58,8 +58,8 @@ pub(crate) fn router(app: Arc<App>) -> Router {
 
 async fn root(State(app): State<Arc<App>>) -> Response {
     run_blocking(move || {
-        let views = vfs::view_tags(&app)
-            .map_err(|e| map_lookup(&e, StatusCode::INTERNAL_SERVER_ERROR))?;
+        let views =
+            vfs::view_tags(&app).map_err(|e| map_lookup(&e, StatusCode::INTERNAL_SERVER_ERROR))?;
         let mut body = String::from(
             "<!doctype html><meta charset=\"utf-8\"><title>datboi</title><h1>datboi views</h1><ul>",
         );
@@ -79,8 +79,8 @@ async fn root(State(app): State<Arc<App>>) -> Response {
 
 async fn views_json(State(app): State<Arc<App>>) -> Response {
     run_blocking(move || {
-        let views = vfs::view_tags(&app)
-            .map_err(|e| map_lookup(&e, StatusCode::INTERNAL_SERVER_ERROR))?;
+        let views =
+            vfs::view_tags(&app).map_err(|e| map_lookup(&e, StatusCode::INTERNAL_SERVER_ERROR))?;
         let items: Vec<_> = views
             .iter()
             .map(|(name, snapshot)| json!({"name": name, "snapshot": snapshot.to_hex()}))
@@ -105,7 +105,15 @@ async fn view_root(
     headers: HeaderMap,
     RawQuery(query): RawQuery,
 ) -> Response {
-    serve_tree(app, TreeRef::View(name), String::new(), method, headers, query).await
+    serve_tree(
+        app,
+        TreeRef::View(name),
+        String::new(),
+        method,
+        headers,
+        query,
+    )
+    .await
 }
 
 async fn view_path(
@@ -125,7 +133,15 @@ async fn snap_root(
     headers: HeaderMap,
     RawQuery(query): RawQuery,
 ) -> Response {
-    serve_tree(app, TreeRef::Snap(hash), String::new(), method, headers, query).await
+    serve_tree(
+        app,
+        TreeRef::Snap(hash),
+        String::new(),
+        method,
+        headers,
+        query,
+    )
+    .await
 }
 
 async fn snap_path(
@@ -194,11 +210,10 @@ fn tree_response(
     immutable: bool,
     url_base: &str,
 ) -> Response {
-    if let Some(prefix) = path.strip_suffix('/').or(if path.is_empty() {
-        Some("")
-    } else {
-        None
-    }) {
+    if let Some(prefix) = path
+        .strip_suffix('/')
+        .or(if path.is_empty() { Some("") } else { None })
+    {
         // Directory form. Manifest paths are canonical, so lookups are
         // pure string comparisons — no filesystem is ever consulted.
         if idx.is_dir(prefix) {
@@ -276,11 +291,7 @@ fn file_response(
         RangeOutcome::Full
     };
     let range = match range {
-        RangeOutcome::Partial { .. }
-            if !if_range_allows(headers, &etag) =>
-        {
-            RangeOutcome::Full
-        }
+        RangeOutcome::Partial { .. } if !if_range_allows(headers, &etag) => RangeOutcome::Full,
         other => other,
     };
 
@@ -313,13 +324,16 @@ fn file_response(
         // Small enough to answer in one verified read — and to report
         // failures as proper statuses instead of a broken stream.
         let result = {
-            let db = app.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let db = app
+                .db
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             app.exec.serve_range(&db, &row.hash, start, span)
         };
         return match result {
-            Ok(bytes) if bytes.len() as u64 == span => builder
-                .body(Body::from(bytes))
-                .expect("static headers"),
+            Ok(bytes) if bytes.len() as u64 == span => {
+                builder.body(Body::from(bytes)).expect("static headers")
+            }
             Ok(bytes) => text(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("short read: {} of {span} bytes", bytes.len()),
@@ -356,7 +370,10 @@ fn feed_windows(
     // as-is.
     if row.seek == 2 {
         let resident = {
-            let db = app.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let db = app
+                .db
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match db.blob_by_hash(&row.hash) {
                 Ok(Some(blob)) => blob.residency == datboi_index::Residency::Resident,
                 Ok(None) => false,
@@ -367,7 +384,10 @@ fn feed_windows(
             }
         };
         if !resident {
-            let db = app.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let db = app
+                .db
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Err(e) = app.exec.materialize(&db, &row.hash) {
                 let _ = tx.blocking_send(Err(std::io::Error::other(e.to_string())));
                 return;
@@ -378,7 +398,10 @@ fn feed_windows(
     while off < end {
         let want = WINDOW.min(end - off);
         let result = {
-            let db = app.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let db = app
+                .db
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             app.exec.serve_range(&db, &row.hash, off, want)
         };
         match result {
@@ -566,16 +589,16 @@ fn listing_response(idx: &ViewIndex, prefix: &str, want_json: bool, immutable: b
         idx.snapshot.to_hex()
     ));
     let mut resp = html(StatusCode::OK, body);
-    resp.headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static(cache_control));
+    resp.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_control),
+    );
     resp
 }
 
 // ---- small helpers ----
 
-async fn run_blocking(
-    f: impl FnOnce() -> Result<Response, Response> + Send + 'static,
-) -> Response {
+async fn run_blocking(f: impl FnOnce() -> Result<Response, Response> + Send + 'static) -> Response {
     match tokio::task::spawn_blocking(f).await {
         Ok(Ok(resp) | Err(resp)) => resp,
         Err(join) => text(

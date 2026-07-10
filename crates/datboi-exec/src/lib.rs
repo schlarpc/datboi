@@ -1109,7 +1109,12 @@ fn fuel_budget(children: &[Plan], outputs: &[(Blake3, u64)]) -> u64 {
         .iter()
         .map(Plan::len)
         .fold(0u64, u64::saturating_add)
-        .saturating_add(outputs.iter().map(|(_, s)| *s).fold(0u64, u64::saturating_add));
+        .saturating_add(
+            outputs
+                .iter()
+                .map(|(_, s)| *s)
+                .fold(0u64, u64::saturating_add),
+        );
     FUEL_BASE.saturating_add(bytes.saturating_mul(FUEL_PER_BYTE))
 }
 

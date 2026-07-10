@@ -23,9 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use datboi_core::hash::Blake3;
-use nfsserve::nfs::{
-    fattr3, fileid3, filename3, ftype3, nfspath3, nfsstat3, nfstime3, sattr3,
-};
+use nfsserve::nfs::{fattr3, fileid3, filename3, ftype3, nfspath3, nfsstat3, nfstime3, sattr3};
 use nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
 
 use crate::App;
@@ -189,8 +187,7 @@ fn children_of(app: &App, node: &Node) -> Result<Vec<Child>, nfsstat3> {
             views
                 .into_iter()
                 .map(|(name, snapshot)| {
-                    let idx =
-                        vfs::snapshot_index(app, snapshot).map_err(|e| map_lookup(&e))?;
+                    let idx = vfs::snapshot_index(app, snapshot).map_err(|e| map_lookup(&e))?;
                     Ok(Child {
                         node: Node::View(name.clone()),
                         name,
@@ -271,9 +268,7 @@ impl NFSFileSystem for NfsFs {
             return match &dir {
                 Node::Root | Node::View(_) => Ok(ROOT_ID),
                 Node::Path(snapshot, path) => match path.rsplit_once('/') {
-                    Some((parent, _)) => {
-                        Ok(self.id_for(&Node::Path(*snapshot, parent.to_owned())))
-                    }
+                    Some((parent, _)) => Ok(self.id_for(&Node::Path(*snapshot, parent.to_owned()))),
                     // top of a snapshot tree: the view dir that got us
                     // here isn't recoverable from the snapshot alone;
                     // fall back to root (clients only use this for cwd
@@ -302,8 +297,7 @@ impl NFSFileSystem for NfsFs {
                     }
                 }
                 Node::Path(snapshot, path) => {
-                    let idx =
-                        vfs::snapshot_index(&app, *snapshot).map_err(|e| map_lookup(&e))?;
+                    let idx = vfs::snapshot_index(&app, *snapshot).map_err(|e| map_lookup(&e))?;
                     let child = format!("{path}/{name}");
                     if idx.file(&child).is_some() || idx.is_dir(&child) {
                         Ok(Node::Path(*snapshot, child))
@@ -377,9 +371,7 @@ impl NFSFileSystem for NfsFs {
         max_entries: usize,
     ) -> Result<ReadDirResult, nfsstat3> {
         let dir = self.node(dirid)?;
-        let children = self
-            .blocking(move |app| children_of(&app, &dir))
-            .await?;
+        let children = self.blocking(move |app| children_of(&app, &dir)).await?;
         // Materialize ids, then window after `start_after`.
         let all: Vec<(fileid3, Child)> = children
             .into_iter()
@@ -495,12 +487,7 @@ mod tests {
         assert_eq!(t.node(999), None);
     }
 
-    fn mint_snapshot(
-        store: &Store,
-        db: &Db,
-        rows: Vec<ViewRow>,
-        created_at: u64,
-    ) -> Blake3 {
+    fn mint_snapshot(store: &Store, db: &Db, rows: Vec<ViewRow>, created_at: u64) -> Blake3 {
         let snap = ViewSnapshot {
             created_at,
             view_name: "test".into(),
@@ -512,8 +499,13 @@ mod tests {
         store
             .put(StoreNs::Meta, hash, encoded.as_slice())
             .expect("put snap");
-        db.upsert_blob(&hash, Some(encoded.len() as u64), IxNs::Meta, Residency::Resident)
-            .expect("index");
+        db.upsert_blob(
+            &hash,
+            Some(encoded.len() as u64),
+            IxNs::Meta,
+            Residency::Resident,
+        )
+        .expect("index");
         db.set_tag("view/test", &hash, i64::try_from(created_at).unwrap())
             .expect("tag");
         hash
@@ -524,8 +516,13 @@ mod tests {
         store
             .put_with_obao(StoreNs::Data, hash, bytes.len() as u64, bytes)
             .expect("put");
-        db.upsert_blob(&hash, Some(bytes.len() as u64), IxNs::Data, Residency::Resident)
-            .expect("index");
+        db.upsert_blob(
+            &hash,
+            Some(bytes.len() as u64),
+            IxNs::Data,
+            Residency::Resident,
+        )
+        .expect("index");
         ViewRow {
             path: path.into(),
             hash,
@@ -561,9 +558,18 @@ mod tests {
             .expect("rt");
         rt.block_on(async {
             // walk down
-            let view_id = fs.lookup(ROOT_ID, &"test".as_bytes().into()).await.expect("view");
-            let dir_id = fs.lookup(view_id, &"Dir".as_bytes().into()).await.expect("dir");
-            let file_id = fs.lookup(dir_id, &"a.bin".as_bytes().into()).await.expect("file");
+            let view_id = fs
+                .lookup(ROOT_ID, &"test".as_bytes().into())
+                .await
+                .expect("view");
+            let dir_id = fs
+                .lookup(view_id, &"Dir".as_bytes().into())
+                .await
+                .expect("dir");
+            let file_id = fs
+                .lookup(dir_id, &"a.bin".as_bytes().into())
+                .await
+                .expect("file");
             assert!(matches!(
                 fs.lookup(ROOT_ID, &"nope".as_bytes().into()).await,
                 Err(nfsstat3::NFS3ERR_NOENT)
@@ -622,7 +628,10 @@ mod tests {
                 mint_snapshot(store, &db, rows, 1_780_000_100)
             };
             assert_ne!(snap1, snap2);
-            let dir_id2 = fs.lookup(view_id, &"Dir".as_bytes().into()).await.expect("dir2");
+            let dir_id2 = fs
+                .lookup(view_id, &"Dir".as_bytes().into())
+                .await
+                .expect("dir2");
             assert_ne!(dir_id, dir_id2, "new snapshot, new identity");
             let listing = fs.readdir(dir_id2, 0, 10).await.expect("readdir");
             assert_eq!(listing.entries.len(), 1);

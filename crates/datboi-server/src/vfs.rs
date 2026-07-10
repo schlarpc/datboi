@@ -62,7 +62,10 @@ impl std::fmt::Display for LookupError {
 
 /// All `view/<name>` tags as (name, snapshot hash), the serving roots.
 pub(crate) fn view_tags(app: &App) -> Result<Vec<(String, Blake3)>, LookupError> {
-    let db = app.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let db = app
+        .db
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tags = db
         .list_tags()
         .map_err(|e| LookupError::Internal(e.to_string()))?;
@@ -75,7 +78,10 @@ pub(crate) fn view_tags(app: &App) -> Result<Vec<(String, Blake3)>, LookupError>
 /// Resolve a view name through its tag (the per-request D33 read).
 pub(crate) fn view_index(app: &App, name: &str) -> Result<Arc<ViewIndex>, LookupError> {
     let snapshot = {
-        let db = app.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let db = app
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         db.get_tag(&format!("view/{name}"))
             .map_err(|e| LookupError::Internal(e.to_string()))?
     };
@@ -83,10 +89,7 @@ pub(crate) fn view_index(app: &App, name: &str) -> Result<Arc<ViewIndex>, Lookup
 }
 
 /// Load (or hit the cache for) a snapshot's decoded manifest.
-pub(crate) fn snapshot_index(
-    app: &App,
-    snapshot: Blake3,
-) -> Result<Arc<ViewIndex>, LookupError> {
+pub(crate) fn snapshot_index(app: &App, snapshot: Blake3) -> Result<Arc<ViewIndex>, LookupError> {
     if let Some(idx) = app
         .manifests
         .lock()
@@ -108,8 +111,7 @@ pub(crate) fn snapshot_index(
         file.read_to_end(&mut bytes)
             .map_err(|e| LookupError::Internal(e.to_string()))?;
     }
-    let snap =
-        ViewSnapshot::decode(&bytes).map_err(|e| LookupError::Corrupt(e.to_string()))?;
+    let snap = ViewSnapshot::decode(&bytes).map_err(|e| LookupError::Corrupt(e.to_string()))?;
     let idx = Arc::new(ViewIndex::from_snapshot(snapshot, snap));
     let mut cache = app
         .manifests

@@ -702,9 +702,10 @@ fn hash_member(blob: &mut File, member: &zip::Member) -> Result<AliasTuple, Stri
     let cap = member.uncomp_size.saturating_add(1);
     let counted = match member.method {
         Method::Stored => stream_into(window.take(cap), &mut hasher),
-        Method::Deflate => {
-            stream_into(flate2::read::DeflateDecoder::new(window).take(cap), &mut hasher)
-        }
+        Method::Deflate => stream_into(
+            flate2::read::DeflateDecoder::new(window).take(cap),
+            &mut hasher,
+        ),
     }
     .map_err(|e| format!("member data unreadable: {e}"))?;
     if counted > member.uncomp_size {

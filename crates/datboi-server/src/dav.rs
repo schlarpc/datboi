@@ -12,13 +12,13 @@
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
+use datboi_core::hash::Blake3;
 use dav_server::davpath::DavPath;
 use dav_server::fs::{
     DavDirEntry, DavFile, DavFileSystem, DavMetaData, FsError, FsFuture, FsResult, FsStream,
     OpenOptions, ReadDirMeta,
 };
 use dav_server::{DavHandler, DavMethodSet};
-use datboi_core::hash::Blake3;
 
 use crate::App;
 use crate::vfs::{self, LookupError, RowMeta, ViewIndex};
@@ -92,7 +92,10 @@ impl DavFileSystem for DavFs {
         options: OpenOptions,
     ) -> FsFuture<'a, Box<dyn DavFile>> {
         Box::pin(async move {
-            if options.write || options.append || options.truncate || options.create
+            if options.write
+                || options.append
+                || options.truncate
+                || options.create
                 || options.create_new
             {
                 return Err(FsError::Forbidden);
@@ -123,8 +126,7 @@ impl DavFileSystem for DavFs {
             let app = Arc::clone(&self.app);
             let rel = rel_str(path)?;
             let entries = blocking(move || dir_entries(&app, &rel)).await?;
-            Ok(Box::pin(IterStream(entries.into_iter()))
-                as FsStream<Box<dyn DavDirEntry>>)
+            Ok(Box::pin(IterStream(entries.into_iter())) as FsStream<Box<dyn DavDirEntry>>)
         })
     }
 
@@ -277,7 +279,9 @@ impl DavFile for RangeFile {
             is_dir: false,
             etag: Some(self.hash.to_hex()),
         };
-        Box::pin(std::future::ready(Ok(Box::new(meta) as Box<dyn DavMetaData>)))
+        Box::pin(std::future::ready(Ok(
+            Box::new(meta) as Box<dyn DavMetaData>
+        )))
     }
 
     fn read_bytes(&'_ mut self, count: usize) -> FsFuture<'_, bytes::Bytes> {
@@ -289,7 +293,10 @@ impl DavFile for RangeFile {
             let app = Arc::clone(&self.app);
             let (hash, pos) = (self.hash, self.pos);
             let bytes = blocking(move || {
-                let db = app.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let db = app
+                    .db
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 app.exec
                     .serve_range(&db, &hash, pos, want)
                     .map_err(|_| FsError::GeneralFailure)

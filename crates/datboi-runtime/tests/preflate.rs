@@ -155,10 +155,7 @@ fn corrupt_corrections_never_panic() {
         transform,
         "recreate",
         &[],
-        vec![
-            sequential(corrections),
-            sequential(pattern(1 << 20 | 5)),
-        ],
+        vec![sequential(corrections), sequential(pattern(1 << 20 | 5))],
         vec![Box::new(out.clone())],
     );
     match result {

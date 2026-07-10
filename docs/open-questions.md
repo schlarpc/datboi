@@ -163,13 +163,19 @@ constraint profiles (fat32/everdrive/mister: FAT charset scrub, length
 caps with suffix reserve, oversize rows skipped + counted, overfull
 dirs reported), and SD sync (`view sync`: incremental, --verify,
 --delete, temp+fsync+rename). ViewDef grew additive CBOR keys 4–7;
-the viewsnap format is untouched. REMAINING M4: in-process NFSv3
-(nfsserve-lineage, the primary mount), FAT32 image synthesis (NEEDS the
-two rulings: reified views + D49 affine carve-out — user leaned toward
-the carve-out but has NOT ruled), MAME merge-mode rendering (D31
-deferred set), retool clonelist consumption. Note: view defs/tags still
-don't ride the statesnap payload — recovery loses them (same class as
-the existing tag/config gap).
+the viewsnap format is untouched. LATER THE SAME SESSION: in-process
+NFSv3 shipped (nfsserve 0.11, opt-in `--nfs-listen`; view-dir fileids
+stable across flips, everything beneath keyed (snapshot, path) so held
+ids keep serving the old tree — the D33 promise under a stateless
+protocol); adversarial hardening shipped (zip-bomb member inflation
+bounded at declared+1, overlapping-member archives refused whole,
+raw-socket traversal probes + u64-boundary Range tests; CBOR audited,
+already guarded); and the tag/config recovery gap CLOSED (statesnap
+payload keys 8/9, additive — golden hash unchanged; the bare-NAS
+drill now proves a view survives the nuke). REMAINING M4: FAT32 image
+synthesis (NEEDS the two rulings: reified views + D49 affine
+carve-out — user leaned toward the carve-out but has NOT ruled), MAME
+merge-mode rendering (D31 deferred set), retool clonelist consumption.
 
 **Previous position (2026-07-07 late session)**: **M1/M2/M3 COMPLETE**
 (bench-gated items indefinitely deferred by ruling). **M4 started** —

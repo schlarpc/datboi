@@ -144,7 +144,11 @@ fn params_change_the_artifact_and_junk_params_error() {
     // {1: 4096} canonical CBOR: block-size 4096.
     let big_blocks = compress(&[0xa1, 0x01, 0x19, 0x10, 0x00], image.clone());
     assert_ne!(default_cso, big_blocks, "params are recipe content");
-    assert_eq!(decompress(big_blocks), image, "alt geometry still roundtrips");
+    assert_eq!(
+        decompress(big_blocks),
+        image,
+        "alt geometry still roundtrips"
+    );
 
     let (host, transform) = shared();
     // Non-canonical encoding of the same params must be REJECTED, not

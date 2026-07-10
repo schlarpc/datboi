@@ -31,8 +31,13 @@ fn put_data(store: &Store, db: &Db, bytes: &[u8]) -> Blake3 {
     store
         .put_with_obao(StoreNs::Data, hash, bytes.len() as u64, bytes)
         .expect("put");
-    db.upsert_blob(&hash, Some(bytes.len() as u64), IxNs::Data, Residency::Resident)
-        .expect("index");
+    db.upsert_blob(
+        &hash,
+        Some(bytes.len() as u64),
+        IxNs::Data,
+        Residency::Resident,
+    )
+    .expect("index");
     hash
 }
 
@@ -78,9 +83,15 @@ fn fixture() -> Fixture {
     store
         .put(StoreNs::Meta, snap_hash, encoded.as_slice())
         .expect("put snap");
-    db.upsert_blob(&snap_hash, Some(encoded.len() as u64), IxNs::Meta, Residency::Resident)
-        .expect("index snap");
-    db.set_tag("view/test", &snap_hash, 1_780_000_000).expect("tag");
+    db.upsert_blob(
+        &snap_hash,
+        Some(encoded.len() as u64),
+        IxNs::Meta,
+        Residency::Resident,
+    )
+    .expect("index snap");
+    db.set_tag("view/test", &snap_hash, 1_780_000_000)
+        .expect("tag");
     drop(db); // the daemon opens its own handles
 
     let server = Server::bind(&Config {
@@ -101,11 +112,7 @@ fn fixture() -> Fixture {
 
 /// GET with optional headers; returns (status, response). Never follows
 /// redirects — the tests assert on them.
-fn get(
-    addr: SocketAddr,
-    path: &str,
-    headers: &[(&str, &str)],
-) -> (u16, ureq::Response) {
+fn get(addr: SocketAddr, path: &str, headers: &[(&str, &str)]) -> (u16, ureq::Response) {
     let agent = ureq::AgentBuilder::new().redirects(0).build();
     let mut req = agent.get(&format!("http://{addr}{path}"));
     for (k, v) in headers {
@@ -170,7 +177,10 @@ fn http_surface_end_to_end() {
 
     // health + discovery
     let (status, resp) = get(f.addr, "/healthz", &[]);
-    assert_eq!((status, resp.into_string().expect("text").as_str()), (200, "ok"));
+    assert_eq!(
+        (status, resp.into_string().expect("text").as_str()),
+        (200, "ok")
+    );
     let (status, resp) = get(f.addr, "/v1/views", &[]);
     assert_eq!(status, 200);
     let v: serde_json::Value =

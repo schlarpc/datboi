@@ -86,10 +86,7 @@ impl ViewSnapshot {
         }
         let body = cbor::encode(&Value::Map(vec![
             (PAYKEY_CREATED_AT, Value::Uint(self.created_at)),
-            (
-                PAYKEY_VIEW_NAME,
-                Value::Text(self.view_name.clone()),
-            ),
+            (PAYKEY_VIEW_NAME, Value::Text(self.view_name.clone())),
             (
                 PAYKEY_SOURCES,
                 Value::Array(
@@ -166,11 +163,7 @@ impl ViewSnapshot {
         }
         // Canonicality on the way in too: a hand-built blob with
         // unsorted rows must not round-trip to a different hash.
-        if snap
-            .rows
-            .windows(2)
-            .any(|w| w[0].path >= w[1].path)
-        {
+        if snap.rows.windows(2).any(|w| w[0].path >= w[1].path) {
             return Err(SnapshotError::Invalid("manifest rows not sorted by path"));
         }
         for row in &snap.rows {
@@ -192,9 +185,10 @@ fn decode_source(value: Value) -> Result<ViewSource, SnapshotError> {
             (SRCKEY_PROVIDER, Value::Text(v)) => provider = Some(v),
             (SRCKEY_SYSTEM, Value::Text(v)) => system = Some(v),
             (SRCKEY_DAT_BLOB, Value::Bytes(v)) => {
-                dat_blob = Some(Blake3(v.try_into().map_err(|_| {
-                    SnapshotError::Invalid("dat blob hash is not 32 bytes")
-                })?));
+                dat_blob =
+                    Some(Blake3(v.try_into().map_err(|_| {
+                        SnapshotError::Invalid("dat blob hash is not 32 bytes")
+                    })?));
             }
             (SRCKEY_REVISION, Value::Uint(v)) => revision = Some(v),
             _ => return Err(SnapshotError::Invalid("unknown source key")),
@@ -217,15 +211,17 @@ fn decode_row(value: Value) -> Result<ViewRow, SnapshotError> {
         match (key, value) {
             (ROWKEY_PATH, Value::Text(v)) => path = Some(v),
             (ROWKEY_HASH, Value::Bytes(v)) => {
-                hash = Some(Blake3(v.try_into().map_err(|_| {
-                    SnapshotError::Invalid("row hash is not 32 bytes")
-                })?));
+                hash =
+                    Some(Blake3(v.try_into().map_err(|_| {
+                        SnapshotError::Invalid("row hash is not 32 bytes")
+                    })?));
             }
             (ROWKEY_SIZE, Value::Uint(v)) => size = Some(v),
             (ROWKEY_SEEK, Value::Uint(v)) => {
-                seek = Some(u8::try_from(v).map_err(|_| {
-                    SnapshotError::Invalid("seek class out of range")
-                })?);
+                seek = Some(
+                    u8::try_from(v)
+                        .map_err(|_| SnapshotError::Invalid("seek class out of range"))?,
+                );
             }
             _ => return Err(SnapshotError::Invalid("unknown row key")),
         }

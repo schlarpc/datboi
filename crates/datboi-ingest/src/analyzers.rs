@@ -176,7 +176,8 @@ impl<'a> SplitReader<'a> {
                 .min(self.remaining_comp);
             if take > 0 {
                 let start = self.window.len();
-                self.window.resize(start + usize::try_from(take).expect("bounded"), 0);
+                self.window
+                    .resize(start + usize::try_from(take).expect("bounded"), 0);
                 self.src.read_exact(&mut self.window[start..])?;
                 self.stream_hasher.update(&self.window[start..]);
                 self.remaining_comp -= take;
@@ -188,10 +189,9 @@ impl<'a> SplitReader<'a> {
                     }
                     let pt = self.processor.plain_text().text().to_vec();
                     self.processor.shrink_to_dictionary();
-                    let (Ok(pt_len), Ok(corr_len)) = (
-                        u32::try_from(pt.len()),
-                        u32::try_from(r.corrections.len()),
-                    ) else {
+                    let (Ok(pt_len), Ok(corr_len)) =
+                        (u32::try_from(pt.len()), u32::try_from(r.corrections.len()))
+                    else {
                         return Err(self.split_failed("frame exceeds u32".into()));
                     };
                     self.corrections.extend_from_slice(&pt_len.to_le_bytes());
@@ -319,7 +319,8 @@ impl Analyzer for PreflateZipAnalyzer {
         let mut covered: Vec<(u64, u64, MemberSplit)> = Vec::new();
         let mut failures: Vec<String> = Vec::new();
         for &(start, len, ix) in &ranges {
-            file.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
+            file.seek(SeekFrom::Start(start))
+                .map_err(|e| e.to_string())?;
             let mut reader = SplitReader::new(&mut file, len);
             let put = store.put_new(StoreNs::Data, &mut reader);
             match put {
@@ -338,7 +339,11 @@ impl Analyzer for PreflateZipAnalyzer {
                         .map_err(|e| e.to_string())?;
                     let corrections_hash = Blake3::compute(&reader.corrections);
                     store
-                        .put(StoreNs::Data, corrections_hash, reader.corrections.as_slice())
+                        .put(
+                            StoreNs::Data,
+                            corrections_hash,
+                            reader.corrections.as_slice(),
+                        )
                         .map_err(|e| e.to_string())?;
                     let stream_hash = Blake3(*reader.stream_hasher.finalize().as_bytes());
                     covered.push((
@@ -373,8 +378,7 @@ impl Analyzer for PreflateZipAnalyzer {
                 )),
             });
         }
-        let skeleton_len =
-            container_size - covered.iter().map(|&(_, len, _)| len).sum::<u64>();
+        let skeleton_len = container_size - covered.iter().map(|&(_, len, _)| len).sum::<u64>();
         if skeleton_len > SKELETON_LIMIT {
             return Ok(AnalysisResult {
                 outcome: AnalysisOutcome::Negative,
@@ -587,7 +591,12 @@ impl Analyzer for PreflateZipAnalyzer {
 /// not a log dump.
 fn summarize_failures(failures: &[String]) -> String {
     const SHOW: usize = 3;
-    let mut s = failures.iter().take(SHOW).cloned().collect::<Vec<_>>().join("; ");
+    let mut s = failures
+        .iter()
+        .take(SHOW)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("; ");
     if failures.len() > SHOW {
         s.push_str(&format!("; +{} more", failures.len() - SHOW));
     }

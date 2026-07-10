@@ -722,8 +722,13 @@ fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
         &[(0, input_id)],
         &[(0, swapped_id, swapped.len() as u64)],
     );
-    w.db.set_verify_state(good_id, VerifyState::Failed, 0, Some(("simulated host bug", None)))
-        .expect("poison by fiat");
+    w.db.set_verify_state(
+        good_id,
+        VerifyState::Failed,
+        0,
+        Some(("simulated host bug", None)),
+    )
+    .expect("poison by fiat");
 
     // A genuinely bad claim: same op, wrong claimed output hash.
     let bogus = Blake3::compute(b"never these bytes");

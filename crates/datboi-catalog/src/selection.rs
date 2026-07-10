@@ -149,9 +149,17 @@ fn normalize_region(token: &str) -> String {
 /// Development/incomplete flags rank behind any production release.
 fn is_dev_flag(token: &str) -> bool {
     let token = token.to_ascii_lowercase();
-    ["beta", "proto", "prototype", "sample", "demo", "alpha", "debug"]
-        .iter()
-        .any(|flag| token == *flag || token.starts_with(&format!("{flag} ")))
+    [
+        "beta",
+        "proto",
+        "prototype",
+        "sample",
+        "demo",
+        "alpha",
+        "debug",
+    ]
+    .iter()
+    .any(|flag| token == *flag || token.starts_with(&format!("{flag} ")))
 }
 
 /// `(Rev 2)` → 2, `(Rev B)` → 2; absent → 0. Higher wins.
@@ -211,10 +219,7 @@ mod tests {
 
     #[test]
     fn held_beats_preferred_region() {
-        let cands = vec![
-            cand(1, "Game (USA)", false),
-            cand(2, "Game (Europe)", true),
-        ];
+        let cands = vec![cand(1, "Game (USA)", false), cand(2, "Game (Europe)", true)];
         let picked = select_1g1r(&cands, &policy(&["USA", "Europe"], &[]));
         assert!(picked.contains(&2), "the NAS serves what it holds");
     }
@@ -256,10 +261,7 @@ mod tests {
         // A third entry whose base name collides with nothing declared:
         // with a clone graph present it is its own family.
         let c = cand(3, "Parent (Japan)", true);
-        let picked = select_1g1r(
-            &[a, b, c],
-            &policy(&["USA", "Europe", "Japan"], &[]),
-        );
+        let picked = select_1g1r(&[a, b, c], &policy(&["USA", "Europe", "Japan"], &[]));
         assert!(picked.contains(&1), "family {{1,2}} picks USA parent");
         assert!(picked.contains(&3), "undeclared sibling stays separate");
         assert_eq!(picked.len(), 2);

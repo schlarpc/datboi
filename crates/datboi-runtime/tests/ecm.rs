@@ -165,12 +165,12 @@ fn served_ranges_match_materialization() {
     let sector = SECTOR as u64;
     for (offset, len) in [
         (0u64, 1u64),
-        (sector - 1, 2),                // sector straddle inside mode-1 run
-        (5 * sector - 3, 3006),         // run boundary into the literal junk
-        (5 * sector + 2999, 2),         // junk -> mode 2 form 1 boundary
-        (total - 10, 100),              // EOF clamp inside trailing literal
-        (total + 7, 4),                 // fully past EOF: empty
-        (0, total),                     // the whole image through serve-range
+        (sector - 1, 2),        // sector straddle inside mode-1 run
+        (5 * sector - 3, 3006), // run boundary into the literal junk
+        (5 * sector + 2999, 2), // junk -> mode 2 form 1 boundary
+        (total - 10, 100),      // EOF clamp inside trailing literal
+        (total + 7, 4),         // fully past EOF: empty
+        (0, total),             // the whole image through serve-range
     ] {
         let out = Collector::default();
         let inputs: Vec<Box<dyn RangeRead>> =
