@@ -398,6 +398,84 @@ fn encrypted_and_zero_byte_members() {
     assert!(world.db.get_blob_id(&empty_hash).expect("query").is_some());
 }
 
+/// A member whose deflate stream inflates far past its declared size
+/// (the classic bomb shape) is refused after declared+1 bytes — the
+/// claim is skipped, the container stays a harmless literal.
+#[test]
+fn zip_bomb_lying_size_is_refused_cheaply() {
+    let mut world = setup();
+    // 8 MiB of zeros deflates to ~8 KiB; then lie in both headers that
+    // it inflates to 10 bytes.
+    let huge = vec![0u8; 8 << 20];
+    let mut zb = ZipBuilder::new();
+    zb.add("innocent.rom", &huge, true, 0);
+    let mut bytes = zb.finish();
+    let lie = 10u32.to_le_bytes();
+    bytes[22..26].copy_from_slice(&lie); // local header uncomp_size
+    let eocd = bytes.len() - 22;
+    let cd_off =
+        u32::from_le_bytes(bytes[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
+    bytes[cd_off + 24..cd_off + 28].copy_from_slice(&lie); // CD uncomp_size
+    let bomb_path = world.src.parent().unwrap().join("bomb.zip");
+    fs::write(&bomb_path, &bytes).expect("write");
+
+    let report = {
+        let mut ingester = Ingester::new(&world.store, &mut world.db, &world.detectors);
+        ingester.ingest(&[bomb_path])
+    };
+    let skips: Vec<_> = report
+        .member_skips
+        .iter()
+        .map(|(_, name, reason)| (name.as_str(), reason.as_str()))
+        .collect();
+    assert!(
+        skips
+            .iter()
+            .any(|(n, r)| *n == "innocent.rom" && r.contains("bomb-shaped")),
+        "expected bomb refusal, got {skips:?}"
+    );
+    assert_eq!(report.members_claimed, 0);
+    // Custody unharmed: the container literal is stored and safe.
+    assert!(world.store.has(Namespace::Data, &Blake3::compute(&bytes)));
+}
+
+/// Entries sharing raw data ranges (42.zip's trick: thousands of claims
+/// over the same bytes) poison the whole directory — no claims minted.
+#[test]
+fn overlapping_members_refuse_all_claims() {
+    let mut world = setup();
+    let mut zb = ZipBuilder::new();
+    zb.add("one.rom", b"first member data", false, 0);
+    zb.add("two.rom", b"secnd member data", false, 0); // same length
+    let mut bytes = zb.finish();
+    // Point the SECOND central entry's local header at the first's:
+    // both members now claim the same raw span.
+    let eocd = bytes.len() - 22;
+    let cd_off =
+        u32::from_le_bytes(bytes[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
+    let first_entry_len = 46 + "one.rom".len();
+    let second_local_offset_at = cd_off + first_entry_len + 42;
+    bytes[second_local_offset_at..second_local_offset_at + 4]
+        .copy_from_slice(&0u32.to_le_bytes());
+    let overlap_path = world.src.parent().unwrap().join("overlap.zip");
+    fs::write(&overlap_path, &bytes).expect("write");
+
+    let report = {
+        let mut ingester = Ingester::new(&world.store, &mut world.db, &world.detectors);
+        ingester.ingest(&[overlap_path])
+    };
+    assert_eq!(report.members_claimed, 0);
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|(_, e)| e.contains("bomb-shaped") && e.contains("overlap")),
+        "expected overlap refusal, got {:?}",
+        report.errors
+    );
+    assert!(world.store.has(Namespace::Data, &Blake3::compute(&bytes)));
+}
+
 #[test]
 fn zip_member_data_offsets_honor_local_headers() {
     // Local header with a longer extra field than the central directory

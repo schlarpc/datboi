@@ -138,6 +138,25 @@ fn propfind(addr: SocketAddr, path: &str, depth: &str) -> (u16, ureq::Response) 
     }
 }
 
+/// GET over a raw socket — no client-side URL normalization — and
+/// return the status code.
+fn raw_get_status(addr: SocketAddr, raw_path: &str) -> u16 {
+    use std::io::{Read as _, Write as _};
+    let mut sock = std::net::TcpStream::connect(addr).expect("connect");
+    write!(
+        sock,
+        "GET {raw_path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n"
+    )
+    .expect("send");
+    let mut response = Vec::new();
+    sock.read_to_end(&mut response).expect("read");
+    let head = std::str::from_utf8(&response[..response.len().min(64)]).expect("ascii head");
+    head.split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .expect("status line")
+}
+
 fn body(resp: ureq::Response) -> Vec<u8> {
     let mut out = Vec::new();
     use std::io::Read as _;
@@ -259,6 +278,59 @@ fn http_surface_end_to_end() {
     assert_eq!(get(f.addr, "/view/nope/", &[]).0, 404);
     assert_eq!(get(f.addr, "/view/test/Alpha/nope.bin", &[]).0, 404);
     assert_eq!(get(f.addr, "/view/test/Alpha/alpha.gba/", &[]).0, 404);
+
+    // ---- hostile inputs ----
+
+    // traversal shapes: lookups are exact string matches into a
+    // canonical manifest — every dot-segment form just misses. Sent
+    // over a raw socket because URL-standard clients (ureq included)
+    // collapse dot segments (even %2e%2e forms) before sending.
+    for path in [
+        "/view/test/../../etc/passwd",
+        "/view/test/%2e%2e/%2e%2e/etc/passwd",
+        "/view/test/Alpha/%2e%2e/%2e%2e/secret",
+        "/view/%2e%2e%2f%2e%2e%2fetc/",
+        "/view/test/Alpha%00.gba",
+        "/snap/%2e%2e/store",
+    ] {
+        let status = raw_get_status(f.addr, path);
+        assert!(
+            status == 404 || status == 400,
+            "{path} must miss, got {status}"
+        );
+    }
+    // control: the same transport serves a real file fine
+    assert_eq!(raw_get_status(f.addr, "/view/test/Alpha/alpha.gba"), 200);
+
+    // ranges at u64 boundaries: clamp or 416, never panic or overflow
+    let (status, resp) = get(
+        f.addr,
+        "/view/test/Alpha/alpha.gba",
+        &[("Range", "bytes=0-18446744073709551615")],
+    );
+    assert_eq!(status, 206);
+    assert_eq!(body(resp).len(), ALPHA.len(), "last-pos clamps to EOF");
+    let (status, _) = get(
+        f.addr,
+        "/view/test/Alpha/alpha.gba",
+        &[("Range", "bytes=18446744073709551615-")],
+    );
+    assert_eq!(status, 416, "start past EOF");
+    let (status, resp) = get(
+        f.addr,
+        "/view/test/Alpha/alpha.gba",
+        // one past u64::MAX: unparseable → header ignored → 200
+        &[("Range", "bytes=-18446744073709551616")],
+    );
+    assert_eq!(status, 200);
+    assert_eq!(body(resp).len(), ALPHA.len());
+    let (status, resp) = get(
+        f.addr,
+        "/view/test/Alpha/alpha.gba",
+        &[("Range", "bytes=x-y,,,junk")],
+    );
+    assert_eq!(status, 200, "garbage Range is ignored per RFC 9110");
+    drop(resp);
 
     // ---- WebDAV surface (same trees, protocol via dav-server) ----
 

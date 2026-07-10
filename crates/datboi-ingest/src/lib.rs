@@ -696,11 +696,23 @@ fn hash_member(blob: &mut File, member: &zip::Member) -> Result<AliasTuple, Stri
         remaining: member.comp_size,
     };
     let mut hasher = AliasHasher::new();
+    // Bounded at declared+1: one extra byte proves the directory lied,
+    // and a bomb-shaped member (tiny declared size, monstrous actual
+    // inflation) costs declared-size work instead of full inflation.
+    let cap = member.uncomp_size.saturating_add(1);
     let counted = match member.method {
-        Method::Stored => stream_into(window, &mut hasher),
-        Method::Deflate => stream_into(flate2::read::DeflateDecoder::new(window), &mut hasher),
+        Method::Stored => stream_into(window.take(cap), &mut hasher),
+        Method::Deflate => {
+            stream_into(flate2::read::DeflateDecoder::new(window).take(cap), &mut hasher)
+        }
     }
     .map_err(|e| format!("member data unreadable: {e}"))?;
+    if counted > member.uncomp_size {
+        return Err(format!(
+            "member inflates past its declared {} bytes — bomb-shaped, refusing claim",
+            member.uncomp_size
+        ));
+    }
     if counted != member.uncomp_size {
         return Err(format!(
             "central directory size mismatch: cd says {}, data yields {counted}",

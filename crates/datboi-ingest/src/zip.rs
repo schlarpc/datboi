@@ -32,6 +32,10 @@ pub enum ZipError {
     BadCentralDirectory(&'static str),
     #[error("malformed local header for member {0:?}")]
     BadLocalHeader(String),
+    #[error(
+        "members share raw data ranges ({0} overlap(s)) — bomb-shaped archive, refusing all claims"
+    )]
+    OverlappingMembers(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,6 +153,24 @@ pub fn parse_members<R: Read + Seek>(file: &mut R) -> Result<Parsed, ZipError> {
             data_start,
         });
     }
+
+    // 42.zip-shaped bombs point thousands of entries at the same raw
+    // bytes; no legitimate archiver shares member data ranges. Refuse
+    // the whole directory — the container stays a harmless literal.
+    let mut spans: Vec<(u64, u64)> = members
+        .iter()
+        .filter(|m| m.comp_size > 0)
+        .map(|m| (m.data_start, m.data_start + m.comp_size))
+        .collect();
+    spans.sort_unstable();
+    let overlaps = spans
+        .windows(2)
+        .filter(|pair| pair[1].0 < pair[0].1)
+        .count();
+    if overlaps > 0 {
+        return Err(ZipError::OverlappingMembers(overlaps));
+    }
+
     Ok(Parsed { members, skipped })
 }
 
