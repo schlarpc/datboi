@@ -842,6 +842,98 @@ fn view_1g1r_and_profile() {
         .code(2);
 }
 
+/// M4 SD sync: initial write, incremental no-op, holdings change +
+/// re-eval + re-sync updates in place, --delete clears extraneous.
+#[test]
+fn view_sync_incremental() {
+    let u = Universe::new();
+    fs::create_dir_all(u.src()).unwrap();
+    let alpha = b"alpha rom content".as_slice();
+    let beta = b"beta rom content!".as_slice();
+    fs::write(u.src().join("alpha.gba"), alpha).unwrap();
+    u.cmd().arg("ingest").arg(u.src()).assert().success();
+
+    let games = format!(
+        r#"  <game name="Alpha"><description>a</description>{}</game>
+  <game name="Beta"><description>b</description>{}</game>"#,
+        rom_xml("alpha.gba", alpha),
+        rom_xml("beta.gba", beta),
+    );
+    let dat_path = u.root.path().join("sync.dat");
+    fs::write(&dat_path, dat_xml("Sync", &games)).unwrap();
+    u.cmd()
+        .args(["dat", "import"])
+        .arg(&dat_path)
+        .args(["--provider", "test", "--system", "sync"])
+        .assert()
+        .success();
+    u.cmd()
+        .args(["view", "define", "card", "test/sync"])
+        .args(["--template", "{entry}/{name}"])
+        .assert()
+        .success();
+    u.cmd().args(["view", "eval", "card"]).assert().success();
+
+    let card = u.root.path().join("sdcard");
+
+    // dry-run touches nothing
+    let out = u
+        .cmd()
+        .args(["view", "sync", "card"])
+        .arg(&card)
+        .args(["--dry-run", "--json"])
+        .assert()
+        .success();
+    let v: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(v["written"], 1);
+    assert!(!card.exists(), "dry-run must not create the target");
+
+    // first sync writes; second is a no-op
+    u.cmd().args(["view", "sync", "card"]).arg(&card).assert().success();
+    assert_eq!(fs::read(card.join("Alpha/alpha.gba")).unwrap(), alpha);
+    let out = u
+        .cmd()
+        .args(["view", "sync", "card"])
+        .arg(&card)
+        .args(["--json"])
+        .assert()
+        .success();
+    let v: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!((v["written"].as_u64(), v["skipped"].as_u64()), (Some(0), Some(1)));
+
+    // --verify catches silent same-size corruption on the card
+    fs::write(card.join("Alpha/alpha.gba"), b"XXXXX rom content").unwrap();
+    let out = u
+        .cmd()
+        .args(["view", "sync", "card"])
+        .arg(&card)
+        .args(["--verify", "--json"])
+        .assert()
+        .success();
+    let v: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(v["written"], 1, "corrupt file rewritten");
+    assert_eq!(fs::read(card.join("Alpha/alpha.gba")).unwrap(), alpha);
+
+    // new holdings + re-eval + sync --delete: Beta arrives, junk leaves
+    fs::write(u.src().join("beta.gba"), beta).unwrap();
+    u.cmd().arg("ingest").arg(u.src()).assert().success();
+    u.cmd().args(["view", "eval", "card"]).assert().success();
+    fs::create_dir_all(card.join("stale")).unwrap();
+    fs::write(card.join("stale/junk.bin"), b"junk").unwrap();
+    let out = u
+        .cmd()
+        .args(["view", "sync", "card"])
+        .arg(&card)
+        .args(["--delete", "--json"])
+        .assert()
+        .success();
+    let v: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(v["written"], 1, "beta written");
+    assert_eq!(v["deleted"], 1, "junk removed");
+    assert_eq!(fs::read(card.join("Beta/beta.gba")).unwrap(), beta);
+    assert!(!card.join("stale").exists(), "emptied dir pruned");
+}
+
 /// M4 views: define → eval → manifest over a real ingest+dat, with the
 /// D33 tag flip and a re-eval producing a new snapshot after holdings
 /// change.

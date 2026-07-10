@@ -1507,7 +1507,11 @@ pub fn view_list(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-pub fn view_manifest(env: &Env, name: &str, json: bool) -> anyhow::Result<ExitCode> {
+/// Resolve a view's current snapshot (tag → decoded manifest).
+fn load_view_snapshot(
+    env: &Env,
+    name: &str,
+) -> anyhow::Result<(datboi_core::hash::Blake3, datboi_core::viewsnap::ViewSnapshot)> {
     let snap_hash = env
         .db
         .get_tag(&format!("view/{name}"))?
@@ -1519,6 +1523,11 @@ pub fn view_manifest(env: &Env, name: &str, json: bool) -> anyhow::Result<ExitCo
         .read_to_end(&mut bytes)?;
     let snap = datboi_core::viewsnap::ViewSnapshot::decode(&bytes)
         .map_err(|e| anyhow::anyhow!("snapshot does not decode: {e}"))?;
+    Ok((snap_hash, snap))
+}
+
+pub fn view_manifest(env: &Env, name: &str, json: bool) -> anyhow::Result<ExitCode> {
+    let (snap_hash, snap) = load_view_snapshot(env, name)?;
     if json {
         println!(
             "{}",
@@ -1539,4 +1548,231 @@ pub fn view_manifest(env: &Env, name: &str, json: bool) -> anyhow::Result<ExitCo
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Marker suffix for in-flight writes; leftovers from a crashed sync
+/// are ours to clean.
+const SYNC_TMP_SUFFIX: &str = ".datboi-tmp";
+
+/// SD sync (80-views.md): materialize a snapshot into a plain directory
+/// for flashcart cards. Incremental by (path, size) — `--verify`
+/// re-hashes matches; `--delete` removes extraneous files. All bytes
+/// flow through the executor's verified range path.
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+pub fn view_sync(
+    env: &Env,
+    name: &str,
+    target: &Path,
+    delete: bool,
+    verify: bool,
+    dry_run: bool,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let (snap_hash, snap) = load_view_snapshot(env, name)?;
+    let exec = datboi_exec::Executor::new(&env.store, datboi_exec::ExecConfig::default())?;
+    if !dry_run {
+        std::fs::create_dir_all(target)
+            .with_context(|| format!("creating {}", target.display()))?;
+    }
+
+    // Inventory the card: relative path → size. Symlinks are never
+    // followed (or deleted through); stale temp files are removed.
+    let mut existing: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if target.is_dir() {
+        walk_target(target, &mut String::new(), &mut existing, &mut dirs, dry_run)?;
+    }
+
+    let (mut written, mut skipped, mut bytes_written) = (0usize, 0usize, 0u64);
+    for row in &snap.rows {
+        let up_to_date = existing.remove(&row.path).is_some_and(|size| {
+            size == row.size && (!verify || file_matches(target, &row.path, &row.hash))
+        });
+        if up_to_date {
+            skipped += 1;
+            continue;
+        }
+        written += 1;
+        bytes_written += row.size;
+        if dry_run {
+            continue;
+        }
+        write_row_verified(&exec, env, target, row)?;
+    }
+
+    let mut deleted = 0usize;
+    if delete {
+        for path in existing.keys() {
+            if !dry_run {
+                std::fs::remove_file(rel_join(target, path))
+                    .with_context(|| format!("deleting extraneous {path}"))?;
+            }
+            deleted += 1;
+        }
+        if !dry_run {
+            // Deepest-first so newly-emptied parents fall too; non-empty
+            // dirs just fail the remove and stay.
+            dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+            for dir in &dirs {
+                let _ = std::fs::remove_dir(dir);
+            }
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            json!({
+                "view": name,
+                "snapshot": snap_hash.to_hex(),
+                "written": written,
+                "skipped": skipped,
+                "deleted": deleted,
+                "extraneous": if delete { 0 } else { existing.len() },
+                "bytes_written": bytes_written,
+                "dry_run": dry_run,
+            })
+        );
+    } else {
+        let verb = if dry_run { "would write" } else { "wrote" };
+        print!(
+            "sync {name} -> {}: {verb} {written} file(s) ({bytes_written} B), {skipped} up to date",
+            target.display()
+        );
+        if delete {
+            println!(", {deleted} deleted");
+        } else if existing.is_empty() {
+            println!();
+        } else {
+            println!(", {} extraneous (use --delete)", existing.len());
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Join a canonical manifest path under the target dir component-wise.
+fn rel_join(target: &Path, rel: &str) -> PathBuf {
+    let mut out = target.to_path_buf();
+    for component in rel.split('/') {
+        out.push(component);
+    }
+    out
+}
+
+fn file_matches(target: &Path, rel: &str, hash: &datboi_core::hash::Blake3) -> bool {
+    let Ok(file) = std::fs::File::open(rel_join(target, rel)) else {
+        return false;
+    };
+    let mut hasher = blake3::Hasher::new();
+    if std::io::copy(&mut std::io::BufReader::new(file), &mut hasher).is_err() {
+        return false;
+    }
+    hasher.finalize().as_bytes() == &hash.0
+}
+
+/// Stream one row into place: temp file, verified 8 MiB windows, fsync,
+/// rename — a yanked card never sees a half-written file under its
+/// final name.
+fn write_row_verified(
+    exec: &datboi_exec::Executor,
+    env: &Env,
+    target: &Path,
+    row: &datboi_core::viewsnap::ViewRow,
+) -> anyhow::Result<()> {
+    const WINDOW: u64 = 8 << 20;
+    let dest = rel_join(target, &row.path);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // Opaque non-resident routes re-spill per window; one verified
+    // replay first (same policy as the daemon's long streams).
+    if row.seek == 2 {
+        let resident = env
+            .db
+            .blob_by_hash(&row.hash)?
+            .is_some_and(|b| b.residency == Residency::Resident);
+        if !resident {
+            exec.materialize(&env.db, &row.hash)?;
+        }
+    }
+    let tmp = {
+        let mut name = dest
+            .file_name()
+            .map(std::ffi::OsString::from)
+            .unwrap_or_default();
+        name.push(SYNC_TMP_SUFFIX);
+        dest.with_file_name(name)
+    };
+    let mut out = std::fs::File::create(&tmp)
+        .with_context(|| format!("creating {}", tmp.display()))?;
+    let result = (|| -> anyhow::Result<()> {
+        use std::io::Write as _;
+        let mut off = 0u64;
+        while off < row.size {
+            let want = WINDOW.min(row.size - off);
+            let window = exec.serve_range(&env.db, &row.hash, off, want)?;
+            anyhow::ensure!(
+                window.len() as u64 == want,
+                "short read at {off} of {}: {} of {want} bytes",
+                row.path,
+                window.len()
+            );
+            out.write_all(&window)?;
+            off += want;
+        }
+        out.sync_all()?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            std::fs::rename(&tmp, &dest)
+                .with_context(|| format!("publishing {}", dest.display()))?;
+            Ok(())
+        }
+        Err(e) => {
+            drop(out);
+            let _ = std::fs::remove_file(&tmp);
+            Err(e.context(format!("writing {}", row.path)))
+        }
+    }
+}
+
+/// Recursive target inventory. `prefix` is the relative path so far
+/// ('/'-separated); symlinks are skipped, our temp leftovers removed.
+fn walk_target(
+    dir: &Path,
+    prefix: &mut String,
+    files: &mut std::collections::HashMap<String, u64>,
+    dirs: &mut Vec<PathBuf>,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            // Not representable as a manifest path: leave it alone
+            // (it can never match a row, and we won't delete blind).
+            continue;
+        };
+        let meta = std::fs::symlink_metadata(entry.path())?;
+        let rel_len = prefix.len();
+        if !prefix.is_empty() {
+            prefix.push('/');
+        }
+        prefix.push_str(name_str);
+        if meta.is_symlink() {
+            // never write or delete through links
+        } else if meta.is_dir() {
+            dirs.push(entry.path());
+            walk_target(&entry.path(), prefix, files, dirs, dry_run)?;
+        } else if name_str.ends_with(SYNC_TMP_SUFFIX) {
+            if !dry_run {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        } else {
+            files.insert(prefix.clone(), meta.len());
+        }
+        prefix.truncate(rel_len);
+    }
+    Ok(())
 }

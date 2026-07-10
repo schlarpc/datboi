@@ -253,6 +253,25 @@ enum ViewCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Materialize a view's current snapshot into a directory (SD sync
+    /// for flashcarts). Incremental by size; bytes flow through the
+    /// verified range path.
+    Sync {
+        name: String,
+        /// Target directory (e.g. a mounted SD card).
+        target: PathBuf,
+        /// Remove files not in the snapshot (and newly-empty dirs).
+        #[arg(long)]
+        delete: bool,
+        /// Re-hash size-matched files instead of trusting size alone.
+        #[arg(long)]
+        verify: bool,
+        /// Report what would change without touching the target.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
@@ -341,6 +360,22 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             ViewCommand::Eval { name, json } => cmds::view_eval(cli.global.open()?, &name, json),
             ViewCommand::List { json } => cmds::view_list(&cli.global.open()?, json),
             ViewCommand::Profiles { json } => cmds::view_profiles(json),
+            ViewCommand::Sync {
+                name,
+                target,
+                delete,
+                verify,
+                dry_run,
+                json,
+            } => cmds::view_sync(
+                &cli.global.open()?,
+                &name,
+                &target,
+                delete,
+                verify,
+                dry_run,
+                json,
+            ),
             ViewCommand::Manifest { name, json } => {
                 cmds::view_manifest(&cli.global.open()?, &name, json)
             }

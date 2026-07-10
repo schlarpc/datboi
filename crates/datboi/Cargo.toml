@@ -9,6 +9,8 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+# streaming re-hash for `view sync --verify`
+blake3.workspace = true
 clap.workspace = true
 datboi-catalog.workspace = true
 datboi-core.workspace = true
