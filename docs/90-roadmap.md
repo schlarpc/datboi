@@ -96,10 +96,16 @@ recovery-equivalence as a property test.
   regeneration, manifest-seekable serve-range; EcmAnalyzer splits on
   the 2352 grid with verify-at-discovery, damaged sectors ride as
   literal runs; e2e split→license→evict→serve gate green).
-- **M4 — "The NAS becomes useful"**: views/snapshots/profiles (D33),
-  1G1R + retool clonelists, MAME merge-mode rendering + device_ref
-  closure + softlist fidelity (D31 deferred set), HTTP/WebDAV, SD sync,
-  in-process NFSv3, FAT32 image synthesis.
+- **M4 — "The NAS becomes useful"**: views/snapshots/profiles (D33) —
+  *shipped 2026-07-07/09*; 1G1R — *shipped 2026-07-09* (held-first
+  scoring over clone families, dat cloneof graph or igir-style
+  base-name inference; retool clonelists remain a later additive
+  input); HTTP Range + WebDAV — *shipped 2026-07-09* (axum daemon,
+  /view /snap /dav, D49-verified windows, localhost-only default);
+  SD sync — *shipped 2026-07-09* (`view sync`, incremental,
+  temp+fsync+rename); MAME merge-mode rendering + device_ref closure +
+  softlist fidelity (D31 deferred set), in-process NFSv3, FAT32 image
+  synthesis (gated on the reified-views + D49 carve-out rulings).
 - **M5 — "Other people can touch it"**: axum API, invites + passwords
   (D30), ACLs, Svelte web UI (D17).
 - **M6 — "Friends"**: iroh, partial-blob bitfields + irpc store facade

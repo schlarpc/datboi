@@ -125,9 +125,53 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
   verify-path implementation should keep this pluggable; rule no
   later than M4.
 
+## Flagged for ruling (raised 2026-07-09, M4 serving session)
+
+Implementation policies shipped this session with defaults chosen by
+the builder — each is reversible and flagged here for ratification or
+reversal (details in commit messages + code comments):
+
+- **1G1R held-first scoring**: a held-and-verified clone outranks the
+  preferred-but-absent region; re-eval upgrades the pick after ingest.
+  Alternative (retool semantics): pure dat-level selection independent
+  of holdings. Held-first ships as the default because the serving NAS
+  is the consumer; flip or make per-view if curation-exactness should
+  win.
+- **Opaque long streams materialize on demand**: the daemon and
+  `view sync`, when streaming a large opaque-routed non-resident blob,
+  run one verified replay into the store (evictable again later)
+  instead of re-spilling per window. Storage-for-latency trade chosen
+  silently; the residency planner's materialize-at-snapshot-activation
+  (80-views.md) is the eventual systematic answer.
+- **Daemon bind policy**: 127.0.0.1:2352 default, any other bind is an
+  explicit flag with a loud no-auth warning (auth is M5).
+- **DAV read chunk**: 1 MiB serve_range calls (route re-planned per
+  read). Fine for consoles; revisit if per-read planning shows up in
+  profiles.
+
 ## Next sessions (pick up here)
 
-**Position as of 2026-07-07 (late session)**: **M1/M2/M3 COMPLETE**
+**Position as of 2026-07-09**: **M4 serving core SHIPPED** — the
+daemon exists (axum + tokio): HTTP Range serving of view snapshots
+(`/view/<name>/` per-request tag resolution, `/snap/<hash>/` immutable,
+strong content-hash ETags, single-range RFC 9110, D49-verified 8 MiB
+windows, EIO-style mid-stream abort on verify failure), WebDAV at
+`/dav` (dav-server 0.11, WEBDAV_RO + write-ops-Forbidden, same verified
+read path), 1G1R selection (crate::selection; families from cloneof or
+base-name inference, held-first scoring — see ruling flag above),
+constraint profiles (fat32/everdrive/mister: FAT charset scrub, length
+caps with suffix reserve, oversize rows skipped + counted, overfull
+dirs reported), and SD sync (`view sync`: incremental, --verify,
+--delete, temp+fsync+rename). ViewDef grew additive CBOR keys 4–7;
+the viewsnap format is untouched. REMAINING M4: in-process NFSv3
+(nfsserve-lineage, the primary mount), FAT32 image synthesis (NEEDS the
+two rulings: reified views + D49 affine carve-out — user leaned toward
+the carve-out but has NOT ruled), MAME merge-mode rendering (D31
+deferred set), retool clonelist consumption. Note: view defs/tags still
+don't ride the statesnap payload — recovery loses them (same class as
+the existing tag/config gap).
+
+**Previous position (2026-07-07 late session)**: **M1/M2/M3 COMPLETE**
 (bench-gated items indefinitely deferred by ruling). **M4 started** —
 shipped: `datboi/viewsnap/1` (canonical manifest object, golden-pinned),
 view definitions (state.db config KV) + evaluation (relink → rollups →
@@ -142,30 +186,13 @@ Note: view defs/tags don't yet ride the statesnap payload — recovery
 loses them (additive payload key later; same class as the existing
 tag/config gap).
 
-**Previous position (2026-07-07 evening session)**: M1/M2 complete. **M3
-nearly complete** — shipped this session on top of eviction/chunking:
-wild-zip rebuild for real (D53: xf-preflate @2 component, preflate
-splitting with PARTIAL coverage, per-member recreate + container
-assemble recipes; an 11 MB real-world git-archive zip evicts and
-rematerializes bit-exact through 489 wasm recipes), a second component
-(xf-cso, exercising CBOR params / per-op seek classes /
-random-access-inputs / in-guest compression), child-recipe licensing
-on parent replay, size-scaled fuel (fuel exhaustion never poisons),
-quarantine attribution (corrupt inputs don't defame components),
-eviction explainability (explain_eviction + CLI reasons), the pipe
-verdict-race fix, sweep residency filter, and fast recovery
-(metadata-only walk + scrub back-fill). Remaining M3: ECM, 7z/rar
-ingest, aggregation (NFS-bench-gated).
-
 Priority order:
 
-1. ~~ECM build-out~~ shipped 2026-07-07 — **M3 COMPLETE**. Caveat
-   carried: EDC/ECC implemented from ECMA-130 and self-consistency
-   tested (wasm-vs-native equivalence gate); validate against a real
-   disc sector when the NAS corpus is reachable — verify-at-discovery
-   means a spec bug costs coverage, never bytes. Next build target:
-   **M4 views** (rule the reified-views design + D49 affine carve-out
-   first — see "Open (design work, ratify before M4 views)").
+1. **M4 remainder**: in-process NFSv3 (the primary mount), FAT32 image
+   synthesis (rule reified views + the D49 carve-out first), MAME
+   merge-mode rendering (D31 deferred set), retool clonelists.
+   Carried caveat from M3/ECM: validate EDC/ECC against a real disc
+   sector when the NAS corpus is reachable.
 2. **7z rebuild via pinned-encoder parameter discovery — DEFERRED to
    the M7 rebuild long tail** (ruled 2026-07-07). Research concluded:
    no preflate-analog exists for LZMA anywhere; corrections can't
