@@ -30,9 +30,9 @@ fn pattern(len: usize, seed: u64) -> Vec<u8> {
         .collect()
 }
 
-/// Build a mixed image natively: mode 1 run, literal junk, mode 2 form 1
-/// + form 2 runs, and a trailing sub-sector literal. Returns
-/// (image, layout blob, stripped blob).
+/// Build a mixed image natively: mode 1 run, literal junk, mode 2
+/// form 1 and form 2 runs, and a trailing sub-sector literal.
+/// Returns (image, layout blob, stripped blob).
 fn vectors() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let mut image = Vec::new();
     let mut layout = Vec::new();

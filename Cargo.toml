@@ -29,6 +29,10 @@ datboi-store-fs = { path = "crates/datboi-store-fs" }
 
 anyhow = "1"
 assert_cmd = "2"
+# The daemon's serving stack (docs/50-infra.md, docs/80-views.md: axum +
+# tokio, ratified day-one surface). Only `datboi serve` enters the
+# runtime; client subcommands stay blocking (ureq).
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 blake3 = "1"
 clap = { version = "4", features = ["derive", "env"] }
 crc32fast = "1"
@@ -36,6 +40,9 @@ crc32fast = "1"
 # the future server/iroh identity. Signing is deterministic (RFC 8032), so a
 # fixed seed + payload yields a fixed signature — golden-testable.
 ed25519-dalek = "2"
+# Trait-only dep: the daemon's streamed response bodies implement
+# futures_core::Stream over an mpsc receiver (no futures runtime).
+futures-core = "0.3"
 # "std" so getrandom::Error implements std::error::Error (thiserror #[from]).
 getrandom = { version = "0.2", features = ["std"] }
 # rust_backend: no C dependency, deterministic output not required here
@@ -56,6 +63,9 @@ sha1 = "0.10"
 sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
+# Daemon runtime only (see axum note). rt-multi-thread because range
+# execution is blocking work fanned out via spawn_blocking.
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "macros", "signal", "sync", "time"] }
 # Blocking HTTP for `dat fetch` (D16): small, no async runtime in the CLI.
 ureq = "2"
 # Component model + cranelift only; no wasi/async/cache — a pure, minimal,

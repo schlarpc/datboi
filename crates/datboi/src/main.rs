@@ -26,7 +26,17 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Run the daemon (12-factor; config via env / DATBOI_* variables).
-    Serve,
+    Serve {
+        /// Listen address. Loopback by default: there is no auth until
+        /// M5, so a wider bind is an explicit operator choice.
+        #[arg(
+            long,
+            env = "DATBOI_LISTEN",
+            default_value = "127.0.0.1:2352",
+            value_name = "ADDR"
+        )]
+        listen: std::net::SocketAddr,
+    },
     /// Hash and claim content into the store (copy semantics, D40).
     Ingest {
         /// Files or directories to ingest.
@@ -229,8 +239,20 @@ enum ViewCommand {
 
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.command {
-        Command::Serve => {
-            datboi_server::run()?;
+        Command::Serve { listen } => {
+            let Some(store_root) = cli.global.store.clone() else {
+                anyhow::bail!("store root not set: pass --store or set DATBOI_STORE");
+            };
+            let Some(db_dir) = cli.global.db_dir.clone() else {
+                anyhow::bail!(
+                    "database dir not set: pass --db-dir or set DATBOI_DB_DIR (local disk, not NFS)"
+                );
+            };
+            datboi_server::run(&datboi_server::Config {
+                store_root,
+                db_dir,
+                listen,
+            })?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Ingest { paths, mv, json } => cmds::ingest(cli.global.open()?, &paths, mv, json),

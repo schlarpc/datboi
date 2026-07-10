@@ -1,6 +1,6 @@
 [package]
 name = "datboi-server"
-description = "The datboi daemon (12-factor, localhost-only until M4)"
+description = "The datboi daemon (12-factor, localhost-only until M5 auth)"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,7 +9,19 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+axum.workspace = true
 datboi-core.workspace = true
+datboi-exec.workspace = true
+datboi-index.workspace = true
+datboi-store-fs.workspace = true
+futures-core.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+datboi-catalog.workspace = true
+tempfile.workspace = true
+ureq.workspace = true
 
 [lints]
 workspace = true
