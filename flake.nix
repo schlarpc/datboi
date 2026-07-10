@@ -43,16 +43,17 @@
 
       # ---- host workspace (crates/) ----
 
-      # cleanCargoSource drops non-Rust files; keep test fixtures (.xml, and
-      # the committed .wasm component the determinism gate pins) and the WIT
-      # ABI (.wit) in the build source.
+      # cleanCargoSource drops non-Rust files; keep test fixtures (.xml,
+      # the committed .wasm component the determinism gate pins, and the
+      # preflate vectors .deflate/.bin) and the WIT ABI (.wit) in the
+      # build source.
       srcFor = system: root:
         let craneLib = craneLibFor system;
         in
         nixpkgs.lib.cleanSourceWith {
           src = root;
           filter = path: type:
-            (builtins.match ".*\\.(xml|wit|wasm)$" path != null)
+            (builtins.match ".*\\.(xml|wit|wasm|deflate|bin)$" path != null)
             || (craneLib.filterCargoSources path type);
           name = "source";
         };
