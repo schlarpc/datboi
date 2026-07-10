@@ -75,6 +75,15 @@ const PAYKEY_ALIAS_FANOUT: u64 = 4;
 const PAYKEY_ALIAS_BATCHES: u64 = 5;
 const PAYKEY_ANALYSIS_FANOUT: u64 = 6;
 const PAYKEY_ANALYSIS_BATCHES: u64 = 7;
+// Additive keys 8/9 (2026-07-09): tags + config KV ride the snapshot so
+// recovery keeps views (defs are config rows, the flip is a tag). Both
+// are inline — dozens of tiny rows, unlike the sharded alias batches.
+const PAYKEY_TAGS: u64 = 8;
+const PAYKEY_CONFIG: u64 = 9;
+const TAGKEY_NAME: u64 = 1;
+const TAGKEY_HASH: u64 = 2;
+const CFGKEY_KEY: u64 = 1;
+const CFGKEY_VALUE: u64 = 2;
 const SRCKEY_PROVIDER: u64 = 1;
 const SRCKEY_SYSTEM: u64 = 2;
 const SRCKEY_DAT_BLOB: u64 = 3;
@@ -288,6 +297,12 @@ pub struct SnapshotPayload {
     /// and encodes as the fields being absent.
     pub analysis_fanout: usize,
     pub analysis_batches: Vec<Blake3>,
+    /// Tags (name → object hash), sorted by name, unique. Carries the
+    /// `view/<name>` flips (D33) through recovery.
+    pub tags: Vec<(String, Blake3)>,
+    /// Authoritative config KV (view definitions live here), sorted by
+    /// key, unique.
+    pub config: Vec<(String, Vec<u8>)>,
 }
 
 impl SnapshotPayload {
@@ -320,6 +335,18 @@ impl SnapshotPayload {
         {
             return Err(SnapshotError::Invalid("empty source provider or system"));
         }
+        if !self.tags.windows(2).all(|w| w[0].0 < w[1].0) {
+            return Err(SnapshotError::Invalid("tags not sorted/unique by name"));
+        }
+        if self.tags.iter().any(|(name, _)| name.is_empty()) {
+            return Err(SnapshotError::Invalid("empty tag name"));
+        }
+        if !self.config.windows(2).all(|w| w[0].0 < w[1].0) {
+            return Err(SnapshotError::Invalid("config not sorted/unique by key"));
+        }
+        if self.config.iter().any(|(key, _)| key.is_empty()) {
+            return Err(SnapshotError::Invalid("empty config key"));
+        }
         Ok(())
     }
 
@@ -349,6 +376,39 @@ impl SnapshotPayload {
                     self.analysis_batches
                         .iter()
                         .map(|h| Value::Bytes(h.0.to_vec()))
+                        .collect(),
+                ),
+            ));
+        }
+        // Empty encodes as absence (one encoding per value).
+        if !self.tags.is_empty() {
+            entries.push((
+                PAYKEY_TAGS,
+                Value::Array(
+                    self.tags
+                        .iter()
+                        .map(|(name, hash)| {
+                            Value::Map(vec![
+                                (TAGKEY_NAME, Value::Text(name.clone())),
+                                (TAGKEY_HASH, Value::Bytes(hash.0.to_vec())),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ));
+        }
+        if !self.config.is_empty() {
+            entries.push((
+                PAYKEY_CONFIG,
+                Value::Array(
+                    self.config
+                        .iter()
+                        .map(|(key, value)| {
+                            Value::Map(vec![
+                                (CFGKEY_KEY, Value::Text(key.clone())),
+                                (CFGKEY_VALUE, Value::Bytes(value.clone())),
+                            ])
+                        })
                         .collect(),
                 ),
             ));
@@ -446,6 +506,7 @@ fn payload_from_bytes(bytes: &[u8]) -> Result<SnapshotPayload, SnapshotError> {
     let (mut sequence, mut created_at, mut sources, mut fanout, mut batches) =
         (None, None, None, None, None);
     let (mut analysis_fanout, mut analysis_batches) = (None, None);
+    let (mut tags, mut config) = (None, None);
     for (key, val) in as_map(&value)? {
         match *key {
             PAYKEY_SEQUENCE => sequence = Some(as_uint(val)?),
@@ -491,6 +552,34 @@ fn payload_from_bytes(bytes: &[u8]) -> Result<SnapshotPayload, SnapshotError> {
                 };
                 analysis_batches = Some(items.iter().map(as_hash).collect::<Result<Vec<_>, _>>()?);
             }
+            PAYKEY_TAGS => {
+                let Value::Array(items) = val else {
+                    return Err(SnapshotError::Invalid("tags must be an array"));
+                };
+                if items.is_empty() {
+                    return Err(SnapshotError::Invalid("tags present but empty"));
+                }
+                tags = Some(
+                    items
+                        .iter()
+                        .map(tag_from_value)
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+            }
+            PAYKEY_CONFIG => {
+                let Value::Array(items) = val else {
+                    return Err(SnapshotError::Invalid("config must be an array"));
+                };
+                if items.is_empty() {
+                    return Err(SnapshotError::Invalid("config present but empty"));
+                }
+                config = Some(
+                    items
+                        .iter()
+                        .map(config_from_value)
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+            }
             _ => return Err(SnapshotError::Invalid("unknown payload key")),
         }
     }
@@ -507,7 +596,54 @@ fn payload_from_bytes(bytes: &[u8]) -> Result<SnapshotPayload, SnapshotError> {
         alias_batches: batches.ok_or(SnapshotError::Invalid("missing alias batches"))?,
         analysis_fanout: analysis_fanout.unwrap_or(0),
         analysis_batches: analysis_batches.unwrap_or_default(),
+        tags: tags.unwrap_or_default(),
+        config: config.unwrap_or_default(),
     })
+}
+
+fn tag_from_value(value: &Value) -> Result<(String, Blake3), SnapshotError> {
+    let (mut name, mut hash) = (None, None);
+    for (key, val) in as_map(value)? {
+        match *key {
+            TAGKEY_NAME => {
+                let Value::Text(v) = val else {
+                    return Err(SnapshotError::Invalid("tag name must be text"));
+                };
+                name = Some(v.clone());
+            }
+            TAGKEY_HASH => hash = Some(as_hash(val)?),
+            _ => return Err(SnapshotError::Invalid("unknown tag key")),
+        }
+    }
+    Ok((
+        name.ok_or(SnapshotError::Invalid("tag missing name"))?,
+        hash.ok_or(SnapshotError::Invalid("tag missing hash"))?,
+    ))
+}
+
+fn config_from_value(value: &Value) -> Result<(String, Vec<u8>), SnapshotError> {
+    let (mut key_out, mut val_out) = (None, None);
+    for (key, val) in as_map(value)? {
+        match *key {
+            CFGKEY_KEY => {
+                let Value::Text(v) = val else {
+                    return Err(SnapshotError::Invalid("config key must be text"));
+                };
+                key_out = Some(v.clone());
+            }
+            CFGKEY_VALUE => {
+                let Value::Bytes(v) = val else {
+                    return Err(SnapshotError::Invalid("config value must be bytes"));
+                };
+                val_out = Some(v.clone());
+            }
+            _ => return Err(SnapshotError::Invalid("unknown config entry key")),
+        }
+    }
+    Ok((
+        key_out.ok_or(SnapshotError::Invalid("config entry missing key"))?,
+        val_out.ok_or(SnapshotError::Invalid("config entry missing value"))?,
+    ))
 }
 
 fn analysis_row_to_value(row: &AnalysisRow) -> Value {
@@ -716,7 +852,36 @@ mod tests {
             ],
             analysis_fanout: 0,
             analysis_batches: Vec::new(),
+            // Empty encodes as absence: the pinned golden hash below
+            // proves keys 8/9 were a compatible, additive change.
+            tags: Vec::new(),
+            config: Vec::new(),
         }
+    }
+
+    #[test]
+    fn tags_and_config_round_trip() {
+        let id = Identity::from_seed([9u8; 32]);
+        let mut payload = golden_payload();
+        payload.tags = vec![
+            ("view/gba".into(), Blake3::compute(b"snap a")),
+            ("view/psx".into(), Blake3::compute(b"snap b")),
+        ];
+        payload.config = vec![
+            ("view:gba".into(), vec![1, 2, 3]),
+            ("view:psx".into(), vec![4, 5]),
+        ];
+        let encoded = payload.encode_signed(&id).expect("valid");
+        let decoded = StateSnapshot::decode(&encoded).expect("decodes");
+        assert_eq!(decoded.payload, payload);
+
+        // canonicality: unsorted or empty-keyed rows are rejected
+        let mut unsorted = payload.clone();
+        unsorted.tags.swap(0, 1);
+        assert!(unsorted.encode_signed(&id).is_err());
+        let mut empty_key = payload.clone();
+        empty_key.config[0].0 = String::new();
+        assert!(empty_key.encode_signed(&id).is_err());
     }
 
     fn analysis_row(seed: u8, positive: bool) -> AnalysisRow {

@@ -409,6 +409,21 @@ fn snapshot_recovery_drill() {
     assert_eq!(sweep2["enqueued"], 0);
     assert_eq!(sweep2["analyzed"], 0);
 
+    // A defined + evaluated view must survive the disaster too: the
+    // definition is config KV, the flip is a tag, both ride the payload.
+    u.cmd()
+        .args(["view", "define", "shelf", "test/drill"])
+        .args(["--template", "{name}"])
+        .assert()
+        .success();
+    let eval = u
+        .cmd()
+        .args(["view", "eval", "shelf", "--json"])
+        .output()
+        .expect("eval runs");
+    let eval: serde_json::Value = serde_json::from_slice(&eval.stdout).unwrap();
+    let view_snapshot = eval["snapshot"].as_str().unwrap().to_owned();
+
     // Mint the snapshot (creates the identity key on first use).
     let snap_out = u
         .cmd()
@@ -445,6 +460,23 @@ fn snapshot_recovery_drill() {
     let (after, code_after) = audit_json(&u, "test/drill");
     assert_eq!(code_after, code_before);
     assert_eq!(after, before, "audit must be byte-identical after recovery");
+
+    // The view came back: same definition, same tagged snapshot.
+    let manifest = u
+        .cmd()
+        .args(["view", "manifest", "shelf", "--json"])
+        .output()
+        .expect("manifest runs");
+    assert!(manifest.status.success(), "view survives recovery");
+    let m: serde_json::Value = serde_json::from_slice(&manifest.stdout).unwrap();
+    assert_eq!(m["snapshot"], view_snapshot.as_str(), "same D33 flip");
+    let relisted = u
+        .cmd()
+        .args(["view", "list", "--json"])
+        .output()
+        .expect("list runs");
+    let l: serde_json::Value = serde_json::from_slice(&relisted.stdout).unwrap();
+    assert_eq!(l["views"][0]["name"], "shelf");
 
     // The restored provenance means a fresh sweep re-pays NOTHING for
     // blobs analyzed before the disaster (D48's whole purpose). The

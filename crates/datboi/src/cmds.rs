@@ -582,6 +582,12 @@ pub fn snapshot(env: Env, json: bool) -> anyhow::Result<ExitCode> {
     } else {
         ALIAS_FANOUT
     };
+    // Tags + authoritative config ride inline (dozens of tiny rows):
+    // recovery keeps view definitions and their D33 flips.
+    let mut tags = env.db.list_tags()?;
+    tags.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut config = env.db.config_list_prefix("")?;
+    config.sort_by(|a, b| a.0.cmp(&b.0));
     let payload = SnapshotPayload {
         sequence: u64::try_from(sequence).unwrap_or(0),
         created_at: u64::try_from(now).unwrap_or(0),
@@ -590,6 +596,8 @@ pub fn snapshot(env: Env, json: bool) -> anyhow::Result<ExitCode> {
         alias_batches,
         analysis_fanout,
         analysis_batches,
+        tags,
+        config,
     };
     let bytes = payload.encode_signed(&identity)?;
     let (hash, aliases, _outcome) = env.store.put_new(Namespace::Meta, bytes.as_slice())?;
@@ -1054,6 +1062,18 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
                             eprintln!("warning: analysis batch {batch_hash} does not decode: {e}");
                         }
                     }
+                }
+                // Tags + config (views: definitions and their D33
+                // flips) come back verbatim from the signed payload.
+                for (key, value) in &snap.payload.config {
+                    env.db.config_set(key, value)?;
+                }
+                for (name, hash) in &snap.payload.tags {
+                    env.db.set_tag(
+                        name,
+                        hash,
+                        i64::try_from(snap.payload.created_at).unwrap_or(0),
+                    )?;
                 }
                 // Sequence monotonicity survives the nuke: re-seed the log
                 // so the next mint continues from here instead of reusing
