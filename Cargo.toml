@@ -29,6 +29,9 @@ datboi-store-fs = { path = "crates/datboi-store-fs" }
 
 anyhow = "1"
 assert_cmd = "2"
+# The NFSv3 VFS trait is #[async_trait]; implementing it requires the
+# same macro on our side.
+async-trait = "0.1"
 # The daemon's serving stack (docs/50-infra.md, docs/80-views.md: axum +
 # tokio, ratified day-one surface). Only `datboi serve` enters the
 # runtime; client subcommands stay blocking (ureq).
@@ -63,6 +66,10 @@ quick-xml = "0.38"
 # version (and thus JSONB availability) moves — a system libsqlite would
 # reintroduce exactly the version drift the design forbids elsewhere.
 rusqlite = { version = "0.37", features = ["bundled"] }
+# In-process userspace NFSv3 (docs/80-views.md: the primary mount,
+# nfsserve lineage). Serves mount+portmap+nfs on one TCP port; no
+# kernel export, no root.
+nfsserve = "0.11"
 # Value-construction only (JSONB column text); no serde derive anywhere.
 serde_json = "1"
 sha1 = "0.10"

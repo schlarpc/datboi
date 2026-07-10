@@ -87,6 +87,7 @@ fn fixture() -> Fixture {
         store_root,
         db_dir,
         listen: SocketAddr::from_str("127.0.0.1:0").expect("addr"),
+        nfs_listen: None,
     })
     .expect("bind");
     let addr = server.local_addr().expect("addr");

@@ -36,6 +36,10 @@ enum Command {
             value_name = "ADDR"
         )]
         listen: std::net::SocketAddr,
+        /// Also serve NFSv3 on this address (off unless set). Consoles
+        /// need a LAN bind; the same no-auth caveat applies.
+        #[arg(long, env = "DATBOI_NFS_LISTEN", value_name = "ADDR")]
+        nfs_listen: Option<std::net::SocketAddr>,
     },
     /// Hash and claim content into the store (copy semantics, D40).
     Ingest {
@@ -276,7 +280,7 @@ enum ViewCommand {
 
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.command {
-        Command::Serve { listen } => {
+        Command::Serve { listen, nfs_listen } => {
             let Some(store_root) = cli.global.store.clone() else {
                 anyhow::bail!("store root not set: pass --store or set DATBOI_STORE");
             };
@@ -289,6 +293,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 store_root,
                 db_dir,
                 listen,
+                nfs_listen,
             })?;
             Ok(ExitCode::SUCCESS)
         }

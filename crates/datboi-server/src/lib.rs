@@ -12,6 +12,7 @@
 
 mod dav;
 mod http;
+mod nfs;
 mod vfs;
 
 use std::collections::HashMap;
@@ -31,8 +32,12 @@ pub struct Config {
     pub store_root: PathBuf,
     /// Database directory — local disk, never NFS (D15).
     pub db_dir: PathBuf,
-    /// Listen address; loopback unless the operator opted out.
+    /// HTTP/WebDAV listen address; loopback unless the operator opted
+    /// out.
     pub listen: SocketAddr,
+    /// NFSv3 listen address (`None` = NFS off). Consoles need a LAN
+    /// bind — the same no-auth warning applies until M5.
+    pub nfs_listen: Option<SocketAddr>,
 }
 
 /// Shared server state. One SQLite handle behind a mutex serializes
@@ -51,7 +56,29 @@ pub(crate) struct App {
 /// the actual address before requests flow.
 pub struct Server {
     listener: std::net::TcpListener,
+    nfs_listen: Option<SocketAddr>,
     app: Arc<App>,
+}
+
+impl App {
+    /// Open store + databases into shared daemon state.
+    fn open(store_root: &std::path::Path, db_dir: &std::path::Path) -> anyhow::Result<Arc<Self>> {
+        let store = Store::open(store_root)
+            .with_context(|| format!("opening store at {}", store_root.display()))?;
+        // The executor borrows the store for its lifetime; the daemon's
+        // lifetime IS the process lifetime, so one leaked Store is the
+        // honest expression of that (no self-referential gymnastics).
+        let store: &'static Store = Box::leak(Box::new(store));
+        let db = Db::open(db_dir)
+            .with_context(|| format!("opening databases in {}", db_dir.display()))?;
+        let exec = Executor::new(store, ExecConfig::default())?;
+        Ok(Arc::new(App {
+            db: Mutex::new(db),
+            exec,
+            store,
+            manifests: Mutex::new(HashMap::new()),
+        }))
+    }
 }
 
 impl Server {
@@ -60,33 +87,22 @@ impl Server {
     /// # Errors
     /// Store/DB open failures, bind failures.
     pub fn bind(config: &Config) -> anyhow::Result<Self> {
-        let store = Store::open(&config.store_root)
-            .with_context(|| format!("opening store at {}", config.store_root.display()))?;
-        // The executor borrows the store for its lifetime; the daemon's
-        // lifetime IS the process lifetime, so one leaked Store is the
-        // honest expression of that (no self-referential gymnastics).
-        let store: &'static Store = Box::leak(Box::new(store));
-        let db = Db::open(&config.db_dir)
-            .with_context(|| format!("opening databases in {}", config.db_dir.display()))?;
-        let exec = Executor::new(store, ExecConfig::default())?;
-        if !config.listen.ip().is_loopback() {
-            eprintln!(
-                "warning: listening on non-loopback {} with NO AUTHENTICATION (auth is M5); \
-                 anyone who can reach this socket can read every view",
-                config.listen
-            );
+        let app = App::open(&config.store_root, &config.db_dir)?;
+        for addr in std::iter::once(config.listen).chain(config.nfs_listen) {
+            if !addr.ip().is_loopback() {
+                eprintln!(
+                    "warning: listening on non-loopback {addr} with NO AUTHENTICATION \
+                     (auth is M5); anyone who can reach this socket can read every view"
+                );
+            }
         }
         let listener = std::net::TcpListener::bind(config.listen)
             .with_context(|| format!("binding {}", config.listen))?;
         listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
-            app: Arc::new(App {
-                db: Mutex::new(db),
-                exec,
-                store,
-                manifests: Mutex::new(HashMap::new()),
-            }),
+            nfs_listen: config.nfs_listen,
+            app,
         })
     }
 
@@ -109,6 +125,23 @@ impl Server {
             .build()
             .context("building tokio runtime")?;
         runtime.block_on(async move {
+            if let Some(addr) = self.nfs_listen {
+                use nfsserve::tcp::NFSTcp as _;
+                let fs = nfs::NfsFs::new(Arc::clone(&self.app));
+                let nfs_listener = nfsserve::tcp::NFSTcpListener::bind(&addr.to_string(), fs)
+                    .await
+                    .with_context(|| format!("binding NFS on {addr}"))?;
+                println!(
+                    "datboi-server NFSv3 on {addr} \
+                     (mount -o nolock,vers=3,tcp,port={port},mountport={port} <host>:/ <dir>)",
+                    port = nfs_listener.get_listen_port()
+                );
+                tokio::spawn(async move {
+                    if let Err(e) = nfs_listener.handle_forever().await {
+                        eprintln!("nfs listener died: {e}");
+                    }
+                });
+            }
             let listener = tokio::net::TcpListener::from_std(self.listener)?;
             let router = http::router(self.app);
             axum::serve(listener, router)
