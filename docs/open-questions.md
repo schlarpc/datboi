@@ -194,9 +194,11 @@ tag/config gap).
 
 Priority order:
 
-1. **M4 remainder**: in-process NFSv3 (the primary mount), FAT32 image
-   synthesis (rule reified views + the D49 carve-out first), MAME
-   merge-mode rendering (D31 deferred set), retool clonelists.
+1. **M4 remainder**: FAT32 image synthesis (rule reified views + the
+   D49 carve-out first — the LAST unruled gate), MAME merge-mode
+   rendering (D31 deferred set), retool clonelists. Then the user's
+   stated post-M4 directions: M6 iroh, M7 formats/xf-s, ingest
+   policies/background curing, deeper adversarial testing.
    Carried caveat from M3/ECM: validate EDC/ECC against a real disc
    sector when the NAS corpus is reachable.
 2. **7z rebuild via pinned-encoder parameter discovery — DEFERRED to

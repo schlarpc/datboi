@@ -103,9 +103,13 @@ recovery-equivalence as a property test.
   input); HTTP Range + WebDAV — *shipped 2026-07-09* (axum daemon,
   /view /snap /dav, D49-verified windows, localhost-only default);
   SD sync — *shipped 2026-07-09* (`view sync`, incremental,
-  temp+fsync+rename); MAME merge-mode rendering + device_ref closure +
-  softlist fidelity (D31 deferred set), in-process NFSv3, FAT32 image
-  synthesis (gated on the reified-views + D49 carve-out rulings).
+  temp+fsync+rename); in-process NFSv3 — *shipped 2026-07-09*
+  (nfsserve, opt-in `--nfs-listen`, snapshot-pinned fileids); view
+  defs/tags ride the statesnap — *shipped 2026-07-09* (additive payload
+  keys 8/9, recovery drill proves it). REMAINING: MAME merge-mode
+  rendering + device_ref closure + softlist fidelity (D31 deferred
+  set), retool clonelists, FAT32 image synthesis (gated on the
+  reified-views + D49 carve-out rulings).
 - **M5 — "Other people can touch it"**: axum API, invites + passwords
   (D30), ACLs, Svelte web UI (D17).
 - **M6 — "Friends"**: iroh, partial-blob bitfields + irpc store facade
