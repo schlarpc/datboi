@@ -5,10 +5,13 @@
 //! the view's TAG (`view/<name>`) points at the latest snapshot — the
 //! D33 atomic flip and the D27 GC root are the same tag move.
 //!
-//! v1 scope (ratified surface only): query = one dat source's current
-//! revision ∩ have(verified); selection = all required claims;
-//! transform chain = none; layout = template over `{entry}` / `{name}`.
-//! 1G1R, profiles, and transform chains land on this same shape.
+//! v1 scope: query = one dat source's current revision ∩ have(verified);
+//! selection = all required claims, or 1G1R over clone families
+//! ([`crate::selection`]); layout = template over `{entry}` / `{name}`,
+//! optionally constrained by a device profile ([`crate::profiles`]).
+//! Transform chains land on this same shape.
+
+use std::collections::{HashMap, HashSet};
 
 use datboi_core::cbor::{self, Value};
 use datboi_core::hash::Blake3;
@@ -17,12 +20,19 @@ use datboi_index::Db;
 use datboi_store_fs::{Namespace as StoreNs, Store};
 use rusqlite::params;
 
+use crate::selection::{Candidate, SelectionPolicy, select_1g1r};
 use crate::{CatalogError, audit::current_revision, rollup::refresh_rollups, unify::relink_all};
 
-// Definition CBOR: {1: provider, 2: system, 3: template}.
+// Definition CBOR: {1: provider, 2: system, 3: template, 4: selection
+// mode (0 all / 1 one-per-family), 5: regions, 6: langs, 7: profile}.
+// Keys 4–7 are additive: v1 definitions decode as mode 0, no profile.
 const DEFKEY_PROVIDER: u64 = 1;
 const DEFKEY_SYSTEM: u64 = 2;
 const DEFKEY_TEMPLATE: u64 = 3;
+const DEFKEY_SELECTION: u64 = 4;
+const DEFKEY_REGIONS: u64 = 5;
+const DEFKEY_LANGS: u64 = 6;
+const DEFKEY_PROFILE: u64 = 7;
 
 /// A named view definition (the mutable policy layer).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +44,10 @@ pub struct ViewDef {
     /// (rom claim name). Path separators inside expanded values are
     /// sanitized to `_`.
     pub template: String,
+    /// `Some` = 1G1R over clone families with these priorities.
+    pub selection: Option<SelectionPolicy>,
+    /// Built-in constraint profile name ([`crate::profiles`]).
+    pub profile: Option<String>,
 }
 
 fn def_key(name: &str) -> String {
@@ -45,12 +59,31 @@ fn def_key(name: &str) -> String {
 /// # Errors
 /// Index I/O.
 pub fn define_view(db: &Db, def: &ViewDef) -> Result<(), CatalogError> {
-    let bytes = cbor::encode(&Value::Map(vec![
+    if let Some(name) = &def.profile
+        && crate::profiles::profile(name).is_none()
+    {
+        return Err(CatalogError::UnknownProfile(name.clone()));
+    }
+    let mut pairs = vec![
         (DEFKEY_PROVIDER, Value::Text(def.provider.clone())),
         (DEFKEY_SYSTEM, Value::Text(def.system.clone())),
         (DEFKEY_TEMPLATE, Value::Text(def.template.clone())),
-    ]))
-    .expect("static keys");
+    ];
+    if let Some(policy) = &def.selection {
+        pairs.push((DEFKEY_SELECTION, Value::Uint(1)));
+        pairs.push((
+            DEFKEY_REGIONS,
+            Value::Array(policy.regions.iter().cloned().map(Value::Text).collect()),
+        ));
+        pairs.push((
+            DEFKEY_LANGS,
+            Value::Array(policy.langs.iter().cloned().map(Value::Text).collect()),
+        ));
+    }
+    if let Some(profile) = &def.profile {
+        pairs.push((DEFKEY_PROFILE, Value::Text(profile.clone())));
+    }
+    let bytes = cbor::encode(&Value::Map(pairs)).expect("static keys");
     db.config_set(&def_key(&def.name), &bytes)?;
     Ok(())
 }
@@ -68,20 +101,46 @@ pub fn get_view(db: &Db, name: &str) -> Result<Option<ViewDef>, CatalogError> {
         return Err(CatalogError::Corrupt("view def"));
     };
     let (mut provider, mut system, mut template) = (None, None, None);
+    let (mut mode, mut regions, mut langs, mut profile) = (0u64, Vec::new(), Vec::new(), None);
     for (key, value) in pairs {
         match (key, value) {
             (DEFKEY_PROVIDER, Value::Text(v)) => provider = Some(v),
             (DEFKEY_SYSTEM, Value::Text(v)) => system = Some(v),
             (DEFKEY_TEMPLATE, Value::Text(v)) => template = Some(v),
+            (DEFKEY_SELECTION, Value::Uint(v)) => mode = v,
+            (DEFKEY_REGIONS, Value::Array(items)) => {
+                regions = decode_texts(items)?;
+            }
+            (DEFKEY_LANGS, Value::Array(items)) => {
+                langs = decode_texts(items)?;
+            }
+            (DEFKEY_PROFILE, Value::Text(v)) => profile = Some(v),
             _ => return Err(CatalogError::Corrupt("view def")),
         }
     }
+    let selection = match mode {
+        0 => None,
+        1 => Some(SelectionPolicy { regions, langs }),
+        _ => return Err(CatalogError::Corrupt("view def")),
+    };
     Ok(Some(ViewDef {
         name: name.to_owned(),
         provider: provider.ok_or(CatalogError::Corrupt("view def"))?,
         system: system.ok_or(CatalogError::Corrupt("view def"))?,
         template: template.ok_or(CatalogError::Corrupt("view def"))?,
+        selection,
+        profile,
     }))
+}
+
+fn decode_texts(items: Vec<Value>) -> Result<Vec<String>, CatalogError> {
+    items
+        .into_iter()
+        .map(|v| match v {
+            Value::Text(s) => Ok(s),
+            _ => Err(CatalogError::Corrupt("view def")),
+        })
+        .collect()
 }
 
 /// All defined view names.
@@ -105,6 +164,12 @@ pub struct EvalReport {
     pub missing: usize,
     /// Rows renamed to resolve path collisions.
     pub disambiguated: usize,
+    /// 1G1R only: clone families the selector chose from.
+    pub families: Option<usize>,
+    /// Rows dropped because the profile's size cap can't hold them.
+    pub skipped_oversize: usize,
+    /// Directories exceeding the profile's entry cap (rows kept).
+    pub overfull_dirs: usize,
 }
 
 /// Evaluate a definition into an immutable snapshot, publish it (meta
@@ -142,10 +207,35 @@ pub fn evaluate_view(
         (Blake3(dat_blob), u64::try_from(missing).unwrap_or(0))
     };
 
+    // 1G1R: resolve clone families over the whole revision and keep one
+    // entry per family (held-and-verified candidates outrank absent
+    // ones — see crate::selection).
+    let (selected, families): (Option<HashSet<i64>>, Option<usize>) = match &def.selection {
+        None => (None, None),
+        Some(policy) => {
+            let candidates = load_candidates(db, revision_id)?;
+            let picked = select_1g1r(&candidates, policy);
+            let count = picked.len();
+            (Some(picked), Some(count))
+        }
+    };
+
+    // Profile checked at definition time; a stored def naming a profile
+    // this build doesn't know is a config error, not corruption.
+    let profile = def
+        .profile
+        .as_deref()
+        .map(|name| {
+            crate::profiles::profile(name)
+                .ok_or_else(|| CatalogError::UnknownProfile(name.to_owned()))
+        })
+        .transpose()?;
+
     // Every required claim of the current revision with a have(verified)
     // identity, resolved to a deterministic blob (smallest hash wins when
     // several blobs share the identity).
     struct Picked {
+        entry_id: i64,
         entry: String,
         claim: String,
         hash: Blake3,
@@ -155,7 +245,7 @@ pub fn evaluate_view(
     {
         let conn = db.cache();
         let mut stmt = conn.prepare(
-            "SELECT e.name, rc.name, MIN(b.hash), MAX(b.size)
+            "SELECT e.entry_id, e.name, rc.name, MIN(b.hash), MAX(b.size)
              FROM entry e
              JOIN rom_claim rc ON rc.entry_id = e.entry_id
              JOIN identity_status s ON s.identity_id = rc.identity_id AND s.state = 4
@@ -167,15 +257,17 @@ pub fn evaluate_view(
         )?;
         let rows = stmt.query_map(params![revision_id], |row| {
             Ok((
-                row.get::<_, String>(0)?,
+                row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, [u8; 32]>(2)?,
-                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, [u8; 32]>(3)?,
+                row.get::<_, Option<i64>>(4)?,
             ))
         })?;
         for row in rows {
-            let (entry, claim, hash, size) = row?;
+            let (entry_id, entry, claim, hash, size) = row?;
             picked.push(Picked {
+                entry_id,
                 entry,
                 claim,
                 hash: Blake3(hash),
@@ -184,18 +276,37 @@ pub fn evaluate_view(
         }
     }
 
-    // Layout + collision handling. Sanitized expansion first; identical
-    // paths get a deterministic ` (xxxxxxxx)` hash suffix.
+    // Layout + collision handling. Sanitized expansion first, then the
+    // profile's device constraints; identical paths get a deterministic
+    // ` (xxxxxxxx)` hash suffix.
     let mut rows: Vec<ViewRow> = Vec::new();
     let mut disambiguated = 0usize;
+    let mut skipped_oversize = 0usize;
     let mut seen = std::collections::HashSet::new();
     for p in &picked {
+        if let Some(selected) = &selected
+            && !selected.contains(&p.entry_id)
+        {
+            continue;
+        }
+        if let Some(profile) = profile
+            && let Some(cap) = profile.max_file_size
+            && p.size > cap
+        {
+            // The target filesystem cannot hold this file at all;
+            // auto-split is image-synthesis-era work (80-views.md).
+            skipped_oversize += 1;
+            continue;
+        }
         let mut path = def
             .template
             .replace("{entry}", &sanitize_component(&p.entry))
             .replace("{name}", &sanitize_name(&p.claim));
         if !path_is_canonical(&path) {
             path = sanitize_name(&path);
+        }
+        if let Some(profile) = profile {
+            path = profile.constrain_path(&path);
         }
         if !seen.insert(path.clone()) {
             let tag = &p.hash.to_hex()[..8];
@@ -215,6 +326,32 @@ pub fn evaluate_view(
             size: p.size,
             seek,
         });
+    }
+
+    // Entry-cap audit (report-only: dropping rows is worse than telling
+    // the operator their template needs another directory level).
+    let mut overfull_dirs = 0usize;
+    if let Some(profile) = profile
+        && let Some(cap) = profile.max_dir_entries
+    {
+        let mut children: HashMap<&str, HashSet<&str>> = HashMap::new();
+        for row in &rows {
+            // walk ancestors: each parent dir gains its immediate child
+            let mut node = row.path.as_str();
+            loop {
+                match node.rsplit_once('/') {
+                    Some((parent, leaf)) => {
+                        children.entry(parent).or_default().insert(leaf);
+                        node = parent;
+                    }
+                    None => {
+                        children.entry("").or_default().insert(node);
+                        break;
+                    }
+                }
+            }
+        }
+        overfull_dirs = children.values().filter(|c| c.len() > cap).count();
     }
 
     let snap = ViewSnapshot {
@@ -244,7 +381,40 @@ pub fn evaluate_view(
         rows: snap.rows.len(),
         missing: usize::try_from(missing_total).unwrap_or(usize::MAX),
         disambiguated,
+        families,
+        skipped_oversize,
+        overfull_dirs,
     })
+}
+
+/// Load the revision's entries with clone links and holding status —
+/// the 1G1R selector's input.
+fn load_candidates(db: &Db, revision_id: i64) -> Result<Vec<Candidate>, CatalogError> {
+    let conn = db.cache();
+    let mut stmt = conn.prepare(
+        "SELECT e.entry_id, e.name, e.cloneof_id,
+           (SELECT COUNT(*) FROM rom_claim rc
+             WHERE rc.entry_id = e.entry_id AND rc.status != 2 AND NOT rc.optional),
+           (SELECT COUNT(*) FROM rom_claim rc
+             WHERE rc.entry_id = e.entry_id AND rc.status != 2 AND NOT rc.optional
+               AND EXISTS (
+                 SELECT 1 FROM identity_status s
+                 JOIN identity_blob ib
+                   ON ib.identity_id = s.identity_id AND ib.basis >= 1
+                 WHERE s.identity_id = rc.identity_id AND s.state = 4))
+         FROM entry e
+         WHERE e.revision_id = ?1",
+    )?;
+    let rows = stmt.query_map(params![revision_id], |row| {
+        Ok(Candidate {
+            entry_id: row.get(0)?,
+            name: row.get(1)?,
+            cloneof_id: row.get(2)?,
+            required: row.get::<_, i64>(3)?.max(0).unsigned_abs(),
+            held: row.get::<_, i64>(4)?.max(0).unsigned_abs(),
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 /// D27 class for a blob at snapshot time: resident literals read

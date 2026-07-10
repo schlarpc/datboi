@@ -215,6 +215,19 @@ enum ViewCommand {
         /// Layout template; placeholders {entry} and {name}.
         #[arg(long, default_value = "{name}")]
         template: String,
+        /// Keep one entry per clone family (1G1R) instead of everything.
+        #[arg(long = "1g1r")]
+        one_per_family: bool,
+        /// Ordered region priority for 1G1R, comma-separated
+        /// (e.g. "USA,Europe,Japan"; aliases US/EU/JP accepted).
+        #[arg(long, value_delimiter = ',', requires = "one_per_family")]
+        regions: Vec<String>,
+        /// Ordered language priority for 1G1R (e.g. "En").
+        #[arg(long, value_delimiter = ',', requires = "one_per_family")]
+        langs: Vec<String>,
+        /// Constraint profile for the target device (see `view profiles`).
+        #[arg(long)]
+        profile: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -232,6 +245,11 @@ enum ViewCommand {
     /// Print a view's current manifest.
     Manifest {
         name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List built-in constraint profiles.
+    Profiles {
         #[arg(long)]
         json: bool,
     },
@@ -306,10 +324,23 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 name,
                 source,
                 template,
+                one_per_family,
+                regions,
+                langs,
+                profile,
                 json,
-            } => cmds::view_define(&cli.global.open()?, &name, &source, &template, json),
+            } => cmds::view_define(
+                &cli.global.open()?,
+                &name,
+                &source,
+                &template,
+                one_per_family.then_some(datboi_catalog::SelectionPolicy { regions, langs }),
+                profile,
+                json,
+            ),
             ViewCommand::Eval { name, json } => cmds::view_eval(cli.global.open()?, &name, json),
             ViewCommand::List { json } => cmds::view_list(&cli.global.open()?, json),
+            ViewCommand::Profiles { json } => cmds::view_profiles(json),
             ViewCommand::Manifest { name, json } => {
                 cmds::view_manifest(&cli.global.open()?, &name, json)
             }

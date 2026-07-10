@@ -19,7 +19,9 @@ pub mod audit;
 pub mod diff;
 pub mod export;
 pub mod import;
+pub mod profiles;
 pub mod rollup;
+pub mod selection;
 pub mod unify;
 pub mod views;
 
@@ -27,7 +29,9 @@ pub use audit::{AuditReport, EntryAudit, audit};
 pub use diff::{DatDiff, diff_source};
 pub use export::export_dat;
 pub use import::{ImportOptions, ImportReport, import_dat};
+pub use profiles::{PROFILES, Profile};
 pub use rollup::refresh_rollups;
+pub use selection::SelectionPolicy;
 pub use unify::relink_all;
 pub use views::{EvalReport, ViewDef, define_view, evaluate_view, get_view, list_views};
 
@@ -49,6 +53,8 @@ pub enum CatalogError {
     Corrupt(&'static str),
     #[error("export: {0}")]
     Export(String),
+    #[error("unknown profile {0} (see `datboi view profiles`)")]
+    UnknownProfile(String),
     #[error("unknown dat source {provider}/{system}")]
     UnknownSource { provider: String, system: String },
     #[error("source {provider}/{system} has no current revision")]

@@ -1371,6 +1371,8 @@ pub fn view_define(
     name: &str,
     source: &str,
     template: &str,
+    selection: Option<datboi_catalog::SelectionPolicy>,
+    profile: Option<String>,
     json: bool,
 ) -> anyhow::Result<ExitCode> {
     let (provider, system) = split_source(source)?;
@@ -1379,15 +1381,64 @@ pub fn view_define(
         provider: provider.to_owned(),
         system: system.to_owned(),
         template: template.to_owned(),
+        selection,
+        profile,
     };
     datboi_catalog::define_view(&env.db, &def)?;
     if json {
         println!(
             "{}",
-            json!({"view": name, "source": source, "template": template})
+            json!({
+                "view": name,
+                "source": source,
+                "template": template,
+                "selection": def.selection.as_ref().map(|p| json!({
+                    "mode": "1g1r", "regions": p.regions, "langs": p.langs,
+                })),
+                "profile": def.profile,
+            })
         );
     } else {
-        println!("defined view {name} over {source} (template {template:?})");
+        let sel = match &def.selection {
+            Some(p) => format!(
+                "1g1r regions=[{}] langs=[{}]",
+                p.regions.join(","),
+                p.langs.join(",")
+            ),
+            None => "all".to_owned(),
+        };
+        let prof = def.profile.as_deref().unwrap_or("none");
+        println!(
+            "defined view {name} over {source} (template {template:?}, selection {sel}, profile {prof})"
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn view_profiles(json: bool) -> anyhow::Result<ExitCode> {
+    if json {
+        println!(
+            "{}",
+            json!({"profiles": datboi_catalog::PROFILES.iter().map(|p| json!({
+                "name": p.name,
+                "max_name_len": p.max_name_len,
+                "max_file_size": p.max_file_size,
+                "max_dir_entries": p.max_dir_entries,
+            })).collect::<Vec<_>>()})
+        );
+    } else {
+        for p in datboi_catalog::PROFILES {
+            let size = p
+                .max_file_size
+                .map_or("unlimited".to_owned(), |s| format!("{s} B max"));
+            let entries = p
+                .max_dir_entries
+                .map_or("unlimited".to_owned(), |n| format!("{n}/dir"));
+            println!(
+                "{:<12} names \u{2264}{} chars, files {size}, entries {entries}",
+                p.name, p.max_name_len
+            );
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -1405,11 +1456,24 @@ pub fn view_eval(mut env: Env, name: &str, json: bool) -> anyhow::Result<ExitCod
                 "rows": report.rows,
                 "missing_claims": report.missing,
                 "disambiguated": report.disambiguated,
+                "families": report.families,
+                "skipped_oversize": report.skipped_oversize,
+                "overfull_dirs": report.overfull_dirs,
             })
         );
     } else {
+        let mut extras = String::new();
+        if let Some(families) = report.families {
+            extras.push_str(&format!(", {families} famil(ies)"));
+        }
+        if report.skipped_oversize > 0 {
+            extras.push_str(&format!(", {} oversize row(s) SKIPPED", report.skipped_oversize));
+        }
+        if report.overfull_dirs > 0 {
+            extras.push_str(&format!(", {} dir(s) over the profile entry cap", report.overfull_dirs));
+        }
         println!(
-            "view {name}: snapshot {} ({} row(s), {} claim(s) missing, {} path(s) disambiguated)",
+            "view {name}: snapshot {} ({} row(s), {} claim(s) missing, {} path(s) disambiguated{extras})",
             report.snapshot, report.rows, report.missing, report.disambiguated
         );
     }

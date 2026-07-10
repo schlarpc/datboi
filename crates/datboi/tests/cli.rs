@@ -734,6 +734,114 @@ fn dat_fetch_imports_zipped_and_bare() {
         .stderr(predicate::str::contains("redump/<system-slug>"));
 }
 
+/// M4 selection + profiles: a 1G1R view over a flat dat (family
+/// inference by base name), held-first pick upgrading after ingest, and
+/// device-profile name sanitization.
+#[test]
+fn view_1g1r_and_profile() {
+    let u = Universe::new();
+    fs::create_dir_all(u.src()).unwrap();
+    let usa = b"usa revision of the game".as_slice();
+    let europe = b"european revision here!!".as_slice();
+    let solo = b"a game with no clones".as_slice();
+    // Only Europe + Solo held at first.
+    fs::write(u.src().join("europe.gba"), europe).unwrap();
+    fs::write(u.src().join("solo.gba"), solo).unwrap();
+    u.cmd().arg("ingest").arg(u.src()).assert().success();
+
+    let games = format!(
+        r#"  <game name="Game, The (USA)"><description>g</description>{}</game>
+  <game name="Game, The (Europe)"><description>g</description>{}</game>
+  <game name="Solo (Japan)"><description>s</description>{}</game>"#,
+        rom_xml("Game, The (USA).gba", usa),
+        rom_xml("Game, The (Europe).gba", europe),
+        // illegal-on-FAT characters in the claim name
+        rom_xml("solo: the remaster?.gba", solo),
+    );
+    let dat_path = u.root.path().join("clones.dat");
+    fs::write(&dat_path, dat_xml("Clones", &games)).unwrap();
+    u.cmd()
+        .args(["dat", "import"])
+        .arg(&dat_path)
+        .args(["--provider", "test", "--system", "clones"])
+        .assert()
+        .success();
+
+    u.cmd()
+        .args(["view", "define", "shelf", "test/clones"])
+        .args(["--template", "{name}", "--1g1r"])
+        .args(["--regions", "USA,Europe"])
+        .args(["--profile", "everdrive"])
+        .assert()
+        .success();
+
+    // USA is preferred but absent: the held Europe copy wins its family.
+    let eval = u
+        .cmd()
+        .args(["view", "eval", "shelf", "--json"])
+        .assert()
+        .success();
+    let out: serde_json::Value =
+        serde_json::from_slice(&eval.get_output().stdout).expect("json");
+    assert_eq!(out["families"], 2);
+    assert_eq!(out["rows"], 2);
+    let manifest = u
+        .cmd()
+        .args(["view", "manifest", "shelf", "--json"])
+        .assert()
+        .success();
+    let m: serde_json::Value =
+        serde_json::from_slice(&manifest.get_output().stdout).expect("json");
+    let paths: Vec<&str> = m["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    assert!(
+        paths.contains(&"Game, The (Europe).gba"),
+        "held Europe beats absent USA: {paths:?}"
+    );
+    assert!(
+        paths.contains(&"solo_ the remaster_.gba"),
+        "profile scrubs FAT-hostile chars: {paths:?}"
+    );
+
+    // Ingest USA and re-evaluate: the pick upgrades to the preferred
+    // region — that's what re-eval is for.
+    fs::write(u.src().join("usa.gba"), usa).unwrap();
+    u.cmd().arg("ingest").arg(u.src()).assert().success();
+    u.cmd()
+        .args(["view", "eval", "shelf"])
+        .assert()
+        .success();
+    let manifest = u
+        .cmd()
+        .args(["view", "manifest", "shelf", "--json"])
+        .assert()
+        .success();
+    let m: serde_json::Value =
+        serde_json::from_slice(&manifest.get_output().stdout).expect("json");
+    let paths: Vec<&str> = m["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    assert!(
+        paths.contains(&"Game, The (USA).gba"),
+        "preferred region wins once held: {paths:?}"
+    );
+    assert!(!paths.iter().any(|p| p.contains("Europe")), "{paths:?}");
+
+    // Unknown profile is rejected at definition time.
+    u.cmd()
+        .args(["view", "define", "bad", "test/clones"])
+        .args(["--profile", "betamax"])
+        .assert()
+        .code(2);
+}
+
 /// M4 views: define → eval → manifest over a real ingest+dat, with the
 /// D33 tag flip and a re-eval producing a new snapshot after holdings
 /// change.
