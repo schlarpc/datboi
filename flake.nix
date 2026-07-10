@@ -53,7 +53,7 @@
         nixpkgs.lib.cleanSourceWith {
           src = root;
           filter = path: type:
-            (builtins.match ".*\\.(xml|wit|wasm|deflate|bin)$" path != null)
+            (builtins.match ".*\\.(xml|wit|wasm|deflate|bin|rar)$" path != null)
             || (craneLib.filterCargoSources path type);
           name = "source";
         };
