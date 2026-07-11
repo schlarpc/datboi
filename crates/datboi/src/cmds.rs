@@ -1396,6 +1396,7 @@ pub fn status(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
 
 // ---- views (M4: definitions, evaluation, manifests) ----
 
+#[allow(clippy::too_many_arguments)]
 pub fn view_define(
     env: &Env,
     name: &str,
@@ -1403,6 +1404,7 @@ pub fn view_define(
     template: &str,
     selection: Option<datboi_catalog::SelectionPolicy>,
     profile: Option<String>,
+    image: Option<datboi_catalog::ImageParams>,
     json: bool,
 ) -> anyhow::Result<ExitCode> {
     let (provider, system) = split_source(source)?;
@@ -1413,6 +1415,7 @@ pub fn view_define(
         template: template.to_owned(),
         selection,
         profile,
+        image,
     };
     datboi_catalog::define_view(&env.db, &def)?;
     if json {
@@ -1426,6 +1429,11 @@ pub fn view_define(
                     "mode": "1g1r", "regions": p.regions, "langs": p.langs,
                 })),
                 "profile": def.profile,
+                "image": def.image.as_ref().map(|i| json!({
+                    "cluster_size": i.cluster_size,
+                    "partition": i.partition,
+                    "label": i.label,
+                })),
             })
         );
     } else {
@@ -1438,8 +1446,16 @@ pub fn view_define(
             None => "all".to_owned(),
         };
         let prof = def.profile.as_deref().unwrap_or("none");
+        let img = match &def.image {
+            Some(i) => format!(
+                ", image fat32 (cluster {}, {})",
+                i.cluster_size,
+                if i.partition { "mbr" } else { "superfloppy" }
+            ),
+            None => String::new(),
+        };
         println!(
-            "defined view {name} over {source} (template {template:?}, selection {sel}, profile {prof})"
+            "defined view {name} over {source} (template {template:?}, selection {sel}, profile {prof}{img})"
         );
     }
     Ok(ExitCode::SUCCESS)
@@ -1696,6 +1712,147 @@ pub fn view_sync(
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Mint (or refresh) the view's FAT32 image recipe from its current
+/// snapshot (D62): materialize missing inputs, mint, flip the
+/// `image/<name>` tag, optionally export bytes.
+pub fn view_image(
+    mut env: Env,
+    name: &str,
+    out: Option<&Path>,
+    no_obao: bool,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let (snap_hash, snap) = load_view_snapshot(&env, name)?;
+    // Image params live on the definition (CBOR keys 8–11) when the
+    // view opted in at define time; the command still works without
+    // them — the ruled defaults apply.
+    let params = datboi_catalog::get_view(&env.db, name)?
+        .and_then(|d| d.image)
+        .unwrap_or_default();
+    let exec = datboi_exec::Executor::new(&env.store, datboi_exec::ExecConfig::default())?;
+
+    let missing = datboi_catalog::missing_inputs(&env.db, &snap)?;
+    let materialized = missing.len();
+    for hash in &missing {
+        exec.materialize(&env.db, hash)
+            .with_context(|| format!("materializing image input {hash}"))?;
+    }
+
+    let report = datboi_catalog::mint_image(
+        &mut env.db,
+        &env.store,
+        name,
+        &snap_hash,
+        &snap,
+        &params,
+        !no_obao,
+        now_unix(),
+    )?;
+
+    if let Some(dest) = out {
+        write_image_file(&exec, &env, &report.image, report.size, dest)?;
+    }
+
+    if json {
+        println!(
+            "{}",
+            json!({
+                "view": name,
+                "snapshot": snap_hash.to_hex(),
+                "image": report.image.to_hex(),
+                "recipe": report.recipe.to_hex(),
+                "size": report.size,
+                "rows": report.rows,
+                "skeleton_bytes": report.skeleton_bytes,
+                "obao_stored": report.obao_stored,
+                "materialized_inputs": materialized,
+                "exported": out.map(|p| p.display().to_string()),
+            })
+        );
+    } else {
+        println!(
+            "image {name}: {} ({} B, {} rows, skeleton {} B{})",
+            report.image,
+            report.size,
+            report.rows,
+            report.skeleton_bytes,
+            if report.obao_stored {
+                ", obao stored"
+            } else {
+                ", no obao (D63 carve-out serving)"
+            },
+        );
+        if materialized > 0 {
+            println!("materialized {materialized} input(s) first");
+        }
+        if let Some(dest) = out {
+            println!("exported to {}", dest.display());
+        }
+    }
+    // D62: read-only synthesis; overlays are a future design pass.
+    eprintln!(
+        "warning: reflashing this image onto a device CLOBBERS on-device saves \
+         (writable overlays are not designed yet)"
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Stream a blob to one destination file through the verified range
+/// path: temp file, 8 MiB windows, fsync, rename.
+fn write_image_file(
+    exec: &datboi_exec::Executor,
+    env: &Env,
+    hash: &datboi_core::hash::Blake3,
+    size: u64,
+    dest: &Path,
+) -> anyhow::Result<()> {
+    const WINDOW: u64 = 8 << 20;
+    if let Some(parent) = dest.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = {
+        let mut name = dest
+            .file_name()
+            .map(std::ffi::OsString::from)
+            .unwrap_or_default();
+        name.push(SYNC_TMP_SUFFIX);
+        dest.with_file_name(name)
+    };
+    let mut out =
+        std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+    let result = (|| -> anyhow::Result<()> {
+        use std::io::Write as _;
+        let mut off = 0u64;
+        while off < size {
+            let want = WINDOW.min(size - off);
+            let window = exec.serve_range(&env.db, hash, off, want)?;
+            anyhow::ensure!(
+                window.len() as u64 == want,
+                "short read at {off}: {} of {want} bytes",
+                window.len()
+            );
+            out.write_all(&window)?;
+            off += want;
+        }
+        out.sync_all()?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            std::fs::rename(&tmp, dest)
+                .with_context(|| format!("publishing {}", dest.display()))?;
+            Ok(())
+        }
+        Err(e) => {
+            drop(out);
+            let _ = std::fs::remove_file(&tmp);
+            Err(e.context(format!("writing image to {}", dest.display())))
+        }
+    }
 }
 
 /// Join a canonical manifest path under the target dir component-wise.

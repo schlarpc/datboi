@@ -24,8 +24,11 @@ use crate::selection::{Candidate, SelectionPolicy, select_1g1r};
 use crate::{CatalogError, audit::current_revision, rollup::refresh_rollups, unify::relink_all};
 
 // Definition CBOR: {1: provider, 2: system, 3: template, 4: selection
-// mode (0 all / 1 one-per-family), 5: regions, 6: langs, 7: profile}.
+// mode (0 all / 1 one-per-family), 5: regions, 6: langs, 7: profile,
+// 8: image mode (1 = FAT32), 9: image cluster size, 10: image
+// partition (0/1), 11: image label}.
 // Keys 4–7 are additive: v1 definitions decode as mode 0, no profile.
+// Keys 8–11 are additive the same way (D62): absent = no image mode.
 const DEFKEY_PROVIDER: u64 = 1;
 const DEFKEY_SYSTEM: u64 = 2;
 const DEFKEY_TEMPLATE: u64 = 3;
@@ -33,6 +36,10 @@ const DEFKEY_SELECTION: u64 = 4;
 const DEFKEY_REGIONS: u64 = 5;
 const DEFKEY_LANGS: u64 = 6;
 const DEFKEY_PROFILE: u64 = 7;
+const DEFKEY_IMAGE: u64 = 8;
+const DEFKEY_IMAGE_CLUSTER: u64 = 9;
+const DEFKEY_IMAGE_PARTITION: u64 = 10;
+const DEFKEY_IMAGE_LABEL: u64 = 11;
 
 /// A named view definition (the mutable policy layer).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +55,8 @@ pub struct ViewDef {
     pub selection: Option<SelectionPolicy>,
     /// Built-in constraint profile name ([`crate::profiles`]).
     pub profile: Option<String>,
+    /// `Some` = the view also reifies as a FAT32 image (D62).
+    pub image: Option<crate::image::ImageParams>,
 }
 
 fn def_key(name: &str) -> String {
@@ -83,6 +92,20 @@ pub fn define_view(db: &Db, def: &ViewDef) -> Result<(), CatalogError> {
     if let Some(profile) = &def.profile {
         pairs.push((DEFKEY_PROFILE, Value::Text(profile.clone())));
     }
+    if let Some(image) = &def.image {
+        pairs.push((DEFKEY_IMAGE, Value::Uint(1)));
+        pairs.push((
+            DEFKEY_IMAGE_CLUSTER,
+            Value::Uint(u64::from(image.cluster_size)),
+        ));
+        pairs.push((
+            DEFKEY_IMAGE_PARTITION,
+            Value::Uint(u64::from(image.partition)),
+        ));
+        if let Some(label) = &image.label {
+            pairs.push((DEFKEY_IMAGE_LABEL, Value::Text(label.clone())));
+        }
+    }
     let bytes = cbor::encode(&Value::Map(pairs)).expect("static keys");
     db.config_set(&def_key(&def.name), &bytes)?;
     Ok(())
@@ -102,6 +125,8 @@ pub fn get_view(db: &Db, name: &str) -> Result<Option<ViewDef>, CatalogError> {
     };
     let (mut provider, mut system, mut template) = (None, None, None);
     let (mut mode, mut regions, mut langs, mut profile) = (0u64, Vec::new(), Vec::new(), None);
+    let (mut image_mode, mut image_cluster, mut image_partition, mut image_label) =
+        (0u64, None, 1u64, None);
     for (key, value) in pairs {
         match (key, value) {
             (DEFKEY_PROVIDER, Value::Text(v)) => provider = Some(v),
@@ -115,12 +140,35 @@ pub fn get_view(db: &Db, name: &str) -> Result<Option<ViewDef>, CatalogError> {
                 langs = decode_texts(items)?;
             }
             (DEFKEY_PROFILE, Value::Text(v)) => profile = Some(v),
+            (DEFKEY_IMAGE, Value::Uint(v)) => image_mode = v,
+            (DEFKEY_IMAGE_CLUSTER, Value::Uint(v)) => {
+                image_cluster =
+                    Some(u32::try_from(v).map_err(|_| CatalogError::Corrupt("view def"))?);
+            }
+            (DEFKEY_IMAGE_PARTITION, Value::Uint(v)) => image_partition = v,
+            (DEFKEY_IMAGE_LABEL, Value::Text(v)) => image_label = Some(v),
             _ => return Err(CatalogError::Corrupt("view def")),
         }
     }
     let selection = match mode {
         0 => None,
         1 => Some(SelectionPolicy { regions, langs }),
+        _ => return Err(CatalogError::Corrupt("view def")),
+    };
+    let image = match image_mode {
+        0 => None,
+        1 => {
+            let defaults = crate::image::ImageParams::default();
+            Some(crate::image::ImageParams {
+                cluster_size: image_cluster.unwrap_or(defaults.cluster_size),
+                partition: match image_partition {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(CatalogError::Corrupt("view def")),
+                },
+                label: image_label,
+            })
+        }
         _ => return Err(CatalogError::Corrupt("view def")),
     };
     Ok(Some(ViewDef {
@@ -130,6 +178,7 @@ pub fn get_view(db: &Db, name: &str) -> Result<Option<ViewDef>, CatalogError> {
         template: template.ok_or(CatalogError::Corrupt("view def"))?,
         selection,
         profile,
+        image,
     }))
 }
 

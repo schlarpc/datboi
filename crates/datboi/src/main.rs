@@ -232,6 +232,19 @@ enum ViewCommand {
         /// Constraint profile for the target device (see `view profiles`).
         #[arg(long)]
         profile: Option<String>,
+        /// Also reify the view as a FAT32 image (D62); mint with
+        /// `view image <name>` after evaluating.
+        #[arg(long)]
+        image: bool,
+        /// Image cluster size in bytes (power of two, 512..=65536).
+        #[arg(long, default_value_t = 32 * 1024, requires = "image")]
+        image_cluster_size: u32,
+        /// Bare filesystem (superfloppy) instead of an MBR partition table.
+        #[arg(long, requires = "image")]
+        image_no_partition: bool,
+        /// Volume label (defaults to the view name).
+        #[arg(long, requires = "image")]
+        image_label: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -273,6 +286,22 @@ enum ViewCommand {
         /// Report what would change without touching the target.
         #[arg(long)]
         dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mint the view's FAT32 image recipe (D62) from its current
+    /// snapshot and flip the `image/<name>` tag; optionally export the
+    /// bytes. NOTE: reflashing an exported image CLOBBERS on-device
+    /// saves (writable overlays are a future design pass).
+    Image {
+        name: String,
+        /// Write the image bytes to this file (temp + fsync + rename).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Skip storing the output obao sidecar; serving then relies on
+        /// the D63 affine carve-out.
+        #[arg(long)]
+        no_obao: bool,
         #[arg(long)]
         json: bool,
     },
@@ -352,6 +381,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 regions,
                 langs,
                 profile,
+                image,
+                image_cluster_size,
+                image_no_partition,
+                image_label,
                 json,
             } => cmds::view_define(
                 &cli.global.open()?,
@@ -360,6 +393,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 &template,
                 one_per_family.then_some(datboi_catalog::SelectionPolicy { regions, langs }),
                 profile,
+                image.then_some(datboi_catalog::ImageParams {
+                    cluster_size: image_cluster_size,
+                    partition: !image_no_partition,
+                    label: image_label,
+                }),
                 json,
             ),
             ViewCommand::Eval { name, json } => cmds::view_eval(cli.global.open()?, &name, json),
@@ -384,6 +422,12 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             ViewCommand::Manifest { name, json } => {
                 cmds::view_manifest(&cli.global.open()?, &name, json)
             }
+            ViewCommand::Image {
+                name,
+                out,
+                no_obao,
+                json,
+            } => cmds::view_image(cli.global.open()?, &name, out.as_deref(), no_obao, json),
         },
         Command::Sweep {
             analyzer,

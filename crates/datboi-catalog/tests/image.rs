@@ -1,8 +1,10 @@
 //! Image mint tests (D62): determinism across fresh stores, golden
 //! recipe hash, residency refusal, layout refusals surfacing, tag flip,
-//! idempotent re-mint.
+//! idempotent re-mint, ViewDef image-param round-trip (CBOR keys 8–11).
 
-use datboi_catalog::{CatalogError, ImageParams, mint_image, missing_inputs};
+use datboi_catalog::{
+    CatalogError, ImageParams, ViewDef, define_view, get_view, mint_image, missing_inputs,
+};
 use datboi_core::hash::Blake3;
 use datboi_core::viewsnap::{ViewRow, ViewSnapshot};
 use datboi_index::{Db, Namespace as IndexNs, Residency};
@@ -255,4 +257,48 @@ fn oversize_file_refused_by_layout() {
     )
     .expect_err("must refuse");
     assert!(matches!(err, CatalogError::Fat32(_)), "got {err}");
+}
+
+/// ViewDef image params round-trip through CBOR keys 8–11; definitions
+/// without them (the pre-image v2 shape) decode as image = None.
+#[test]
+fn view_def_image_params_round_trip() {
+    let fx = fixture();
+    let base = ViewDef {
+        name: "plain".into(),
+        provider: "no-intro".into(),
+        system: "gba".into(),
+        template: "{name}".into(),
+        selection: None,
+        profile: None,
+        image: None,
+    };
+    define_view(&fx.db, &base).expect("define");
+    assert_eq!(
+        get_view(&fx.db, "plain").expect("get").expect("defined"),
+        base
+    );
+
+    let imaged = ViewDef {
+        name: "carded".into(),
+        image: Some(ImageParams {
+            cluster_size: 512,
+            partition: false,
+            label: Some("MYCARD".into()),
+        }),
+        ..base.clone()
+    };
+    define_view(&fx.db, &imaged).expect("define");
+    let got = get_view(&fx.db, "carded").expect("get").expect("defined");
+    assert_eq!(got.image, imaged.image);
+
+    // Defaults (no explicit label) survive too.
+    let defaulted = ViewDef {
+        name: "defaults".into(),
+        image: Some(ImageParams::default()),
+        ..base
+    };
+    define_view(&fx.db, &defaulted).expect("define");
+    let got = get_view(&fx.db, "defaults").expect("get").expect("defined");
+    assert_eq!(got.image, Some(ImageParams::default()));
 }
