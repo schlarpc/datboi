@@ -36,6 +36,7 @@ use datboi_core::cbor::{self, Value};
 use datboi_core::hash::Blake3;
 use datboi_core::recipe::{Op, Recipe};
 use datboi_index::{Db, IndexError, Residency, VerifyState};
+use datboi_runtime::extractor::{ExtractorComponent, ExtractorHost};
 use datboi_runtime::stream::{
     RangeRead, SequentialInput, StreamHost, StreamInput, StreamTransform,
 };
@@ -183,6 +184,14 @@ enum OpImpl {
         op: String,
         params: Vec<u8>,
     },
+    /// Container→member extraction through a `datboi:extractor@1` component
+    /// (D58). Input 0 is the archive container (random-access); the single
+    /// output is member `member_ix` (opaque — the whole member decodes as a
+    /// unit, so range reads spill).
+    Extractor {
+        component: Arc<ExtractorComponent>,
+        member_ix: u32,
+    },
 }
 
 impl Plan {
@@ -198,9 +207,12 @@ pub struct Executor<'s> {
     store: &'s Store,
     stream_host: Arc<StreamHost>,
     v1_host: TransformHost,
+    extractor_host: Arc<ExtractorHost>,
     config: ExecConfig,
     /// Compiled @2 components by hash — the D51 load/run split.
     components: Mutex<HashMap<Blake3, Arc<StreamTransform>>>,
+    /// Compiled extractor components by hash (same load/run split).
+    extractor_components: Mutex<HashMap<Blake3, Arc<ExtractorComponent>>>,
 }
 
 impl<'s> Executor<'s> {
@@ -211,8 +223,10 @@ impl<'s> Executor<'s> {
             store,
             stream_host: Arc::new(StreamHost::new(config.limits)?),
             v1_host: TransformHost::new(config.limits)?,
+            extractor_host: Arc::new(ExtractorHost::new(config.limits)?),
             config,
             components: Mutex::new(HashMap::new()),
+            extractor_components: Mutex::new(HashMap::new()),
         })
     }
 
@@ -717,6 +731,14 @@ impl<'s> Executor<'s> {
                         op: export.clone(),
                         params: recipe.params.clone(),
                     })
+                } else if world.starts_with("datboi:extractor@1") {
+                    // export is "extract"; params pin the member index.
+                    let member_ix = decode_member_ix(&recipe.params)?;
+                    let compiled = self.load_extractor_component(component)?;
+                    Ok(OpImpl::Extractor {
+                        component: compiled,
+                        member_ix,
+                    })
                 } else {
                     Err(ExecError::UnsupportedOp(world.clone()))
                 }
@@ -741,6 +763,31 @@ impl<'s> Executor<'s> {
         Ok(compiled)
     }
 
+    fn load_extractor_component(
+        &self,
+        hash: &Blake3,
+    ) -> Result<Arc<ExtractorComponent>, ExecError> {
+        if let Some(t) = self
+            .extractor_components
+            .lock()
+            .expect("extractor cache")
+            .get(hash)
+        {
+            return Ok(Arc::clone(t));
+        }
+        let mut bytes = Vec::new();
+        self.store
+            .get(StoreNs::Data, hash)?
+            .ok_or(ExecError::NoRoute(*hash))?
+            .read_to_end(&mut bytes)?;
+        let compiled = Arc::new(self.extractor_host.load(&bytes)?);
+        self.extractor_components
+            .lock()
+            .expect("extractor cache")
+            .insert(*hash, Arc::clone(&compiled));
+        Ok(compiled)
+    }
+
     // ---- opening plans as streams ----
 
     fn open_sequential(&self, plan: &Plan) -> Result<Box<dyn Read + Send>, ExecError> {
@@ -755,6 +802,33 @@ impl<'s> Executor<'s> {
             Plan::Op(op_plan) => match &op_plan.op {
                 OpImpl::Assemble(_) | OpImpl::Deflate { .. } | OpImpl::Wasm1 { .. } => {
                     self.open_builtin_or_v1_sequential(op_plan)
+                }
+                OpImpl::Extractor {
+                    component,
+                    member_ix,
+                } => {
+                    // The container (input 0) arrives random-access — the
+                    // extractor seeks its headers. The single output member
+                    // streams out through a pipe (opaque: whole member).
+                    let container = self.open_random(&op_plan.children[0])?;
+                    let (w, r, h) = pipe::pipe();
+                    let host = Arc::clone(&self.extractor_host);
+                    let component = component.clone();
+                    let member_ix = *member_ix;
+                    let fuel = fuel_budget(&op_plan.children, &op_plan.outputs);
+                    std::thread::spawn(move || {
+                        let _finished = h.finish_on_drop();
+                        if let Err(e) = host.extract_fueled(
+                            &component,
+                            container,
+                            member_ix,
+                            Box::new(w),
+                            Some(fuel),
+                        ) {
+                            h.fail(format!("extractor failed: {e}"));
+                        }
+                    });
+                    Ok(Box::new(r))
                 }
                 OpImpl::Wasm2 {
                     transform,
@@ -830,7 +904,9 @@ impl<'s> Executor<'s> {
                     outputs.into_iter().nth(op_plan.output_ix).expect("checked"),
                 )))
             }
-            OpImpl::Wasm2 { .. } => unreachable!("handled by open_sequential"),
+            OpImpl::Wasm2 { .. } | OpImpl::Extractor { .. } => {
+                unreachable!("handled by open_sequential")
+            }
         }
     }
 
@@ -936,6 +1012,27 @@ impl<'s> Executor<'s> {
                     recipe_id: None,
                 };
                 let reader = self.open_builtin_or_v1_sequential(&plan)?;
+                let outcome =
+                    self.store
+                        .put_with_obao(StoreNs::Data, outputs[0].0, outputs[0].1, reader)?;
+                Ok(vec![(outputs[0].0, outcome)])
+            }
+            OpImpl::Extractor { .. } => {
+                // Single opaque output (one member); stream it through the
+                // pipe path and materialize with verification (D4).
+                if outputs.len() != 1 {
+                    return Err(ExecError::Malformed(
+                        "extractor recipe must claim exactly one member output".into(),
+                    ));
+                }
+                let plan = OpPlan {
+                    op,
+                    output_ix: 0,
+                    outputs: outputs.clone(),
+                    children,
+                    recipe_id: None,
+                };
+                let reader = self.open_sequential(&Plan::Op(Box::new(plan)))?;
                 let outcome =
                     self.store
                         .put_with_obao(StoreNs::Data, outputs[0].0, outputs[0].1, reader)?;
@@ -1144,6 +1241,27 @@ fn collect_literal_leaves(plan: &Plan, out: &mut Vec<(Blake3, u64)>) {
                 collect_literal_leaves(child, out);
             }
         }
+    }
+}
+
+/// CBOR key for the extractor member index (D58); mirrors ingest's
+/// `EXTRACTOR_PARAM_MEMBER_IX`.
+const EXTRACTOR_PARAM_MEMBER_IX: u64 = 1;
+
+fn decode_member_ix(params: &[u8]) -> Result<u32, ExecError> {
+    let Ok(Value::Map(entries)) = cbor::decode(params) else {
+        return Err(ExecError::Malformed("extractor params must be a map".into()));
+    };
+    if entries.len() != 1 {
+        return Err(ExecError::Malformed(
+            "extractor params: exactly one field (member index)".into(),
+        ));
+    }
+    match entries.iter().find(|(k, _)| *k == EXTRACTOR_PARAM_MEMBER_IX) {
+        Some((_, Value::Uint(n))) => {
+            u32::try_from(*n).map_err(|_| ExecError::Malformed("member index out of range".into()))
+        }
+        _ => Err(ExecError::Malformed("extractor member index missing".into())),
     }
 }
 

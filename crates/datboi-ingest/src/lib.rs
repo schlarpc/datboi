@@ -43,9 +43,41 @@ use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe};
 use datboi_formats::skipper::{Detector, Operation};
 use datboi_index::recipes::NewRecipe;
 use datboi_index::{Db, Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass};
+use datboi_runtime::extractor::ExtractorHost;
 use datboi_store_fs::{Namespace as StoreNs, PutOutcome, Store};
 
 use crate::zip::{Method, ZipError};
+
+/// The committed, stamped `ex-unrar` component (D5/D6/D54) the rar derive
+/// recipes pin. `transforms/dist/` holds the built artifact.
+pub const EX_UNRAR_WASM: &[u8] = include_bytes!("../../../transforms/dist/ex_unrar.wasm");
+
+/// CBOR key for the extractor member index in an `ex-unrar/extract`
+/// recipe's params (D58); mirrors exec's `EXTRACTOR_PARAM_MEMBER_IX`.
+const EXTRACTOR_PARAM_MEMBER_IX: u64 = 1;
+
+/// A shared, in-memory sink for one extracted member (the extractor host
+/// writes here; we read the bytes back out to hash into the CAS).
+#[derive(Clone, Default)]
+struct SharedSink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl SharedSink {
+    fn into_inner(self) -> Vec<u8> {
+        std::sync::Arc::try_unwrap(self.0)
+            .map(|m| m.into_inner().expect("lock"))
+            .unwrap_or_else(|arc| arc.lock().expect("lock").clone())
+    }
+}
+
+impl std::io::Write for SharedSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("lock").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 /// Streaming buffer size for member hashing.
 const CHUNK: usize = 64 * 1024;
@@ -123,11 +155,23 @@ pub struct IngestReport {
     pub notes: Vec<String>,
 }
 
+/// Lazily-built rar extractor state (D58): the wasm host, the compiled
+/// `ex-unrar` component, and whether its bytes have been published into
+/// the store this sweep (recipes pin it by hash).
+struct ExtractorRt {
+    host: ExtractorHost,
+    component: datboi_runtime::extractor::ExtractorComponent,
+    published: bool,
+}
+
 pub struct Ingester<'a> {
     store: &'a Store,
     db: &'a mut Db,
     detectors: &'a [Detector],
     config: IngestConfig,
+    /// Built on the first rar container encountered (avoids the wasm engine
+    /// cost when a sweep has no rar).
+    extractor: Option<ExtractorRt>,
 }
 
 impl<'a> Ingester<'a> {
@@ -137,6 +181,7 @@ impl<'a> Ingester<'a> {
             db,
             detectors,
             config: IngestConfig::default(),
+            extractor: None,
         }
     }
 
@@ -238,7 +283,7 @@ impl<'a> Ingester<'a> {
                 report.errors.push((path.to_owned(), e));
             }
         } else if archive::looks_like_rar(&head[..head_len]) {
-            if let Err(e) = self.process_rar(&canonical, report) {
+            if let Err(e) = self.process_rar(&hash, blob_id, &mut blob, report) {
                 report.errors.push((path.to_owned(), e));
             }
         } else if !self.detectors.is_empty() {
@@ -314,26 +359,148 @@ impl<'a> Ingester<'a> {
         Ok(())
     }
 
-    /// Extract every rar member into the CAS. The unrar library opens by
-    /// path, so this reads the SOURCE file (same bytes we just hashed and
-    /// stored) and spools members through the store's tmp dir.
-    fn process_rar(&mut self, source: &Path, report: &mut IngestReport) -> Result<(), String> {
-        let spool = tempfile::tempdir().map_err(|e| format!("spool dir: {e}"))?;
-        let store = self.store;
-        let mut stored: Vec<datboi_core::alias::AliasTuple> = Vec::new();
-        archive::extract_rar(source, spool.path(), |name, file| {
-            let (_, aliases, _) = store
-                .put_new(StoreNs::Data, file)
-                .map_err(|e| format!("storing member {name:?}: {e}"))?;
-            stored.push(aliases);
-            Ok(())
-        })?;
-        for aliases in &stored {
-            self.record_resident_blob(&aliases.blake3, aliases)
+    /// Extract every rar member into the CAS through the `ex-unrar`
+    /// component (D58): unrar's C++ runs inside the wasm sandbox, so
+    /// extraction is deterministic-by-construction. Each member lands
+    /// resident AND carries a DERIVE RECIPE (container→member through the
+    /// component) so it can be evicted and rebuilt — the recipe re-runs the
+    /// same component, never a recompressor (rar rebuild stays infeasible).
+    fn process_rar(
+        &mut self,
+        container_hash: &Blake3,
+        container_blob_id: i64,
+        blob: &mut File,
+        report: &mut IngestReport,
+    ) -> Result<(), String> {
+        // The component reads the container as a seekable resource; buffer
+        // the stored bytes (same bytes we just hashed) for random access.
+        blob.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+        let mut container = Vec::new();
+        blob.read_to_end(&mut container)
+            .map_err(|e| e.to_string())?;
+
+        self.ensure_extractor()?;
+        let members = self.extractor_enumerate(&container)?;
+
+        for member in &members {
+            // Decode the member inside the sandbox, streaming into the CAS
+            // (hash computed on the way in).
+            let bytes = self.extractor_extract(&container, member.ix)?;
+            if bytes.len() as u64 != member.size {
+                return Err(format!(
+                    "member {:?}: extractor produced {} bytes, header claims {}",
+                    member.name,
+                    bytes.len(),
+                    member.size
+                ));
+            }
+            let (member_hash, aliases, _) = self
+                .store
+                .put_new(StoreNs::Data, std::io::Cursor::new(&bytes))
+                .map_err(|e| format!("storing member {:?}: {e}", member.name))?;
+            let member_blob_id = self
+                .record_resident_blob(&member_hash, &aliases)
                 .map_err(|e| e.to_string())?;
+
+            // Mint the container→member derive recipe (makes the member
+            // evictable). Empty members need no recipe (nothing to rebuild).
+            if member.size > 0 {
+                let params = cbor::encode(&Value::Map(vec![(
+                    EXTRACTOR_PARAM_MEMBER_IX,
+                    Value::Uint(u64::from(member.ix)),
+                )]))
+                .map_err(|e| e.to_string())?;
+                let recipe = Recipe {
+                    op: Op::Wasm {
+                        component: self.extractor_component_hash()?,
+                        world: "datboi:extractor@1".into(),
+                        export: "extract".into(),
+                    },
+                    inputs: vec![InputRef {
+                        hash: *container_hash,
+                        role: None,
+                    }],
+                    outputs: vec![OutputRef {
+                        hash: member_hash,
+                        size: member.size,
+                        name: Some(member.name.clone()),
+                    }],
+                    params,
+                };
+                mint_recipe(
+                    self.store,
+                    self.db,
+                    &recipe,
+                    "ex-unrar/extract",
+                    SeekClass::Opaque,
+                    &[(0, container_blob_id, None)],
+                    &[(0, member_blob_id, member.size, Some(&member.name))],
+                )
+                .map_err(|e| e.to_string())?;
+            }
             report.members_extracted += 1;
         }
         Ok(())
+    }
+
+    /// Lazily build the extractor host + compile the pinned component, and
+    /// publish the component into the store+index once per sweep (recipes
+    /// pin it by hash, so a later replay can load it).
+    fn ensure_extractor(&mut self) -> Result<(), String> {
+        if self.extractor.is_none() {
+            let host = ExtractorHost::new(datboi_runtime::Limits::default())
+                .map_err(|e| e.to_string())?;
+            let component = host.load(EX_UNRAR_WASM).map_err(|e| e.to_string())?;
+            self.extractor = Some(ExtractorRt {
+                host,
+                component,
+                published: false,
+            });
+        }
+        if !self.extractor.as_ref().expect("just set").published {
+            let hash = Blake3::compute(EX_UNRAR_WASM);
+            self.store
+                .put(StoreNs::Data, hash, EX_UNRAR_WASM)
+                .map_err(|e| e.to_string())?;
+            self.db
+                .upsert_blob(
+                    &hash,
+                    Some(EX_UNRAR_WASM.len() as u64),
+                    IndexNs::Data,
+                    Residency::Resident,
+                )
+                .map_err(|e| e.to_string())?;
+            self.extractor.as_mut().expect("just set").published = true;
+        }
+        Ok(())
+    }
+
+    fn extractor_component_hash(&self) -> Result<Blake3, String> {
+        Ok(Blake3::compute(EX_UNRAR_WASM))
+    }
+
+    fn extractor_enumerate(
+        &self,
+        container: &[u8],
+    ) -> Result<Vec<datboi_runtime::extractor::Member>, String> {
+        let rt = self.extractor.as_ref().expect("ensure_extractor first");
+        rt.host
+            .enumerate(&rt.component, Box::new(container.to_vec()))
+            .map_err(|e| e.to_string())
+    }
+
+    fn extractor_extract(&self, container: &[u8], ix: u32) -> Result<Vec<u8>, String> {
+        let rt = self.extractor.as_ref().expect("ensure_extractor first");
+        let out = SharedSink::default();
+        rt.host
+            .extract(
+                &rt.component,
+                Box::new(container.to_vec()),
+                ix,
+                Box::new(out.clone()),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(out.into_inner())
     }
 
     fn process_zip(

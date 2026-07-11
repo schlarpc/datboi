@@ -9,12 +9,14 @@
 //! members both resident; the win is that audit sees the members and
 //! they dedupe against every other source of the same bytes.
 //!
-//! rar is extraction-only by license and by design (the unrar library
-//! cannot create archives), which matches the ingest direction exactly.
+//! rar is extraction-only by license and by design (unrar cannot create
+//! archives), which matches the ingest direction exactly. Since D58 the
+//! rar path runs the `ex-unrar` component (unrar's C++ inside the wasm
+//! sandbox) — see `Ingester::process_rar`; this module keeps only the 7z
+//! extraction and the magic sniffs.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
 
 /// 7z signature: `'7' 'z' 0xBC 0xAF 0x27 0x1C`.
 #[must_use]
@@ -63,61 +65,6 @@ pub fn extract_7z(
             Ok(true)
         })
         .map_err(|e| format!("7z extraction failed: {e}"))?;
-    Ok(members)
-}
-
-/// Walk a rar container at `path` (the unrar library opens by path, not
-/// by reader), extracting each file member to `spool_dir` and handing
-/// the spooled file to `sink`. The spool file is removed after each
-/// member.
-///
-/// # Errors
-/// As [`extract_7z`]; additionally multi-volume archives are refused.
-pub fn extract_rar(
-    path: &Path,
-    spool_dir: &Path,
-    mut sink: impl FnMut(&str, &mut File) -> Result<(), String>,
-) -> Result<Vec<ExtractedMember>, String> {
-    let mut members = Vec::new();
-    let mut cursor = Some(
-        unrar::Archive::new(path)
-            .open_for_processing()
-            .map_err(|e| format!("rar open failed: {e}"))?,
-    );
-    loop {
-        let archive = cursor.take().expect("cursor present");
-        let Some(header) = archive
-            .read_header()
-            .map_err(|e| format!("rar header read failed: {e}"))?
-        else {
-            break;
-        };
-        let entry = header.entry();
-        let name = entry.filename.to_string_lossy().into_owned();
-        let size = entry.unpacked_size;
-        if entry.is_split() {
-            return Err(format!(
-                "member {name:?} spans volumes; multi-volume rar is unsupported"
-            ));
-        }
-        cursor = Some(if entry.is_file() {
-            let spool = spool_dir.join("rar-member.spool");
-            let next = header
-                .extract_to(&spool)
-                .map_err(|e| format!("rar extract of {name:?} failed: {e}"))?;
-            let mut file = File::open(&spool)
-                .map_err(|e| format!("spooled member {name:?} unreadable: {e}"))?;
-            let result = sink(&name, &mut file);
-            let _ = std::fs::remove_file(&spool);
-            result?;
-            members.push(ExtractedMember { name, size });
-            next
-        } else {
-            header
-                .skip()
-                .map_err(|e| format!("rar skip of {name:?} failed: {e}"))?
-        });
-    }
     Ok(members)
 }
 
