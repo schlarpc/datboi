@@ -18,6 +18,8 @@ export type Route =
   | { screen: 'admin' }
   | { screen: 'login' }
   | { screen: 'invite' }
+  /** Friend browse (spec §4.3); owners have `/view/{name}/` instead. */
+  | { screen: 'browse'; view: string }
   | { screen: 'notfound' };
 
 /** Pure path → route match, unit-testable without a window. */
@@ -43,6 +45,10 @@ export function matchPath(pathname: string): Route {
       const audit = pathname.match(/^\/library\/([^/]+)$/);
       if (audit) {
         return { screen: 'audit', systemId: decodeURIComponent(audit[1]) };
+      }
+      const shelf = pathname.match(/^\/shelf\/([^/]+)$/);
+      if (shelf) {
+        return { screen: 'browse', view: decodeURIComponent(shelf[1]) };
       }
       return { screen: 'notfound' };
     }

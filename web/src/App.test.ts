@@ -48,3 +48,34 @@ test('a named session shows the avatar initial', async () => {
   await screen.findByText('The shelf');
   expect(screen.getByTitle('sam').textContent).toBe('s');
 });
+
+test('a friend session gets friend chrome — no owner surfaces leak', async () => {
+  installFetch({
+    whoami: { authenticated: true, username: 'sam', role: 'friend', via: 'session' },
+    views: [],
+  });
+  render(App);
+
+  // Shelves home + account chip; no nav tabs, no jobs tray, no health chip.
+  expect(await screen.findByText('Your shelves')).toBeTruthy();
+  expect(screen.getByText('shared with you by the owner')).toBeTruthy();
+  expect(screen.getByText('sam')).toBeTruthy();
+  expect(screen.queryByText('Library')).toBeNull();
+  expect(screen.queryByText('Ingest')).toBeNull();
+  expect(screen.queryByText('Admin')).toBeNull();
+  expect(screen.queryByText(/▸ jobs/)).toBeNull();
+  expect(screen.queryByText('healthy')).toBeNull();
+});
+
+test('owner routes refuse friends — bounced back to the shelves', async () => {
+  installFetch({
+    whoami: { authenticated: true, username: 'sam', role: 'friend', via: 'session' },
+    views: [],
+  });
+  router.replace('/admin');
+  render(App);
+
+  expect(await screen.findByText('Your shelves')).toBeTruthy();
+  expect(window.location.pathname).toBe('/');
+  expect(screen.queryByText('+ mint invite URL')).toBeNull();
+});

@@ -19,6 +19,7 @@ import type {
   StorageBody,
   System,
   ViewDetail,
+  ViewFileRow,
   Whoami,
 } from '../lib/api/types';
 
@@ -33,6 +34,9 @@ export interface MockUniverse {
   /** Full detail bodies; the list endpoint serves the same objects
    * (extra fields are harmless — the real list is a subset). */
   views?: ViewDetail[];
+  /** Snapshot manifest rows by view name, served through the files
+   * endpoint's q/offset/limit semantics (api.rs view_files_body). */
+  files?: Record<string, ViewFileRow[]>;
   admin?: AdminUsersBody;
   /** Non-200 for /v1/admin/users (e.g. 403 exercises owner-only). */
   adminStatus?: number;
@@ -117,6 +121,25 @@ export function installFetch(universe: MockUniverse) {
       }
       if (path === '/v1/views') {
         return json(200, { views: universe.views ?? [] });
+      }
+      const filesMatch = path.match(/^\/v1\/views\/([^/]+)\/files$/);
+      if (filesMatch) {
+        const view = (universe.views ?? []).find((v) => v.name === filesMatch[1]);
+        if (!view) {
+          return json(404, { error: 'no such view' });
+        }
+        const q = url.searchParams.get('q')?.toLowerCase() ?? null;
+        const offset = Number(url.searchParams.get('offset') ?? 0);
+        const limit = Math.min(Number(url.searchParams.get('limit') ?? 200), 1000);
+        const rows = universe.files?.[view.name] ?? [];
+        const filtered = rows.filter((f) => q === null || f.path.toLowerCase().includes(q));
+        return json(200, {
+          files: filtered.slice(offset, offset + limit),
+          total: filtered.length,
+          offset,
+          limit,
+          snapshot: view.snapshot ?? '0'.repeat(64),
+        });
       }
       const viewMatch = path.match(/^\/v1\/views\/(.+)$/);
       if (viewMatch) {

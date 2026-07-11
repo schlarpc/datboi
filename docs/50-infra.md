@@ -30,7 +30,9 @@ datboi/
 │   └── datboi-ex-*/           # wasm extractor components (D58), same shape
 ├── wit/                       # datboi:{transform,extractor} WIT worlds —
 │                              # the versioned, frozen ABI
-├── web/                       # vite + TS (rof-gui pattern)
+├── web/                       # Svelte 5 + vite SPA (D17/D67) — own
+│                              # package-lock boundary; dist embedded
+│                              # into the daemon via DATBOI_WEB_DIST
 └── docs/
 ```
 
@@ -43,8 +45,13 @@ components via `include_bytes!` of the nix store paths
 (`DATBOI_COMPONENTS_DIR`, D66) — nix makes "transforms are
 content-addressed artifacts" nearly literal; in a dev checkout the
 embedding crates' build.rs invokes `nix build .#transforms` itself, so a
-component edit lands on the next cargo build. Shared API types: a
-`datboi-api` crate generates TS; WIT plays that role for the wasm
+component edit lands on the next cargo build; the web dist embeds the
+same way (`DATBOI_WEB_DIST`, served with an SPA fallback — one binary,
+no deploy-time asset directory). Shared API types: the original sketch
+("a `datboi-api` crate generates TS") lost to reality — no serde derive
+in the codebase makes codegen non-trivial, so M5 hand-writes the TS
+types against the `json!` literals, pinned by integration tests
+(recorded in open-questions); WIT plays the codegen role for the wasm
 boundary.
 
 ## Daemon conventions
@@ -53,7 +60,7 @@ boundary.
 clap-env); `tracing` structured JSON logs to stdout; single process; health
 endpoint; no pidfiles. Server keypair doubles as iroh identity.
 
-## Auth options (survey — decision pending)
+## Auth options (survey — ruled D30/D68: invite tokens → local accounts + sessions, shipped M5)
 
 | Option | Fit |
 |---|---|

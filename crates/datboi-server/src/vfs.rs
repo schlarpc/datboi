@@ -148,6 +148,12 @@ impl ViewIndex {
         }
     }
 
+    /// Every manifest row in path order — the flat listing the friend
+    /// browse surface pages through (api.rs `/v1/views/{name}/files`).
+    pub fn rows(&self) -> impl Iterator<Item = (&str, &RowMeta)> {
+        self.rows.iter().map(|(path, meta)| (path.as_str(), meta))
+    }
+
     /// (row count, total manifest bytes) — the cheap per-view stats the
     /// M5 API surfaces (decoded once per snapshot via the cache).
     pub fn stats(&self) -> (usize, u64) {

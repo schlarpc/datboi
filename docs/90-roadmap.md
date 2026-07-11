@@ -130,8 +130,20 @@ recovery-equivalence as a property test.
   cross-toolchain lane, zero imports — D46 held); rar members carry
   derive recipes and are evictable. The C-to-wasm lane M7's 7-Zip
   SDK / CHD / RVZ work needs now exists.
-- **M5 — "Other people can touch it"**: axum API, invites + passwords
-  (D30), ACLs, Svelte web UI (D17).
+- **M5 — "Other people can touch it"** — **shipped 2026-07-11**:
+  axum /v1 read-model API ✓ (systems/entries audit rollups, views +
+  flat snapshot listings + minted-image download over the verified
+  range path, storage); invites + passwords ✓ (D30/D68: argon2id,
+  hashed tokens, cookie sessions + bearer, loopback = owner); per-view
+  ACLs ✓ (friends see exactly their grants; denials answer like
+  misses); Svelte web UI ✓ (D17/D67: wuchale i18n-first, embedded
+  dist, owner screens + the friend surface — shelves home, browse,
+  entry panel, SD-image modal; friends were the point of
+  invites+ACLs, so the friend surface is M5, not M6). Honest scope:
+  mutating pipeline actions (ingest, eval, mint, evict, scrub) stay
+  CLI-only — the UI reveals incantations; eval-report / view-editor /
+  eviction-planner screens and the jobs registry deferred
+  (docs/open-questions.md § raised 2026-07-11).
 - **M6 — "Friends"**: iroh, partial-blob bitfields + irpc store facade
   (D14 stage 2), holdings channels + peer-availability audit state (D34),
   tickets.

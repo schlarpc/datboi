@@ -857,6 +857,69 @@ fn view_detail_body(app: &App, caller: &Caller, name: &str) -> Result<Value, Res
     Ok(body)
 }
 
+// ---- GET /v1/views/{name}/files ----
+
+pub(crate) async fn view_files(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+    UrlPath(name): UrlPath<String>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    run_blocking(move || {
+        // parse_page for the shared q/offset/limit vocabulary and
+        // clamps; snapshot rows have no state (a snapshot only serves
+        // verified content), so a `state` param is ignored here.
+        let page = parse_page(query.as_deref())?;
+        Ok(json_response(
+            StatusCode::OK,
+            &view_files_body(&app, &caller, &name, &page)?,
+        ))
+    })
+    .await
+}
+
+/// Flat listing of a view's CURRENT snapshot manifest — the friend
+/// browse surface (spec §4.3). Same decoded-manifest cache the byte
+/// tree serves from, so a page here is a string scan, not a decode.
+fn view_files_body(app: &App, caller: &Caller, name: &str, page: &Page) -> Result<Value, Response> {
+    {
+        // View-scoped resource: denial answers exactly like a miss
+        // (auth.rs convention) so probing learns nothing.
+        let db = lock_db(app);
+        if !auth::view_allowed(&db, caller, name) {
+            return Err(err(StatusCode::NOT_FOUND, "no such view"));
+        }
+    }
+    let idx = vfs::view_index(app, name).map_err(|e| match e {
+        vfs::LookupError::NoSuchView => err(StatusCode::NOT_FOUND, "no such view"),
+        // A tagged snapshot that won't resolve is server-side damage.
+        other => internal(other),
+    })?;
+    let needle = page.q.as_deref().map(str::to_lowercase);
+    let mut files = Vec::new();
+    let mut total: u64 = 0;
+    for (path, meta) in idx.rows() {
+        if let Some(needle) = &needle
+            && !path.to_lowercase().contains(needle.as_str())
+        {
+            continue;
+        }
+        if total >= page.offset && (files.len() as u64) < page.limit {
+            files.push(json!({
+                "path": path,
+                "size": meta.size,
+                "hash": meta.hash.to_hex(),
+            }));
+        }
+        total += 1;
+    }
+    Ok(json!({
+        "files": files, "total": total,
+        "offset": page.offset, "limit": page.limit,
+        "snapshot": idx.snapshot.to_hex(),
+    }))
+}
+
 // ---- GET /v1/storage ----
 
 pub(crate) async fn storage(
@@ -1079,6 +1142,79 @@ mod tests {
         let denied = view_detail_body(&app, &pal, "psx").expect_err("not granted");
         assert_eq!(denied.status(), StatusCode::NOT_FOUND);
         let missing = view_detail_body(&app, &Caller::Local, "nope").expect_err("no such view");
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Friend gating + query semantics for the browse listing, against
+    /// a REAL encoded snapshot (the decode path is the served path).
+    #[test]
+    fn view_files_pages_filters_and_gates() {
+        use datboi_core::viewsnap::{ViewRow, ViewSnapshot};
+
+        let (_dir, app) = test_app();
+        let snap = ViewSnapshot {
+            created_at: 7,
+            view_name: "gba".into(),
+            sources: vec![],
+            rows: [
+                "Games/Alpha (USA).gba",
+                "Games/Beta (Japan).gba",
+                "loose.txt",
+            ]
+            .into_iter()
+            .map(|path| ViewRow {
+                path: path.into(),
+                hash: Blake3::compute(path.as_bytes()),
+                size: 9,
+                seek: 0,
+            })
+            .collect(),
+        };
+        let bytes = snap.encode().expect("encode");
+        let (hash, _, _) = app
+            .store
+            .put_new(datboi_store_fs::Namespace::Meta, bytes.as_slice())
+            .expect("put");
+        let pal = {
+            let db = lock_db(&app);
+            db.set_tag("view/gba", &hash, 1).expect("tag");
+            friend(&db, "pal", &["gba"])
+        };
+
+        let page = |q: Option<&str>, offset, limit| Page {
+            q: q.map(str::to_owned),
+            state: None,
+            offset,
+            limit,
+        };
+        let body = view_files_body(&app, &pal, "gba", &page(None, 0, 200)).expect("granted");
+        assert_eq!(body["total"], 3);
+        assert_eq!(body["snapshot"], hash.to_hex());
+        let files = body["files"].as_array().expect("files");
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0]["path"], "Games/Alpha (USA).gba", "path-ordered");
+        assert_eq!(files[0]["size"], 9);
+        assert_eq!(
+            files[0]["hash"],
+            Blake3::compute(b"Games/Alpha (USA).gba").to_hex()
+        );
+
+        // q is case-insensitive substring on the FULL path; total is
+        // the filtered count, the window slides under it.
+        let body = view_files_body(&app, &pal, "gba", &page(Some("ALPHA"), 0, 200)).expect("q");
+        assert_eq!(body["total"], 1);
+        assert_eq!(body["files"][0]["path"], "Games/Alpha (USA).gba");
+        let body = view_files_body(&app, &pal, "gba", &page(Some("games/"), 1, 1)).expect("page");
+        assert_eq!(body["total"], 2);
+        assert_eq!(body["files"].as_array().expect("files").len(), 1);
+        assert_eq!(body["files"][0]["path"], "Games/Beta (Japan).gba");
+
+        // Not granted / nonexistent: identical 404s (the auth.rs
+        // convention — probing learns nothing).
+        let denied = view_files_body(&app, &pal, "psx", &page(None, 0, 200)).expect_err("denied");
+        assert_eq!(denied.status(), StatusCode::NOT_FOUND);
+        let missing =
+            view_files_body(&app, &Caller::Local, "nope", &page(None, 0, 200)).expect_err("miss");
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 

@@ -184,6 +184,33 @@ export interface ViewDetail extends View {
   image: MintedImage | null;
 }
 
+// ---- GET /v1/views/{name}/files ----
+
+export interface ViewFilesParams {
+  /** Case-insensitive substring over the full manifest path. */
+  q?: string;
+  offset?: number;
+  /** Server clamps to 1..=1000; default 200. */
+  limit?: number;
+}
+
+/** One snapshot manifest row — everything here is verified content. */
+export interface ViewFileRow {
+  path: string;
+  size: number;
+  /** Full blake3 hex; the UI truncates. */
+  hash: string;
+}
+
+export interface ViewFilesBody {
+  files: ViewFileRow[];
+  /** Count under the CURRENT q filter, not the page length. */
+  total: number;
+  offset: number;
+  limit: number;
+  snapshot: string;
+}
+
 // ---- GET /v1/storage ----
 
 export interface QuarantineItem {

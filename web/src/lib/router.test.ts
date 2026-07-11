@@ -22,7 +22,15 @@ describe('matchPath', () => {
     expect(matchPath('/library/a%20b')).toEqual({ screen: 'audit', systemId: 'a b' });
   });
 
-  test.each(['/bogus', '/library', '/library/3/extra', '/viewsx'])(
+  test('friend browse carries the view name, percent-decoded', () => {
+    expect(matchPath('/shelf/gba-everdrive')).toEqual({
+      screen: 'browse',
+      view: 'gba-everdrive',
+    });
+    expect(matchPath('/shelf/a%20b')).toEqual({ screen: 'browse', view: 'a b' });
+  });
+
+  test.each(['/bogus', '/library', '/library/3/extra', '/viewsx', '/shelf', '/shelf/x/y'])(
     'unknown path %s is notfound',
     (path) => {
       expect(matchPath(path).screen).toBe('notfound');

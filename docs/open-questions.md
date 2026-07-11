@@ -162,7 +162,16 @@ strict mode + retool clonelist consumption are M4 work items).
   (audit is the drill-down under Library; the hi-fi "Dats" tab
   variant rejected as redundant with it); friend-facing surface
   ships in M5 (it is what invites+ACLs exist for; M6 "Friends" is
-  the iroh daemon-to-daemon plane, a different thing); desktop-only
+  the iroh daemon-to-daemon plane, a different thing) — shipped
+  2026-07-11: shelves home, browse (flat full-path rows per the
+  interactive prototype's canon; folder rows were only a wireframe
+  sketch), entry panel, trust bar, SD-image modal, backed by
+  `GET /v1/views/{name}/files` (paged, server-side q) and
+  `GET /v1/views/{name}/image` (the minted blob through the same
+  verified-range machinery as /view files — a clean reuse, so no
+  CLI-hint fallback was needed; the modal's download is a plain
+  anchor, so no client-side progress bar — the browser's own
+  download UI is the truth); desktop-only
   layout for now (all comps are 1160px; responsive is design work);
   `▶ Play` (browser emulator cores) and box-art metadata provider
   stay explicitly-future per the comps, UI reserves their slots.

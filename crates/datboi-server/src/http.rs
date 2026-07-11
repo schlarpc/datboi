@@ -56,6 +56,8 @@ pub(crate) fn router(app: Arc<App>) -> Router {
         .route("/v1/systems/{id}/entries/{*name}", get(api::system_entry))
         .route("/v1/views", get(api::views))
         .route("/v1/views/{name}", get(api::view_detail))
+        .route("/v1/views/{name}/files", get(api::view_files))
+        .route("/v1/views/{name}/image", get(view_image))
         .route("/v1/storage", get(api::storage))
         .route("/v1/jobs", get(api::jobs))
         .route("/v1/admin/users", get(admin::users))
@@ -96,8 +98,8 @@ pub(crate) fn router(app: Arc<App>) -> Router {
 }
 
 // ---- handlers ----
-// (the /v1 JSON read models live in api.rs; only the byte-serving
-// tree surface remains here)
+// (the /v1 JSON read models live in api.rs; the byte-serving surfaces
+// — the view/snap trees and the minted-image download — live here)
 
 async fn view_bare(UrlPath(name): UrlPath<String>) -> Response {
     redirect(&format!("/view/{}/", enc_seg(&name)))
@@ -185,6 +187,91 @@ async fn snap_path(
         query,
     )
     .await
+}
+
+/// GET /v1/views/{name}/image — the minted SD image (D62 `image/<name>`
+/// tag), friend-visible per grant like the rest of the view surface.
+/// The image blob is content-addressed with verified windows like any
+/// manifest row, so it rides the exact same Range/ETag/windowed-stream
+/// path `/view/{name}/{path}` uses; only the provenance header and the
+/// download name differ.
+async fn view_image(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+    UrlPath(name): UrlPath<String>,
+    method: Method,
+    headers: HeaderMap,
+) -> Response {
+    run_blocking(move || {
+        let row = {
+            let db = app
+                .db
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // View-scoped resource: denial answers exactly like a miss
+            // (auth.rs convention) so probing learns nothing.
+            if !auth::view_allowed(&db, &caller, &name) {
+                return Err(text(StatusCode::NOT_FOUND, "no such view"));
+            }
+            let hash = db
+                .get_tag(&format!("image/{name}"))
+                .map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?
+                .ok_or_else(|| text(StatusCode::NOT_FOUND, "no image minted for this view"))?;
+            // A tag pointing at an unindexed/sizeless blob is server-side
+            // damage, not a client miss.
+            let blob = db
+                .blob_by_hash(&hash)
+                .map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?
+                .ok_or_else(|| text(StatusCode::INTERNAL_SERVER_ERROR, "image blob not indexed"))?;
+            let size = blob
+                .size
+                .ok_or_else(|| text(StatusCode::INTERNAL_SERVER_ERROR, "image blob has no size"))?;
+            // D27 class, derived exactly like snapshot rows record it:
+            // resident reads affinely, otherwise the best route's class
+            // (the mint recipe is affine assemble, D62).
+            let seek = if blob.residency == datboi_index::Residency::Resident {
+                0
+            } else {
+                db.recipes_for_output(blob.blob_id)
+                    .map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?
+                    .iter()
+                    .filter(|r| r.verify != datboi_index::VerifyState::Failed)
+                    .map(|r| match r.seek_class {
+                        datboi_index::SeekClass::Affine => 0,
+                        datboi_index::SeekClass::ManifestSeekable => 1,
+                        datboi_index::SeekClass::Opaque => 2,
+                    })
+                    .min()
+                    .unwrap_or(2)
+            };
+            RowMeta { hash, size, seek }
+        };
+        // The tag is mutable (re-mint moves it), so no `immutable`
+        // caching; the strong ETag keeps revalidation free.
+        let disposition = format!("attachment; filename=\"{}.img\"", filename_safe(&name));
+        Ok(file_response(
+            &app,
+            row,
+            &method,
+            &headers,
+            false,
+            None,
+            Some(&disposition),
+        ))
+    })
+    .await
+}
+
+/// Conservative quoted-string filename: anything outside printable
+/// ASCII (or a quote/backslash) becomes `_` so the header value never
+/// needs escaping rules the receiving side might disagree about.
+fn filename_safe(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            ' '..='~' if c != '"' && c != '\\' => c,
+            _ => '_',
+        })
+        .collect()
 }
 
 /// How the request named the tree: a mutable view tag (resolved per
@@ -282,7 +369,15 @@ fn tree_response(
         return text(StatusCode::NOT_FOUND, "no such directory");
     }
     if let Some(row) = idx.file(path) {
-        return file_response(app, idx, row, method, headers, immutable);
+        return file_response(
+            app,
+            row,
+            method,
+            headers,
+            immutable,
+            Some(idx.snapshot),
+            None,
+        );
     }
     if idx.is_dir(path) {
         // Canonicalize to the trailing-slash form so relative links in
@@ -309,13 +404,19 @@ fn map_lookup(e: &LookupError, missing: StatusCode) -> Response {
 
 // ---- file serving (blocking context) ----
 
+/// Serve one content-addressed blob (a manifest row, or the minted
+/// image posing as one) with Range/conditional semantics. `snapshot`
+/// stamps the provenance header when the bytes came out of a snapshot
+/// tree; `disposition` names the download (the image route).
+#[allow(clippy::too_many_arguments)]
 fn file_response(
     app: &Arc<App>,
-    idx: &ViewIndex,
     row: RowMeta,
     method: &Method,
     headers: &HeaderMap,
     immutable: bool,
+    snapshot: Option<Blake3>,
+    disposition: Option<&str>,
 ) -> Response {
     let etag = format!("\"{}\"", row.hash.to_hex());
     let cache_control = if immutable {
@@ -326,12 +427,18 @@ fn file_response(
         "no-cache"
     };
     let base = |status: StatusCode| {
-        Response::builder()
+        let mut b = Response::builder()
             .status(status)
             .header(header::ETAG, &etag)
             .header(header::CACHE_CONTROL, cache_control)
-            .header(header::ACCEPT_RANGES, "bytes")
-            .header("datboi-snapshot", idx.snapshot.to_hex())
+            .header(header::ACCEPT_RANGES, "bytes");
+        if let Some(snapshot) = snapshot {
+            b = b.header("datboi-snapshot", snapshot.to_hex());
+        }
+        if let Some(disposition) = disposition {
+            b = b.header(header::CONTENT_DISPOSITION, disposition);
+        }
+        b
     };
 
     if if_none_match(headers, &etag) {
@@ -795,5 +902,7 @@ mod tests {
         assert_eq!(enc_seg("Alpha (USA).gba"), "Alpha%20%28USA%29.gba");
         assert_eq!(enc_path("a b/c.bin"), "a%20b/c.bin");
         assert_eq!(html_escape("<b>&\"'"), "&lt;b&gt;&amp;&quot;&#39;");
+        assert_eq!(filename_safe("gba-everdrive"), "gba-everdrive");
+        assert_eq!(filename_safe("a\"b\\c\néö"), "a_b_c___");
     }
 }

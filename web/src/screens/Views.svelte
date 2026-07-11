@@ -11,18 +11,18 @@
    * here are clipboard copies of the serving endpoints (HTTP + WebDAV)
    * and the browse link into the served tree.
    *
-   * Minted images are NOT HTTP-downloadable: http.rs serves only the
-   * /view/{name}/ and /snap/{hash}/ trees — the minted image blob is
-   * tagged `image/<name>` and no route serves it — so `⬇ Export SD
-   * image` reveals `datboi view image <name> --out …` instead of
-   * downloading (M5 scope ruling, open-questions 2026-07-11).
+   * Minted images ARE HTTP-downloadable (GET /v1/views/{name}/image,
+   * same verified-range machinery as /view files), so `⬇ Export SD
+   * image` is a real download anchor once an image exists; MINTING
+   * stays CLI-only like every other mutating action, so an unminted
+   * image profile reveals the `datboi view image <name>` incantation.
    *
    * View editor (§3.4) and eval report/diff (§3.5) are NOT built as
    * screens: definitions are read-only here (the ⋯ "definition" fold)
    * and no eval-history API exists — deferral recorded in
    * docs/open-questions.md (M5 scope ruling, open-questions 2026-07-11).
    */
-  import { viewDetail, views as fetchViews } from '../lib/api/client';
+  import { viewDetail, viewImageUrl, views as fetchViews } from '../lib/api/client';
   import type { ViewDetail } from '../lib/api/types';
   import { bandFor } from '../lib/bands';
   import CliHint from '../lib/components/CliHint.svelte';
@@ -168,9 +168,15 @@
             </div>
 
             <div class="actions">
-              {#if hasImage}
-                <!-- No HTTP route serves the minted image blob (see the
-                     header comment) — the verb reveals the CLI export. -->
+              {#if hasImage && view.image?.minted === true}
+                <!-- Minted: a real download through the verified image
+                     route (/v1/views/{name}/image). -->
+                <a class="primary" href={viewImageUrl(view.name)} download={`${view.name}.img`}>
+                  ⬇ Export SD image
+                </a>
+              {:else if hasImage}
+                <!-- Image profile but nothing minted yet: minting is
+                     CLI-only (mutating action), so reveal the verb. -->
                 <button class="primary" onclick={() => toggle(view.name, 'image')}>
                   ⬇ Export SD image
                 </button>
@@ -190,8 +196,8 @@
             </div>
 
             {#if panel === 'image'}
-              <CliHint command={`datboi view image ${view.name} --out ${view.name}.img`}>
-                minted images aren't served over HTTP yet — export via CLI:
+              <CliHint command={`datboi view image ${view.name}`}>
+                no image minted yet — minting is CLI-only, run:
               </CliHint>
             {:else if panel === 'reeval'}
               <CliHint command={`datboi view eval ${view.name}`}>

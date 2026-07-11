@@ -26,6 +26,8 @@ import type {
   StorageBody,
   SystemsBody,
   ViewDetail,
+  ViewFilesBody,
+  ViewFilesParams,
   ViewsBody,
   Whoami,
 } from './types';
@@ -135,6 +137,25 @@ export const views = (): Promise<ViewsBody> => request('GET', '/v1/views');
 
 export const viewDetail = (name: string): Promise<ViewDetail> =>
   request('GET', `/v1/views/${encodeURIComponent(name)}`);
+
+export function viewFiles(name: string, params: ViewFilesParams = {}): Promise<ViewFilesBody> {
+  const query = new URLSearchParams();
+  if (params.q) query.set('q', params.q);
+  if (params.offset !== undefined) query.set('offset', String(params.offset));
+  if (params.limit !== undefined) query.set('limit', String(params.limit));
+  const qs = query.toString();
+  return request('GET', `/v1/views/${encodeURIComponent(name)}/files${qs ? `?${qs}` : ''}`);
+}
+
+// ---- content URLs (real anchors, not fetches — the browser downloads) ----
+
+/** `/view/{name}/{path}` — the verified byte-serving tree (http.rs). */
+export const viewFileUrl = (name: string, path: string): string =>
+  `/view/${encodeURIComponent(name)}/${path.split('/').map(encodeURIComponent).join('/')}`;
+
+/** `/v1/views/{name}/image` — the minted SD image download. */
+export const viewImageUrl = (name: string): string =>
+  `/v1/views/${encodeURIComponent(name)}/image`;
 
 export const storage = (): Promise<StorageBody> => request('GET', '/v1/storage');
 

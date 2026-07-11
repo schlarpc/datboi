@@ -5,12 +5,16 @@
 //! the friend-visibility matrix is unit-tested in api.rs where a
 //! friend Caller can actually be presented.
 
+use std::io::Read as _;
 use std::net::SocketAddr;
 use std::str::FromStr as _;
 
-use datboi_catalog::{ImportOptions, ViewDef, define_view, evaluate_view, import_dat};
+use datboi_catalog::{
+    ImageParams, ImportOptions, ViewDef, define_view, evaluate_view, import_dat, mint_image,
+};
 use datboi_core::alias::AliasHasher;
 use datboi_core::hash::Blake3;
+use datboi_core::viewsnap::ViewSnapshot;
 use datboi_index::{Db, Namespace as IxNs, Residency};
 use datboi_server::{Config, Server};
 use datboi_store_fs::{Namespace as StoreNs, Store};
@@ -21,6 +25,9 @@ struct Fixture {
     addr: SocketAddr,
     system_id: i64,
     snapshot: String,
+    /// (blake3 hex, byte size) of the minted `gba-sd` image, when the
+    /// fixture was built `with_image`.
+    image: Option<(String, u64)>,
     db_dir: std::path::PathBuf,
     _root: tempfile::TempDir,
 }
@@ -30,6 +37,10 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn fixture() -> Fixture {
+    fixture_ext(false)
+}
+
+fn fixture_ext(with_image: bool) -> Fixture {
     let root = tempfile::tempdir().expect("tempdir");
     let store_root = root.path().join("store");
     let db_dir = root.path().join("db");
@@ -94,6 +105,49 @@ fn fixture() -> Fixture {
     define_view(&db, &def).expect("define");
     let eval = evaluate_view(&mut db, &store, &def, 1_780_000_000).expect("eval");
     assert_eq!(eval.rows, 1, "only Alpha is held");
+
+    // Optionally a second, image-bearing view (D62): defined with
+    // image params, evaluated, minted — the way `datboi view image`
+    // does it. 512-byte clusters keep the FAT32 floor (65,525
+    // clusters) at ~35 MB instead of the default's gigabytes.
+    let image = with_image.then(|| {
+        let params = ImageParams {
+            cluster_size: 512,
+            ..ImageParams::default()
+        };
+        let def = ViewDef {
+            name: "gba-sd".into(),
+            provider: "no-intro".into(),
+            system: "gba".into(),
+            template: "Games/{name}".into(),
+            selection: None,
+            profile: None,
+            image: Some(params.clone()),
+            mame: None,
+        };
+        define_view(&db, &def).expect("define");
+        let eval = evaluate_view(&mut db, &store, &def, 1_780_000_000).expect("eval");
+        let mut snap_bytes = Vec::new();
+        store
+            .get(StoreNs::Meta, &eval.snapshot)
+            .expect("get snapshot")
+            .expect("snapshot blob")
+            .read_to_end(&mut snap_bytes)
+            .expect("read snapshot");
+        let snap = ViewSnapshot::decode(&snap_bytes).expect("decode snapshot");
+        let report = mint_image(
+            &mut db,
+            &store,
+            "gba-sd",
+            &eval.snapshot,
+            &snap,
+            &params,
+            true,
+            1_780_000_100,
+        )
+        .expect("mint");
+        (report.image.to_hex(), report.size)
+    });
     drop(db); // the daemon opens its own handles
 
     let server = Server::bind(&Config {
@@ -109,6 +163,7 @@ fn fixture() -> Fixture {
         addr,
         system_id: report.source_id,
         snapshot: eval.snapshot.to_hex(),
+        image,
         db_dir,
         _root: root,
     }
@@ -150,6 +205,27 @@ fn request(addr: SocketAddr, method: &str, path: &str, body: &str) -> (u16, serd
 fn parse(resp: ureq::Response) -> serde_json::Value {
     let text = resp.into_string().expect("body");
     serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text))
+}
+
+/// GET returning the raw response (binary bodies, header assertions).
+fn get_raw(addr: SocketAddr, path: &str, range: Option<&str>) -> ureq::Response {
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let mut req = agent.get(&format!("http://{addr}{path}"));
+    if let Some(range) = range {
+        req = req.set("Range", range);
+    }
+    match req.call() {
+        Ok(resp) | Err(ureq::Error::Status(_, resp)) => resp,
+        Err(e) => panic!("GET {path} transport error: {e}"),
+    }
+}
+
+fn body_bytes(resp: ureq::Response) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    resp.into_reader()
+        .read_to_end(&mut bytes)
+        .expect("read body");
+    bytes
 }
 
 #[test]
@@ -299,6 +375,83 @@ fn read_models_end_to_end() {
     let (status, v) = get(f.addr, "/v1/jobs");
     assert_eq!(status, 200);
     assert_eq!(v["jobs"], serde_json::json!([]));
+}
+
+/// The M5 friend-surface additions, owner path: the flat files listing
+/// (`/v1/views/{name}/files`) and the minted-image download
+/// (`/v1/views/{name}/image`). Friend gating for both is unit-tested
+/// in api.rs/http.rs terms (loopback peers are always the owner, D68);
+/// this exercises the full HTTP semantics.
+#[test]
+fn view_files_and_image_end_to_end() {
+    let f = fixture_ext(true);
+    let (image_hex, image_size) = f.image.clone().expect("minted");
+
+    // ---- files listing: rows, q, paging, misses ----
+    let (status, v) = get(f.addr, "/v1/views/gba/files");
+    assert_eq!(status, 200);
+    assert_eq!(v["total"], 1);
+    assert_eq!(v["snapshot"], f.snapshot.as_str());
+    let row = &v["files"][0];
+    assert_eq!(row["path"], "Games/Alpha (USA).gba");
+    assert_eq!(row["size"], ALPHA.len() as u64);
+    assert_eq!(row["hash"], Blake3::compute(ALPHA).to_hex());
+
+    // q is case-insensitive substring over the full path
+    let (_, v) = get(f.addr, "/v1/views/gba/files?q=games%2Falpha");
+    assert_eq!(v["total"], 1);
+    let (_, v) = get(f.addr, "/v1/views/gba/files?q=zelda");
+    assert_eq!(v["total"], 0);
+    assert_eq!(v["files"], serde_json::json!([]));
+
+    // the window slides under the filtered total
+    let (_, v) = get(f.addr, "/v1/views/gba/files?offset=1&limit=1");
+    assert_eq!(v["total"], 1);
+    assert_eq!(v["files"], serde_json::json!([]));
+    assert_eq!(
+        (v["offset"].as_u64(), v["limit"].as_u64()),
+        (Some(1), Some(1))
+    );
+
+    assert_eq!(get(f.addr, "/v1/views/gba/files?limit=abc").0, 400);
+    let (status, v) = get(f.addr, "/v1/views/nope/files");
+    assert_eq!(status, 404);
+    assert_eq!(v["error"], "no such view");
+
+    // ---- view detail reports the mint ----
+    let (_, v) = get(f.addr, "/v1/views/gba-sd");
+    assert_eq!(v["image"]["minted"], true);
+    assert_eq!(v["image"]["hash"], image_hex.as_str());
+    assert_eq!(v["image"]["bytes"], image_size);
+
+    // ---- image download: full body hashes to the minted image ----
+    let resp = get_raw(f.addr, "/v1/views/gba-sd/image", None);
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.header("content-disposition"),
+        Some("attachment; filename=\"gba-sd.img\"")
+    );
+    assert_eq!(resp.header("accept-ranges"), Some("bytes"));
+    assert_eq!(
+        resp.header("etag"),
+        Some(format!("\"{image_hex}\"").as_str())
+    );
+    let whole = body_bytes(resp);
+    assert_eq!(whole.len() as u64, image_size);
+    assert_eq!(Blake3::compute(&whole).to_hex(), image_hex);
+
+    // ---- Range: same verified path, same bytes ----
+    let resp = get_raw(f.addr, "/v1/views/gba-sd/image", Some("bytes=512-1023"));
+    assert_eq!(resp.status(), 206);
+    assert_eq!(
+        resp.header("content-range"),
+        Some(format!("bytes 512-1023/{image_size}").as_str())
+    );
+    assert_eq!(body_bytes(resp), whole[512..1024]);
+
+    // ---- misses: no mint on `gba`, unknown view — identical 404s ----
+    assert_eq!(get_raw(f.addr, "/v1/views/gba/image", None).status(), 404);
+    assert_eq!(get_raw(f.addr, "/v1/views/nope/image", None).status(), 404);
 }
 
 #[test]

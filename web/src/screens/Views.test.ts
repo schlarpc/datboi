@@ -86,16 +86,26 @@ test('cards compose sub-line, stats, and per-profile verb from the detail', asyn
   expect(screen.getByText(`${location.origin}/view/snes-mister/ · read-only`)).toBeTruthy();
 });
 
-test('SD export reveals the CLI hint — minted images are not HTTP-served', async () => {
+test('SD export: unminted reveals the mint CLI hint; minted is a real download', async () => {
+  // Unminted image profile: minting is CLI-only, so the verb reveals it.
   installFetch({ views: [gbaView] });
-  render(Views);
+  const { unmount } = render(Views);
   await screen.findByText('gba-everdrive');
 
   expect(screen.queryByText(/datboi view image/)).toBeNull();
   await fireEvent.click(screen.getByText('⬇ Export SD image'));
-  expect(
-    screen.getByText('datboi view image gba-everdrive --out gba-everdrive.img'),
-  ).toBeTruthy();
+  expect(screen.getByText('datboi view image gba-everdrive')).toBeTruthy();
+  unmount();
+
+  // Minted: the verb is an anchor into the verified image route.
+  installFetch({
+    views: [{ ...gbaView, image: { minted: true, hash: 'ab'.repeat(32), bytes: 1024 } }],
+  });
+  render(Views);
+  await screen.findByText('gba-everdrive');
+  const anchor = screen.getByText('⬇ Export SD image') as HTMLAnchorElement;
+  expect(anchor.getAttribute('href')).toBe('/v1/views/gba-everdrive/image');
+  expect(anchor.getAttribute('download')).toBe('gba-everdrive.img');
 });
 
 test('copy link puts the absolute HTTP endpoint on the clipboard', async () => {

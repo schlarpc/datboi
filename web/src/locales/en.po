@@ -82,13 +82,17 @@ msgstr "# datboi missing-list · {0} {1} {2}"
 #. 0: error
 #. 0: error
 #. 0: error
+#. 0: error
 #. 0: otherError
+#. 0: error
 #. 0: error
 #. 0: error
 #: src/screens/Admin.svelte
 #: src/screens/Audit.svelte
+#: src/screens/Browse.svelte
 #: src/screens/Library.svelte
 #: src/screens/Login.svelte
+#: src/screens/Shelves.svelte
 #: src/screens/Storage.svelte
 #: src/screens/Views.svelte
 msgid "something went wrong — {0}"
@@ -97,6 +101,7 @@ msgstr "something went wrong — {0}"
 #: src/screens/Admin.svelte
 #: src/screens/Audit.svelte
 #: src/screens/Library.svelte
+#: src/screens/Shelves.svelte
 #: src/screens/Storage.svelte
 #: src/screens/Views.svelte
 msgid "loading…"
@@ -164,7 +169,9 @@ msgid "nothing matches — clear the filter or search"
 msgstr "nothing matches — clear the filter or search"
 
 #. 0: entries.length.toLocaleString(); 1: total.toLocaleString()
+#. 0: files.length.toLocaleString(); 1: total.toLocaleString()
 #: src/screens/Audit.svelte
+#: src/screens/Browse.svelte
 msgid "load more ({0} / {1})"
 msgstr "load more ({0} / {1})"
 
@@ -222,6 +229,7 @@ msgid "Storage"
 msgstr "Storage"
 
 #: src/lib/components/EntryDrawer.svelte
+#: src/screens/Browse.svelte
 msgid "ENTRY"
 msgstr "ENTRY"
 
@@ -230,18 +238,22 @@ msgid "not in library"
 msgstr "not in library"
 
 #: src/lib/components/EntryDrawer.svelte
+#: src/screens/Browse.svelte
 msgid "in-browser emulator — future"
 msgstr "in-browser emulator — future"
 
 #: src/lib/components/EntryDrawer.svelte
+#: src/screens/Browse.svelte
 msgid "▶ Play"
 msgstr "▶ Play"
 
 #: src/lib/components/EntryDrawer.svelte
+#: src/screens/Browse.svelte
 msgid "play: in-browser core over verified ranges — future"
 msgstr "play: in-browser core over verified ranges — future"
 
 #: src/lib/components/EntryDrawer.svelte
+#: src/screens/Browse.svelte
 msgid "metadata provider, later — the dat name stays the source of truth"
 msgstr "metadata provider, later — the dat name stays the source of truth"
 
@@ -297,9 +309,11 @@ msgid "{0} storage internals"
 msgstr "{0} storage internals"
 
 #: src/lib/components/EntryDrawer.svelte
+#: src/screens/Browse.svelte
 msgid "box art — metadata provider, later"
 msgstr "box art — metadata provider, later"
 
+#: src/lib/components/FriendHeader.svelte
 #: src/lib/components/Header.svelte
 #: src/screens/Invite.svelte
 #: src/screens/Login.svelte
@@ -370,6 +384,7 @@ msgid "evicted (covered)"
 msgstr "evicted (covered)"
 
 #: src/lib/components/EntryDrawer.svelte
+#: src/screens/Browse.svelte
 msgid "close"
 msgstr "close"
 
@@ -653,6 +668,8 @@ msgid "{0} files"
 msgstr "{0} files"
 
 #. 0: snapShort(view.snapshot)
+#. 0: snapShort(view.snapshot)
+#: src/screens/Shelves.svelte
 #: src/screens/Views.svelte
 msgid "snap {0}<0/>"
 msgstr "snap {0}<0/>"
@@ -661,6 +678,7 @@ msgstr "snap {0}<0/>"
 msgid "not evaluated yet"
 msgstr "not evaluated yet"
 
+#: src/screens/Views.svelte
 #: src/screens/Views.svelte
 msgid "⬇ Export SD image"
 msgstr "⬇ Export SD image"
@@ -677,9 +695,8 @@ msgstr "re-eval"
 msgid "browse"
 msgstr "browse"
 
-#: src/screens/Views.svelte
-msgid "minted images aren't served over HTTP yet — export via CLI:"
-msgstr "minted images aren't served over HTTP yet — export via CLI:"
+#~ msgid "minted images aren't served over HTTP yet — export via CLI:"
+#~ msgstr "minted images aren't served over HTTP yet — export via CLI:"
 
 #: src/screens/Views.svelte
 msgid "evaluation is CLI-only for now — run:"
@@ -758,3 +775,125 @@ msgstr "⚠ flashing overwrites on-device saves"
 #: src/screens/Views.svelte
 msgid "{0} · read-only"
 msgstr "{0} · read-only"
+
+#: src/screens/Browse.svelte
+msgid "find a game…"
+msgstr "find a game…"
+
+#: src/screens/Browse.svelte
+msgid "download"
+msgstr "download"
+
+#. 0: ' · '; 1: fmtAge( detail.created_at, )
+#. 0: ' · '; 1: fmtAge( view.created_at, )
+#: src/screens/Browse.svelte
+#: src/screens/Shelves.svelte
+msgid "{0}{1} ago"
+msgstr "{0}{1} ago"
+
+#~ msgid "snap {0}<0/>{1}{2} files"
+#~ msgstr "snap {0}<0/>{1}{2} files"
+
+#: src/screens/Browse.svelte
+msgid "this shelf is empty"
+msgstr "this shelf is empty"
+
+#. 0: q
+#: src/screens/Browse.svelte
+msgid "nothing matches “{0}”"
+msgstr "nothing matches “{0}”"
+
+#: src/screens/Browse.svelte
+msgctxt "storage state"
+msgid "● verified"
+msgstr "● verified"
+
+#: src/screens/Browse.svelte
+msgid "hash-checked as it streams"
+msgstr "hash-checked as it streams"
+
+#: src/screens/Browse.svelte
+msgid "⬇ Download"
+msgstr "⬇ Download"
+
+#: src/screens/Browse.svelte
+msgid "⬇ whole SD image<0/>"
+msgstr "⬇ whole SD image<0/>"
+
+#: src/screens/Browse.svelte
+msgid "● every download is hash-verified as it streams"
+msgstr "● every download is hash-verified as it streams"
+
+#. 0: ' · '; 1: snapShort(detail.snapshot)
+#: src/screens/Browse.svelte
+msgid "FAT32<0/>{0}minted from snap {1}"
+msgstr "FAT32<0/>{0}minted from snap {1}"
+
+#: src/screens/Browse.svelte
+msgid "cancel"
+msgstr "cancel"
+
+#: src/screens/Browse.svelte
+msgid "I understand — download"
+msgstr "I understand — download"
+
+#. 0: view
+#: src/screens/Browse.svelte
+msgid "SD image · {0}"
+msgstr "SD image · {0}"
+
+#: src/screens/Browse.svelte
+msgid "⚠ Re-flashing a card overwrites on-device saves. Back up your saves first."
+msgstr "⚠ Re-flashing a card overwrites on-device saves. Back up your saves first."
+
+#: src/screens/Shelves.svelte
+msgid "Your shelves"
+msgstr "Your shelves"
+
+#: src/screens/Shelves.svelte
+msgid "shared with you by the owner"
+msgstr "shared with you by the owner"
+
+#: src/screens/Shelves.svelte
+msgid "nothing on your shelves yet — ask the owner for a grant"
+msgstr "nothing on your shelves yet — ask the owner for a grant"
+
+#: src/screens/Shelves.svelte
+msgid "browse →"
+msgstr "browse →"
+
+#. 0: ' · '; 1: def.profile
+#: src/screens/Shelves.svelte
+msgid "{0}{1} layout"
+msgstr "{0}{1} layout"
+
+#: src/screens/Shelves.svelte
+msgid "served read-only"
+msgstr "served read-only"
+
+#. 0: view.rows.toLocaleString(); 1: fmtSize(view.bytes)
+#: src/screens/Shelves.svelte
+msgid "{0} files · {1}"
+msgstr "{0} files · {1}"
+
+#: src/screens/Shelves.svelte
+msgid "● verified — hash-checked as it streams"
+msgstr "● verified — hash-checked as it streams"
+
+#: src/screens/Views.svelte
+msgid "no image minted yet — minting is CLI-only, run:"
+msgstr "no image minted yet — minting is CLI-only, run:"
+
+#: src/lib/components/FriendHeader.svelte
+msgid "‹ your shelves"
+msgstr "‹ your shelves"
+
+#. 0: ' · '; 1: detail.rows.toLocaleString()
+#: src/screens/Browse.svelte
+msgid "{0}{1} files"
+msgstr "{0}{1} files"
+
+#. 0: snapShort(detail.snapshot)
+#: src/screens/Browse.svelte
+msgid "snap {0}<0/><1/>"
+msgstr "snap {0}<0/><1/>"

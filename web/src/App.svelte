@@ -3,16 +3,19 @@
   // Side-effect import: registers the wuchale catalog loaders (generated at
   // startup into src/locales/, gitignored) before the first loadLocale.
   import './locales/main.loader.svelte.js';
+  import FriendHeader from './lib/components/FriendHeader.svelte';
   import Header from './lib/components/Header.svelte';
   import JobsTray from './lib/components/JobsTray.svelte';
   import { router } from './lib/router.svelte';
   import { session } from './lib/session.svelte';
   import Admin from './screens/Admin.svelte';
   import Audit from './screens/Audit.svelte';
+  import Browse from './screens/Browse.svelte';
   import Ingest from './screens/Ingest.svelte';
   import Invite from './screens/Invite.svelte';
   import Library from './screens/Library.svelte';
   import Login from './screens/Login.svelte';
+  import Shelves from './screens/Shelves.svelte';
   import Storage from './screens/Storage.svelte';
   import Views from './screens/Views.svelte';
 
@@ -37,6 +40,17 @@
       router.replace('/');
     }
   });
+
+  // Friend chrome (spec §4): whoami's role decides which app renders.
+  // Friends get shelves home at `/` and browse at `/shelf/{view}` —
+  // every owner route (and any miss) refuses by bouncing home, so the
+  // owner screens never even mount for a friend.
+  const friend = $derived(session.status === 'authenticated' && session.role === 'friend');
+  $effect(() => {
+    if (friend && !open && route.screen !== 'library' && route.screen !== 'browse') {
+      router.replace('/');
+    }
+  });
 </script>
 
 {#await loadLocale(locale)}
@@ -52,6 +66,20 @@
     <p class="boot">checking session…</p>
   {:else if session.status === 'anonymous'}
     <!-- The redirect effect above is already swapping to /login. -->
+  {:else if friend}
+    <!-- Friend surface (spec §4): no nav tabs, no health chip, no jobs
+         tray, no owner screens. The trust bar lives inside Browse. -->
+    <div class="shell">
+      <FriendHeader view={route.screen === 'browse' ? route.view : null} />
+      {#if route.screen === 'browse'}
+        <!-- key: a different shelf remounts the browse screen clean. -->
+        {#key route.view}
+          <Browse view={route.view} />
+        {/key}
+      {:else}
+        <Shelves />
+      {/if}
+    </div>
   {:else}
     <div class="shell">
       <Header />

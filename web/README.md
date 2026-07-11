@@ -4,14 +4,14 @@ The Svelte 5 + Vite SPA for datboi (D17/D67). This is a standalone npm
 project — its own `package-lock.json` is the dependency boundary (D54/D66
 lockfile discipline): rust edits never invalidate the web build and vice
 versa. The built `dist/` is a nix derivation (`nix build .#web`) that the
-datboi binary will embed and serve with an SPA fallback, exactly like the
+datboi binary embeds and serves with an SPA fallback, exactly like the
 wasm components (D66). Assets are fully self-hosted (fonts via @fontsource) —
 the UI must work offline on a NAS.
 
 ## Dev workflow
 
 ```sh
-npm run dev      # vite dev server (real screens will proxy the daemon's API)
+npm run dev      # vite dev server (proxies /v1, /view, /snap to a local `datboi serve`)
 npm run build    # vite build -> dist/
 npm run check    # svelte-check + tsc over the node-side configs
 npm test         # vitest (happy-dom)
