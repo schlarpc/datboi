@@ -82,6 +82,7 @@ msgstr "# datboi missing-list · {0} {1} {2}"
 #. 0: error
 #. 0: error
 #. 0: error
+#. 0: error
 #. 0: failure
 #. 0: error
 #. 0: otherError
@@ -90,6 +91,7 @@ msgstr "# datboi missing-list · {0} {1} {2}"
 #. 0: error
 #: src/screens/Admin.svelte
 #: src/screens/Audit.svelte
+#: src/screens/Blob.svelte
 #: src/screens/Browse.svelte
 #: src/screens/Ingest.svelte
 #: src/screens/Library.svelte
@@ -102,6 +104,7 @@ msgstr "something went wrong — {0}"
 
 #: src/screens/Admin.svelte
 #: src/screens/Audit.svelte
+#: src/screens/Blob.svelte
 #: src/screens/Library.svelte
 #: src/screens/Shelves.svelte
 #: src/screens/Storage.svelte
@@ -277,7 +280,9 @@ msgid "excluded from completeness math"
 msgstr "excluded from completeness math"
 
 #. 0: fmtDate(rom.blob.verified_at)
+#. 0: fmtDate(detail.verified_at)
 #: src/lib/components/EntryDrawer.svelte
+#: src/screens/Blob.svelte
 msgid "verified {0}"
 msgstr "verified {0}"
 
@@ -425,12 +430,14 @@ msgid "mint"
 msgstr "mint"
 
 #: src/screens/Admin.svelte
+#: src/screens/Blob.svelte
 #: src/screens/Views.svelte
 #: src/screens/Views.svelte
 msgid "copied ✓"
 msgstr "copied ✓"
 
 #: src/screens/Admin.svelte
+#: src/screens/Blob.svelte
 msgid "⎘ copy"
 msgstr "⎘ copy"
 
@@ -703,6 +710,7 @@ msgstr "SD sync is CLI-only for now — run:"
 msgid "grants live on the Admin screen, or via CLI:"
 msgstr "grants live on the Admin screen, or via CLI:"
 
+#: src/screens/Storage.svelte
 #: src/screens/Views.svelte
 msgid "source"
 msgstr "source"
@@ -994,7 +1002,9 @@ msgstr "NAS-local ingest runs in the CLI:"
 msgid "recent activity log — needs a durable job table"
 msgstr "recent activity log — needs a durable job table"
 
+#. 0: (detail.claims_total - detail.claims.length).toLocaleString()
 #. 0: (job.matched_total - job.matched.length).toLocaleString()
+#: src/screens/Blob.svelte
 #: src/screens/Ingest.svelte
 msgid "…and {0} more"
 msgstr "…and {0} more"
@@ -1033,3 +1043,106 @@ msgstr "failed"
 #: src/lib/components/JobsTray.svelte
 msgid "{0}/{1} files <0/> · {2} matched · {3} refused"
 msgstr "{0}/{1} files <0/> · {2} matched · {3} refused"
+
+#: src/screens/Blob.svelte
+msgid "inputs"
+msgstr "inputs"
+
+#: src/screens/Blob.svelte
+msgid "outputs"
+msgstr "outputs"
+
+#: src/screens/Blob.svelte
+msgid "← storage"
+msgstr "← storage"
+
+#: src/screens/Blob.svelte
+msgid "never verified"
+msgstr "never verified"
+
+#: src/screens/Blob.svelte
+msgid "digests"
+msgstr "digests"
+
+#: src/screens/Blob.svelte
+msgid "no recorded source paths"
+msgstr "no recorded source paths"
+
+#: src/screens/Blob.svelte
+msgid "provenance"
+msgstr "provenance"
+
+#: src/screens/Blob.svelte
+msgid "no recipe produces this blob — a literal"
+msgstr "no recipe produces this blob — a literal"
+
+#: src/screens/Blob.svelte
+msgid "routes in — ways to make it"
+msgstr "routes in — ways to make it"
+
+#: src/screens/Blob.svelte
+msgid "no recipe consumes this blob"
+msgstr "no recipe consumes this blob"
+
+#: src/screens/Blob.svelte
+msgid "routes out — things made from it"
+msgstr "routes out — things made from it"
+
+#: src/screens/Blob.svelte
+msgid "satisfies no dat claims"
+msgstr "satisfies no dat claims"
+
+#. 0: detail.claims_total.toLocaleString()
+#: src/screens/Blob.svelte
+msgid "claims · {0}"
+msgstr "claims · {0}"
+
+#: src/screens/Blob.svelte
+msgid "no view pins this blob"
+msgstr "no view pins this blob"
+
+#: src/screens/Blob.svelte
+msgid "pinned by"
+msgstr "pinned by"
+
+#. 0: cell.sizeless.toLocaleString()
+#: src/screens/Storage.svelte
+msgid "· {0} sizeless"
+msgstr "· {0} sizeless"
+
+#. 0: cell.blobs.toLocaleString()
+#: src/screens/Storage.svelte
+msgid "{0} blobs<0/>"
+msgstr "{0} blobs<0/>"
+
+#: src/screens/Storage.svelte
+msgid "blobs"
+msgstr "blobs"
+
+#: src/screens/Storage.svelte
+msgid "bytes"
+msgstr "bytes"
+
+#: src/screens/Storage.svelte
+msgid "by source"
+msgstr "by source"
+
+#: src/screens/Storage.svelte
+msgid "hash"
+msgstr "hash"
+
+#: src/screens/Storage.svelte
+msgid "size"
+msgstr "size"
+
+#: src/screens/Storage.svelte
+msgid "residency"
+msgstr "residency"
+
+#: src/screens/Storage.svelte
+msgid "largest blobs"
+msgstr "largest blobs"
+
+#: src/screens/Storage.svelte
+msgid "WHERE THE BYTES LIVE"
+msgstr "WHERE THE BYTES LIVE"

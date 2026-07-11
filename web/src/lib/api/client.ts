@@ -14,6 +14,9 @@ import { router } from '../router.svelte';
 import type { EntryState } from '../state';
 import type {
   AdminUsersBody,
+  BlobDetail,
+  BlobsBody,
+  BlobsParams,
   DatImportBody,
   DatImportParams,
   EntriesBody,
@@ -32,6 +35,7 @@ import type {
   RevokedSessions,
   SessionInfo,
   StorageBody,
+  StorageBreakdownBody,
   SystemsBody,
   UploadReceipt,
   ViewDetail,
@@ -193,6 +197,23 @@ export const viewImageUrl = (name: string): string =>
   `/v1/views/${encodeURIComponent(name)}/image`;
 
 export const storage = (): Promise<StorageBody> => request('GET', '/v1/storage');
+
+export const storageBreakdown = (): Promise<StorageBreakdownBody> =>
+  request('GET', '/v1/storage/breakdown');
+
+export function blobs(params: BlobsParams = {}): Promise<BlobsBody> {
+  const query = new URLSearchParams();
+  if (params.q) query.set('q', params.q);
+  if (params.ns) query.set('ns', params.ns);
+  if (params.residency) query.set('residency', params.residency);
+  if (params.offset !== undefined) query.set('offset', String(params.offset));
+  if (params.limit !== undefined) query.set('limit', String(params.limit));
+  const qs = query.toString();
+  return request('GET', `/v1/blobs${qs ? `?${qs}` : ''}`);
+}
+
+export const blobDetail = (hash: string): Promise<BlobDetail> =>
+  request('GET', `/v1/blobs/${encodeURIComponent(hash)}`);
 
 // ---- ingest ----
 

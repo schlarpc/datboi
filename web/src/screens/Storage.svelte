@@ -16,12 +16,14 @@
    *   plan API; the dry-run CLI is the only entry point, and the
    *   design's promise copy stays.
    */
-  import { storage as fetchStorage } from '../lib/api/client';
-  import type { StorageBody } from '../lib/api/types';
+  import { storage as fetchStorage, storageBreakdown } from '../lib/api/client';
+  import type { StorageBody, StorageBreakdownBody } from '../lib/api/types';
   import CliHint from '../lib/components/CliHint.svelte';
+  import Link from '../lib/components/Link.svelte';
   import { fmtDate, fmtSize, shortHash } from '../lib/format';
 
   let stats = $state<StorageBody | null>(null);
+  let breakdown = $state<StorageBreakdownBody | null>(null);
   let error = $state<string | null>(null);
   let scrubHint = $state(false);
   let evictHint = $state(false);
@@ -33,12 +35,30 @@
     );
   });
 
+  $effect(() => {
+    storageBreakdown().then(
+      (body) => (breakdown = body),
+      (e: unknown) => (error = e instanceof Error ? e.message : String(e)),
+    );
+  });
+
   /** `−68% via recipes`: how much smaller disk is than what it represents. */
   const savingsPct = $derived(
     stats === null || stats.represented_bytes === 0
       ? null
       : Math.round(100 * (1 - stats.on_disk_bytes / stats.represented_bytes)),
   );
+
+  /** Class bars are proportional to the LARGEST cell, not the sum —
+   * meta/ is invisible next to data/ either way; against the max the
+   * big cell reads full-scale. */
+  const maxClassBytes = $derived(
+    breakdown === null ? 1 : Math.max(1, ...breakdown.by_class.map((cell) => cell.bytes)),
+  );
+
+  /** `evicted_covered` → `evicted covered` — residency is data (mono),
+   * but the underscore is a wire artifact, not display. */
+  const residencyLabel = (residency: string) => residency.replace('_', ' ');
 </script>
 
 <main>
@@ -125,6 +145,65 @@
         {/if}
       </div>
     </div>
+
+    <!-- Debug-grade introspection (open-questions 2026-07-11): the
+         /v1/storage/breakdown aggregates, with the largest blobs
+         linking into the /storage/blob/{hash} inspector. -->
+    {#if breakdown !== null}
+      <div class="bytes-card">
+        <div class="bytes-title">WHERE THE BYTES LIVE</div>
+
+        <div class="classes">
+          {#each breakdown.by_class as cell (cell.namespace + cell.residency)}
+            <div class="class-row">
+              <span class="class-label">{cell.namespace} · {residencyLabel(cell.residency)}</span>
+              <span class="track">
+                <span
+                  class="fill"
+                  style:width="{Math.max(1, Math.round((100 * cell.bytes) / maxClassBytes))}%"
+                ></span>
+              </span>
+              <span class="class-bytes">{fmtSize(cell.bytes)}</span>
+              <span class="class-blobs">
+                {cell.blobs.toLocaleString()} blobs{#if cell.sizeless > 0}
+                  · {cell.sizeless.toLocaleString()} sizeless{/if}
+              </span>
+            </div>
+          {/each}
+        </div>
+
+        <div class="split">
+          <div class="col">
+            <div class="col-title">by source</div>
+            <div class="grid-table sources">
+              <span class="th">source</span>
+              <span class="th num">blobs</span>
+              <span class="th num">bytes</span>
+              {#each breakdown.by_source as row (row.source)}
+                <span class="td data">{row.source}</span>
+                <span class="td num">{row.blobs.toLocaleString()}</span>
+                <span class="td num">{fmtSize(row.bytes)}</span>
+              {/each}
+            </div>
+          </div>
+          <div class="col">
+            <div class="col-title">largest blobs</div>
+            <div class="grid-table largest">
+              <span class="th">hash</span>
+              <span class="th num">size</span>
+              <span class="th">residency</span>
+              {#each breakdown.largest as blob (blob.hash)}
+                <Link class="td data blob-link" href={`/storage/blob/${blob.hash}`}>
+                  {shortHash(blob.hash)}
+                </Link>
+                <span class="td num">{blob.size === null ? '—' : fmtSize(blob.size)}</span>
+                <span class="td data">{residencyLabel(blob.residency)}</span>
+              {/each}
+            </div>
+          </div>
+        </div>
+      </div>
+    {/if}
   {/if}
 </main>
 
@@ -280,5 +359,127 @@
 
   .q-when {
     color: var(--faint);
+  }
+
+  .bytes-card {
+    margin-top: 18px;
+    background: var(--panel);
+    border: 2px solid var(--ink);
+    border-radius: var(--r-card);
+    box-shadow: var(--shadow-card);
+    padding: 16px 20px 20px;
+  }
+
+  .bytes-title {
+    font: 800 14px var(--font-display);
+    letter-spacing: 0.02em;
+    margin-bottom: 12px;
+  }
+
+  .classes {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 16px;
+  }
+
+  .class-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font: 400 12px var(--font-data);
+  }
+
+  .class-label {
+    width: 170px;
+    flex: none;
+    color: var(--text);
+  }
+
+  /* The JobRow track/fill register — a width-percent fill is enough
+     here (StackedBar is the shelf's multi-state register). */
+  .track {
+    flex: 1;
+    height: 8px;
+    background: var(--panel2);
+    border: 1px solid var(--hair);
+    border-radius: var(--r-fill);
+    overflow: hidden;
+  }
+
+  .fill {
+    display: block;
+    height: 100%;
+    background: var(--ink);
+    border-radius: var(--r-fill);
+  }
+
+  .class-bytes {
+    width: 72px;
+    flex: none;
+    text-align: right;
+    color: var(--text);
+  }
+
+  .class-blobs {
+    width: 160px;
+    flex: none;
+    text-align: right;
+    color: var(--faint);
+  }
+
+  .split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    align-items: start;
+  }
+
+  .col-title {
+    font: 800 12.5px var(--font-display);
+    letter-spacing: 0.02em;
+    color: var(--mut);
+    margin-bottom: 6px;
+  }
+
+  .grid-table {
+    display: grid;
+    font: 400 12px var(--font-data);
+    column-gap: 14px;
+    row-gap: 2px;
+  }
+
+  .grid-table.sources {
+    grid-template-columns: 1fr auto auto;
+  }
+
+  .grid-table.largest {
+    grid-template-columns: auto auto 1fr;
+  }
+
+  .th {
+    font: 600 11px var(--font-data);
+    color: var(--faint);
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 3px;
+  }
+
+  .td {
+    color: var(--mut);
+  }
+
+  .td.data {
+    color: var(--text);
+  }
+
+  .num {
+    text-align: right;
+  }
+
+  .grid-table :global(a.blob-link) {
+    color: var(--text);
+    text-decoration: underline;
+    text-decoration-color: var(--dim);
+    text-underline-offset: 2px;
   }
 </style>

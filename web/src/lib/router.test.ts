@@ -22,6 +22,11 @@ describe('matchPath', () => {
     expect(matchPath('/library/a%20b')).toEqual({ screen: 'audit', systemId: 'a b' });
   });
 
+  test('blob inspector carries the hash', () => {
+    const hash = 'ab'.repeat(32);
+    expect(matchPath(`/storage/blob/${hash}`)).toEqual({ screen: 'blob', hash });
+  });
+
   test('friend browse carries the view name, percent-decoded', () => {
     expect(matchPath('/shelf/gba-everdrive')).toEqual({
       screen: 'browse',
@@ -30,7 +35,16 @@ describe('matchPath', () => {
     expect(matchPath('/shelf/a%20b')).toEqual({ screen: 'browse', view: 'a b' });
   });
 
-  test.each(['/bogus', '/library', '/library/3/extra', '/viewsx', '/shelf', '/shelf/x/y'])(
+  test.each([
+    '/bogus',
+    '/library',
+    '/library/3/extra',
+    '/viewsx',
+    '/shelf',
+    '/shelf/x/y',
+    '/storage/blob',
+    '/storage/blob/x/y',
+  ])(
     'unknown path %s is notfound',
     (path) => {
       expect(matchPath(path).screen).toBe('notfound');

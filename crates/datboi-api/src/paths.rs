@@ -22,11 +22,12 @@ use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder
 use utoipa::{Modify, OpenApi, ToSchema};
 
 use crate::{
-    AdminUsersResponse, ApiError, DatImportResponse, EntriesPage, EntryDetail, EntryState,
-    GrantAddRequest, IngestRequest, IngestStartResponse, InviteAcceptRequest, InviteMintRequest,
-    InviteMintResponse, JobDetail, JobsResponse, LoginRequest, OkResponse, SessionResponse,
-    SessionsRevokedResponse, StorageResponse, SystemsResponse, UploadResponse, ViewDetail,
-    ViewFilesPage, ViewsResponse, WhoamiResponse,
+    AdminUsersResponse, ApiError, BlobDetail, BlobsPage, DatImportResponse, EntriesPage,
+    EntryDetail, EntryState, GrantAddRequest, IngestRequest, IngestStartResponse,
+    InviteAcceptRequest, InviteMintRequest, InviteMintResponse, JobDetail, JobsResponse,
+    LoginRequest, OkResponse, ResidencyState, SessionResponse, SessionsRevokedResponse,
+    StorageBreakdown, StorageResponse, SystemsResponse, UploadResponse, ViewDetail, ViewFilesPage,
+    ViewsResponse, WhoamiResponse,
 };
 
 /// Marker schema for the minted-image download body: raw octets, not
@@ -313,6 +314,61 @@ fn ingest_start() {}
 )]
 fn storage() {}
 
+/// Where the bytes live: per-(namespace, residency) accounting,
+/// dat-source attribution (a blob claimed by several sources counts in
+/// each; unlinked blobs fold into `(unattributed)`), and the 50
+/// largest data blobs.
+#[utoipa::path(
+    get,
+    path = "/v1/storage/breakdown",
+    tag = "storage",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    responses(
+        (status = 200, description = "Aggregate byte attribution", body = StorageBreakdown),
+        (status = 403, description = "Owner only", body = ApiError),
+    ),
+)]
+fn storage_breakdown() {}
+
+/// Page through the blob index — the inspector's search surface.
+#[utoipa::path(
+    get,
+    path = "/v1/blobs",
+    tag = "storage",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    params(
+        ("q" = Option<String>, Query, description = "Case-insensitive blake3-hex prefix; empty = no filter"),
+        ("ns" = Option<String>, Query, description = "Keep only this namespace: `data` | `meta`"),
+        ("residency" = Option<ResidencyState>, Query, description = "Keep only blobs in this residency"),
+        ("offset" = Option<u64>, Query, description = "Window start (default 0)"),
+        ("limit" = Option<u64>, Query, description = "Window size, clamped to 1..=1000 (default 200)"),
+    ),
+    responses(
+        (status = 200, description = "One page, hash-ordered; `total` counts the filtered set", body = BlobsPage),
+        (status = 400, description = "Bad ns/residency/offset/limit value", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+    ),
+)]
+fn blobs() {}
+
+/// One blob, fully explained: digests, provenance, the one-hop recipe
+/// DAG around it, the dat claims it satisfies, and the views pinning
+/// it.
+#[utoipa::path(
+    get,
+    path = "/v1/blobs/{hash}",
+    tag = "storage",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    params(("hash" = String, Path, description = "blake3, 64 hex chars (case-insensitive)")),
+    responses(
+        (status = 200, description = "The inspector card", body = BlobDetail),
+        (status = 400, description = "Not a blake3 hex hash", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+        (status = 404, description = "No such blob", body = ApiError),
+    ),
+)]
+fn blob_detail() {}
+
 /// The in-memory job registry: running jobs plus recently finished
 /// ones (the registry keeps a bounded tail; a daemon restart forgets
 /// everything — durable job reports are a recorded open question).
@@ -499,6 +555,9 @@ impl Modify for SecurityAddon {
         view_files,
         view_image,
         storage,
+        storage_breakdown,
+        blobs,
+        blob_detail,
         jobs,
         job_detail,
         admin_users,

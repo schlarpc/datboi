@@ -24,14 +24,16 @@ use axum::extract::{Path as UrlPath, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use datboi_api::{
-    BlobInfo, ClaimState, Counts, Definition, Endpoints, EntriesPage, EntryDetail, EntryRow,
-    EntryState, FileRow, ImageStatus, JobsResponse, Quarantine, QuarantineItem, ResidencyState,
-    Revision, RomClaim, RomHashes, RouteInfo, RouteVerify, StorageResponse, System,
-    SystemsResponse, ViewDetail, ViewFilesPage, ViewSummary, ViewsResponse,
+    BlobDetail, BlobDigests, BlobInfo, BlobRow, BlobsPage, ClaimRef, ClaimState, ClassBytes,
+    Counts, Definition, Endpoints, EntriesPage, EntryDetail, EntryRow, EntryState, FileRow,
+    HashRef, ImageStatus, JobsResponse, ProvenanceRow, Quarantine, QuarantineItem, ResidencyState,
+    Revision, RomClaim, RomHashes, RouteEdge, RouteInfo, RouteVerify, SourceBytes,
+    StorageBreakdown, StorageResponse, System, SystemsResponse, ViewDetail, ViewFilesPage,
+    ViewSummary, ViewsResponse,
 };
 use datboi_catalog::ViewDef;
 use datboi_core::hash::Blake3;
-use datboi_index::{Db, Residency, VerifyState};
+use datboi_index::{AliasAlgo, Db, Namespace, Residency, VerifyState};
 use rusqlite::OptionalExtension as _;
 
 use crate::App;
@@ -1043,6 +1045,534 @@ fn storage_body(app: &App) -> Result<StorageResponse, Response> {
     })
 }
 
+// ---- GET /v1/storage/breakdown ----
+
+pub(crate) async fn storage_breakdown(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+) -> Response {
+    run_blocking(move || {
+        require_owner(&caller)?;
+        Ok(json_response(StatusCode::OK, &breakdown_body(&app)?))
+    })
+    .await
+}
+
+/// `data`/`meta` wire label for a namespace code (D20).
+fn ns_label(code: i64) -> Result<&'static str, Response> {
+    Ok(match Namespace::from_code(code).map_err(internal)? {
+        Namespace::Data => "data",
+        Namespace::Meta => "meta",
+    })
+}
+
+fn residency_state(code: i64) -> Result<ResidencyState, Response> {
+    Ok(match Residency::from_code(code).map_err(internal)? {
+        Residency::Resident => ResidencyState::Resident,
+        Residency::EvictedCovered => ResidencyState::EvictedCovered,
+        Residency::Absent => ResidencyState::Absent,
+    })
+}
+
+/// The by_source attribution: identity_blob → rom_claim → entry → the
+/// source's CURRENT revision → dat_source, deduped per (source, blob)
+/// so a many-claim blob counts once per source. A blob claimed by
+/// several sources counts in EACH — the column does not sum to the
+/// store. Links of any evidence grade attribute: this is explanation,
+/// not holdings math (the D39 rollup owns that).
+const BY_SOURCE_SQL: &str = "SELECT source, COUNT(*), COALESCE(SUM(size), 0)
+     FROM (SELECT DISTINCT ds.provider || '/' || ds.system AS source,
+                  b.blob_id, b.size
+           FROM blob b
+           JOIN identity_blob ib ON ib.blob_id = b.blob_id
+           JOIN rom_claim rc ON rc.identity_id = ib.identity_id
+           JOIN entry e ON e.entry_id = rc.entry_id
+           JOIN dat_revision dr ON dr.revision_id = e.revision_id
+           JOIN dat_source ds ON ds.source_id = dr.source_id
+                             AND ds.current_revision_id = dr.revision_id
+           WHERE b.namespace = 0)
+     GROUP BY source
+     ORDER BY 3 DESC, source";
+
+fn breakdown_body(app: &App) -> Result<StorageBreakdown, Response> {
+    let db = lock_db(app);
+    let conn = db.cache();
+    // by_class: every (namespace, residency) cell that exists. NULL
+    // sizes sum as 0; the sizeless count keeps the 0 honest.
+    let mut stmt = conn
+        .prepare(
+            "SELECT namespace, residency, COUNT(*),
+                    COALESCE(SUM(size), 0), COALESCE(SUM(size IS NULL), 0)
+             FROM blob
+             GROUP BY namespace, residency
+             ORDER BY namespace, residency",
+        )
+        .map_err(internal)?;
+    let cells: Vec<(i64, i64, i64, i64, i64)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .map_err(internal)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(internal)?;
+    let mut by_class = Vec::new();
+    for (ns, residency, blobs, bytes, sizeless) in cells {
+        by_class.push(ClassBytes {
+            namespace: ns_label(ns)?.to_owned(),
+            residency: residency_state(residency)?,
+            blobs,
+            bytes,
+            sizeless,
+        });
+    }
+
+    let mut stmt = conn.prepare(BY_SOURCE_SQL).map_err(internal)?;
+    let mut by_source = stmt
+        .query_map([], |row| {
+            Ok(SourceBytes {
+                source: row.get(0)?,
+                blobs: row.get(1)?,
+                bytes: row.get(2)?,
+            })
+        })
+        .map_err(internal)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(internal)?;
+    // Data blobs with no identity link at all — dat files, containers,
+    // never-claimed uploads.
+    let (blobs, bytes): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(b.size), 0) FROM blob b
+             WHERE b.namespace = 0 AND NOT EXISTS (
+               SELECT 1 FROM identity_blob ib WHERE ib.blob_id = b.blob_id)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(internal)?;
+    if blobs > 0 {
+        by_source.push(SourceBytes {
+            source: "(unattributed)".to_owned(),
+            blobs,
+            bytes,
+        });
+    }
+
+    // Sizeless rows sort below every sized one (SQLite: NULL is
+    // smallest, so DESC puts them last) — they only pad a short list.
+    let largest = blob_rows(
+        conn,
+        "WHERE b.namespace = 0 ORDER BY b.size DESC, b.hash LIMIT 50",
+        [],
+    )?;
+    Ok(StorageBreakdown {
+        by_class,
+        by_source,
+        largest,
+    })
+}
+
+// ---- GET /v1/blobs ----
+
+/// The listing projection: one blob row plus its graph degree. Degree
+/// counts exclude poisoned recipes (D25), like every route surface.
+const BLOB_ROW_SQL: &str = "SELECT b.hash, b.size, b.namespace, b.residency, b.verified_at,
+       (SELECT COUNT(*) FROM source_file sf WHERE sf.blob_id = b.blob_id),
+       (SELECT COUNT(DISTINCT ro.recipe_id)
+          FROM recipe_output ro JOIN recipe r ON r.recipe_id = ro.recipe_id
+          WHERE ro.blob_id = b.blob_id AND r.verify != 2),
+       (SELECT COUNT(DISTINCT ri.recipe_id)
+          FROM recipe_input ri JOIN recipe r ON r.recipe_id = ri.recipe_id
+          WHERE ri.blob_id = b.blob_id AND r.verify != 2)
+     FROM blob b";
+
+fn blob_rows(
+    conn: &rusqlite::Connection,
+    suffix: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<BlobRow>, Response> {
+    let mut stmt = conn
+        .prepare(&format!("{BLOB_ROW_SQL} {suffix}"))
+        .map_err(internal)?;
+    #[allow(clippy::type_complexity)] // one projection row, named once
+    let rows: Vec<([u8; 32], Option<i64>, i64, i64, Option<i64>, i64, i64, i64)> = stmt
+        .query_map(params, |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+            ))
+        })
+        .map_err(internal)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(internal)?;
+    let count = |n: i64| u64::try_from(n).expect("COUNT(*) is non-negative");
+    rows.into_iter()
+        .map(
+            |(hash, size, ns, residency, verified_at, sources, routes_in, routes_out)| {
+                Ok(BlobRow {
+                    hash: Blake3(hash).to_hex(),
+                    size,
+                    namespace: ns_label(ns)?.to_owned(),
+                    residency: residency_state(residency)?,
+                    verified_at,
+                    sources: count(sources),
+                    routes_in: count(routes_in),
+                    routes_out: count(routes_out),
+                })
+            },
+        )
+        .collect()
+}
+
+/// Parsed + clamped params for the blob listing (the parse_page shape,
+/// with the blob vocabulary instead of entry states).
+#[derive(Debug, PartialEq, Eq)]
+struct BlobsQuery {
+    /// Lowercased hex prefix.
+    q: Option<String>,
+    ns: Option<i64>,
+    residency: Option<i64>,
+    offset: u64,
+    limit: u64,
+}
+
+fn parse_blobs_query(query: Option<&str>) -> Result<BlobsQuery, Response> {
+    let mut page = BlobsQuery {
+        q: None,
+        ns: None,
+        residency: None,
+        offset: 0,
+        limit: LIMIT_DEFAULT,
+    };
+    for (key, value) in parse_query(query.unwrap_or("")) {
+        match key.as_str() {
+            "q" if !value.is_empty() => page.q = Some(value.to_lowercase()),
+            "q" => {}
+            "ns" => {
+                page.ns = Some(match value.as_str() {
+                    "data" => Namespace::Data.code(),
+                    "meta" => Namespace::Meta.code(),
+                    _ => return Err(err(StatusCode::BAD_REQUEST, "ns must be data|meta")),
+                });
+            }
+            "residency" => {
+                page.residency = Some(match value.as_str() {
+                    "resident" => Residency::Resident.code(),
+                    "evicted_covered" => Residency::EvictedCovered.code(),
+                    "absent" => Residency::Absent.code(),
+                    _ => {
+                        return Err(err(
+                            StatusCode::BAD_REQUEST,
+                            "residency must be one of resident|evicted_covered|absent",
+                        ));
+                    }
+                });
+            }
+            "offset" => {
+                page.offset = value
+                    .parse()
+                    .map_err(|_| err(StatusCode::BAD_REQUEST, "offset must be an integer"))?;
+            }
+            "limit" => {
+                let limit: u64 = value
+                    .parse()
+                    .map_err(|_| err(StatusCode::BAD_REQUEST, "limit must be an integer"))?;
+                page.limit = limit.clamp(1, LIMIT_MAX);
+            }
+            _ => {} // unknown params are ignored, not errors
+        }
+    }
+    Ok(page)
+}
+
+pub(crate) async fn blobs(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    run_blocking(move || {
+        require_owner(&caller)?;
+        let page = parse_blobs_query(query.as_deref())?;
+        Ok(json_response(StatusCode::OK, &blobs_body(&app, &page)?))
+    })
+    .await
+}
+
+fn blobs_body(app: &App, page: &BlobsQuery) -> Result<BlobsPage, Response> {
+    let db = lock_db(app);
+    let conn = db.cache();
+    // Prefix match by substr equality, not LIKE — `%`/`_` in q must
+    // not wildcard. Non-hex input just matches nothing.
+    let filter = "WHERE (?1 IS NULL OR substr(lower(hex(b.hash)), 1, length(?1)) = ?1)
+           AND (?2 IS NULL OR b.namespace = ?2)
+           AND (?3 IS NULL OR b.residency = ?3)";
+    let total: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM blob b {filter}"),
+            rusqlite::params![page.q, page.ns, page.residency],
+            |row| row.get(0),
+        )
+        .map_err(internal)?;
+    let blobs = blob_rows(
+        conn,
+        &format!("{filter} ORDER BY b.hash LIMIT ?4 OFFSET ?5"),
+        rusqlite::params![page.q, page.ns, page.residency, page.limit, page.offset],
+    )?;
+    Ok(BlobsPage {
+        blobs,
+        total,
+        offset: page.offset,
+        limit: page.limit,
+    })
+}
+
+// ---- GET /v1/blobs/{hash} ----
+
+pub(crate) async fn blob_detail(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+    UrlPath(hash): UrlPath<String>,
+) -> Response {
+    run_blocking(move || {
+        require_owner(&caller)?;
+        // Case-insensitive like the listing's q; a non-hash is a 400,
+        // an unknown hash a 404.
+        let hash: Blake3 = hash
+            .to_lowercase()
+            .parse()
+            .map_err(|_| err(StatusCode::BAD_REQUEST, "not a blake3 hex hash"))?;
+        Ok(json_response(
+            StatusCode::OK,
+            &blob_detail_body(&app, &hash)?,
+        ))
+    })
+    .await
+}
+
+/// The claims a blob satisfies: identity links of any evidence grade
+/// (explanation, not the D39 holdings rollup) → rom_claim → entry,
+/// restricted to each source's CURRENT revision. DISTINCT because an
+/// entry with several claims resolving to one identity is a single
+/// answer to "what is this?".
+const CLAIMS_SQL: &str =
+    "SELECT DISTINCT e.name AS entry, ds.provider || '/' || ds.system AS source
+     FROM identity_blob ib
+     JOIN rom_claim rc ON rc.identity_id = ib.identity_id
+     JOIN entry e ON e.entry_id = rc.entry_id
+     JOIN dat_revision dr ON dr.revision_id = e.revision_id
+     JOIN dat_source ds ON ds.source_id = dr.source_id
+                       AND ds.current_revision_id = dr.revision_id
+     WHERE ib.blob_id = ?1";
+
+fn blob_detail_body(app: &App, hash: &Blake3) -> Result<BlobDetail, Response> {
+    let mut detail = {
+        let db = lock_db(app);
+        let conn = db.cache();
+        let Some((blob_id, size, ns, residency, verified_at)) = conn
+            .query_row(
+                "SELECT blob_id, size, namespace, residency, verified_at
+                 FROM blob WHERE hash = ?1",
+                rusqlite::params![hash.0.as_slice()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(internal)?
+        else {
+            return Err(err(StatusCode::NOT_FOUND, "no such blob"));
+        };
+
+        // Alias digests (D22). ChdSha1 attests decompressed content,
+        // not these bytes (D44) — excluded. First row per algo wins
+        // (deterministic by the ORDER BY; multi-digest rows would mean
+        // a same-blob hash collision).
+        let mut aliases = RomHashes::default();
+        let mut stmt = conn
+            .prepare("SELECT algo, digest FROM alias WHERE blob_id = ?1 ORDER BY algo, digest")
+            .map_err(internal)?;
+        let alias_rows: Vec<(i64, Vec<u8>)> = stmt
+            .query_map([blob_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(internal)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(internal)?;
+        for (algo, digest) in alias_rows {
+            let slot = match AliasAlgo::from_code(algo).map_err(internal)? {
+                AliasAlgo::Crc32 => &mut aliases.crc32,
+                AliasAlgo::Md5 => &mut aliases.md5,
+                AliasAlgo::Sha1 => &mut aliases.sha1,
+                AliasAlgo::Sha256 => &mut aliases.sha256,
+                AliasAlgo::ChdSha1 => continue,
+            };
+            slot.get_or_insert_with(|| hex(&digest));
+        }
+
+        // Provenance: every rescan-cache path that hashed to this blob.
+        let mut stmt = conn
+            .prepare("SELECT path, scanned_at FROM source_file WHERE blob_id = ?1 ORDER BY path")
+            .map_err(internal)?;
+        let provenance = stmt
+            .query_map([blob_id], |row| {
+                Ok(ProvenanceRow {
+                    path: row.get(0)?,
+                    ingested_at: row.get(1)?,
+                })
+            })
+            .map_err(internal)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(internal)?;
+
+        // One DAG hop each way: recipes producing this blob, recipes
+        // consuming it. Poisoned recipes drop out inside route_edge.
+        let mut routes_in = Vec::new();
+        for recipe in db.recipes_for_output(blob_id).map_err(internal)? {
+            routes_in.extend(route_edge(&db, &recipe)?);
+        }
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT recipe_id FROM recipe_input WHERE blob_id = ?1 ORDER BY recipe_id",
+            )
+            .map_err(internal)?;
+        let consuming: Vec<i64> = stmt
+            .query_map([blob_id], |row| row.get(0))
+            .map_err(internal)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(internal)?;
+        let mut routes_out = Vec::new();
+        for recipe_id in consuming {
+            let recipe = db.recipe_by_id(recipe_id).map_err(internal)?;
+            routes_out.extend(route_edge(&db, &recipe)?);
+        }
+
+        let claims_total: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM ({CLAIMS_SQL})"),
+                [blob_id],
+                |row| row.get(0),
+            )
+            .map_err(internal)?;
+        let mut stmt = conn
+            .prepare(&format!("{CLAIMS_SQL} ORDER BY source, entry LIMIT 100"))
+            .map_err(internal)?;
+        let claims = stmt
+            .query_map([blob_id], |row| {
+                Ok(ClaimRef {
+                    entry: row.get(0)?,
+                    source: row.get(1)?,
+                })
+            })
+            .map_err(internal)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(internal)?;
+
+        BlobDetail {
+            hash: hash.to_hex(),
+            size,
+            namespace: ns_label(ns)?.to_owned(),
+            residency: residency_state(residency)?,
+            verified_at,
+            digests: BlobDigests {
+                blake3: hash.to_hex(),
+                aliases,
+            },
+            provenance,
+            routes_in,
+            routes_out,
+            claims,
+            claims_total: u64::try_from(claims_total).expect("COUNT(*) is non-negative"),
+            pins: Vec::new(), // filled below, after the lock drops
+        }
+    };
+
+    // Pins: which views' CURRENT snapshots reference the blob (D33 —
+    // the tag is what pins; the entry-detail path computes per-claim
+    // pins the same way). vfs::view_tags takes the db lock internally.
+    let tags = vfs::view_tags(app).map_err(internal)?;
+    detail.pins = tags
+        .iter()
+        .filter(|(_, snap)| {
+            vfs::snapshot_index(app, *snap).is_ok_and(|idx| idx.contains_hash(hash))
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    Ok(detail)
+}
+
+/// One recipe as a navigable DAG edge; `None` for poisoned recipes
+/// (D25 terminal — not a route anywhere in the API). `name` carries
+/// the output member name / input role when the index recorded one.
+fn route_edge(
+    db: &Db,
+    recipe: &datboi_index::recipes::RecipeRow,
+) -> Result<Option<RouteEdge>, Response> {
+    if recipe.verify == VerifyState::Failed {
+        return Ok(None);
+    }
+    let conn = db.cache();
+    let mut stmt = conn
+        .prepare(
+            "SELECT b.hash, b.size, ri.role
+             FROM recipe_input ri JOIN blob b ON b.blob_id = ri.blob_id
+             WHERE ri.recipe_id = ?1 ORDER BY ri.position",
+        )
+        .map_err(internal)?;
+    let inputs = hash_refs(&mut stmt, recipe.recipe_id)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT b.hash, b.size, ro.name
+             FROM recipe_output ro JOIN blob b ON b.blob_id = ro.blob_id
+             WHERE ro.recipe_id = ?1 ORDER BY ro.ordinal",
+        )
+        .map_err(internal)?;
+    let outputs = hash_refs(&mut stmt, recipe.recipe_id)?;
+    Ok(Some(RouteEdge {
+        op: recipe.op_name.clone(),
+        verify: match recipe.verify {
+            VerifyState::Pending => RouteVerify::Pending,
+            VerifyState::Verified => RouteVerify::Verified,
+            VerifyState::ReplayedLocal => RouteVerify::ReplayedLocal,
+            VerifyState::Failed => unreachable!("filtered above"),
+        },
+        inputs,
+        outputs,
+    }))
+}
+
+fn hash_refs(stmt: &mut rusqlite::Statement<'_>, recipe_id: i64) -> Result<Vec<HashRef>, Response> {
+    let rows: Vec<([u8; 32], Option<i64>, Option<String>)> = stmt
+        .query_map([recipe_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(internal)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(internal)?;
+    Ok(rows
+        .into_iter()
+        .map(|(hash, size, name)| HashRef {
+            hash: Blake3(hash).to_hex(),
+            size,
+            name,
+        })
+        .collect())
+}
+
 // ---- GET /v1/jobs (+ /{id}) ----
 
 /// The in-memory job registry (jobs.rs): running jobs plus a bounded
@@ -1132,6 +1662,36 @@ mod tests {
         assert!(parse_page(Some("state=bogus")).is_err());
         assert_eq!(
             parse_page(Some("q=")).expect("parse").q,
+            None,
+            "empty q is no filter"
+        );
+    }
+
+    #[test]
+    fn blob_query_params_clamp_and_reject() {
+        let page = parse_blobs_query(None).expect("defaults");
+        assert_eq!(
+            page,
+            BlobsQuery {
+                q: None,
+                ns: None,
+                residency: None,
+                offset: 0,
+                limit: LIMIT_DEFAULT
+            }
+        );
+        let page = parse_blobs_query(Some(
+            "q=ABCD&ns=meta&residency=evicted_covered&limit=999999",
+        ))
+        .expect("parse");
+        assert_eq!(page.q.as_deref(), Some("abcd"), "prefix lowercases");
+        assert_eq!((page.ns, page.residency), (Some(1), Some(1)));
+        assert_eq!(page.limit, LIMIT_MAX, "limit clamps to the max");
+        assert!(parse_blobs_query(Some("ns=bogus")).is_err());
+        assert!(parse_blobs_query(Some("residency=bogus")).is_err());
+        assert!(parse_blobs_query(Some("limit=abc")).is_err());
+        assert_eq!(
+            parse_blobs_query(Some("q=")).expect("parse").q,
             None,
             "empty q is no filter"
         );
@@ -1320,5 +1880,13 @@ mod tests {
         let storage = storage_body(&app).expect("storage");
         assert_eq!(storage.blob_count, 0);
         assert_eq!(storage.quarantine.count, 0);
+        let breakdown = breakdown_body(&app).expect("breakdown");
+        assert!(breakdown.by_class.is_empty());
+        assert!(breakdown.by_source.is_empty(), "no lying zero rows");
+        assert!(breakdown.largest.is_empty());
+        let page = blobs_body(&app, &parse_blobs_query(None).expect("defaults")).expect("blobs");
+        assert_eq!((page.total, page.blobs.len()), (0, 0));
+        let miss = blob_detail_body(&app, &Blake3::compute(b"nothing")).expect_err("miss");
+        assert_eq!(miss.status(), StatusCode::NOT_FOUND);
     }
 }

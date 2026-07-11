@@ -435,6 +435,72 @@ fn job_classifies_dats_zipped_dats_and_roms_by_content() {
     assert_eq!(sources, ["no-intro/gba", "redump/psx"], "{v}");
 }
 
+/// The blob inspector walks the recipe DAG the ingest pipeline minted:
+/// a zip member's routes_in edge points at its container, the
+/// container's routes_out names the member, and provenance carries the
+/// client's upload name.
+#[test]
+fn blob_inspector_walks_the_zip_dag() {
+    let f = fixture();
+    const MEMBER: &[u8] = b"zip member content";
+    let zip = stored_zip(&[("inner.gba", MEMBER)]);
+    let member_hex = datboi_core::hash::Blake3::compute(MEMBER).to_hex();
+    let zip_hex = datboi_core::hash::Blake3::compute(&zip).to_hex();
+
+    let (status, v) = post_bytes(f.addr, "/v1/ingest/uploads?name=packs%2Fpack.zip", &zip);
+    assert_eq!(status, 200, "{v}");
+    let token = v["upload"].as_str().expect("token").to_owned();
+    let (_, v) = post_json(
+        f.addr,
+        "/v1/ingest",
+        &format!(r#"{{"uploads":["{token}"]}}"#),
+    );
+    let done = wait_done(f.addr, v["job"].as_i64().expect("job id"));
+    assert_eq!(done["state"], "done", "{done}");
+    assert_eq!(done["report"]["members_claimed"], 1, "{done}");
+
+    // The member: made FROM the container (a STORED member is an
+    // assemble@1 slice; the container keeps the bytes, D35).
+    let (status, v) = get(f.addr, &format!("/v1/blobs/{member_hex}"));
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["namespace"], "data");
+    assert_eq!(v["size"], MEMBER.len() as u64);
+    assert_eq!(v["routes_in"].as_array().expect("routes_in").len(), 1);
+    let edge = &v["routes_in"][0];
+    assert_eq!(edge["op"], "assemble@1");
+    assert_eq!(edge["verify"], "verified", "verify-on-ingest (D4)");
+    assert_eq!(
+        edge["inputs"][0]["hash"],
+        zip_hex.as_str(),
+        "the edge points at the container: {v}"
+    );
+    assert_eq!(edge["outputs"][0]["hash"], member_hex.as_str());
+    assert_eq!(edge["outputs"][0]["name"], "inner.gba");
+    assert_eq!(v["routes_out"], serde_json::json!([]));
+
+    // The container: the mirror edge, plus upload-name provenance.
+    let (status, v) = get(f.addr, &format!("/v1/blobs/{zip_hex}"));
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["routes_in"], serde_json::json!([]));
+    assert_eq!(v["routes_out"].as_array().expect("routes_out").len(), 1);
+    let edge = &v["routes_out"][0];
+    assert_eq!(edge["op"], "assemble@1");
+    assert_eq!(edge["inputs"][0]["hash"], zip_hex.as_str());
+    assert_eq!(edge["outputs"][0]["hash"], member_hex.as_str());
+    assert_eq!(edge["outputs"][0]["name"], "inner.gba");
+    // Provenance is the rescan-cache KEY — for a staged upload that is
+    // the staging path (which embeds the client basename), not the
+    // client's relative name (that lives in the job report only).
+    let prov = v["provenance"][0]["path"].as_str().expect("path");
+    assert!(prov.contains("pack.zip"), "{v}");
+
+    // The listing's degree counts agree with the inspector's edges.
+    let (_, v) = get(f.addr, &format!("/v1/blobs?q={member_hex}"));
+    assert_eq!(v["total"], 1);
+    assert_eq!(v["blobs"][0]["routes_in"], 1);
+    assert_eq!(v["blobs"][0]["routes_out"], 0);
+}
+
 #[test]
 fn upload_and_start_reject_bad_requests() {
     let f = fixture();

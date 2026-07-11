@@ -12,6 +12,8 @@
 import { vi } from 'vitest';
 import type {
   AdminUsersBody,
+  BlobDetail,
+  BlobRow,
   DatImportBody,
   EntryDetail,
   EntryRow,
@@ -19,6 +21,7 @@ import type {
   JobDetailBody,
   MintedInvite,
   StorageBody,
+  StorageBreakdownBody,
   System,
   ViewDetail,
   ViewFileRow,
@@ -32,6 +35,14 @@ export interface MockUniverse {
   /** Entry detail by name; default derives a minimal one from the row. */
   detail?: (name: string) => EntryDetail | undefined;
   storage?: StorageBody;
+  /** GET /v1/storage/breakdown aggregates. */
+  breakdown?: StorageBreakdownBody;
+  /** GET /v1/blobs rows, served through the endpoint's q(hex-prefix)/
+   * ns/residency/offset/limit semantics (api.rs blobs_body). */
+  blobRows?: BlobRow[];
+  /** GET /v1/blobs/{hash} bodies by lowercase hash; misses answer 404
+   * (non-hex answers 400 like the server). */
+  blobDetails?: Record<string, BlobDetail>;
   /** GET /v1/jobs rows (the in-memory registry's tray render). */
   jobs?: Job[];
   /** GET /v1/jobs/{id} script: each poll SHIFTS one entry until the
@@ -68,6 +79,12 @@ export const emptyStorage: StorageBody = {
   represented_bytes: 0,
   literal_only_bytes: 0,
   quarantine: { count: 0, items: [] },
+};
+
+export const emptyBreakdown: StorageBreakdownBody = {
+  by_class: [],
+  by_source: [],
+  largest: [],
 };
 
 function json(status: number, body: unknown): Response {
@@ -162,6 +179,37 @@ export function installFetch(universe: MockUniverse) {
       }
       if (path === '/v1/storage') {
         return json(200, universe.storage ?? emptyStorage);
+      }
+      if (path === '/v1/storage/breakdown') {
+        return json(200, universe.breakdown ?? emptyBreakdown);
+      }
+      if (path === '/v1/blobs') {
+        const q = url.searchParams.get('q')?.toLowerCase() ?? null;
+        const ns = url.searchParams.get('ns');
+        const residency = url.searchParams.get('residency');
+        const offset = Number(url.searchParams.get('offset') ?? 0);
+        const limit = Math.min(Number(url.searchParams.get('limit') ?? 200), 1000);
+        const filtered = (universe.blobRows ?? []).filter(
+          (b) =>
+            (q === null || b.hash.startsWith(q)) &&
+            (ns === null || b.namespace === ns) &&
+            (residency === null || b.residency === residency),
+        );
+        return json(200, {
+          blobs: filtered.slice(offset, offset + limit),
+          total: filtered.length,
+          offset,
+          limit,
+        });
+      }
+      const blobMatch = path.match(/^\/v1\/blobs\/(.+)$/);
+      if (blobMatch) {
+        const hash = blobMatch[1].toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(hash)) {
+          return json(400, { error: 'not a blake3 hex hash' });
+        }
+        const body = universe.blobDetails?.[hash];
+        return body ? json(200, body) : json(404, { error: 'no such blob' });
       }
       if (path === '/v1/jobs') {
         return json(200, { jobs: universe.jobs ?? [] });

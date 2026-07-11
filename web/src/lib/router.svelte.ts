@@ -15,6 +15,8 @@ export type Route =
   | { screen: 'views' }
   | { screen: 'ingest' }
   | { screen: 'storage' }
+  /** Blob inspector, the storage drill-down (hash = blake3 hex). */
+  | { screen: 'blob'; hash: string }
   | { screen: 'admin' }
   | { screen: 'login' }
   | { screen: 'invite' }
@@ -49,6 +51,10 @@ export function matchPath(pathname: string): Route {
       const shelf = pathname.match(/^\/shelf\/([^/]+)$/);
       if (shelf) {
         return { screen: 'browse', view: decodeURIComponent(shelf[1]) };
+      }
+      const blob = pathname.match(/^\/storage\/blob\/([^/]+)$/);
+      if (blob) {
+        return { screen: 'blob', hash: decodeURIComponent(blob[1]) };
       }
       return { screen: 'notfound' };
     }

@@ -137,7 +137,12 @@ strict mode + retool clonelist consumption are M4 work items).
   both stay loopback-only meanwhile.
 - **Quarantine review screen** was never designed (the wireframes
   link `review →` into nothing). Storage page ships the count +
-  list; the review/resolve flow needs design.
+  list; the review/resolve flow needs design. The storage breakdown
+  + blob inspector shipped 2026-07-11 (`/v1/storage/breakdown`,
+  `/v1/blobs`, `/v1/blobs/{hash}` → `/storage/blob/{hash}`):
+  aggregates by class/source, one-hop recipe-DAG navigation,
+  claims/pins provenance. A treemap visualization and the
+  quarantine review itself remain open design work.
 - ~~Shared API types~~ ruled 2026-07-11 (same day) as **D69**: the
   derive rule is scoped to identity bytes; a typed `datboi-api`
   crate owns every /v1 shape, emits checked-in OpenAPI behind a

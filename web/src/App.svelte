@@ -10,6 +10,7 @@
   import { session } from './lib/session.svelte';
   import Admin from './screens/Admin.svelte';
   import Audit from './screens/Audit.svelte';
+  import Blob from './screens/Blob.svelte';
   import Browse from './screens/Browse.svelte';
   import Ingest from './screens/Ingest.svelte';
   import Invite from './screens/Invite.svelte';
@@ -96,6 +97,11 @@
         <Ingest />
       {:else if route.screen === 'storage'}
         <Storage />
+      {:else if route.screen === 'blob'}
+        <!-- key: a different blob remounts the inspector clean. -->
+        {#key route.hash}
+          <Blob hash={route.hash} />
+        {/key}
       {:else if route.screen === 'admin'}
         <Admin />
       {:else}

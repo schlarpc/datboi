@@ -525,6 +525,165 @@ pub struct QuarantineItem {
     pub reason: String,
 }
 
+// ---- GET /v1/storage/breakdown ----
+
+/// Where the bytes live: the debug-grade aggregate behind the storage
+/// screen — per-(namespace, residency) accounting, dat-source
+/// attribution, and the largest blobs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct StorageBreakdown {
+    pub by_class: Vec<ClassBytes>,
+    pub by_source: Vec<SourceBytes>,
+    /// Top 50 data-namespace blobs by size.
+    pub largest: Vec<BlobRow>,
+}
+
+/// One (namespace, residency) cell of the blob index.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ClassBytes {
+    /// `data` | `meta` (D20).
+    pub namespace: String,
+    pub residency: ResidencyState,
+    pub blobs: i64,
+    /// SUM(size) with NULL sizes counted as 0; `sizeless` says how many.
+    pub bytes: i64,
+    /// Blobs in this cell with no recorded size.
+    pub sizeless: i64,
+}
+
+/// Data-namespace bytes attributed to one dat source via identity
+/// links (identity_blob → rom_claim → entry → the source's CURRENT
+/// dat_revision). A blob claimed by several sources counts in EACH
+/// row — the column does not sum to the store. Blobs with no identity
+/// link at all fold into the `(unattributed)` row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SourceBytes {
+    /// `provider/system`, or `(unattributed)`.
+    pub source: String,
+    pub blobs: i64,
+    pub bytes: i64,
+}
+
+// ---- GET /v1/blobs ----
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct BlobsPage {
+    pub blobs: Vec<BlobRow>,
+    /// The FILTERED count; the offset/limit window slides under it.
+    pub total: i64,
+    pub offset: u64,
+    pub limit: u64,
+}
+
+/// One blob-index row with its graph degree — enough to answer "what
+/// is this?" at listing granularity (`GET /v1/blobs/{hash}` expands
+/// the edges).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct BlobRow {
+    /// blake3, lowercase hex.
+    pub hash: String,
+    #[schema(required = true)]
+    pub size: Option<i64>,
+    /// `data` | `meta` (D20).
+    pub namespace: String,
+    pub residency: ResidencyState,
+    /// Last full-hash store verification, unix seconds.
+    #[schema(required = true)]
+    pub verified_at: Option<i64>,
+    /// source_file provenance rows naming this blob.
+    pub sources: u64,
+    /// Non-poisoned recipes producing it (D25: `failed` never counts).
+    pub routes_in: u64,
+    /// Non-poisoned recipes consuming it.
+    pub routes_out: u64,
+}
+
+// ---- GET /v1/blobs/{hash} ----
+
+/// The blob inspector: identity, digests, provenance, the one-hop
+/// recipe-DAG neighborhood, satisfied claims, and pinning views. The
+/// listing row's degree counts materialize here as the actual lists
+/// (claims capped at 100 — `claims_total` is uncapped).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct BlobDetail {
+    /// blake3, lowercase hex.
+    pub hash: String,
+    #[schema(required = true)]
+    pub size: Option<i64>,
+    /// `data` | `meta` (D20).
+    pub namespace: String,
+    pub residency: ResidencyState,
+    #[schema(required = true)]
+    pub verified_at: Option<i64>,
+    pub digests: BlobDigests,
+    pub provenance: Vec<ProvenanceRow>,
+    /// Recipes whose OUTPUT is this blob — ways to make it.
+    pub routes_in: Vec<RouteEdge>,
+    /// Recipes consuming this blob as an input — things made from it.
+    pub routes_out: Vec<RouteEdge>,
+    /// Capped at 100 rows; `claims_total` is the uncapped count.
+    pub claims: Vec<ClaimRef>,
+    pub claims_total: u64,
+    /// Views whose CURRENT snapshot references this blob (D33: the tag
+    /// is what pins).
+    pub pins: Vec<String>,
+}
+
+/// Every digest the index holds for the blob's bytes: the blake3 key
+/// plus recorded alias digests (D22). The declared CHD sha1 alias is
+/// excluded — it attests decompressed content, not these bytes (D44).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct BlobDigests {
+    /// The identity, lowercase hex.
+    pub blake3: String,
+    #[serde(flatten)]
+    pub aliases: RomHashes,
+}
+
+/// One rescan-cache row: a filesystem path that hashed to this blob.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProvenanceRow {
+    pub path: String,
+    /// When the path was last scanned/ingested, unix seconds.
+    #[schema(required = true)]
+    pub ingested_at: Option<i64>,
+}
+
+/// One recipe edge of the DAG neighborhood, navigable — every
+/// [`HashRef`] resolves at `GET /v1/blobs/{hash}`. Poisoned (`failed`)
+/// recipes never surface (D25 terminal).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RouteEdge {
+    /// The op as recorded: builtin `name@major`, wasm `<hex>#export`.
+    pub op: String,
+    pub verify: RouteVerify,
+    pub inputs: Vec<HashRef>,
+    pub outputs: Vec<HashRef>,
+}
+
+/// A blob reference inside a route edge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct HashRef {
+    /// blake3, lowercase hex.
+    pub hash: String,
+    #[schema(required = true)]
+    pub size: Option<i64>,
+    /// The recipe_output member name (or recipe_input role), when
+    /// recorded.
+    #[schema(required = true)]
+    pub name: Option<String>,
+}
+
+/// One dat claim this blob satisfies, via identity links of any
+/// evidence grade (current revisions only).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ClaimRef {
+    /// Entry name within the source's current revision.
+    pub entry: String,
+    /// `provider/system` display identity.
+    pub source: String,
+}
+
 // ---- POST /v1/ingest/uploads ----
 
 /// One staged upload's receipt.
@@ -842,6 +1001,9 @@ mod tests {
             "/v1/views/{name}/files",
             "/v1/views/{name}/image",
             "/v1/storage",
+            "/v1/storage/breakdown",
+            "/v1/blobs",
+            "/v1/blobs/{hash}",
             "/v1/jobs",
             "/v1/jobs/{id}",
             "/v1/admin/users",

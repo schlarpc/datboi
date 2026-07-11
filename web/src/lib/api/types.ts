@@ -74,6 +74,24 @@ export type ViewFilesBody = Schemas['ViewFilesPage'];
 export type QuarantineItem = Schemas['QuarantineItem'];
 export type StorageBody = Schemas['StorageResponse'];
 
+// ---- GET /v1/storage/breakdown ----
+
+export type ClassBytes = Schemas['ClassBytes'];
+export type SourceBytes = Schemas['SourceBytes'];
+export type StorageBreakdownBody = Schemas['StorageBreakdown'];
+
+// ---- GET /v1/blobs (+ /{hash}) ----
+
+export type BlobsParams = NonNullable<operations['blobs']['parameters']['query']>;
+export type BlobRow = Schemas['BlobRow'];
+export type BlobsBody = Schemas['BlobsPage'];
+export type BlobDigests = Schemas['BlobDigests'];
+export type ProvenanceRow = Schemas['ProvenanceRow'];
+export type HashRef = Schemas['HashRef'];
+export type RouteEdge = Schemas['RouteEdge'];
+export type ClaimRef = Schemas['ClaimRef'];
+export type BlobDetail = Schemas['BlobDetail'];
+
 // ---- POST /v1/ingest/uploads + /v1/ingest ----
 
 export type UploadReceipt = Schemas['UploadResponse'];

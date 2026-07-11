@@ -61,6 +61,9 @@ fn fixture_ext(with_image: bool) -> Fixture {
         .expect("blob");
     db.insert_aliases(blob_id, &aliases).expect("aliases");
     db.set_verified(blob_id, 999).expect("verified");
+    // Rescan-cache provenance — what the blob inspector reports.
+    db.upsert_source_file("roms/alpha.gba", 0, ALPHA.len() as u64, Some(blob_id), 998)
+        .expect("source file");
 
     // A three-state dat: Alpha is held, Beta is missing, Gamma was
     // never dumped.
@@ -389,6 +392,129 @@ fn read_models_end_to_end() {
     let (status, v) = get(f.addr, "/v1/jobs");
     assert_eq!(status, 200);
     assert_eq!(v["jobs"], serde_json::json!([]));
+}
+
+/// The storage introspection surface (owner debug): breakdown
+/// aggregates, the blob listing, and the inspector card, over the
+/// fixture's tiny real universe (data/: ALPHA + the dat blob; meta/:
+/// the view snapshot + no recipes). The DAG-walking half — members and
+/// containers — lives in tests/ingest.rs where zips exist.
+#[test]
+fn storage_breakdown_and_blob_inspector() {
+    let f = fixture();
+    let alpha_hex = Blake3::compute(ALPHA).to_hex();
+
+    // ---- /v1/storage/breakdown: by_class ----
+    let (status, v) = get(f.addr, "/v1/storage/breakdown");
+    assert_eq!(status, 200);
+    let by_class = v["by_class"].as_array().expect("by_class");
+    let data_cell = by_class
+        .iter()
+        .find(|c| c["namespace"] == "data" && c["residency"] == "resident")
+        .unwrap_or_else(|| panic!("no data/resident cell: {v}"));
+    assert_eq!(data_cell["blobs"], 2, "ALPHA + the dat blob");
+    assert!(data_cell["bytes"].as_i64().expect("bytes") > ALPHA.len() as i64);
+    assert_eq!(data_cell["sizeless"], 0);
+    assert!(
+        by_class
+            .iter()
+            .any(|c| c["namespace"] == "meta" && c["residency"] == "resident"),
+        "the snapshot blob is meta/resident: {v}"
+    );
+
+    // by_source: ALPHA attributes to no-intro/gba through its identity
+    // link; the dat blob has none and folds into (unattributed).
+    let by_source = v["by_source"].as_array().expect("by_source");
+    assert_eq!(by_source.len(), 2, "{v}");
+    let source_row = |source: &str| {
+        by_source
+            .iter()
+            .find(|s| s["source"] == source)
+            .unwrap_or_else(|| panic!("no {source} row: {v}"))
+    };
+    let gba = source_row("no-intro/gba");
+    assert_eq!(gba["blobs"], 1);
+    assert_eq!(gba["bytes"], ALPHA.len() as u64);
+    let unattributed = source_row("(unattributed)");
+    assert_eq!(unattributed["blobs"], 1, "the dat blob");
+    assert!(unattributed["bytes"].as_i64().expect("bytes") > 0);
+
+    // largest: data blobs only, size DESC — the dat outweighs ALPHA.
+    let largest = v["largest"].as_array().expect("largest");
+    assert_eq!(largest.len(), 2);
+    let alpha_row = &largest[1];
+    assert_eq!(alpha_row["hash"], alpha_hex.as_str());
+    assert_eq!(alpha_row["size"], ALPHA.len() as u64);
+    assert_eq!(alpha_row["sources"], 1, "the rescan-cache row");
+    assert_eq!(alpha_row["routes_in"], 0, "a literal: no recipes");
+    assert_eq!(alpha_row["routes_out"], 0);
+
+    // ---- /v1/blobs: paging + filters ----
+    let (status, v) = get(f.addr, "/v1/blobs");
+    assert_eq!(status, 200);
+    assert_eq!(v["total"], 3, "2 data + the snapshot: {v}");
+    assert_eq!(v["limit"], 200, "default limit");
+    let (_, v) = get(f.addr, "/v1/blobs?limit=1&offset=1");
+    assert_eq!(v["total"], 3);
+    assert_eq!(v["blobs"].as_array().expect("blobs").len(), 1);
+
+    // q: case-insensitive hex-prefix match
+    let prefix = alpha_hex[..8].to_uppercase();
+    let (_, v) = get(f.addr, &format!("/v1/blobs?q={prefix}"));
+    assert_eq!(v["total"], 1, "{v}");
+    assert_eq!(v["blobs"][0]["hash"], alpha_hex.as_str());
+    assert_eq!(v["blobs"][0]["namespace"], "data");
+    assert_eq!(v["blobs"][0]["residency"], "resident");
+    assert_eq!(v["blobs"][0]["verified_at"], 999);
+
+    // ns/residency filters + rejections
+    let (_, v) = get(f.addr, "/v1/blobs?ns=meta");
+    assert_eq!(v["total"], 1, "the view snapshot: {v}");
+    let (_, v) = get(f.addr, "/v1/blobs?residency=evicted_covered");
+    assert_eq!(v["total"], 0);
+    assert_eq!(get(f.addr, "/v1/blobs?ns=bogus").0, 400);
+    assert_eq!(get(f.addr, "/v1/blobs?residency=bogus").0, 400);
+    assert_eq!(get(f.addr, "/v1/blobs?limit=abc").0, 400);
+
+    // ---- /v1/blobs/{hash}: the literal's inspector card ----
+    let (status, v) = get(f.addr, &format!("/v1/blobs/{alpha_hex}"));
+    assert_eq!(status, 200);
+    assert_eq!(v["hash"], alpha_hex.as_str());
+    assert_eq!(v["size"], ALPHA.len() as u64);
+    assert_eq!(v["namespace"], "data");
+    assert_eq!(v["residency"], "resident");
+    assert_eq!(v["verified_at"], 999);
+    // digests: the blake3 key plus the recorded alias tuple
+    let mut hasher = AliasHasher::new();
+    hasher.update(ALPHA);
+    let tuple = hasher.finalize();
+    assert_eq!(v["digests"]["blake3"], alpha_hex.as_str());
+    assert_eq!(v["digests"]["crc32"], hex(&tuple.crc32));
+    assert_eq!(v["digests"]["md5"], hex(&tuple.md5));
+    assert_eq!(v["digests"]["sha1"], hex(&tuple.sha1));
+    assert_eq!(v["digests"]["sha256"], hex(&tuple.sha256));
+    // provenance from the rescan cache
+    assert_eq!(v["provenance"][0]["path"], "roms/alpha.gba");
+    assert_eq!(v["provenance"][0]["ingested_at"], 998);
+    // a loose literal has no DAG neighborhood
+    assert_eq!(v["routes_in"], serde_json::json!([]));
+    assert_eq!(v["routes_out"], serde_json::json!([]));
+    // claims + pins
+    assert_eq!(v["claims_total"], 1);
+    assert_eq!(v["claims"][0]["entry"], "Alpha (USA)");
+    assert_eq!(v["claims"][0]["source"], "no-intro/gba");
+    assert_eq!(v["pins"], serde_json::json!(["gba"]));
+
+    // uppercase hex answers the same card
+    let upper = alpha_hex.to_uppercase();
+    assert_eq!(get(f.addr, &format!("/v1/blobs/{upper}")).0, 200);
+
+    // misses: unknown hash 404, non-hex 400
+    let zeros = "0".repeat(64);
+    let (status, v) = get(f.addr, &format!("/v1/blobs/{zeros}"));
+    assert_eq!(status, 404);
+    assert_eq!(v["error"], "no such blob");
+    assert_eq!(get(f.addr, "/v1/blobs/nothex").0, 400);
 }
 
 /// The M5 friend-surface additions, owner path: the flat files listing
