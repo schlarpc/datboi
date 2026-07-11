@@ -980,3 +980,36 @@ lineage, and disagreement is worth seeing), a standing mutable
 same-day: a config surface with no consumer — the deploy already
 is the policy, and if per-hash selection ever needs config, D60's
 per-analyzer enable is its ruled home).
+
+## D66 — Single binary: components embed at build, nix-built, never hand-copied; dist/ dies (2026-07-10)
+
+Datboi is ONE BINARY (D10/D14 ethos; M5 web assets will embed the
+same way). The shipped component slice embeds via `include_bytes!`
+— but the bytes come from the NIX-BUILT transform derivations
+(build.rs reads `DATBOI_COMPONENTS_DIR`, set by the flake and the
+dev shell), never from a hand-copied checked-in artifact: the
+committed `transforms/dist/` and its rebuild-and-re-copy step are
+DELETED. Dependent rebuild falls out — transform source change →
+derivation → host rebuild with fresh bytes; the D65 seeding path
+(embedded components published into CAS at startup, recipes pin
+hashes) is unchanged, and replay loads components by hash from CAS,
+so embedding is packaging, not capability (D64 intact: peer/newer
+components run under an old core as recipe replay). Layout rulings
+in the same breath: transform crates move to
+`crates/datboi-xf-*` / `crates/datboi-ex-*` (standalone workspaces
+with their own lockfiles — the lockfile boundary, not the
+directory, is what keeps sibling changes from churning component
+bytes, D54); the WIT tree moves to `./wit`; stamped names stay
+`datboi:xf-*` / `datboi:ex-*`. Accepted trade, eyes open: a commit
+no longer carries the exact component bytes it shipped —
+reproducing a historical artifact needs nix + that commit's
+flake.lock; SOURCE traceability stays git-only via the D54
+tree-hash stamp, and identity was never the artifact's location
+(D55: the hash in the recipe). Small blessed fixtures (the refusal
+gate's `unstamped.wasm`, determinism-gate pins) remain in git —
+they are test vectors, not deploy artifacts. *Rejected:* committed
+dist/ + staleness check (drift-prone hand step that a build
+dependency does better; its one virtue — git-only artifact
+reproduction — is the accepted trade above), components as a
+deploy-time payload directory (a second distribution artifact
+contradicting single-binary for no D64 gain).
