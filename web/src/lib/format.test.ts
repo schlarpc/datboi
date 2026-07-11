@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { fmtDate, fmtSize, parseRegion, shortHash } from './format';
+import { fmtAge, fmtDate, fmtSize, parseRegion, shortHash, snapShort } from './format';
 
 describe('shortHash', () => {
   test('renders 5 hex + ellipsis + last 2 (spec §3.2)', () => {
@@ -35,5 +35,26 @@ describe('fmtDate', () => {
   test('unix seconds → UTC date', () => {
     expect(fmtDate(0)).toBe('1970-01-01');
     expect(fmtDate(1_780_000_000)).toBe('2026-05-28');
+  });
+});
+
+describe('fmtAge', () => {
+  const now = 1_780_000_000_000; // ms
+
+  test('minutes under an hour, hours under a day, then days (spec `2h`)', () => {
+    expect(fmtAge(1_780_000_000 - 30, now)).toBe('0m');
+    expect(fmtAge(1_780_000_000 - 5 * 60, now)).toBe('5m');
+    expect(fmtAge(1_780_000_000 - 2 * 3600, now)).toBe('2h');
+    expect(fmtAge(1_780_000_000 - 50 * 3600, now)).toBe('2d');
+  });
+
+  test('clock skew clamps to 0m instead of going negative', () => {
+    expect(fmtAge(1_780_000_000 + 3600, now)).toBe('0m');
+  });
+});
+
+describe('snapShort', () => {
+  test('renders # + first 4 hex (spec `snap #a41f`)', () => {
+    expect(snapShort(`a41f${'0'.repeat(60)}`)).toBe('#a41f');
   });
 });

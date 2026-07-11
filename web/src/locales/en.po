@@ -67,15 +67,12 @@ msgstr "nothing lives at this address"
 
 #: src/lib/components/Header.svelte
 #: src/screens/Admin.svelte
+#: src/screens/Admin.svelte
 msgid "Admin"
 msgstr "Admin"
 
-#: src/screens/Admin.svelte
-#: src/screens/Ingest.svelte
-#: src/screens/Storage.svelte
-#: src/screens/Views.svelte
-msgid "not yet built — this screen lands in the next task"
-msgstr "not yet built — this screen lands in the next task"
+#~ msgid "not yet built — this screen lands in the next task"
+#~ msgstr "not yet built — this screen lands in the next task"
 
 #. 0: system.provider; 1: system.system; 2: system.revision?.version ?? ''
 #: src/screens/Audit.svelte
@@ -84,15 +81,24 @@ msgstr "# datboi missing-list · {0} {1} {2}"
 
 #. 0: error
 #. 0: error
+#. 0: error
 #. 0: otherError
+#. 0: error
+#. 0: error
+#: src/screens/Admin.svelte
 #: src/screens/Audit.svelte
 #: src/screens/Library.svelte
 #: src/screens/Login.svelte
+#: src/screens/Storage.svelte
+#: src/screens/Views.svelte
 msgid "something went wrong — {0}"
 msgstr "something went wrong — {0}"
 
+#: src/screens/Admin.svelte
 #: src/screens/Audit.svelte
 #: src/screens/Library.svelte
+#: src/screens/Storage.svelte
+#: src/screens/Views.svelte
 msgid "loading…"
 msgstr "loading…"
 
@@ -109,6 +115,7 @@ msgid "history"
 msgstr "history"
 
 #: src/screens/Audit.svelte
+#: src/screens/Views.svelte
 msgid "diff"
 msgstr "diff"
 
@@ -365,3 +372,389 @@ msgstr "evicted (covered)"
 #: src/lib/components/EntryDrawer.svelte
 msgid "close"
 msgstr "close"
+
+#: src/screens/Admin.svelte
+msgid "owners see every view — grants apply to friends"
+msgstr "owners see every view — grants apply to friends"
+
+#: src/screens/Admin.svelte
+msgid "grants attach to a user — cells unlock once the invite is accepted"
+msgstr "grants attach to a user — cells unlock once the invite is accepted"
+
+#: src/screens/Admin.svelte
+msgid "friend"
+msgstr "friend"
+
+#: src/screens/Admin.svelte
+msgid "owner"
+msgstr "owner"
+
+#: src/screens/Admin.svelte
+msgid "owner-only — invites, grants, and sessions live here"
+msgstr "owner-only — invites, grants, and sessions live here"
+
+#: src/screens/Admin.svelte
+msgid "+ mint invite URL"
+msgstr "+ mint invite URL"
+
+#: src/screens/Admin.svelte
+msgid "expires in"
+msgstr "expires in"
+
+#: src/screens/Admin.svelte
+msgid "days"
+msgstr "days"
+
+#: src/screens/Admin.svelte
+msgid "role"
+msgstr "role"
+
+#: src/screens/Admin.svelte
+msgid "mint"
+msgstr "mint"
+
+#: src/screens/Admin.svelte
+#: src/screens/Views.svelte
+#: src/screens/Views.svelte
+msgid "copied ✓"
+msgstr "copied ✓"
+
+#: src/screens/Admin.svelte
+msgid "⎘ copy"
+msgstr "⎘ copy"
+
+#: src/screens/Admin.svelte
+msgid "shown once — the server keeps only a hash of this token"
+msgstr "shown once — the server keeps only a hash of this token"
+
+#: src/screens/Admin.svelte
+msgctxt "compiled shelf"
+msgid "USERS × VIEWS"
+msgstr "USERS × VIEWS"
+
+#: src/screens/Admin.svelte
+msgid "no users yet — mint an invite"
+msgstr "no users yet — mint an invite"
+
+#: src/screens/Admin.svelte
+msgid "no views to grant yet"
+msgstr "no views to grant yet"
+
+#. 0: shortHash(invite.token_hash); 1: invite.role === 'owner' ? roleOwner \\: roleFriend
+#: src/screens/Admin.svelte
+msgid "invite {0} · pending {1}"
+msgstr "invite {0} · pending {1}"
+
+#: src/screens/Admin.svelte
+msgid "friends see only ✓ views · dashboard/audit stay owner-only"
+msgstr "friends see only ✓ views · dashboard/audit stay owner-only"
+
+#: src/screens/Admin.svelte
+msgid "nobody to revoke — no users yet"
+msgstr "nobody to revoke — no users yet"
+
+#. 0: user.sessions.toLocaleString()
+#: src/screens/Admin.svelte
+msgid "{0} active"
+msgstr "{0} active"
+
+#: src/screens/Admin.svelte
+msgid "revoke"
+msgstr "revoke"
+
+#: src/screens/Admin.svelte
+msgid "SESSIONS"
+msgstr "SESSIONS"
+
+#: src/screens/Admin.svelte
+msgid "SETTINGS"
+msgstr "SETTINGS"
+
+#: src/screens/Admin.svelte
+msgid "analyzer sweeps: —"
+msgstr "analyzer sweeps: —"
+
+#: src/screens/Admin.svelte
+msgid "listen: —"
+msgstr "listen: —"
+
+#: src/screens/Admin.svelte
+msgid "not surfaced by the API yet — the CLI knows"
+msgstr "not surfaced by the API yet — the CLI knows"
+
+#: src/screens/Ingest.svelte
+msgid "hash and claim content into the store"
+msgstr "hash and claim content into the store"
+
+#: src/screens/Ingest.svelte
+msgctxt "ingest custody"
+msgid "copy — source untouched"
+msgstr "copy — source untouched"
+
+#: src/screens/Ingest.svelte
+msgid "default"
+msgstr "default"
+
+#: src/screens/Ingest.svelte
+msgctxt "ingest custody"
+msgid "move — destroys source layout"
+msgstr "move — destroys source layout"
+
+#: src/screens/Ingest.svelte
+msgid "not implemented yet"
+msgstr "not implemented yet"
+
+#: src/screens/Ingest.svelte
+msgid "WHERE & HOW"
+msgstr "WHERE & HOW"
+
+#: src/screens/Ingest.svelte
+msgid "ingest is CLI-only for now — run:"
+msgstr "ingest is CLI-only for now — run:"
+
+#: src/screens/Ingest.svelte
+msgid "progress and the report (new blobs · dupes · archive members · refused) print in the CLI today — they land here when the daemon grows a job registry"
+msgstr "progress and the report (new blobs · dupes · archive members · refused) print in the CLI today — they land here when the daemon grows a job registry"
+
+#: src/screens/Storage.svelte
+msgid "what the store holds vs what it represents"
+msgstr "what the store holds vs what it represents"
+
+#: src/screens/Storage.svelte
+msgid "BLOBS"
+msgstr "BLOBS"
+
+#: src/screens/Storage.svelte
+msgid "ON DISK"
+msgstr "ON DISK"
+
+#. 0: savingsPct
+#: src/screens/Storage.svelte
+msgid "−{0}% via recipes"
+msgstr "−{0}% via recipes"
+
+#: src/screens/Storage.svelte
+msgid "REPRESENTED"
+msgstr "REPRESENTED"
+
+#: src/screens/Storage.svelte
+msgid "LITERAL-ONLY"
+msgstr "LITERAL-ONLY"
+
+#: src/screens/Storage.svelte
+msgid "shrinkable"
+msgstr "shrinkable"
+
+#: src/screens/Storage.svelte
+msgid "re-hash stored blobs and report corruption:"
+msgstr "re-hash stored blobs and report corruption:"
+
+#: src/screens/Storage.svelte
+msgid "Scrub"
+msgstr "Scrub"
+
+#: src/screens/Storage.svelte
+msgid "no scrub ledger yet — the index records per-blob verify dates, not runs"
+msgstr "no scrub ledger yet — the index records per-blob verify dates, not runs"
+
+#: src/screens/Storage.svelte
+msgid "run via CLI"
+msgstr "run via CLI"
+
+#: src/screens/Storage.svelte
+msgctxt "bad components, not people"
+msgid "Quarantine ·"
+msgstr "Quarantine ·"
+
+#: src/screens/Storage.svelte
+msgid "nothing quarantined"
+msgstr "nothing quarantined"
+
+#: src/screens/Storage.svelte
+msgctxt "storage eviction"
+msgid "Eviction"
+msgstr "Eviction"
+
+#: src/screens/Storage.svelte
+msgid "plan first; the same command without --dry-run executes:"
+msgstr "plan first; the same command without --dry-run executes:"
+
+#: src/screens/Storage.svelte
+msgid "nothing is deleted without a plan you approve"
+msgstr "nothing is deleted without a plan you approve"
+
+#: src/screens/Storage.svelte
+msgid "plan (dry-run) via CLI"
+msgstr "plan (dry-run) via CLI"
+
+#: src/screens/Views.svelte
+msgid "held-first"
+msgstr "held-first"
+
+#: src/screens/Views.svelte
+msgid "strict"
+msgstr "strict"
+
+#: src/screens/Views.svelte
+msgid "view actions"
+msgstr "view actions"
+
+#: src/screens/Views.svelte
+msgctxt "compiled shelf"
+msgid "+ new view"
+msgstr "+ new view"
+
+#: src/screens/Views.svelte
+msgid "compiled shelves, served read-only"
+msgstr "compiled shelves, served read-only"
+
+#: src/screens/Views.svelte
+msgid "view definition is CLI-only for now — define, then evaluate:"
+msgstr "view definition is CLI-only for now — define, then evaluate:"
+
+#: src/screens/Views.svelte
+msgid "no views yet — define one and it lands here"
+msgstr "no views yet — define one and it lands here"
+
+#: src/screens/Views.svelte
+msgid "⎘ webdav url"
+msgstr "⎘ webdav url"
+
+#: src/screens/Views.svelte
+msgid "view-sync CLI"
+msgstr "view-sync CLI"
+
+#: src/screens/Views.svelte
+msgid "definition"
+msgstr "definition"
+
+#: src/screens/Views.svelte
+msgid "access grants"
+msgstr "access grants"
+
+#. 0: ' · '; 1: def.one_g_one_r.mode === 'strict' ? modeStrict \\: modeHeldFirst; 2: def.one_g_one_r.regions.join('›')
+#: src/screens/Views.svelte
+msgid "{0}1G1R {1} ({2})"
+msgstr "{0}1G1R {1} ({2})"
+
+#. 0: ' · '; 1: def.profile
+#: src/screens/Views.svelte
+msgid "{0}{1} profile"
+msgstr "{0}{1} profile"
+
+#: src/screens/Views.svelte
+#: src/screens/Views.svelte
+msgid "served by tag only — no stored definition"
+msgstr "served by tag only — no stored definition"
+
+#. 0: view.rows.toLocaleString()
+#: src/screens/Views.svelte
+msgid "{0} files"
+msgstr "{0} files"
+
+#. 0: snapShort(view.snapshot)
+#: src/screens/Views.svelte
+msgid "snap {0}<0/>"
+msgstr "snap {0}<0/>"
+
+#: src/screens/Views.svelte
+msgid "not evaluated yet"
+msgstr "not evaluated yet"
+
+#: src/screens/Views.svelte
+msgid "⬇ Export SD image"
+msgstr "⬇ Export SD image"
+
+#: src/screens/Views.svelte
+msgid "⎘ copy link"
+msgstr "⎘ copy link"
+
+#: src/screens/Views.svelte
+msgid "re-eval"
+msgstr "re-eval"
+
+#: src/screens/Views.svelte
+msgid "browse"
+msgstr "browse"
+
+#: src/screens/Views.svelte
+msgid "minted images aren't served over HTTP yet — export via CLI:"
+msgstr "minted images aren't served over HTTP yet — export via CLI:"
+
+#: src/screens/Views.svelte
+msgid "evaluation is CLI-only for now — run:"
+msgstr "evaluation is CLI-only for now — run:"
+
+#: src/screens/Views.svelte
+msgid "snapshot diff isn't built yet — the dat-revision diff is:"
+msgstr "snapshot diff isn't built yet — the dat-revision diff is:"
+
+#: src/screens/Views.svelte
+msgid "SD sync is CLI-only for now — run:"
+msgstr "SD sync is CLI-only for now — run:"
+
+#: src/screens/Views.svelte
+msgid "grants live on the Admin screen, or via CLI:"
+msgstr "grants live on the Admin screen, or via CLI:"
+
+#: src/screens/Views.svelte
+msgid "source"
+msgstr "source"
+
+#: src/screens/Views.svelte
+msgid "layout"
+msgstr "layout"
+
+#: src/screens/Views.svelte
+msgid "1G1R"
+msgstr "1G1R"
+
+#: src/screens/Views.svelte
+msgid "profile"
+msgstr "profile"
+
+#: src/screens/Views.svelte
+msgid "MBR"
+msgstr "MBR"
+
+#: src/screens/Views.svelte
+msgid "superfloppy"
+msgstr "superfloppy"
+
+#: src/screens/Views.svelte
+msgid "image"
+msgstr "image"
+
+#. 0: fmtSize(def.image.cluster_size)
+#: src/screens/Views.svelte
+msgid "FAT32 · {0} clusters · <0/><1/>"
+msgstr "FAT32 · {0} clusters · <0/><1/>"
+
+#: src/screens/Views.svelte
+msgid "mame"
+msgstr "mame"
+
+#: src/screens/Views.svelte
+msgid "snapshot"
+msgstr "snapshot"
+
+#: src/screens/Views.svelte
+msgid "not minted yet"
+msgstr "not minted yet"
+
+#: src/screens/Views.svelte
+msgid "minted"
+msgstr "minted"
+
+#: src/screens/Views.svelte
+msgid "editing is CLI-only for now — redefine, then re-evaluate:"
+msgstr "editing is CLI-only for now — redefine, then re-evaluate:"
+
+#: src/screens/Views.svelte
+msgid "⚠ flashing overwrites on-device saves"
+msgstr "⚠ flashing overwrites on-device saves"
+
+#. 0: httpUrl
+#: src/screens/Views.svelte
+msgid "{0} · read-only"
+msgstr "{0} · read-only"

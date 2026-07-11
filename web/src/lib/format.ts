@@ -50,3 +50,24 @@ export function fmtSize(bytes: number): string {
 export function fmtDate(unixSecs: number): string {
   return new Date(unixSecs * 1000).toISOString().slice(0, 10);
 }
+
+/**
+ * Snapshot age in the comps' register (`snap #a41f · 2h`): minutes under
+ * an hour, hours under a day, then days. Unit letters are data (spec §6
+ * note), like the size units above. Clock skew clamps to `0m`.
+ */
+export function fmtAge(unixSecs: number, nowMs: number = Date.now()): string {
+  const secs = Math.max(0, Math.floor(nowMs / 1000 - unixSecs));
+  if (secs < 3600) {
+    return `${Math.floor(secs / 60)}m`;
+  }
+  if (secs < 86400) {
+    return `${Math.floor(secs / 3600)}h`;
+  }
+  return `${Math.floor(secs / 86400)}d`;
+}
+
+/** Snapshot id chip (spec §6 `snap #a41f`): `#` + first 4 hex chars. */
+export function snapShort(hash: string): string {
+  return `#${hash.slice(0, 4)}`;
+}

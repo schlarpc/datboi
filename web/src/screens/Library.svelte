@@ -7,6 +7,7 @@
   import { systems as fetchSystems } from '../lib/api/client';
   import type { System } from '../lib/api/types';
   import { bandFor } from '../lib/bands';
+  import CliHint from '../lib/components/CliHint.svelte';
   import Link from '../lib/components/Link.svelte';
   import StackedBar from '../lib/components/StackedBar.svelte';
   import { router } from '../lib/router.svelte';
@@ -109,11 +110,9 @@
     <button class="empty-card" onclick={() => (cliHintOpen = !cliHintOpen)}>
       <span>+ import a dat to start a new system</span>
       {#if cliHintOpen}
-        <span class="cli-hint">
-          <span>dat import is CLI-only for now — run:</span>
-          <!-- @wc-ignore -->
-          <code>datboi dat import &lt;file.dat&gt;</code>
-        </span>
+        <CliHint command={'datboi dat import <file.dat>'}>
+          dat import is CLI-only for now — run:
+        </CliHint>
       {/if}
     </button>
   {/if}
@@ -248,15 +247,4 @@
     cursor: pointer;
   }
 
-  .cli-hint {
-    display: block;
-    margin-top: 8px;
-    font: 400 11.5px var(--font-data);
-    color: var(--mut);
-  }
-
-  .cli-hint code {
-    font-family: var(--font-data);
-    color: var(--text);
-  }
 </style>

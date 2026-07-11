@@ -148,6 +148,15 @@ strict mode + retool clonelist consumption are M4 work items).
   scratch. UI deep-links survive a browsing session, not a cache
   rebuild — fine for M5; if bookmarkable system URLs ever matter,
   the durable key is the provider/system pair, not the integer.
+- **View editor + eval report/diff screens deferred**: view
+  definitions are CLI-authored in M5 (mutating actions stay
+  CLI-only), so the editor (spec §3.4) shrinks to a read-only
+  definition fold on the Views cards with redefine/eval CLI hints;
+  the eval report and snapshot diff (§3.5) have no API at all — no
+  eval history or per-snapshot diff is stored — and want the same
+  durable job/report table as the Jobs tray backend above. The
+  eviction planner (§3.7/§3.8) is deferred on the same grounds (no
+  plan API; the dry-run CLI is the only entry).
 - **Web rulings made during implementation** (recorded here, not
   D-numbered): nav = `Library · Views · Ingest · Storage · Admin`
   (audit is the drill-down under Library; the hi-fi "Dats" tab
