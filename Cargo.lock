@@ -794,6 +794,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "crc32fast",
+ "datboi-catalog",
  "datboi-core",
  "datboi-index",
  "datboi-ingest",
