@@ -54,6 +54,10 @@
           src = root;
           filter = path: type:
             (builtins.match ".*\\.(xml|wit|wasm|deflate|bin|rar)$" path != null)
+            # ex-unrar vendors C++ (.cpp/.hpp) plus force-included compat
+            # headers (.h) and the license/patch provenance (.txt); the
+            # build.rs cross-compiles them (D58).
+            || (builtins.match ".*\\.(cpp|hpp|h|txt|def|rc|vcxproj)$" path != null)
             || (craneLib.filterCargoSources path type);
           name = "source";
         };
@@ -70,14 +74,55 @@
         let craneLib = craneLibFor system;
         in craneLib.buildDepsOnly (hostArgsFor system);
 
-      # ---- transforms (transforms/xf-*, wasm32-unknown-unknown) ----
+      # ---- components (transforms/{xf,ex}-*, wasm32-unknown-unknown) ----
       #
-      # Each transform is a STANDALONE workspace with its own lockfile
+      # Each component is a STANDALONE workspace with its own lockfile
       # (D54): sibling crates must not be able to perturb a component's
       # bytes through shared dependency resolution. The reproducibility
       # boundary is one crate directory plus the frozen ../wit.
+      #
+      # Two world families, distinguished by crate prefix (D58): `xf-` =
+      # transform (@1 whole-buffer / @2 streaming), `ex-` = extractor
+      # (seekable archive in → member streams + metadata out). The build,
+      # stamp, and zero-import gate are identical across both; extractors
+      # additionally cross-compile a vendored C++ staticlib (see the
+      # wasiToolchainFor / ex-unrar wiring below).
 
-      wasmCrateNames = [ "xf-cso" "xf-ecm" "xf-preflate" "xf-reference" "xf-reference-stream" ];
+      wasmCrateNames = [ "xf-cso" "xf-ecm" "xf-preflate" "xf-reference" "xf-reference-stream" "ex-unrar" ];
+
+      # ---- C-to-wasm toolchain lane (D58) ----
+      #
+      # The extractor lane compiles vendored C++ (unrar) to freestanding
+      # wasm32. wasi-sdk's clang++/wasm-ld + a wasm libc++/libc/builtins
+      # provide the cross toolchain; the guest's build.rs consumes these
+      # through DATBOI_WASI_* env vars. NOTE the component still imports
+      # NOTHING (D5/D46) — the sysroot only supplies the C++ runtime the
+      # determinism shim leaves undefined; wasi-libc's syscall-importing
+      # objects are shut out by that shim (see transforms/ex-unrar).
+      wasiToolchainFor = system:
+        let
+          pkgs = pkgsFor system;
+          wasi = pkgs.pkgsCross.wasi32;
+        in
+        rec {
+          cc = wasi.stdenv.cc;
+          bintools = wasi.stdenv.cc.bintools.bintools;
+          libcxx = wasi.llvmPackages.libcxx;
+          libc = wasi.wasilibc;
+          builtins = wasi.llvmPackages.compiler-rt;
+          # The exact env the ex-* build.rs reads.
+          env = {
+            DATBOI_WASI_CXX = "${cc}/bin/wasm32-unknown-wasi-clang++";
+            DATBOI_WASI_WASMLD = "${bintools}/bin/wasm32-unknown-wasi-wasm-ld";
+            DATBOI_WASI_LIBCXX_DIR = "${libcxx}/lib";
+            DATBOI_WASI_LIBC_DIR = "${libc}/lib/wasm32-wasi";
+            DATBOI_WASI_BUILTINS_DIR = "${builtins}/lib/wasi";
+          };
+        };
+
+      # Extractor crates need the C-to-wasm toolchain in the build env;
+      # transforms don't. Keyed by prefix.
+      isExtractor = crate: nixpkgs.lib.hasPrefix "ex-" crate;
 
       # The shared frozen WIT, staged next to the unpacked crate so the
       # guests' `../wit/v2` path resolves.
@@ -87,6 +132,9 @@
       '';
 
       wasmCrateArgsFor = system: crate:
+        let
+          toolchain = wasiToolchainFor system;
+        in
         {
           src = srcFor system (./transforms + "/${crate}");
           strictDeps = true;
@@ -102,7 +150,11 @@
           # runs them under the determinism gate instead.
           doCheck = false;
           postUnpack = witStageFor system;
-        };
+        }
+        # Extractors (ex-*) cross-compile a vendored C++ staticlib in their
+        # build.rs; hand it the wasi toolchain via env (D58). Transforms get
+        # nothing extra.
+        // nixpkgs.lib.optionalAttrs (isExtractor crate) toolchain.env;
 
       # One stamped component per crate (D54 attribution): identity
       # metadata rides IN the artifact as execution-inert custom sections,
@@ -198,9 +250,12 @@
           });
 
         } // nixpkgs.lib.listToAttrs (map
-          # Transform unit tests run natively per crate (logic is
+          # Component unit tests run natively per crate (logic is
           # target-independent; wasm artifacts are exercised by the host
-          # determinism gates).
+          # determinism/extractor gates). `--no-tests=pass` because an
+          # extractor's logic can be entirely wasm-guest (ex-unrar's is C++
+          # under the sandbox; its conformance lives in datboi-runtime), so
+          # a crate legitimately has zero host-native tests.
           (crate:
             let
               args = builtins.removeAttrs (wasmCrateArgsFor system crate)
@@ -214,6 +269,7 @@
                 cargoArtifacts = craneLib.buildDepsOnly args;
                 partitions = 1;
                 partitionType = "count";
+                cargoNextestExtraArgs = "--no-tests=pass";
               });
             })
           wasmCrateNames));

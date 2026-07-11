@@ -93,6 +93,55 @@ fn rar_members_become_resident_blobs() {
     // The container itself is stored and literal.
     let container_hash = Blake3::compute(rar);
     assert!(store.has(StoreNs::Data, &container_hash));
+
+    // The member landed resident and byte-exact (the fixture's one member
+    // "VERSION" holds "unrar-0.4.0").
+    let member = b"unrar-0.4.0";
+    let member_hash = Blake3::compute(member);
+    let mut got = Vec::new();
+    store
+        .get(StoreNs::Data, &member_hash)
+        .expect("get")
+        .expect("member resident")
+        .read_to_end(&mut got)
+        .expect("read");
+    assert_eq!(&got, member, "member bytes bit-exact");
+
+    // D58: the member carries a DERIVE RECIPE (container→member through the
+    // ex-unrar component) and is therefore evictable + rebuildable.
+    let row = db.blob_by_hash(&member_hash).expect("q").expect("indexed");
+    let recipes = db.recipes_for_output(row.blob_id).expect("q");
+    assert_eq!(recipes.len(), 1, "one covering derive recipe");
+    let recipe_id = recipes[0].recipe_id;
+
+    let exec =
+        datboi_exec::Executor::new(&store, datboi_exec::ExecConfig::default()).expect("executor");
+
+    // Replay licenses the recipe (D25): running the ex-unrar component
+    // rebuilds the member bit-exact and verifies its hash.
+    exec.replay(&db, recipe_id).expect("replay");
+
+    // Now the literal is droppable; evict then rebuild it through the
+    // component — bit-exact = the derive route is real.
+    let outcome = exec.evict(&db, &member_hash).expect("evict");
+    assert!(
+        matches!(outcome, datboi_exec::evict::EvictOutcome::Evicted { .. }),
+        "member evicted: {outcome:?}"
+    );
+    assert!(
+        !store.has(StoreNs::Data, &member_hash),
+        "member literal gone"
+    );
+
+    let mut rebuilt = Vec::new();
+    exec.open_stream(&db, &member_hash)
+        .expect("route")
+        .read_to_end(&mut rebuilt)
+        .expect("read");
+    assert_eq!(
+        &rebuilt, member,
+        "member rebuilds bit-exact through ex-unrar"
+    );
 }
 
 #[test]

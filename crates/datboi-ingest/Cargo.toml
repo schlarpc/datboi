@@ -12,6 +12,10 @@ datboi-core.workspace = true
 datboi-formats.workspace = true
 datboi-index.workspace = true
 datboi-store-fs.workspace = true
+# rar extraction now runs the ex-unrar component under the wasm sandbox
+# (D58); ingest drives it through the runtime's ExtractorHost. The native
+# unrar/unrar_sys crates left the tree with this change.
+datboi-runtime.workspace = true
 fastcdc = "4.0.1"
 flate2.workspace = true
 blake3.workspace = true
@@ -22,14 +26,14 @@ xf-ecm = { path = "../../transforms/xf-ecm" }
 # 7z member extraction (pure Rust). Container rebuild recipes wait on an
 # LZMA-class transform; ingest extracts members as first-class blobs.
 sevenz-rust2 = "0.21"
-# rar member extraction (vendored unrar C++; extraction-only use, which
-# is what its license permits).
-tempfile.workspace = true
-unrar = "0.5"
 thiserror.workspace = true
 
 [dev-dependencies]
 crc32fast.workspace = true
+tempfile.workspace = true
+# The rar ingest test replays the minted derive recipe (evict → rebuild
+# the member through the ex-unrar component) end to end.
+datboi-exec.workspace = true
 
 [lints]
 workspace = true
