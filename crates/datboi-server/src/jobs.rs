@@ -192,9 +192,8 @@ impl Registry {
         Self::prune(&mut inner);
     }
 
-    /// Infrastructure failure (not a per-file refusal) — kept for
-    /// honesty even though the ingest loop itself never throws.
-    #[allow(dead_code)]
+    /// Infrastructure failure (not a per-file refusal): the job's
+    /// closing relink/rollup pass hitting the db is exactly this case.
     pub(crate) fn fail(&self, id: i64, error: &str, now: i64) {
         let mut inner = lock(&self.jobs);
         if let Some(j) = inner.jobs.iter_mut().find(|j| j.id == id) {

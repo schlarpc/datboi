@@ -250,5 +250,21 @@ fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
         app.jobs
             .file_done(id, upload.bytes, translate(report, &upload));
     }
+    // The pipeline stores content; identity linking + the D39 rollup
+    // refresh are what make the shelf light up. The job owns finishing
+    // that thought (dat import and view eval already run the same pair).
+    {
+        let mut db = app
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let refreshed = datboi_catalog::relink_all(&db)
+            .and_then(|()| datboi_catalog::refresh_rollups(&mut db, auth::now_unix()));
+        if let Err(e) = refreshed {
+            app.jobs
+                .fail(id, &format!("catalog refresh: {e}"), auth::now_unix());
+            return;
+        }
+    }
     app.jobs.finish(id, auth::now_unix());
 }

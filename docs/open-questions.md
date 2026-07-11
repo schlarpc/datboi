@@ -122,12 +122,16 @@ strict mode + retool clonelist consumption are M4 work items).
 - **wuchale is pre-1.0** (D67 accepted this eyes-open). Catalogs are
   standard gettext PO, so the worst case is swapping the compiler,
   not the translations. Revisit when it hits 1.0 or stalls.
-- **Jobs tray backend**: the daemon has no persistent job registry —
-  analyzer sweeps, ingest, scrub run as CLI-process work today. M5
-  ships a minimal in-daemon jobs surface (`/v1/jobs`, in-memory) so
-  the tray has something truthful to render; durable job reports
-  (the design's "reachable from Jobs" eval/ingest reports) want a
-  real job table — design item for M5 polish or M6.
+- **Jobs tray backend**: the minimal in-daemon jobs surface shipped
+  2026-07-11 with web ingest (`/v1/jobs` + `/v1/jobs/{id}`, in-memory
+  registry in datboi-server jobs.rs: running jobs + a bounded finished
+  tail, forgotten on restart). Still open: a DURABLE job/report table
+  (the design's "reachable from Jobs" eval/ingest history — finished
+  jobs currently vanish with the process), and intra-file progress —
+  the Ingester has no callbacks, so job progress moves at file
+  boundaries only; if per-byte hooks ever land in datboi-ingest, SSE
+  over the existing bounded-mpsc streaming pattern is the natural
+  upgrade from the tray's 2 s poll.
 - **Authenticated WebDAV** (basic auth against D68 bearer tokens)
   so friends can mount views; NFS auth is likely never (protocol);
   both stay loopback-only meanwhile.
@@ -197,6 +201,36 @@ strict mode + retool clonelist consumption are M4 work items).
   the Library screen's dashed empty-card became a real drop-zone +
   file-picker with a per-file receipt log. The other pipeline
   actions still wait on the job registry above.
+- **ROM ingest graduated from CLI-only** (2026-07-11, post-ship):
+  the hard sibling of dat import — files run to GBs and the pipeline
+  outlives any sane request — so it shipped as two phases plus the
+  minimal job registry the Jobs-tray entry above deferred to.
+  `POST /v1/ingest/uploads?name=<relative path>` streams one file's
+  raw bytes (no multipart, no body cap — a D56-style headroom guard
+  instead) through a bounded channel into `<store>/tmp/` staging
+  (same filesystem as the store; swept by the existing cleanup_temp;
+  never fsynced — the durable publish is put_new's rename during
+  ingest), answering an in-memory token. `POST /v1/ingest` spends
+  tokens all-or-nothing and runs one Ingester per file on a plain
+  background thread — the db lock releases between files, and
+  progress is byte-weighted at file granularity (capped 99 while
+  running). Report paths wear the client's original names; staging
+  paths never leak. Transport ruling: REST + polling (tray 2 s while
+  running only, screen 1 s on its job) — upload progress is the
+  browser's own XHR meter, and server-side events are file-granular,
+  so SSE/WS buys nothing today. Custody over HTTP is always copy
+  (the browser cannot move originals); NAS-local ingest stays CLI.
+  The web Ingest screen is the real spec §3.6 flow now: drop files /
+  zips / folders (webkitGetAsEntry traversal, readEntries batching
+  handled) or pick either, per-file upload bars, then the step-2
+  report card (new blobs · dupes · archive members · refused).
+  Detectors became daemon config too (`Config.detectors_dir` from
+  the global `--detectors`/`DATBOI_DETECTORS`) so web ingest applies
+  the same skipper set CLI ingest does. Follow-up fix: the job (and
+  CLI ingest, same gap) now runs relink_all + refresh_rollups at the
+  end, so freshly ingested content lights the shelf immediately —
+  previously that pair only ran at dat import/view eval, leaving a
+  matching upload dark until an unrelated eval happened by.
 
 ## Next sessions (pick up here)
 

@@ -271,6 +271,70 @@ fn upload_ingest_and_report_end_to_end() {
     assert_eq!(v["blob_count"], 3, "no new blob");
 }
 
+/// The regression this pins: ingest must finish the thought — link new
+/// blobs to identities and refresh the D39 rollups — not leave a
+/// hash-matching upload dark until an unrelated dat import/view eval
+/// happens by.
+#[test]
+fn ingested_member_lights_up_the_shelf() {
+    let f = fixture();
+    const MEMBER: &[u8] = b"mario kart rom bytes";
+
+    // A one-claim dat whose hashes match MEMBER exactly.
+    let mut hasher = datboi_core::alias::AliasHasher::new();
+    hasher.update(MEMBER);
+    let tuple = hasher.finalize();
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+    let dat = format!(
+        r#"<?xml version="1.0"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+<datafile><header><name>nds</name><description>Test dat</description><version>r1</version><author>no-intro</author></header>
+<game name="Mario Kart DS (USA)"><description>Mario Kart DS</description><rom name="Mario Kart DS (USA).nds" size="{size}" crc="{crc}" sha1="{sha1}"/></game>
+</datafile>"#,
+        size = MEMBER.len(),
+        crc = hex(&tuple.crc32),
+        sha1 = hex(&tuple.sha1),
+    );
+    let (status, v) = post_bytes(
+        f.addr,
+        "/v1/dats/import?provider=no-intro&system=nds",
+        dat.as_bytes(),
+    );
+    assert_eq!(status, 200, "{v}");
+
+    // Nothing ingested yet: the shelf is red.
+    let (status, v) = get(f.addr, "/v1/systems");
+    assert_eq!(status, 200);
+    let systems = v["systems"].as_array().expect("systems");
+    assert_eq!(systems.len(), 1);
+    assert_eq!(systems[0]["counts"]["missing"], 1, "{v}");
+
+    // Upload + ingest a zip holding the claimed member.
+    let zip = stored_zip(&[("game.nds", MEMBER)]);
+    let (status, v) = post_bytes(f.addr, "/v1/ingest/uploads?name=pack.zip", &zip);
+    assert_eq!(status, 200, "{v}");
+    let token = v["upload"].as_str().expect("token").to_owned();
+    let (status, v) = post_json(
+        f.addr,
+        "/v1/ingest",
+        &format!(r#"{{"uploads":["{token}"]}}"#),
+    );
+    assert_eq!(status, 200, "{v}");
+    let done = wait_done(f.addr, v["job"].as_i64().expect("job id"));
+    assert_eq!(done["state"], "done", "{done}");
+    assert_eq!(done["report"]["members_claimed"], 1, "{done}");
+
+    // The shelf lit up without any dat import/view eval in between:
+    // the zip member's LocalIngest recipe counts as have(verified).
+    let (status, v) = get(f.addr, "/v1/systems");
+    assert_eq!(status, 200);
+    let counts = &v["systems"][0]["counts"];
+    assert_eq!(counts["verified"], 1, "{v}");
+    assert_eq!(counts["missing"], 0, "{v}");
+}
+
 #[test]
 fn upload_and_start_reject_bad_requests() {
     let f = fixture();

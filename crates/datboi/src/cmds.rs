@@ -61,6 +61,12 @@ pub fn ingest(mut env: Env, paths: &[PathBuf], mv: bool, json: bool) -> anyhow::
     }
     let detectors = std::mem::take(&mut env.detectors);
     let report = Ingester::new(&env.store, &mut env.db, &detectors).ingest(paths);
+    // The pipeline stores content; identity linking + the D39 rollup
+    // refresh are what make audit/status see it. Ingest owns finishing
+    // that thought (dat import and view eval already run the same pair)
+    // instead of leaving new blobs dark until an unrelated eval.
+    datboi_catalog::relink_all(&env.db)?;
+    datboi_catalog::refresh_rollups(&mut env.db, now_unix())?;
     if json {
         println!("{}", ingest_json(&report));
     } else {
