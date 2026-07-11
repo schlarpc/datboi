@@ -86,9 +86,11 @@ the 2021 Python prototype's EZ-Flash Omega mutator — the earliest
 per-projection constraint code in this project's lineage. Device data
 point preserved with it: EZ-Flash Omega = max 512 files/dir, max
 99-char filenames — its own profile, distinct from everdrive.)
-Shipped status (2026-07-10): the 07-09 profiles skip oversize rows and
-only report overfull dirs — the fitting pipeline + auto-bucketing are
-an owed M4 work item.
+Shipped status (2026-07-10, later session): the fitting pipeline
+(noise-prefix strip, region-tag compression, trailing-junk trim, then
+truncate), auto-bucketing of overfull dirs (`{alpha_bucket}` is also a
+template placeholder), and the ezflash-omega profile are all in;
+oversize FILE rows (size, not name) still skip per D-record.
 
 ## Materialization
 

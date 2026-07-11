@@ -114,11 +114,14 @@ recovery-equivalence as a property test.
   by default, D63 carve-out + seek-equivalence gate + predicate
   refusal matrix, fsck-in-CI via dosfstools + independent fatfs
   read-back, evictor pinned-root guard for image/* and view/* tags).
-  REMAINING: MAME merge-mode rendering + device_ref closure +
-  softlist fidelity (D31 deferred set), retool clonelists + strict
-  1G1R mode (D57), ruled riders (D56 headroom guard, D59 chunking
-  eligibility, D60 config shape, D61 rehabilitate), profile
-  name-fitting pipeline + dir bucketing (80-views.md). ADDED TRACK (D58, pulled from M7): unrar-as-wasm
+  Riders — *shipped 2026-07-10, later session*: D56 headroom guard
+  (statvfs check in materialize), D59 chunking narrowed to route-less
+  literals, D60 analyzer config (`datboi analyzer`), D61 rehabilitate
+  (was already in), D57 strict mode + retool clonelists
+  (`dat clonelist`), name-fitting pipeline + alpha-bucketing +
+  ezflash-omega profile. REMAINING: MAME merge-mode rendering +
+  device_ref closure + softlist fidelity (D31 deferred set); the D58
+  unrar-wasm lane runs as its own track. ADDED TRACK (D58, pulled from M7): unrar-as-wasm
   extractor component — C-to-wasm lane lands now, rar members gain
   derive recipes and become evictable.
 - **M5 — "Other people can touch it"**: axum API, invites + passwords
