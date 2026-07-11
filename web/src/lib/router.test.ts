@@ -1,0 +1,56 @@
+import { beforeEach, describe, expect, test } from 'vitest';
+import { matchPath, router } from './router.svelte';
+
+describe('matchPath', () => {
+  test.each([
+    ['/', 'library'],
+    ['/views', 'views'],
+    ['/ingest', 'ingest'],
+    ['/storage', 'storage'],
+    ['/admin', 'admin'],
+    ['/login', 'login'],
+    ['/invite', 'invite'],
+  ] as const)('%s → %s', (path, screen) => {
+    expect(matchPath(path).screen).toBe(screen);
+  });
+
+  test('library drill-down carries the system id', () => {
+    expect(matchPath('/library/3')).toEqual({ screen: 'audit', systemId: '3' });
+  });
+
+  test('drill-down segment is percent-decoded', () => {
+    expect(matchPath('/library/a%20b')).toEqual({ screen: 'audit', systemId: 'a b' });
+  });
+
+  test.each(['/bogus', '/library', '/library/3/extra', '/viewsx'])(
+    'unknown path %s is notfound',
+    (path) => {
+      expect(matchPath(path).screen).toBe('notfound');
+    },
+  );
+});
+
+describe('router', () => {
+  beforeEach(() => {
+    router.replace('/');
+  });
+
+  test('navigate pushes history and swaps the route', () => {
+    router.navigate('/views');
+    expect(window.location.pathname).toBe('/views');
+    expect(router.route.screen).toBe('views');
+  });
+
+  test('replace swaps without stacking (redirects)', () => {
+    router.replace('/login');
+    expect(window.location.pathname).toBe('/login');
+    expect(router.route.screen).toBe('login');
+  });
+
+  test('popstate re-syncs from location (back/forward)', () => {
+    // Simulate the browser restoring an older entry.
+    window.history.pushState({}, '', '/storage');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    expect(router.route.screen).toBe('storage');
+  });
+});

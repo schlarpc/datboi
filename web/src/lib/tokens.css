@@ -30,6 +30,16 @@
   --band-snes: #b3543e; /* SNES system band (terracotta) */
   --hatch2: #f3e2bb; /* light stripe in the claimed hatch pattern */
   --tray: #efe8d6; /* jobs-tray / trust-bar background */
+  --track-home: #ffffff; /* home-card progress track (comp literal #fff; dark derived) */
+  /* Band palette for systems beyond the spec's GBA/SNES pair (ruling:
+   * the API carries no band color, so lib/bands.ts assigns one
+   * deterministically — known systems map to the spec tokens, others
+   * hash into these hues; dark variants lightened the same way the
+   * spec's own light/dark band pairs are). */
+  --band-teal: #3f7e8a;
+  --band-moss: #6b8a3f;
+  --band-plum: #a8518f;
+  --band-brass: #8a6a23;
 }
 
 /* ---- palette: dark (system preference) ---- */
@@ -55,6 +65,11 @@
     --band-snes: #cf7258;
     --hatch2: #5c4a20;
     --tray: #141613;
+    --track-home: #191b18;
+    --band-teal: #6fb0bf;
+    --band-moss: #9bbf6f;
+    --band-plum: #d883c0;
+    --band-brass: #c0a04f;
   }
 }
 
@@ -80,6 +95,11 @@ html[data-theme='light'] {
   --band-snes: #b3543e;
   --hatch2: #f3e2bb;
   --tray: #efe8d6;
+  --track-home: #ffffff;
+  --band-teal: #3f7e8a;
+  --band-moss: #6b8a3f;
+  --band-plum: #a8518f;
+  --band-brass: #8a6a23;
 }
 
 /* ---- palette: forced dark ---- */
@@ -104,6 +124,11 @@ html[data-theme='dark'] {
   --band-snes: #cf7258;
   --hatch2: #5c4a20;
   --tray: #141613;
+  --track-home: #191b18;
+  --band-teal: #6fb0bf;
+  --band-moss: #9bbf6f;
+  --band-plum: #d883c0;
+  --band-brass: #c0a04f;
 }
 
 /* ---- theme-independent tokens (derive from the palette via color-mix) ---- */

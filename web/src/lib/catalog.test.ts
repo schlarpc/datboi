@@ -37,6 +37,20 @@ describe('en.po msgctxt round-trip', () => {
     },
   );
 
+  test.each(['● Verified', '◐ Claimed', '○ Missing', '– No dump'])(
+    'rail label %j (glyph composed in) is a storage state',
+    (label) => {
+      expect(contextsOf(label)).toContain('storage state');
+    },
+  );
+
+  test.each(['{0} verified', '{0} claimed', '{0} missing'])(
+    'home-card count %j is a storage state',
+    (msgid) => {
+      expect(contextsOf(msgid)).toContain('storage state');
+    },
+  );
+
   test('"Views" is disambiguated as a compiled shelf', () => {
     expect(contextsOf('Views')).toContain('compiled shelf');
   });
@@ -45,9 +59,20 @@ describe('en.po msgctxt round-trip', () => {
     expect(contextsOf('bytes rebuildable, not yet re-verified')).toEqual([undefined]);
   });
 
+  test('composed strings keep their glyphs inside the msgid (spec §6)', () => {
+    for (const msgid of ['⬇ missing-list', '▸ jobs ({0})', 'done ✓', '▶ Play', 'activity ▾']) {
+      expect(contextsOf(msgid).length, msgid).toBeGreaterThan(0);
+    }
+  });
+
   test('ignored strings stay out of the catalog', () => {
-    // The wordmark (@wc-ignore) and the pre-catalog loading message.
-    expect(catalog).not.toContain('datboi');
+    // The wordmark (@wc-ignore), the pre-catalog loading message, the
+    // CLI incantation, and key-comparison literals. (The brand does
+    // appear inside the missing-list header msgid — that one is copy.)
+    expect(contextsOf('datboi')).toEqual([]);
     expect(catalog).not.toContain('Loading translations');
+    expect(catalog).not.toContain('datboi dat import');
+    expect(contextsOf('Escape')).toEqual([]);
+    expect(contextsOf('Enter')).toEqual([]);
   });
 });

@@ -3,150 +3,100 @@
   // Side-effect import: registers the wuchale catalog loaders (generated at
   // startup into src/locales/, gitignored) before the first loadLocale.
   import './locales/main.loader.svelte.js';
-  import { STATE_GLYPHS } from './lib/state';
+  import Header from './lib/components/Header.svelte';
+  import JobsTray from './lib/components/JobsTray.svelte';
+  import { router } from './lib/router.svelte';
+  import { session } from './lib/session.svelte';
+  import Admin from './screens/Admin.svelte';
+  import Audit from './screens/Audit.svelte';
+  import Ingest from './screens/Ingest.svelte';
+  import Invite from './screens/Invite.svelte';
+  import Library from './screens/Library.svelte';
+  import Login from './screens/Login.svelte';
+  import Storage from './screens/Storage.svelte';
+  import Views from './screens/Views.svelte';
 
-  // Locale is app-level state; a real switcher arrives with the M5 screens.
+  // Locale is app-level state; a real switcher arrives with later polish.
   let locale = $state('en');
+
+  const route = $derived(router.route);
+
+  // Boot: one whoami probe decides login page vs app shell. Loopback
+  // browsers are implicitly the owner (D68) and land straight in.
+  $effect(() => {
+    void session.init();
+  });
+
+  // /login and /invite are the open pages; everything else needs a
+  // session. Redirects use replace() so back doesn't ping-pong.
+  const open = $derived(route.screen === 'login' || route.screen === 'invite');
+  $effect(() => {
+    if (session.status === 'anonymous' && !open) {
+      router.replace('/login');
+    } else if (session.status === 'authenticated' && route.screen === 'login') {
+      router.replace('/');
+    }
+  });
 </script>
 
 {#await loadLocale(locale)}
   <!-- Rendered before the catalog is loaded, so untranslatable by design. -->
   <!-- @wc-ignore -->
-  <p class="loading">Loading translations…</p>
+  <p class="boot">Loading translations…</p>
 {:then}
-  <header>
-    <span class="logo-disc"></span>
-    <!-- The wordmark is the brand, not copy. -->
-    <!-- @wc-ignore -->
-    <span class="wordmark">datboi</span>
-    <nav>
-      <!-- "view" = compiled shelf (D33), not a UI view (D67 contexts). -->
-      <!-- @wc-context: compiled shelf -->
-      <span class="nav-item">Views</span>
-    </nav>
-  </header>
-  <main>
-    <h2>The shelf</h2>
-    <p class="sub">dat/rom management on content-addressed storage</p>
-    <!--
-      The four-state legend (spec §1.4). The state WORDS collide with everyday
-      English senses ("claimed" is a storage state, not a person's claim), so
-      each carries `@wc-context: storage state` — a real gettext msgctxt in
-      the PO catalog (D67). The meaning copy is unambiguous prose: no context.
-    -->
-    <ul class="legend">
-      <li>
-        <span class="dot dot--verified"></span>
-        <span class="glyph">{STATE_GLYPHS.verified}</span>
-        <span class="state-word state-text--verified">
-          <!-- @wc-context: storage state -->verified
-        </span>
-        <span class="meaning">bytes on hand, hash checked against the catalog</span>
-      </li>
-      <li>
-        <span class="dot dot--claimed"></span>
-        <span class="glyph">{STATE_GLYPHS.claimed}</span>
-        <span class="state-word state-text--claimed">
-          <!-- @wc-context: storage state -->claimed
-        </span>
-        <span class="meaning">bytes rebuildable, not yet re-verified</span>
-      </li>
-      <li>
-        <span class="dot dot--missing"></span>
-        <span class="glyph">{STATE_GLYPHS.missing}</span>
-        <span class="state-word state-text--missing">
-          <!-- @wc-context: storage state -->missing
-        </span>
-        <span class="meaning">no blob or claim names this hash</span>
-      </li>
-      <li>
-        <span class="dot dot--nodump"></span>
-        <span class="glyph">{STATE_GLYPHS.nodump}</span>
-        <span class="state-word state-text--nodump">
-          <!-- @wc-context: storage state -->no dump
-        </span>
-        <span class="meaning">the catalog marks this entry as never dumped — nothing to have</span>
-      </li>
-    </ul>
-  </main>
+  {#if route.screen === 'login'}
+    <Login />
+  {:else if route.screen === 'invite'}
+    <Invite />
+  {:else if session.status === 'loading'}
+    <p class="boot">checking session…</p>
+  {:else if session.status === 'anonymous'}
+    <!-- The redirect effect above is already swapping to /login. -->
+  {:else}
+    <div class="shell">
+      <Header />
+      {#if route.screen === 'library'}
+        <Library />
+      {:else if route.screen === 'audit'}
+        <!-- key: a different system remounts the drill-down clean. -->
+        {#key route.systemId}
+          <Audit systemId={route.systemId} />
+        {/key}
+      {:else if route.screen === 'views'}
+        <Views />
+      {:else if route.screen === 'ingest'}
+        <Ingest />
+      {:else if route.screen === 'storage'}
+        <Storage />
+      {:else if route.screen === 'admin'}
+        <Admin />
+      {:else}
+        <main class="notfound">
+          <p>nothing lives at this address</p>
+        </main>
+      {/if}
+      <JobsTray />
+    </div>
+  {/if}
 {/await}
 
 <style>
-  header {
+  .shell {
+    height: 100vh;
     display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 28px;
-    border-bottom: 2px solid var(--ink);
-    background: var(--panel);
+    flex-direction: column;
   }
 
-  .logo-disc {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: var(--ok);
-    border: 2px solid var(--ink);
-  }
-
-  .wordmark {
-    font: 800 15px var(--font-display);
-    letter-spacing: -0.02em;
-  }
-
-  nav {
-    margin-left: auto;
-  }
-
-  .nav-item {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--faint);
-  }
-
-  main {
-    padding: 26px 28px;
-  }
-
-  h2 {
-    margin: 0;
-    font: 800 24px var(--font-display);
-    letter-spacing: -0.03em;
-  }
-
-  .sub {
-    margin: 4px 0 20px;
-    font: 400 12.5px var(--font-data);
-    color: var(--faint);
-  }
-
-  .legend {
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .legend li {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 9px 0;
-    border-bottom: 1px solid var(--rule);
-  }
-
-  .glyph,
-  .state-word {
-    font: 400 11.5px var(--font-data);
-  }
-
-  .meaning {
-    font: 400 12px var(--font-data);
-    color: var(--mut);
-  }
-
-  .loading {
+  .boot {
     font: 400 12.5px var(--font-data);
     color: var(--faint);
     padding: 26px 28px;
+  }
+
+  .notfound {
+    flex: 1;
+    padding: 26px 28px;
+    font: 400 12.5px var(--font-data);
+    color: var(--faint);
   }
 </style>

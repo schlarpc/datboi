@@ -15,6 +15,15 @@ export default defineConfig({
       // Serve through the store-symlinked node_modules in the nix dev flow.
       allow: ['.', '/nix/store'],
     },
+    // Dev-loop proxy: `npm run dev` serves the SPA with HMR while the API
+    // and content routes come from a locally running daemon
+    // (`datboi serve`, default 127.0.0.1:2352). Loopback is implicitly
+    // owner (D68), so local dev needs no auth setup.
+    proxy: {
+      '/v1': 'http://127.0.0.1:2352',
+      '/view': 'http://127.0.0.1:2352',
+      '/snap': 'http://127.0.0.1:2352',
+    },
   },
   build: {
     outDir: 'dist',

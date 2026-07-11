@@ -1,29 +1,50 @@
 import { render, screen } from '@testing-library/svelte';
 import { loadLocale } from 'wuchale/load-utils';
-import { expect, test } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
 import App from './App.svelte';
+import { router } from './lib/router.svelte';
+import { installFetch } from './test/mock-api';
 
 // happy-dom emulates the client, so catalogs load the client way: register
 // the loaders (App imports them) and await the locale before rendering.
 await loadLocale('en');
 
-test('renders the shell with wuchale-transformed strings', async () => {
+afterEach(() => {
+  vi.unstubAllGlobals();
+  router.replace('/');
+});
+
+test('anonymous boot redirects to the login card', async () => {
+  installFetch({ whoami: { authenticated: false } });
   render(App);
 
-  // {#await loadLocale(locale)} resolves on a microtask; let it settle.
+  expect(await screen.findByText('log in')).toBeTruthy();
+  expect(window.location.pathname).toBe('/login');
+  // The card is the open page — no owner chrome leaks out.
+  expect(screen.queryByText('Library')).toBeNull();
+});
+
+test('authenticated boot (loopback owner) lands in the shell', async () => {
+  installFetch({
+    whoami: { authenticated: true, role: 'owner', via: 'loopback' },
+    systems: [],
+  });
+  render(App);
+
+  // Shell chrome: nav, wordmark, jobs tray, and the Library home.
   expect(await screen.findByText('The shelf')).toBeTruthy();
-
-  // Strings that went through extraction (these are catalog lookups at
-  // runtime, not literals — the source language round-trips).
-  expect(screen.getByText('verified')).toBeTruthy();
-  expect(screen.getByText('claimed')).toBeTruthy();
-  expect(screen.getByText('missing')).toBeTruthy();
-  expect(screen.getByText('no dump')).toBeTruthy();
-  expect(screen.getByText('bytes rebuildable, not yet re-verified')).toBeTruthy();
-
-  // Context-disambiguated nav item ("view" = compiled shelf).
-  expect(screen.getByText('Views')).toBeTruthy();
-
-  // The wordmark is @wc-ignore'd but still renders.
+  expect(screen.getByText('Library')).toBeTruthy();
   expect(screen.getByText('datboi')).toBeTruthy();
+  expect(await screen.findByText('▸ jobs (0)')).toBeTruthy();
+});
+
+test('a named session shows the avatar initial', async () => {
+  installFetch({
+    whoami: { authenticated: true, username: 'sam', role: 'owner', via: 'session' },
+    systems: [],
+  });
+  render(App);
+
+  await screen.findByText('The shelf');
+  expect(screen.getByTitle('sam').textContent).toBe('s');
 });

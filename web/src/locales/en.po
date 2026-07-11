@@ -7,51 +7,361 @@ msgstr ""
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: src/App.svelte
+#: src/lib/components/Header.svelte
+#: src/screens/Views.svelte
 msgctxt "compiled shelf"
 msgid "Views"
 msgstr "Views"
 
-#: src/App.svelte
+#: src/lib/components/EntryDrawer.svelte
+#: src/screens/Audit.svelte
 msgctxt "storage state"
 msgid "verified"
 msgstr "verified"
 
-#: src/App.svelte
+#: src/lib/components/EntryDrawer.svelte
 msgid "bytes on hand, hash checked against the catalog"
 msgstr "bytes on hand, hash checked against the catalog"
 
-#: src/App.svelte
+#: src/lib/components/EntryDrawer.svelte
+#: src/screens/Audit.svelte
 msgctxt "storage state"
 msgid "claimed"
 msgstr "claimed"
 
-#: src/App.svelte
+#: src/lib/components/EntryDrawer.svelte
 msgid "bytes rebuildable, not yet re-verified"
 msgstr "bytes rebuildable, not yet re-verified"
 
-#: src/App.svelte
+#: src/lib/components/EntryDrawer.svelte
+#: src/screens/Audit.svelte
 msgctxt "storage state"
 msgid "missing"
 msgstr "missing"
 
-#: src/App.svelte
+#: src/lib/components/EntryDrawer.svelte
 msgid "no blob or claim names this hash"
 msgstr "no blob or claim names this hash"
 
-#: src/App.svelte
+#: src/lib/components/EntryDrawer.svelte
+#: src/screens/Audit.svelte
 msgctxt "storage state"
 msgid "no dump"
 msgstr "no dump"
 
-#: src/App.svelte
+#: src/lib/components/EntryDrawer.svelte
 msgid "the catalog marks this entry as never dumped — nothing to have"
 msgstr "the catalog marks this entry as never dumped — nothing to have"
 
-#: src/App.svelte
+#: src/screens/Library.svelte
 msgid "The shelf"
 msgstr "The shelf"
 
 #: src/App.svelte
-msgid "dat/rom management on content-addressed storage"
-msgstr "dat/rom management on content-addressed storage"
+msgid "checking session…"
+msgstr "checking session…"
+
+#: src/App.svelte
+msgid "nothing lives at this address"
+msgstr "nothing lives at this address"
+
+#: src/lib/components/Header.svelte
+#: src/screens/Admin.svelte
+msgid "Admin"
+msgstr "Admin"
+
+#: src/screens/Admin.svelte
+#: src/screens/Ingest.svelte
+#: src/screens/Storage.svelte
+#: src/screens/Views.svelte
+msgid "not yet built — this screen lands in the next task"
+msgstr "not yet built — this screen lands in the next task"
+
+#. 0: system.provider; 1: system.system; 2: system.revision?.version ?? ''
+#: src/screens/Audit.svelte
+msgid "# datboi missing-list · {0} {1} {2}"
+msgstr "# datboi missing-list · {0} {1} {2}"
+
+#. 0: error
+#. 0: error
+#. 0: otherError
+#: src/screens/Audit.svelte
+#: src/screens/Library.svelte
+#: src/screens/Login.svelte
+msgid "something went wrong — {0}"
+msgstr "something went wrong — {0}"
+
+#: src/screens/Audit.svelte
+#: src/screens/Library.svelte
+msgid "loading…"
+msgstr "loading…"
+
+#: src/screens/Audit.svelte
+msgid "dat revision history — future"
+msgstr "dat revision history — future"
+
+#: src/screens/Audit.svelte
+msgid "dat revision diff — future"
+msgstr "dat revision diff — future"
+
+#: src/screens/Audit.svelte
+msgid "history"
+msgstr "history"
+
+#: src/screens/Audit.svelte
+msgid "diff"
+msgstr "diff"
+
+#: src/screens/Audit.svelte
+msgid "⬇ missing-list"
+msgstr "⬇ missing-list"
+
+#: src/screens/Audit.svelte
+msgid "All"
+msgstr "All"
+
+#: src/screens/Audit.svelte
+msgctxt "storage state"
+msgid "● Verified"
+msgstr "● Verified"
+
+#: src/screens/Audit.svelte
+msgctxt "storage state"
+msgid "◐ Claimed"
+msgstr "◐ Claimed"
+
+#: src/screens/Audit.svelte
+msgctxt "storage state"
+msgid "○ Missing"
+msgstr "○ Missing"
+
+#: src/screens/Audit.svelte
+msgctxt "storage state"
+msgid "– No dump"
+msgstr "– No dump"
+
+#: src/screens/Audit.svelte
+msgid "filter names…"
+msgstr "filter names…"
+
+#: src/screens/Audit.svelte
+msgid "comfortable"
+msgstr "comfortable"
+
+#: src/screens/Audit.svelte
+msgid "compact"
+msgstr "compact"
+
+#: src/screens/Audit.svelte
+msgid "nothing matches — clear the filter or search"
+msgstr "nothing matches — clear the filter or search"
+
+#. 0: entries.length.toLocaleString(); 1: total.toLocaleString()
+#: src/screens/Audit.svelte
+msgid "load more ({0} / {1})"
+msgstr "load more ({0} / {1})"
+
+#: src/screens/Invite.svelte
+msgid "this invite link is missing its token — ask for a fresh one"
+msgstr "this invite link is missing its token — ask for a fresh one"
+
+#: src/screens/Invite.svelte
+#: src/screens/Login.svelte
+msgid "username"
+msgstr "username"
+
+#: src/screens/Invite.svelte
+#: src/screens/Login.svelte
+msgid "password"
+msgstr "password"
+
+#: src/screens/Invite.svelte
+msgid "pick a username and password to join this shelf"
+msgstr "pick a username and password to join this shelf"
+
+#: src/screens/Invite.svelte
+msgid "accept invite"
+msgstr "accept invite"
+
+#: src/screens/Invite.svelte
+msgid "you're invited"
+msgstr "you're invited"
+
+#: src/lib/components/Header.svelte
+#: src/screens/Ingest.svelte
+msgid "Ingest"
+msgstr "Ingest"
+
+#. 0: systems.length.toLocaleString(); 1: entryTotal.toLocaleString()
+#: src/screens/Library.svelte
+msgid "{0} systems · {1} entries"
+msgstr "{0} systems · {1} entries"
+
+#: src/screens/Library.svelte
+msgid "dat import is CLI-only for now — run:"
+msgstr "dat import is CLI-only for now — run:"
+
+#: src/screens/Login.svelte
+msgid "invalid credentials"
+msgstr "invalid credentials"
+
+#: src/screens/Login.svelte
+msgid "log in"
+msgstr "log in"
+
+#: src/lib/components/Header.svelte
+#: src/screens/Storage.svelte
+msgid "Storage"
+msgstr "Storage"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "ENTRY"
+msgstr "ENTRY"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "not in library"
+msgstr "not in library"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "in-browser emulator — future"
+msgstr "in-browser emulator — future"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "▶ Play"
+msgstr "▶ Play"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "play: in-browser core over verified ranges — future"
+msgstr "play: in-browser core over verified ranges — future"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "metadata provider, later — the dat name stays the source of truth"
+msgstr "metadata provider, later — the dat name stays the source of truth"
+
+#. 0: shortHash(detail.wanted_hash)
+#: src/lib/components/EntryDrawer.svelte
+msgid "wanted {0}"
+msgstr "wanted {0}"
+
+#. 0: detail.revision.version
+#: src/lib/components/EntryDrawer.svelte
+msgid "added in dat rev {0}"
+msgstr "added in dat rev {0}"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "appears in missing-list export"
+msgstr "appears in missing-list export"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "excluded from completeness math"
+msgstr "excluded from completeness math"
+
+#. 0: fmtDate(rom.blob.verified_at)
+#: src/lib/components/EntryDrawer.svelte
+msgid "verified {0}"
+msgstr "verified {0}"
+
+#. 0: shortHash(rom.blob.hash); 1: rom.blob.residency === 'resident' ? wordResident \\: rom.blob.residency === 'absent' ? wordAbsent \\: wordEvicted
+#: src/lib/components/EntryDrawer.svelte
+msgid "blob {0} · {1}"
+msgstr "blob {0} · {1}"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "verify pending replay"
+msgstr "verify pending replay"
+
+#. 0: route.route; 1: route.source_present ? '●' \\: '○'
+#: src/lib/components/EntryDrawer.svelte
+msgid "route {0} {1}"
+msgstr "route {0} {1}"
+
+#. 0: rom.pins.join(', ')
+#: src/lib/components/EntryDrawer.svelte
+msgid "pinned {0}"
+msgstr "pinned {0}"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "pins — none"
+msgstr "pins — none"
+
+#. 0: storOpen ? '▾' \\: '▸'
+#: src/lib/components/EntryDrawer.svelte
+msgid "{0} storage internals"
+msgstr "{0} storage internals"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "box art — metadata provider, later"
+msgstr "box art — metadata provider, later"
+
+#: src/lib/components/Header.svelte
+#: src/screens/Invite.svelte
+#: src/screens/Login.svelte
+msgid "logo slot — frog goes here"
+msgstr "logo slot — frog goes here"
+
+#: src/lib/components/Header.svelte
+msgid "Library"
+msgstr "Library"
+
+#: src/lib/components/Header.svelte
+msgid "healthy"
+msgstr "healthy"
+
+#: src/lib/components/JobRow.svelte
+msgid "done ✓"
+msgstr "done ✓"
+
+#: src/lib/components/JobsTray.svelte
+msgid "recent activity log — needs a job registry"
+msgstr "recent activity log — needs a job registry"
+
+#. 0: jobs.length
+#: src/lib/components/JobsTray.svelte
+msgid "▸ jobs ({0})"
+msgstr "▸ jobs ({0})"
+
+#: src/lib/components/JobsTray.svelte
+msgid "activity ▾"
+msgstr "activity ▾"
+
+#: src/lib/components/ThemeToggle.svelte
+msgid "sys"
+msgstr "sys"
+
+#. 0: sys.counts.verified.toLocaleString()
+#: src/screens/Library.svelte
+msgctxt "storage state"
+msgid "{0} verified"
+msgstr "{0} verified"
+
+#. 0: sys.counts.claimed.toLocaleString()
+#: src/screens/Library.svelte
+msgctxt "storage state"
+msgid "{0} claimed"
+msgstr "{0} claimed"
+
+#. 0: sys.counts.missing.toLocaleString()
+#: src/screens/Library.svelte
+msgctxt "storage state"
+msgid "{0} missing"
+msgstr "{0} missing"
+
+#: src/screens/Library.svelte
+msgid "+ import a dat to start a new system"
+msgstr "+ import a dat to start a new system"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "resident"
+msgstr "resident"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "absent"
+msgstr "absent"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "evicted (covered)"
+msgstr "evicted (covered)"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "close"
+msgstr "close"
