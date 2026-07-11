@@ -4,10 +4,9 @@
    * GET /v1/systems in the full cartridge register: band, 2px ink,
    * offset shadow, stacked bar with ink frame, views chips.
    */
-  import { systems as fetchSystems } from '../lib/api/client';
+  import { importDat, systems as fetchSystems } from '../lib/api/client';
   import type { System } from '../lib/api/types';
   import { bandFor } from '../lib/bands';
-  import CliHint from '../lib/components/CliHint.svelte';
   import Link from '../lib/components/Link.svelte';
   import StackedBar from '../lib/components/StackedBar.svelte';
   import { router } from '../lib/router.svelte';
@@ -15,10 +14,15 @@
 
   let systems = $state<System[] | null>(null);
   let error = $state<string | null>(null);
-  // Empty-card reveal: dat import is CLI-only in M5 (api.rs scope
-  // ruling), so the dashed card can't open an upload flow — clicking it
-  // reveals the CLI incantation instead. Not a modal, just a fold.
-  let cliHintOpen = $state(false);
+
+  // Dat import (POST /v1/dats/import): the dashed card is a drop zone
+  // and a click-to-pick. Files import sequentially — each import is
+  // one whole-file request with no progress stream, so "importing
+  // <name>…" on the card is the honest maximum of feedback.
+  let fileInput = $state<HTMLInputElement | null>(null);
+  let dragOver = $state(false);
+  let importing = $state<string | null>(null);
+  let imports = $state<{ name: string; ok: boolean; detail: string }[]>([]);
 
   $effect(() => {
     fetchSystems().then(
@@ -26,6 +30,45 @@
       (e: unknown) => (error = e instanceof Error ? e.message : String(e)),
     );
   });
+
+  async function importFiles(files: FileList): Promise<void> {
+    for (const file of Array.from(files)) {
+      importing = file.name;
+      try {
+        const report = await importDat(file);
+        imports.push({
+          name: file.name,
+          ok: true,
+          detail: `${report.provider}/${report.system} — ${report.entries.toLocaleString()} entries`,
+        });
+        // The shelf just changed (new source, or a source's current
+        // revision flipped) — re-fetch rather than guess the rollups.
+        systems = (await fetchSystems()).systems;
+      } catch (e) {
+        imports.push({
+          name: file.name,
+          ok: false,
+          detail: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+    importing = null;
+  }
+
+  function onDrop(e: DragEvent): void {
+    e.preventDefault();
+    dragOver = false;
+    if (importing === null && e.dataTransfer && e.dataTransfer.files.length > 0) {
+      void importFiles(e.dataTransfer.files);
+    }
+  }
+
+  function onPick(): void {
+    if (fileInput?.files && fileInput.files.length > 0) {
+      void importFiles(fileInput.files);
+      fileInput.value = '';
+    }
+  }
 
   const entryTotal = $derived((systems ?? []).reduce((sum, sys) => sum + sys.total, 0));
 
@@ -107,14 +150,51 @@
       {/each}
     </div>
 
-    <button class="empty-card" onclick={() => (cliHintOpen = !cliHintOpen)}>
-      <span>+ import a dat to start a new system</span>
-      {#if cliHintOpen}
-        <CliHint command={'datboi dat import <file.dat>'}>
-          dat import is CLI-only for now — run:
-        </CliHint>
+    <!-- Hidden picker behind the card; `accept` is a hint, not a
+         gate — the server's format detection is the real judge. -->
+    <input
+      bind:this={fileInput}
+      type="file"
+      accept=".dat,.xml"
+      multiple
+      hidden
+      onchange={onPick}
+    />
+    <button
+      class="empty-card"
+      class:drag={dragOver}
+      disabled={importing !== null}
+      onclick={() => fileInput?.click()}
+      ondragover={(e) => {
+        e.preventDefault();
+        dragOver = true;
+      }}
+      ondragleave={() => (dragOver = false)}
+      ondrop={onDrop}
+    >
+      {#if importing !== null}
+        <span>importing {importing}…</span>
+      {:else}
+        <span>+ import a dat to start a new system — drop files here or click to pick</span>
       {/if}
     </button>
+    {#if imports.length > 0}
+      <ul class="import-log">
+        {#each imports as result, i (i)}
+          <li class:bad={!result.ok}>
+            {#if result.ok}
+              <!-- @wc-context: dat import result -->
+              <span>imported</span>
+            {:else}
+              <!-- @wc-context: dat import result -->
+              <span class="bad">refused</span>
+            {/if}
+            <span class="file">{result.name}</span>
+            <span class="detail">{result.detail}</span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
   {/if}
 </main>
 
@@ -247,4 +327,41 @@
     cursor: pointer;
   }
 
+  .empty-card.drag {
+    border-color: var(--ink);
+    color: var(--text);
+    background: var(--panel);
+  }
+
+  .empty-card:disabled {
+    cursor: progress;
+  }
+
+  .import-log {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .import-log li {
+    display: flex;
+    gap: 10px;
+    font: 400 12px var(--font-data);
+    color: var(--mut);
+  }
+
+  .import-log .bad {
+    color: var(--bad);
+  }
+
+  .import-log .file {
+    font-weight: 600;
+  }
+
+  .import-log .detail {
+    color: var(--faint);
+  }
 </style>

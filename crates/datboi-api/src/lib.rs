@@ -343,6 +343,28 @@ pub struct RouteInfo {
     pub verify: RouteVerify,
 }
 
+// ---- POST /v1/dats/import ----
+
+/// One import's receipt — the same fields `datboi dat import --json`
+/// prints, plus the resolved source identity (the web caller never saw
+/// the dat header, so it can't derive provider/system itself).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DatImportResponse {
+    /// The dat source this landed in — the `/v1/systems` id.
+    pub source_id: i64,
+    pub revision_id: i64,
+    /// blake3 of the dat blob now in the CAS, lowercase hex.
+    pub dat_blob: String,
+    /// Resolved provider (override, else the dat header's author).
+    pub provider: String,
+    /// Resolved system (override, else the dat header's name).
+    pub system: String,
+    pub entries: u64,
+    pub claims: u64,
+    /// Revisions demoted to header-only by this import (D38).
+    pub demoted_revisions: Vec<i64>,
+}
+
 // ---- GET /v1/views (+ detail) ----
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -650,6 +672,7 @@ mod tests {
             "/v1/systems",
             "/v1/systems/{id}/entries",
             "/v1/systems/{id}/entries/{name}",
+            "/v1/dats/import",
             "/v1/views",
             "/v1/views/{name}",
             "/v1/views/{name}/files",

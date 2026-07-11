@@ -12,6 +12,7 @@
 import { vi } from 'vitest';
 import type {
   AdminUsersBody,
+  DatImportBody,
   EntryDetail,
   EntryRow,
   MintedInvite,
@@ -42,6 +43,10 @@ export interface MockUniverse {
   /** Non-200 for /v1/admin/users (e.g. 403 exercises owner-only). */
   adminStatus?: number;
   minted?: MintedInvite;
+  /** POST /v1/dats/import receipt; default is a minimal one. */
+  datImport?: DatImportBody;
+  /** Dat import answers 400 — exercises the refused-file log line. */
+  datImportFail?: boolean;
   /** Grant/revoke answer 500 — exercises the optimistic revert. */
   grantFail?: boolean;
   /** Grant/revoke wait on this before answering — lets a test observe
@@ -158,6 +163,24 @@ export function installFetch(universe: MockUniverse) {
           return json(universe.adminStatus, { error: 'owner only' });
         }
         return json(200, universe.admin ?? { users: [], invites: [] });
+      }
+      if (path === '/v1/dats/import' && method === 'POST') {
+        if (universe.datImportFail === true) {
+          return json(400, { error: 'unknown dat format' });
+        }
+        return json(
+          200,
+          universe.datImport ?? {
+            source_id: 1,
+            revision_id: 1,
+            dat_blob: '0'.repeat(64),
+            provider: 'unknown',
+            system: 'unknown',
+            entries: 0,
+            claims: 0,
+            demoted_revisions: [],
+          },
+        );
       }
       if (path === '/v1/admin/invites' && method === 'POST') {
         return json(200, universe.minted ?? { url_path: '/invite#tok-mock', expires_at: 4200 });

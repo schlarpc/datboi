@@ -13,6 +13,7 @@
 mod admin;
 mod api;
 pub mod auth;
+mod dats;
 mod dav;
 mod hardening;
 mod http;

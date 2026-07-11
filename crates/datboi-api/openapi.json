@@ -101,6 +101,66 @@
         ],
         "type": "object"
       },
+      "DatBytes": {
+        "description": "Marker schema for the dat-import upload body: the raw dat file\nbytes, not JSON (and not multipart — one file IS the request).",
+        "format": "binary",
+        "type": "string"
+      },
+      "DatImportResponse": {
+        "description": "One import's receipt — the same fields `datboi dat import --json`\nprints, plus the resolved source identity (the web caller never saw\nthe dat header, so it can't derive provider/system itself).",
+        "properties": {
+          "claims": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dat_blob": {
+            "description": "blake3 of the dat blob now in the CAS, lowercase hex.",
+            "type": "string"
+          },
+          "demoted_revisions": {
+            "description": "Revisions demoted to header-only by this import (D38).",
+            "items": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "entries": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "provider": {
+            "description": "Resolved provider (override, else the dat header's author).",
+            "type": "string"
+          },
+          "revision_id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "source_id": {
+            "description": "The dat source this landed in — the `/v1/systems` id.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "system": {
+            "description": "Resolved system (override, else the dat header's name).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "revision_id",
+          "dat_blob",
+          "provider",
+          "system",
+          "entries",
+          "claims",
+          "demoted_revisions"
+        ],
+        "type": "object"
+      },
       "Definition": {
         "description": "ViewDef summary: dat ref, 1G1R mode, profile, image params (D62).",
         "properties": {
@@ -1752,6 +1812,89 @@
         "summary": "Who am I? Open: answers `authenticated: false` instead of 401 so\nthe SPA can probe without special-casing errors.",
         "tags": [
           "auth"
+        ]
+      }
+    },
+    "/v1/dats/import": {
+      "post": {
+        "operationId": "dat_import",
+        "parameters": [
+          {
+            "description": "Dat source provider override (default: the dat header's author)",
+            "in": "query",
+            "name": "provider",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Dat source system override (default: the dat header's name)",
+            "in": "query",
+            "name": "system",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "$ref": "#/components/schemas/DatBytes"
+              }
+            }
+          },
+          "description": "The dat file bytes",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatImportResponse"
+                }
+              }
+            },
+            "description": "Imported: a new revision of a new or existing source"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Empty body or unparseable dat"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          },
+          "413": {
+            "description": "Dat larger than the upload limit (plain-text body — the reject fires below the JSON layer)"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Import a dat file — the same operation as `datboi dat import`. The\nbody is the raw dat bytes in any supported format (Logiqx,\nClrMamePro, RomCenter, MAME XML / software list); format detection\nand the provider/system defaults come from the bytes themselves.",
+        "tags": [
+          "systems"
         ]
       }
     },

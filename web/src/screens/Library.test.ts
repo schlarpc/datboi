@@ -77,16 +77,54 @@ test('bands: known systems get spec tokens deterministically', async () => {
   ]);
 });
 
-test('views chips render; empty card reveals the CLI hint on click', async () => {
+test('views chips render; the empty card is the dat drop zone', async () => {
   installFetch({ systems: [gba, snes] });
   render(Library);
   await screen.findByText('gba');
 
   expect(screen.getByText('gba-everdrive')).toBeTruthy();
   expect(screen.getByText('gba-flash')).toBeTruthy();
+  expect(screen.getByText(/drop files here or click to pick/)).toBeTruthy();
+});
 
-  // Dat import is CLI-only in M5: the dashed card reveals the command.
-  expect(screen.queryByText(/datboi dat import/)).toBeNull();
-  await fireEvent.click(screen.getByText('+ import a dat to start a new system'));
-  expect(screen.getByText(/datboi dat import/)).toBeTruthy();
+test('picking a dat imports it, logs the receipt, and refreshes the shelf', async () => {
+  const handler = installFetch({
+    systems: [gba],
+    datImport: {
+      source_id: 3,
+      revision_id: 9,
+      dat_blob: 'a'.repeat(64),
+      provider: 'redump',
+      system: 'psx',
+      entries: 1300,
+      claims: 1450,
+      demoted_revisions: [],
+    },
+  });
+  render(Library);
+  await screen.findByText('gba');
+
+  const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+  expect(input).toBeTruthy();
+  const file = new File(['<datafile/>'], 'psx.dat');
+  await fireEvent.change(input!, { target: { files: [file] } });
+
+  expect(await screen.findByText('psx.dat')).toBeTruthy();
+  expect(screen.getByText('redump/psx — 1,300 entries')).toBeTruthy();
+  // The import mutated the shelf, so the screen re-fetched it.
+  const systemFetches = handler.mock.calls.filter(([input_]) => String(input_) === '/v1/systems');
+  expect(systemFetches.length).toBe(2);
+});
+
+test('a refused dat logs the server error against the file name', async () => {
+  installFetch({ systems: [gba], datImportFail: true });
+  render(Library);
+  await screen.findByText('gba');
+
+  const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+  await fireEvent.change(input!, { target: { files: [new File(['junk'], 'junk.dat')] } });
+
+  expect(await screen.findByText('junk.dat')).toBeTruthy();
+  expect(screen.getByText('refused')).toBeTruthy();
+  expect(screen.getByText('unknown dat format')).toBeTruthy();
 });

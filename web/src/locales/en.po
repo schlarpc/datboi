@@ -211,9 +211,8 @@ msgstr "Ingest"
 msgid "{0} systems · {1} entries"
 msgstr "{0} systems · {1} entries"
 
-#: src/screens/Library.svelte
-msgid "dat import is CLI-only for now — run:"
-msgstr "dat import is CLI-only for now — run:"
+#~ msgid "dat import is CLI-only for now — run:"
+#~ msgstr "dat import is CLI-only for now — run:"
 
 #: src/screens/Login.svelte
 msgid "invalid credentials"
@@ -363,9 +362,8 @@ msgctxt "storage state"
 msgid "{0} missing"
 msgstr "{0} missing"
 
-#: src/screens/Library.svelte
-msgid "+ import a dat to start a new system"
-msgstr "+ import a dat to start a new system"
+#~ msgid "+ import a dat to start a new system"
+#~ msgstr "+ import a dat to start a new system"
 
 #: src/lib/components/EntryDrawer.svelte
 msgid "resident"
@@ -893,3 +891,27 @@ msgstr "{0}{1} files"
 #: src/screens/Browse.svelte
 msgid "snap {0}<0/><1/>"
 msgstr "snap {0}<0/><1/>"
+
+#. 0: report.provider; 1: report.system; 2: report.entries.toLocaleString()
+#: src/screens/Library.svelte
+msgid "{0}/{1} — {2} entries"
+msgstr "{0}/{1} — {2} entries"
+
+#. 0: importing
+#: src/screens/Library.svelte
+msgid "importing {0}…"
+msgstr "importing {0}…"
+
+#: src/screens/Library.svelte
+msgid "+ import a dat to start a new system — drop files here or click to pick"
+msgstr "+ import a dat to start a new system — drop files here or click to pick"
+
+#: src/screens/Library.svelte
+msgctxt "dat import result"
+msgid "imported"
+msgstr "imported"
+
+#: src/screens/Library.svelte
+msgctxt "dat import result"
+msgid "refused"
+msgstr "refused"

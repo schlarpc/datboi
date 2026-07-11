@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Path as UrlPath, RawQuery, State};
+use axum::extract::{DefaultBodyLimit, Path as UrlPath, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
 use axum::routing::{any, delete, get, post};
@@ -25,7 +25,7 @@ use axum::{Extension, Router};
 use datboi_core::hash::Blake3;
 use serde_json::json;
 
-use crate::{admin, api};
+use crate::{admin, api, dats};
 
 use crate::App;
 use crate::auth::{self, Caller};
@@ -54,6 +54,14 @@ pub(crate) fn router(app: Arc<App>) -> Router {
         .route("/v1/systems", get(api::systems))
         .route("/v1/systems/{id}/entries", get(api::system_entries))
         .route("/v1/systems/{id}/entries/{*name}", get(api::system_entry))
+        // The one mutating catalog action the web owns (dats.rs) —
+        // request-sized, unlike the CLI-only pipeline actions. The
+        // route-level limit replaces axum's 2 MiB default; real dats
+        // run to hundreds of MiB.
+        .route(
+            "/v1/dats/import",
+            post(dats::import).layer(DefaultBodyLimit::max(dats::BODY_LIMIT)),
+        )
         .route("/v1/views", get(api::views))
         .route("/v1/views/{name}", get(api::view_detail))
         .route("/v1/views/{name}/files", get(api::view_files))

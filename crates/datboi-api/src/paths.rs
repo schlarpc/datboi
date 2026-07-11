@@ -22,10 +22,10 @@ use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder
 use utoipa::{Modify, OpenApi, ToSchema};
 
 use crate::{
-    AdminUsersResponse, ApiError, EntriesPage, EntryDetail, EntryState, GrantAddRequest,
-    InviteAcceptRequest, InviteMintRequest, InviteMintResponse, JobsResponse, LoginRequest,
-    OkResponse, SessionResponse, SessionsRevokedResponse, StorageResponse, SystemsResponse,
-    ViewDetail, ViewFilesPage, ViewsResponse, WhoamiResponse,
+    AdminUsersResponse, ApiError, DatImportResponse, EntriesPage, EntryDetail, EntryState,
+    GrantAddRequest, InviteAcceptRequest, InviteMintRequest, InviteMintResponse, JobsResponse,
+    LoginRequest, OkResponse, SessionResponse, SessionsRevokedResponse, StorageResponse,
+    SystemsResponse, ViewDetail, ViewFilesPage, ViewsResponse, WhoamiResponse,
 };
 
 /// Marker schema for the minted-image download body: raw octets, not
@@ -33,6 +33,12 @@ use crate::{
 #[derive(ToSchema)]
 #[schema(value_type = String, format = Binary)]
 struct ImageBytes(Vec<u8>);
+
+/// Marker schema for the dat-import upload body: the raw dat file
+/// bytes, not JSON (and not multipart — one file IS the request).
+#[derive(ToSchema)]
+#[schema(value_type = String, format = Binary)]
+struct DatBytes(Vec<u8>);
 
 // ---- auth (open: the caller has no identity yet by definition) ----
 
@@ -148,6 +154,29 @@ fn system_entries() {}
     ),
 )]
 fn system_entry() {}
+
+/// Import a dat file — the same operation as `datboi dat import`. The
+/// body is the raw dat bytes in any supported format (Logiqx,
+/// ClrMamePro, RomCenter, MAME XML / software list); format detection
+/// and the provider/system defaults come from the bytes themselves.
+#[utoipa::path(
+    post,
+    path = "/v1/dats/import",
+    tag = "systems",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    params(
+        ("provider" = Option<String>, Query, description = "Dat source provider override (default: the dat header's author)"),
+        ("system" = Option<String>, Query, description = "Dat source system override (default: the dat header's name)"),
+    ),
+    request_body(content = DatBytes, content_type = "application/octet-stream", description = "The dat file bytes"),
+    responses(
+        (status = 200, description = "Imported: a new revision of a new or existing source", body = DatImportResponse),
+        (status = 400, description = "Empty body or unparseable dat", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+        (status = 413, description = "Dat larger than the upload limit (plain-text body — the reject fires below the JSON layer)"),
+    ),
+)]
+fn dat_import() {}
 
 // ---- views (the friend surface: ACL-filtered, misses look alike) ----
 
@@ -395,6 +424,7 @@ impl Modify for SecurityAddon {
         systems,
         system_entries,
         system_entry,
+        dat_import,
         views,
         view_detail,
         view_files,

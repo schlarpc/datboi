@@ -2,7 +2,9 @@
 //! systems/entries audit rollups, view metadata, storage stats — JSON
 //! renders of the same queries the CLI's `audit`/`status` commands run.
 //! Mutating pipeline actions (ingest, eviction, scrub, view eval) stay
-//! CLI-only in M5; the UI deep-links CLI instructions instead.
+//! CLI-only in M5; the UI deep-links CLI instructions instead. Dat
+//! import is the one exception — request-sized, no progress to stream
+//! — and lives in dats.rs.
 //!
 //! Everything here is owner-only except the view surface, which is the
 //! friend surface (D68 grants). Owner-only misses answer 403; view-
@@ -136,7 +138,7 @@ fn pct_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn parse_query(query: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_query(query: &str) -> Vec<(String, String)> {
     query
         .split('&')
         .filter(|pair| !pair.is_empty())

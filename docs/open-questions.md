@@ -184,6 +184,19 @@ strict mode + retool clonelist consumption are M4 work items).
   layout for now (all comps are 1160px; responsive is design work);
   `▶ Play` (browser emulator cores) and box-art metadata provider
   stay explicitly-future per the comps, UI reserves their slots.
+- **Dat import graduated from CLI-only** (2026-07-11, post-ship):
+  the M5 "mutating actions stay CLI-only" ruling was really about
+  long-running pipeline work wanting live progress and a job
+  registry (ingest, eval, mint, evict, scrub) — dat import has
+  neither problem: it is request-sized, bytes in / report out, and
+  the CLI path buffers the whole file the same way. So it became the
+  first (and so far only) mutating /v1 operation:
+  `POST /v1/dats/import` (raw dat bytes as the body — no multipart,
+  one file IS the request; provider/system overrides on the query
+  string; 512 MiB route-level body cap clears MAME's listxml), and
+  the Library screen's dashed empty-card became a real drop-zone +
+  file-picker with a per-file receipt log. The other pipeline
+  actions still wait on the job registry above.
 
 ## Next sessions (pick up here)
 

@@ -14,6 +14,8 @@ import { router } from '../router.svelte';
 import type { EntryState } from '../state';
 import type {
   AdminUsersBody,
+  DatImportBody,
+  DatImportParams,
   EntriesBody,
   EntriesParams,
   EntryDetail,
@@ -55,17 +57,23 @@ export function onUnauthorized(handler: () => void): void {
 
 interface RequestOpts {
   body?: unknown;
+  /** Raw upload body (dat import); mutually exclusive with `body`. */
+  rawBody?: Blob;
   /** false = open auth endpoint: 401 is a typed error, not session death. */
   sessionAuth?: boolean;
 }
 
 async function request<T>(method: string, path: string, opts: RequestOpts = {}): Promise<T> {
-  const resp = await fetch(path, {
-    method,
-    credentials: 'same-origin',
-    headers: opts.body === undefined ? undefined : { 'content-type': 'application/json' },
-    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
-  });
+  let headers: Record<string, string> | undefined;
+  let body: BodyInit | undefined;
+  if (opts.rawBody !== undefined) {
+    headers = { 'content-type': 'application/octet-stream' };
+    body = opts.rawBody;
+  } else if (opts.body !== undefined) {
+    headers = { 'content-type': 'application/json' };
+    body = JSON.stringify(opts.body);
+  }
+  const resp = await fetch(path, { method, credentials: 'same-origin', headers, body });
   if (resp.ok) {
     return (await resp.json()) as T;
   }
@@ -138,6 +146,20 @@ export function systemEntries(
 
 export const entryDetail = (systemId: number | string, name: string): Promise<EntryDetail> =>
   request('GET', `/v1/systems/${systemId}/entries/${encodeURIComponent(name)}`);
+
+/**
+ * POST /v1/dats/import — the raw dat file bytes ARE the body (no
+ * multipart), same operation as `datboi dat import`. Provider/system
+ * overrides ride the query string; omitted, they resolve from the dat
+ * header server-side.
+ */
+export function importDat(file: Blob, params: DatImportParams = {}): Promise<DatImportBody> {
+  const query = new URLSearchParams();
+  if (params.provider) query.set('provider', params.provider);
+  if (params.system) query.set('system', params.system);
+  const qs = query.toString();
+  return request('POST', `/v1/dats/import${qs ? `?${qs}` : ''}`, { rawBody: file });
+}
 
 export const views = (): Promise<ViewsBody> => request('GET', '/v1/views');
 

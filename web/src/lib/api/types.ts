@@ -48,6 +48,11 @@ export type RomRoute = Schemas['RouteInfo'];
 export type Rom = Schemas['RomClaim'];
 export type EntryDetail = Schemas['EntryDetail'];
 
+// ---- POST /v1/dats/import ----
+
+export type DatImportParams = NonNullable<operations['dat_import']['parameters']['query']>;
+export type DatImportBody = Schemas['DatImportResponse'];
+
 // ---- GET /v1/views (+ /{name}) ----
 
 export type OneGOneR = Schemas['OneGOneR'];

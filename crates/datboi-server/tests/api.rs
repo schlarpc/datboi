@@ -202,6 +202,19 @@ fn request(addr: SocketAddr, method: &str, path: &str, body: &str) -> (u16, serd
     }
 }
 
+/// POST raw bytes (the dat-import upload shape).
+fn post_bytes(addr: SocketAddr, path: &str, body: &[u8]) -> (u16, serde_json::Value) {
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let req = agent
+        .post(&format!("http://{addr}{path}"))
+        .set("Content-Type", "application/octet-stream");
+    match req.send_bytes(body) {
+        Ok(resp) => (resp.status(), parse(resp)),
+        Err(ureq::Error::Status(code, resp)) => (code, parse(resp)),
+        Err(e) => panic!("POST {path} transport error: {e}"),
+    }
+}
+
 fn parse(resp: ureq::Response) -> serde_json::Value {
     let text = resp.into_string().expect("body");
     serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text))
@@ -452,6 +465,92 @@ fn view_files_and_image_end_to_end() {
     // ---- misses: no mint on `gba`, unknown view — identical 404s ----
     assert_eq!(get_raw(f.addr, "/v1/views/gba/image", None).status(), 404);
     assert_eq!(get_raw(f.addr, "/v1/views/nope/image", None).status(), 404);
+}
+
+/// POST /v1/dats/import — the web upload path, same operation as
+/// `datboi dat import` (dats.rs). Loopback is implicitly owner (D68);
+/// the friend 403 is covered by require_owner's unit tests.
+#[test]
+fn dat_import_end_to_end() {
+    let f = fixture();
+
+    // A fresh source: provider/system resolve from the dat header.
+    let psx_dat = r#"<?xml version="1.0"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+<datafile><header><name>psx</name><description>Test dat</description><version>r7</version><author>redump</author></header>
+<game name="Delta (Europe)"><description>Delta</description><rom name="Delta (Europe).bin" size="4" crc="deadbeef" sha1="0102030405060708090a0b0c0d0e0f1011121314"/></game>
+</datafile>"#;
+    let (status, v) = post_bytes(f.addr, "/v1/dats/import", psx_dat.as_bytes());
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["provider"], "redump");
+    assert_eq!(v["system"], "psx");
+    assert_eq!(v["entries"], 1);
+    assert_eq!(v["claims"], 1);
+    assert_eq!(v["demoted_revisions"], serde_json::json!([]));
+    assert_eq!(
+        v["dat_blob"].as_str().expect("hex").len(),
+        64,
+        "blake3 hex of the stored dat blob"
+    );
+    let psx_id = v["source_id"].as_i64().expect("source_id");
+    assert_ne!(psx_id, f.system_id, "a new dat source");
+
+    // ...and it is live in the read model, rollups included.
+    let (_, v) = get(f.addr, "/v1/systems");
+    let systems = v["systems"].as_array().expect("systems");
+    assert_eq!(systems.len(), 2);
+    let psx = systems
+        .iter()
+        .find(|s| s["id"] == psx_id)
+        .expect("imported system listed");
+    assert_eq!(psx["source"], "redump/psx");
+    assert_eq!(psx["counts"]["missing"], 1);
+    assert_eq!(psx["revision"]["version"], "r7");
+
+    // Query overrides beat the header (percent-decoded like the rest
+    // of the query surface).
+    let (status, v) = post_bytes(
+        f.addr,
+        "/v1/dats/import?provider=my%20mirror&system=psx-usa",
+        psx_dat.as_bytes(),
+    );
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["provider"], "my mirror");
+    assert_eq!(v["system"], "psx-usa");
+    assert_ne!(
+        v["source_id"].as_i64(),
+        Some(psx_id),
+        "override = new source"
+    );
+
+    // A newer revision of the fixture's source lands on the SAME
+    // source and becomes current.
+    let gba_r2 = r#"<?xml version="1.0"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+<datafile><header><name>gba</name><description>Test dat</description><version>r2</version><author>no-intro</author></header>
+<game name="Alpha (USA)"><description>Alpha</description><rom name="Alpha (USA).gba" size="5" crc="12345678" sha1="000102030405060708090a0b0c0d0e0f10111213"/></game>
+</datafile>"#;
+    let (status, v) = post_bytes(f.addr, "/v1/dats/import", gba_r2.as_bytes());
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["source_id"], f.system_id);
+    let (_, v) = get(f.addr, "/v1/systems");
+    let gba = v["systems"]
+        .as_array()
+        .expect("systems")
+        .iter()
+        .find(|s| s["id"] == f.system_id)
+        .expect("fixture system")
+        .clone();
+    assert_eq!(gba["revision"]["version"], "r2", "import flipped current");
+
+    // Rejections: not a dat (400, the caller's bytes), empty body.
+    let (status, v) = post_bytes(f.addr, "/v1/dats/import", b"definitely not a dat");
+    assert_eq!(status, 400, "{v}");
+    let (status, v) = post_bytes(f.addr, "/v1/dats/import", b"");
+    assert_eq!(
+        (status, v["error"].as_str()),
+        (400, Some("empty request body"))
+    );
 }
 
 #[test]
