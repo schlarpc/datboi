@@ -397,3 +397,83 @@ fn blessing_promotes_to_full_d49() {
     assert_eq!(before, after);
     assert_eq!(after, &full[1_000_000..1_004_096]);
 }
+
+/// The D27 pin guard: while `image/<name>` stands, the image recipe's
+/// inputs (content AND skeleton) refuse eviction as PinnedByView; an
+/// unpinned blob still gets the ordinary answer.
+#[test]
+fn pinned_image_inputs_refuse_eviction() {
+    use datboi_exec::evict::{Blocked, EvictOutcome};
+
+    let mut w = world();
+    let (report, files) = minted(&mut w);
+    let loose = put_content(&mut w, &content(200, 100));
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+
+    // A content input of the pinned image.
+    let leaf = Blake3::compute(&content(2, usize::try_from(files[1].1).expect("small")));
+    match exec.evict(&w.db, &leaf).expect("evict") {
+        EvictOutcome::Blocked(Blocked::PinnedByView) => {}
+        other => panic!("expected PinnedByView, got {other:?}"),
+    }
+    // An unpinned resident blob: the guard doesn't overreach — the
+    // ordinary no-covering-recipe answer applies.
+    match exec.evict(&w.db, &loose).expect("evict") {
+        EvictOutcome::Blocked(Blocked::NotGrounded) => {}
+        other => panic!("expected NotGrounded, got {other:?}"),
+    }
+    // Drop the pin: the leaf goes back to the ordinary answer too.
+    w.db.delete_tag(&format!("image/{}", "carveout"))
+        .expect("untag");
+    match exec.evict(&w.db, &leaf).expect("evict") {
+        EvictOutcome::Blocked(Blocked::NotGrounded) => {}
+        other => panic!("expected NotGrounded after untag, got {other:?}"),
+    }
+    let _ = report;
+}
+
+/// The view/* half of the guard: a pinned snapshot's opaque-classed
+/// rows are protected; affine rows are not.
+#[test]
+fn pinned_view_opaque_rows_refuse_eviction() {
+    use datboi_exec::evict::{Blocked, EvictOutcome};
+
+    let mut w = world();
+    let opaque = put_content(&mut w, &content(31, 5000));
+    let affine = put_content(&mut w, &content(32, 5000));
+    let snap = ViewSnapshot {
+        created_at: 1,
+        view_name: "pins".into(),
+        sources: vec![],
+        rows: vec![
+            ViewRow {
+                path: "affine.bin".into(),
+                hash: affine,
+                size: 5000,
+                seek: 0,
+            },
+            ViewRow {
+                path: "opaque.bin".into(),
+                hash: opaque,
+                size: 5000,
+                seek: 2,
+            },
+        ],
+    };
+    let bytes = snap.encode().expect("encode");
+    let snap_hash = Blake3::compute(&bytes);
+    w.store
+        .put(StoreNs::Meta, snap_hash, bytes.as_slice())
+        .expect("put snap");
+    w.db.set_tag("view/pins", &snap_hash, 1).expect("tag");
+
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+    match exec.evict(&w.db, &opaque).expect("evict") {
+        EvictOutcome::Blocked(Blocked::PinnedByView) => {}
+        other => panic!("expected PinnedByView, got {other:?}"),
+    }
+    match exec.evict(&w.db, &affine).expect("evict") {
+        EvictOutcome::Blocked(Blocked::NotGrounded) => {}
+        other => panic!("expected NotGrounded, got {other:?}"),
+    }
+}

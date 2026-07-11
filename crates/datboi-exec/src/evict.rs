@@ -11,10 +11,12 @@
 //!   so recipe-served range reads stay verifiable forever.
 //! - **D27**: policy default is keep-both-under-high-water; the
 //!   [`plan`] helper picks recipe-covered literals, biggest first, until
-//!   the target is met. The opaque-route/pinned-view refinement has no
-//!   subject yet (view snapshots are M4) — when views land, the planner
-//!   must skip literals whose only route is opaque while a pinned view
-//!   references them.
+//!   the target is met. Pinned views protect what they serve
+//!   ([`Executor::pinned_protected_set`]): `image/*` tags protect every
+//!   input of the image recipe (content + skeleton — evicting one
+//!   degrades serving to spill-per-window and kills the D63 carve-out),
+//!   and `view/*` tags protect opaque-classed rows (the D27 clause,
+//!   applied conservatively: any snapshot row recorded opaque).
 //!
 //! Eviction is a planner decision, never a side effect: nothing else in
 //! the codebase calls [`Store::evict_literal`].
@@ -36,6 +38,9 @@ pub enum Blocked {
     /// The blob has a covering recipe, but it has not replayed locally
     /// yet — run [`Executor::replay`] first (that is the license).
     NeedsReplay,
+    /// A pinned view or image tag references this blob (D27): eviction
+    /// would degrade pinned serving. Drop or move the tag first.
+    PinnedByView,
 }
 
 #[derive(Debug)]
@@ -64,11 +69,24 @@ impl<'s> Executor<'s> {
     /// Index/store failures; the outboard build failing (nothing is
     /// deleted in that case).
     pub fn evict(&self, db: &Db, hash: &Blake3) -> Result<EvictOutcome, ExecError> {
+        let protected = self.pinned_protected_set(db)?;
+        self.evict_with(db, hash, &protected)
+    }
+
+    fn evict_with(
+        &self,
+        db: &Db,
+        hash: &Blake3,
+        protected: &std::collections::HashSet<i64>,
+    ) -> Result<EvictOutcome, ExecError> {
         let Some(row) = db.blob_by_hash(hash)? else {
             return Ok(EvictOutcome::Blocked(Blocked::NotResident));
         };
         if row.residency != Residency::Resident || !self.store.has(StoreNs::Data, hash) {
             return Ok(EvictOutcome::Blocked(Blocked::NotResident));
+        }
+        if protected.contains(&row.blob_id) {
+            return Ok(EvictOutcome::Blocked(Blocked::PinnedByView));
         }
         if !db.is_evictable(row.blob_id)? {
             // Distinguish "needs a replay" from "structurally impossible"
@@ -124,11 +142,12 @@ impl<'s> Executor<'s> {
         if resident <= target_resident_bytes {
             return Ok(report);
         }
+        let protected = self.pinned_protected_set(db)?;
         for candidate in db.list_eviction_candidates()? {
             if resident <= target_resident_bytes {
                 break;
             }
-            match self.evict(db, &candidate.hash)? {
+            match self.evict_with(db, &candidate.hash, &protected)? {
                 EvictOutcome::Evicted { bytes_reclaimed } => {
                     report.evicted += 1;
                     report.bytes_reclaimed += bytes_reclaimed;
@@ -146,6 +165,12 @@ impl<'s> Executor<'s> {
         for (blob_id, hash) in verified_only_candidates(db)? {
             if resident <= target_resident_bytes {
                 break;
+            }
+            // Don't burn a licensing replay on a blob the pin check
+            // would refuse anyway.
+            if protected.contains(&blob_id) {
+                report.blocked.push((hash, Blocked::PinnedByView));
+                continue;
             }
             let mut licensed = false;
             for recipe in db.recipes_for_output(blob_id)? {
@@ -166,7 +191,7 @@ impl<'s> Executor<'s> {
                 report.blocked.push((hash, Blocked::NeedsReplay));
                 continue;
             }
-            match self.evict(db, &hash)? {
+            match self.evict_with(db, &hash, &protected)? {
                 EvictOutcome::Evicted { bytes_reclaimed } => {
                     report.evicted += 1;
                     report.bytes_reclaimed += bytes_reclaimed;
@@ -179,6 +204,54 @@ impl<'s> Executor<'s> {
             }
         }
         Ok(report)
+    }
+
+    /// Blob ids no eviction may touch while their pins stand (D27):
+    /// `image/*` tags protect every input of every non-failed recipe
+    /// covering the tagged output (content windows + skeleton blobs —
+    /// losing one degrades pinned-image serving to spill-per-window and
+    /// disqualifies the D63 carve-out); `view/*` tags protect rows the
+    /// snapshot recorded as opaque (seek class 2), whose serving would
+    /// otherwise re-spill on every read.
+    ///
+    /// Strictness is the safe direction here: a tag that names a
+    /// missing or undecodable snapshot makes this ERROR rather than
+    /// silently protect nothing — eviction destroys bytes.
+    fn pinned_protected_set(&self, db: &Db) -> Result<std::collections::HashSet<i64>, ExecError> {
+        let mut protected = std::collections::HashSet::new();
+        for (name, hash) in db.list_tags()? {
+            if name.starts_with("image/") {
+                let Some(row) = db.blob_by_hash(&hash)? else {
+                    continue; // tag outlived its index row; nothing to protect
+                };
+                for recipe in db.recipes_for_output(row.blob_id)? {
+                    if recipe.verify == VerifyState::Failed {
+                        continue;
+                    }
+                    for input in db.recipe_inputs(recipe.recipe_id)? {
+                        protected.insert(input.blob_id);
+                    }
+                }
+            } else if name.starts_with("view/") {
+                use std::io::Read as _;
+                let mut bytes = Vec::new();
+                self.store
+                    .get(StoreNs::Meta, &hash)?
+                    .ok_or_else(|| {
+                        ExecError::Malformed(format!("pinned snapshot {hash} missing from meta/"))
+                    })?
+                    .read_to_end(&mut bytes)?;
+                let snap = datboi_core::viewsnap::ViewSnapshot::decode(&bytes).map_err(|e| {
+                    ExecError::Malformed(format!("pinned snapshot {hash} does not decode: {e}"))
+                })?;
+                for row in snap.rows.iter().filter(|r| r.seek == 2) {
+                    if let Some(blob) = db.blob_by_hash(&row.hash)? {
+                        protected.insert(blob.blob_id);
+                    }
+                }
+            }
+        }
+        Ok(protected)
     }
 
     /// Human-readable account of why `hash` won't evict right now: which
@@ -197,6 +270,12 @@ impl<'s> Executor<'s> {
                 "not resident ({:?}): there are no local bytes to evict",
                 row.residency
             )]);
+        }
+        if self.pinned_protected_set(db)?.contains(&row.blob_id) {
+            return Ok(vec![
+                "pinned (D27): a view/image tag serves these bytes; drop or move the tag first"
+                    .into(),
+            ]);
         }
         let recipes = db.recipes_for_output(row.blob_id)?;
         if recipes.is_empty() {
