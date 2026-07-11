@@ -25,6 +25,7 @@ mod bindings {
 use bindings::Transform;
 
 pub mod attribution;
+pub mod extractor;
 pub mod stream;
 
 /// The deterministic engine configuration (D5) shared by the @1 and @2
