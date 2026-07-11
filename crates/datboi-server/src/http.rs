@@ -89,10 +89,17 @@ pub(crate) fn router(app: Arc<App>) -> Router {
         // root listing died with it — its content is `/v1/views`.
         .fallback(crate::web::fallback)
         // Identity resolution + per-class enforcement (D68) wraps
-        // everything, fallback included.
+        // everything, fallback included; the gate also runs the D70
+        // Fetch-Metadata CSRF check before any handler.
         .layer(axum::middleware::from_fn_with_state(
             Arc::clone(&app),
             auth::gate,
+        ))
+        // Security headers (D70) go outermost so every response out of
+        // the router wears them — handlers, the SPA fallback, DAV, and
+        // the gate's own rejections alike.
+        .layer(axum::middleware::from_fn(
+            crate::hardening::security_headers,
         ))
         .with_state(app)
 }

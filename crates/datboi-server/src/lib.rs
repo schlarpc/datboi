@@ -14,6 +14,7 @@ mod admin;
 mod api;
 pub mod auth;
 mod dav;
+mod hardening;
 mod http;
 mod nfs;
 mod vfs;

@@ -218,6 +218,13 @@ pub(crate) async fn gate(
     mut req: Request,
     next: Next,
 ) -> Response {
+    // Fetch-Metadata CSRF (D70) first: header-only, no DB. It applies
+    // to loopback callers too — DNS rebinding hands a hostile page an
+    // origin that resolves to 127.0.0.1, and loopback-is-owner (D68)
+    // makes that ambient authority; this check is what closes it.
+    if let Err(msg) = crate::hardening::csrf_check(req.method(), req.headers()) {
+        return err(StatusCode::FORBIDDEN, msg);
+    }
     let caller = if peer.ip().is_loopback() {
         Caller::Local // no DB touch on the hot local path
     } else {

@@ -635,3 +635,79 @@ fn auth_flow_over_http() {
             .is_some()
     );
 }
+
+/// Browser hardening (D70): the security-header set on every response
+/// class, and the Fetch-Metadata CSRF gate on state-changing methods.
+#[test]
+fn d70_security_headers_and_csrf() {
+    const CSP: &str = "default-src 'self'; script-src 'self'; \
+         style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
+         font-src 'self'; connect-src 'self'; frame-ancestors 'none'; \
+         base-uri 'none'; form-action 'self'";
+
+    let f = fixture();
+
+    // headers ride every response class: the SPA shell, a /v1 JSON
+    // answer, and a 404 error alike
+    for (path, want_status) in [("/", 200), ("/v1/views", 200), ("/v1/nope", 404)] {
+        let (status, resp) = get(f.addr, path, &[]);
+        assert_eq!(status, want_status, "{path}");
+        assert_eq!(resp.header("content-security-policy"), Some(CSP), "{path}");
+        assert_eq!(resp.header("x-content-type-options"), Some("nosniff"));
+        assert_eq!(resp.header("referrer-policy"), Some("no-referrer"));
+        assert_eq!(
+            resp.header("cross-origin-opener-policy"),
+            Some("same-origin")
+        );
+        assert_eq!(
+            resp.header("cross-origin-resource-policy"),
+            Some("same-origin")
+        );
+        assert!(
+            resp.header("strict-transport-security").is_none(),
+            "no HSTS (plain-HTTP LAN)"
+        );
+    }
+
+    // CSRF: a cross-site POST is rejected before the handler — even
+    // over loopback (the DNS-rebinding case D70 exists for)
+    let creds = r#"{"username":"pal","password":"wrongwrong"}"#;
+    let (status, resp) = post_json(
+        f.addr,
+        "/v1/auth/login",
+        creds,
+        &[("Sec-Fetch-Site", "cross-site")],
+    );
+    assert_eq!(status, 403);
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.into_string().expect("json")).expect("typed error shape");
+    assert_eq!(v["error"], "cross-origin request rejected (D70)");
+
+    // same-origin fetch (the SPA's own login call) reaches the handler:
+    // normal invalid-credentials 401, not a 403
+    let (status, _) = post_json(
+        f.addr,
+        "/v1/auth/login",
+        creds,
+        &[("Sec-Fetch-Site", "same-origin")],
+    );
+    assert_eq!(status, 401);
+
+    // pre-Fetch-Metadata browser: Origin matching Host passes through
+    let (status, _) = post_json(
+        f.addr,
+        "/v1/auth/login",
+        creds,
+        &[("Origin", &format!("http://{}", f.addr))],
+    );
+    assert_eq!(status, 401);
+
+    // ...and a mismatched Origin rejects
+    let (status, _) = post_json(
+        f.addr,
+        "/v1/auth/login",
+        creds,
+        &[("Origin", "http://evil.example")],
+    );
+    assert_eq!(status, 403);
+}
