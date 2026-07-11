@@ -9,6 +9,11 @@ permissions:
   contents: read
   packages: write
 
+# One publish at a time; a new push to main supersedes an in-flight run.
+concurrency:
+  group: container
+  cancel-in-progress: true
+
 jobs:
   publish:
     runs-on: ubuntu-latest
