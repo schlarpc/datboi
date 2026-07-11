@@ -28,9 +28,13 @@ pub const CHUNK_THRESHOLD: u64 = 4 * 1024 * 1024;
 
 /// The canonical `xf-preflate` component (D53), embedded so the analyzer
 /// can publish it as an ordinary CAS blob the moment it mints the first
-/// recipe that pins it. `transforms/dist/` holds the committed
-/// reproducible build (the runtime gate pins the same bytes by blake3).
-pub const XF_PREFLATE_WASM: &[u8] = include_bytes!("../../../transforms/dist/xf_preflate.wasm");
+/// recipe that pins it. Nix-built, spliced in at compile time via
+/// `DATBOI_COMPONENTS_DIR` (D66); the runtime gate exercises the same
+/// artifact.
+pub const XF_PREFLATE_WASM: &[u8] = include_bytes!(concat!(
+    env!("DATBOI_COMPONENTS_DIR"),
+    "/datboi_xf_preflate.wasm"
+));
 
 /// Compressed-window size fed to the splitter per step. Baked into the
 /// analyzer identity: retuning changes frame boundaries (and so the
@@ -757,7 +761,10 @@ impl Analyzer for ChunkAnalyzer {
 }
 
 /// The canonical `xf-ecm` component, embedded like xf-preflate's.
-pub const XF_ECM_WASM: &[u8] = include_bytes!("../../../transforms/dist/xf_ecm.wasm");
+pub const XF_ECM_WASM: &[u8] = include_bytes!(concat!(
+    env!("DATBOI_COMPONENTS_DIR"),
+    "/datboi_xf_ecm.wasm"
+));
 
 /// CD sector regeneration discovery (the ECM idea; M3's last analyzer).
 /// Scans a blob on the 2352-byte grid; every sector that REGENERATES
@@ -818,7 +825,7 @@ impl Default for EcmAnalyzer {
 struct EcmSplitReader<'a> {
     src: &'a mut std::fs::File,
     remaining: u64,
-    records: Vec<xf_ecm::LayoutRecord>,
+    records: Vec<datboi_xf_ecm::LayoutRecord>,
     sectors: [u64; 4], // by kind; [0] counts literal BYTES
     pending: Vec<u8>,
     pending_pos: usize,
@@ -843,20 +850,21 @@ impl<'a> EcmSplitReader<'a> {
         {
             last.count = merged;
         } else {
-            self.records.push(xf_ecm::LayoutRecord { kind, count });
+            self.records
+                .push(datboi_xf_ecm::LayoutRecord { kind, count });
         }
     }
 
     fn advance(&mut self) -> std::io::Result<()> {
         use std::io::Read as _;
-        let take = self.remaining.min(xf_ecm::SECTOR as u64);
+        let take = self.remaining.min(datboi_xf_ecm::SECTOR as u64);
         if take == 0 {
             return Ok(());
         }
         let mut raw = vec![0u8; usize::try_from(take).expect("sector-bounded")];
         self.src.read_exact(&mut raw)?;
         self.remaining -= take;
-        match xf_ecm::classify_sector(&raw) {
+        match datboi_xf_ecm::classify_sector(&raw) {
             Some((kind, stripped)) => {
                 self.push_run(kind, 1);
                 self.sectors[usize::from(kind)] += 1;
@@ -919,7 +927,7 @@ impl Analyzer for EcmAnalyzer {
             .size
             .or_else(|| store.len(StoreNs::Data, &item.hash).ok().flatten())
             .ok_or("blob size unknown")?;
-        if size < xf_ecm::SECTOR as u64 {
+        if size < datboi_xf_ecm::SECTOR as u64 {
             return Ok(AnalysisResult {
                 outcome: AnalysisOutcome::Negative,
                 detail: Some("smaller than one raw CD sector".into()),
@@ -928,7 +936,7 @@ impl Analyzer for EcmAnalyzer {
         // Cheap gate: a bin's first sector starts with the sync pattern.
         let mut head = [0u8; 12];
         file.read_exact(&mut head).map_err(|e| e.to_string())?;
-        if head != xf_ecm::SYNC {
+        if head != datboi_xf_ecm::SYNC {
             return Ok(AnalysisResult {
                 outcome: AnalysisOutcome::Negative,
                 detail: Some("no CD sync pattern at offset 0".into()),
@@ -952,7 +960,7 @@ impl Analyzer for EcmAnalyzer {
         }
         let mut layout = Vec::with_capacity(reader.records.len() * 5);
         for r in &reader.records {
-            layout.extend_from_slice(&xf_ecm::encode_record(*r));
+            layout.extend_from_slice(&datboi_xf_ecm::encode_record(*r));
         }
         let layout_hash = Blake3::compute(&layout);
         store

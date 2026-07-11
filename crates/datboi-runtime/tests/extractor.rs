@@ -32,7 +32,13 @@ impl Write for SharedBuf {
 }
 
 /// The committed, stamped component (D5/D6/D54) recipes will pin.
-const EX_UNRAR: &[u8] = include_bytes!("../../../transforms/dist/ex_unrar.wasm");
+/// The nix-built `ex-unrar` component (D66), embedded at compile time
+/// via `DATBOI_COMPONENTS_DIR` (build.rs re-exports it) — never a
+/// checked-in artifact.
+const EX_UNRAR: &[u8] = include_bytes!(concat!(
+    env!("DATBOI_COMPONENTS_DIR"),
+    "/datboi_ex_unrar.wasm"
+));
 
 /// The rar test fixture (one member "VERSION" = "unrar-0.4.0"). rar cannot
 /// be created programmatically (extraction-only), hence the committed blob.

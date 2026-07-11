@@ -11,12 +11,20 @@ use datboi_runtime::stream::{
     RangeRead, RangeRequest, SequentialInput, StreamHost, StreamInput, StreamTransform,
 };
 use datboi_runtime::{Limits, RuntimeError, SeekClass};
-use xf_ecm::{LayoutRecord, SECTOR, classify_sector, encode_record, rebuild_sector, stripped_len};
+use datboi_xf_ecm::{
+    LayoutRecord, SECTOR, classify_sector, encode_record, rebuild_sector, stripped_len,
+};
 
-const COMPONENT: &[u8] = include_bytes!("../../../transforms/dist/xf_ecm.wasm");
+/// The nix-built `xf-ecm` component (D66), embedded at compile time
+/// via `DATBOI_COMPONENTS_DIR` (build.rs re-exports it) — never a
+/// checked-in artifact.
+const COMPONENT: &[u8] = include_bytes!(concat!(
+    env!("DATBOI_COMPONENTS_DIR"),
+    "/datboi_xf_ecm.wasm"
+));
 
 /// blake3 of the fixture — the identity a recipe would pin.
-const COMPONENT_BLAKE3: &str = "4bab790d39acd59842a80d6d17a307946658ec76e04c27104876e11f64abc04b";
+const COMPONENT_BLAKE3: &str = "6c41ed6eee717922d173ee9f8598847a13ddcf9d5e6dae77bfa5fb4ebb6b24ad";
 
 fn pattern(len: usize, seed: u64) -> Vec<u8> {
     let mut state = seed;

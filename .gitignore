@@ -1,5 +1,5 @@
 /target
-/transforms/target
+/crates/*/target
 /result
 /result-*
 /.direnv
@@ -7,5 +7,4 @@
 *.db-wal
 *.db-shm
 /prompt.txt
-transforms/*/target/
 /.claude/

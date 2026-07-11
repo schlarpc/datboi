@@ -126,7 +126,7 @@ recovery-equivalence as a property test.
   REBUILD semantics stay M7 transform territory as ruled).
   **M4 IS COMPLETE.** ADDED TRACK (D58, pulled from M7) — *shipped +
   merged 2026-07-10*: unrar-as-wasm extractor component
-  (`transforms/ex-unrar`, `datboi:extractor@1` world, wasi
+  (`crates/datboi-ex-unrar`, `datboi:extractor@1` world, wasi
   cross-toolchain lane, zero imports — D46 held); rar members carry
   derive recipes and are evictable. The C-to-wasm lane M7's 7-Zip
   SDK / CHD / RVZ work needs now exists.

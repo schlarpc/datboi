@@ -17,7 +17,7 @@ wasmtime.workspace = true
 [dev-dependencies]
 # Native twin of the committed component fixture: the ECM gate builds
 # its vectors with the crate and asserts the WASM component agrees.
-xf-ecm = { path = "../../transforms/xf-ecm" }
+datboi-xf-ecm = { path = "../datboi-xf-ecm" }
 blake3.workspace = true
 wat.workspace = true
 

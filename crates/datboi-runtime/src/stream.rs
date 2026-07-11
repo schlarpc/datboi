@@ -27,7 +27,7 @@ mod bindings {
     // entry types below.
     wasmtime::component::bindgen!({
         world: "transform-stream",
-        path: "../../transforms/wit/v2",
+        path: "../../wit/v2",
         // Host methods return wasmtime::Result so contract violations
         // (MAX_READ) and sink I/O failures become deterministic traps.
         imports: { default: trappable },

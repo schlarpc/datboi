@@ -1,13 +1,21 @@
-# Host workspace. The wasm transforms live in their own workspace under
-# transforms/ (different target/profile; see docs/50-infra.md).
+# Host workspace. The wasm components (crates/datboi-xf-*, datboi-ex-*)
+# are each their OWN standalone workspace with their own lockfile
+# (D54/D66; different target/profile; see docs/50-infra.md) — the
+# lockfile boundary is what keeps sibling changes from churning
+# component bytes. Excluding them here lets host crates path-depend on
+# a component's PURE logic (gates cross-check wasm vs native, analyzers
+# reuse classify/rebuild) without merging the dependency graphs.
 [workspace]
 resolver = "2"
 members = ["crates/*"]
-# The transforms are standalone workspaces (D54); excluding them lets
-# host crates path-depend on a transform's PURE logic (gates cross-check
-# wasm vs native, analyzers reuse classify/rebuild) without merging the
-# dependency graphs that keep component bytes reproducible.
-exclude = ["transforms"]
+exclude = [
+  "crates/datboi-xf-cso",
+  "crates/datboi-xf-ecm",
+  "crates/datboi-xf-preflate",
+  "crates/datboi-xf-reference",
+  "crates/datboi-xf-reference-stream",
+  "crates/datboi-ex-unrar",
+]
 
 [workspace.package]
 version = "0.1.0"

@@ -24,22 +24,27 @@ datboi/
 │   │                          # from core to keep core dependency-light
 │   ├── datboi-runtime/        # wasmtime host, limits
 │   ├── datboi-server/         # axum daemon
-│   └── datboi/                # CLI (client subcommands + serve)
-├── transforms/                # SEPARATE cargo workspace (wasm target/profile)
-│   ├── wit/                   # datboi:transform WIT world — the versioned ABI
-│   └── xf-*/                  # one crate per transform
+│   ├── datboi/                # CLI (client subcommands + serve)
+│   ├── datboi-xf-*/           # wasm transform components — each its OWN
+│   │                          # standalone workspace + lockfile (D54/D66)
+│   └── datboi-ex-*/           # wasm extractor components (D58), same shape
+├── wit/                       # datboi:{transform,extractor} WIT worlds —
+│                              # the versioned, frozen ABI
 ├── web/                       # vite + TS (rof-gui pattern)
 └── docs/
 ```
 
-Two cargo workspaces because targets/profiles differ (host vs
-wasm32-unknown-unknown — not wasip2, whose std drags WASI imports into
-every component; see D42) and wasm crates shouldn't pollute the host dep
-cache. Each
-transform is a `packages.xf-*` flake output; the daemon embeds builtin
-transforms via `include_bytes!` of those store paths — nix makes
-"transforms are content-addressed artifacts" nearly literal. Shared API
-types: a `datboi-api` crate generates TS; WIT plays that role for the wasm
+The component crates are excluded from the host workspace: targets and
+profiles differ (host vs wasm32-unknown-unknown — not wasip2, whose std
+drags WASI imports into every component; see D42), and each component
+keeps its own lockfile so sibling crates can't perturb its bytes through
+shared dependency resolution (D54). The daemon embeds the built
+components via `include_bytes!` of the nix store paths
+(`DATBOI_COMPONENTS_DIR`, D66) — nix makes "transforms are
+content-addressed artifacts" nearly literal; in a dev checkout the
+embedding crates' build.rs invokes `nix build .#transforms` itself, so a
+component edit lands on the next cargo build. Shared API types: a
+`datboi-api` crate generates TS; WIT plays that role for the wasm
 boundary.
 
 ## Daemon conventions

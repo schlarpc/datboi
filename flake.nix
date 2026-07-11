@@ -29,7 +29,7 @@
       };
 
       # Toolchain pinned via rust-toolchain.toml (single source of truth);
-      # includes the wasm32-wasip2 target for the transforms workspace.
+      # includes the wasm targets for the component crates.
       rustToolchainFor = system:
         let pkgs = pkgsFor system;
         in pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
@@ -74,21 +74,30 @@
         let craneLib = craneLibFor system;
         in craneLib.buildDepsOnly (hostArgsFor system);
 
-      # ---- components (transforms/{xf,ex}-*, wasm32-unknown-unknown) ----
+      # ---- components (crates/datboi-{xf,ex}-*, wasm32-unknown-unknown) ----
       #
       # Each component is a STANDALONE workspace with its own lockfile
       # (D54): sibling crates must not be able to perturb a component's
       # bytes through shared dependency resolution. The reproducibility
-      # boundary is one crate directory plus the frozen ../wit.
+      # boundary is one crate directory plus the frozen ../../wit (D66
+      # layout: crates/<crate> + ./wit).
       #
-      # Two world families, distinguished by crate prefix (D58): `xf-` =
-      # transform (@1 whole-buffer / @2 streaming), `ex-` = extractor
-      # (seekable archive in → member streams + metadata out). The build,
-      # stamp, and zero-import gate are identical across both; extractors
-      # additionally cross-compile a vendored C++ staticlib (see the
-      # wasiToolchainFor / ex-unrar wiring below).
+      # Two world families, distinguished by crate prefix (D58):
+      # `datboi-xf-` = transform (@1 whole-buffer / @2 streaming),
+      # `datboi-ex-` = extractor (seekable archive in → member streams +
+      # metadata out). The build, stamp, and zero-import gate are
+      # identical across both; extractors additionally cross-compile a
+      # vendored C++ staticlib (see the wasiToolchainFor / datboi-ex-unrar
+      # wiring below).
 
-      wasmCrateNames = [ "xf-cso" "xf-ecm" "xf-preflate" "xf-reference" "xf-reference-stream" "ex-unrar" ];
+      wasmCrateNames = [
+        "datboi-xf-cso"
+        "datboi-xf-ecm"
+        "datboi-xf-preflate"
+        "datboi-xf-reference"
+        "datboi-xf-reference-stream"
+        "datboi-ex-unrar"
+      ];
 
       # ---- C-to-wasm toolchain lane (D58) ----
       #
@@ -98,7 +107,7 @@
       # through DATBOI_WASI_* env vars. NOTE the component still imports
       # NOTHING (D5/D46) — the sysroot only supplies the C++ runtime the
       # determinism shim leaves undefined; wasi-libc's syscall-importing
-      # objects are shut out by that shim (see transforms/ex-unrar).
+      # objects are shut out by that shim (see crates/datboi-ex-unrar).
       wasiToolchainFor = system:
         let
           pkgs = pkgsFor system;
@@ -122,13 +131,17 @@
 
       # Extractor crates need the C-to-wasm toolchain in the build env;
       # transforms don't. Keyed by prefix.
-      isExtractor = crate: nixpkgs.lib.hasPrefix "ex-" crate;
+      isExtractor = crate: nixpkgs.lib.hasPrefix "datboi-ex-" crate;
 
-      # The shared frozen WIT, staged next to the unpacked crate so the
-      # guests' `../wit/v2` path resolves.
+      # The shared frozen WIT, staged so the guests' `../../wit/v2` path
+      # resolves exactly as it does in the repo (crates/<crate>/../../wit):
+      # nest the unpacked crate one level deeper and put wit at the top.
       witStageFor = system: ''
-        cp -r ${srcFor system ./transforms/wit} $NIX_BUILD_TOP/wit
-        chmod -R u+w $NIX_BUILD_TOP/wit
+        mkdir -p "$NIX_BUILD_TOP/nest"
+        mv "$NIX_BUILD_TOP/$sourceRoot" "$NIX_BUILD_TOP/nest/$sourceRoot"
+        sourceRoot="nest/$sourceRoot"
+        cp -r ${srcFor system ./wit} "$NIX_BUILD_TOP/wit"
+        chmod -R u+w "$NIX_BUILD_TOP/wit"
       '';
 
       wasmCrateArgsFor = system: crate:
@@ -136,11 +149,16 @@
           toolchain = wasiToolchainFor system;
         in
         {
-          src = srcFor system (./transforms + "/${crate}");
+          # Deliberately UNFILTERED (unlike the host's srcFor): a flake
+          # path is exactly the git-tracked content, so the in-derivation
+          # `git write-tree` reproduces `git rev-parse <commit>:crates/<crate>`
+          # verbatim — cargo-filtering the source made the D54 stamp hash a
+          # tree that exists nowhere in git history.
+          src = ./crates + "/${crate}";
           strictDeps = true;
           pname = crate;
           version = "0.1.0";
-          cargoLock = ./transforms + "/${crate}/Cargo.lock";
+          cargoLock = ./crates + "/${crate}/Cargo.lock";
           # unknown-unknown, NOT wasip2: components must import nothing (D5
           # empty-import determinism contract), and wasip2's std wires WASI
           # shims into every component. Core modules are componentized with
@@ -163,14 +181,17 @@
       # over the build inputs — no .git needed): content-scoped, so
       # unrelated repo commits cannot churn component bytes, and
       # verifiable by anyone with git — no nix required:
-      #   git rev-parse <commit>:transforms/<crate>
+      #   git rev-parse <commit>:crates/<crate>
       transformPackageFor = system: crate:
         let
           craneLib = craneLibFor system;
           pkgs = pkgsFor system;
           args = wasmCrateArgsFor system crate;
-          crateToml = builtins.fromTOML (builtins.readFile (./transforms + "/${crate}/Cargo.toml"));
+          crateToml = builtins.fromTOML (builtins.readFile (./crates + "/${crate}/Cargo.toml"));
           moduleName = builtins.replaceStrings [ "-" ] [ "_" ] crate;
+          # Stamped name stays `datboi:xf-*` / `datboi:ex-*` — the
+          # `datboi-` crate-name prefix would double the namespace.
+          stampName = nixpkgs.lib.removePrefix "datboi-" crate;
         in
         craneLib.buildPackage (args // {
           cargoArtifacts = craneLib.buildDepsOnly args;
@@ -187,15 +208,32 @@
               target/wasm32-unknown-unknown/release/${moduleName}.wasm \
               -o stamped-input.wasm
             wasm-tools metadata add stamped-input.wasm \
-              --name "datboi:${crate}" \
+              --name "datboi:${stampName}" \
               --description ${nixpkgs.lib.escapeShellArg crateToml.package.description} \
               --authors ${nixpkgs.lib.escapeShellArg (builtins.head crateToml.package.authors)} \
               --licenses ${nixpkgs.lib.escapeShellArg crateToml.package.license} \
-              --source "https://github.com/schlarpc/datboi/tree/main/transforms/${crate}" \
+              --source "https://github.com/schlarpc/datboi/tree/main/crates/${crate}" \
               --revision "tree:$tree" \
               -o "$out/lib/${moduleName}.wasm"
           '';
         });
+
+      # All stamped components in one lib/ — the artifacts recipes pin
+      # (D5/D6/D54) and the host embeds at build time (D66).
+      transformsFor = system: (pkgsFor system).symlinkJoin {
+        name = "datboi-transforms";
+        paths = map (transformPackageFor system) wasmCrateNames;
+      };
+
+      # D66: host builds embed the nix-built components — the embedding
+      # crates' build.rs re-exports this for `include_bytes!` (and falls
+      # back to invoking `nix build .#transforms` itself in a dev
+      # checkout, where this var is unset). Applied to the final
+      # build/test/clippy args — NOT to buildDepsOnly, so a component
+      # edit doesn't rebuild the dep cache.
+      componentsEnvFor = system: {
+        DATBOI_COMPONENTS_DIR = "${transformsFor system}/lib";
+      };
 
     in
     {
@@ -205,19 +243,14 @@
           hostArgs = hostArgsFor system;
         in
         {
-          default = craneLib.buildPackage (hostArgs // {
+          default = craneLib.buildPackage (hostArgs // componentsEnvFor system // {
             cargoArtifacts = hostDepsFor system;
             doCheck = false;
           });
 
           datboi = self.packages.${system}.default;
 
-          # All stamped components in one lib/ — the artifacts recipes
-          # pin (D5/D6/D54).
-          transforms = (pkgsFor system).symlinkJoin {
-            name = "datboi-transforms";
-            paths = map (transformPackageFor system) wasmCrateNames;
-          };
+          transforms = transformsFor system;
         });
 
       checks = eachSystem (system:
@@ -230,7 +263,7 @@
           build = self.packages.${system}.default;
           transforms = self.packages.${system}.transforms;
 
-          clippy = craneLib.cargoClippy (hostArgs // {
+          clippy = craneLib.cargoClippy (hostArgs // componentsEnvFor system // {
             cargoArtifacts = hostArtifacts;
             cargoClippyExtraArgs = "--all-targets -- --deny warnings";
           });
@@ -239,7 +272,7 @@
             src = hostArgs.src;
           };
 
-          test = craneLib.cargoNextest (hostArgs // {
+          test = craneLib.cargoNextest (hostArgs // componentsEnvFor system // {
             cargoArtifacts = hostArtifacts;
             partitions = 1;
             partitionType = "count";
@@ -301,6 +334,11 @@
 
             RUST_BACKTRACE = "1";
             RUST_LOG = "debug";
+            # DATBOI_COMPONENTS_DIR is deliberately NOT set here (D66):
+            # in a dev checkout the embedding crates' build.rs runs
+            # `nix build .#transforms` itself and watches the component
+            # sources, so edits propagate on the next cargo build with
+            # no shell reload. Hermetic builds (crane) set the var.
           };
         });
 

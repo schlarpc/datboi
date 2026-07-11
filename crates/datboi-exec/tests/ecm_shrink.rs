@@ -12,7 +12,7 @@ use datboi_index::{Db, Residency};
 use datboi_ingest::analyzers::EcmAnalyzer;
 use datboi_ingest::refine::run_sweep;
 use datboi_store_fs::{Namespace as StoreNs, Store};
-use xf_ecm::{SECTOR, rebuild_sector, stripped_len};
+use datboi_xf_ecm::{SECTOR, rebuild_sector, stripped_len};
 
 fn pattern(len: usize, seed: u64) -> Vec<u8> {
     let mut state = seed;

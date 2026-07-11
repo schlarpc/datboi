@@ -50,9 +50,13 @@ use datboi_store_fs::{Namespace as StoreNs, PutOutcome, Store};
 
 use crate::zip::{Method, ZipError};
 
-/// The committed, stamped `ex-unrar` component (D5/D6/D54) the rar derive
-/// recipes pin. `transforms/dist/` holds the built artifact.
-pub const EX_UNRAR_WASM: &[u8] = include_bytes!("../../../transforms/dist/ex_unrar.wasm");
+/// The stamped `ex-unrar` component (D5/D6/D54) the rar derive recipes
+/// pin — nix-built and embedded at compile time via
+/// `DATBOI_COMPONENTS_DIR` (D66), never a checked-in artifact.
+pub const EX_UNRAR_WASM: &[u8] = include_bytes!(concat!(
+    env!("DATBOI_COMPONENTS_DIR"),
+    "/datboi_ex_unrar.wasm"
+));
 
 /// CBOR key for the extractor member index in an `ex-unrar/extract`
 /// recipe's params (D58); mirrors exec's `EXTRACTOR_PARAM_MEMBER_IX`.

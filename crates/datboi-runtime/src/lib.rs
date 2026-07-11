@@ -2,7 +2,7 @@
 //! decisions D5–D7).
 //!
 //! This crate runs components targeting the frozen `datboi:transform@1`
-//! world (transforms/wit/transform.wit). Its one job beyond "call the
+//! world (wit/v1/transform.wit). Its one job beyond "call the
 //! component" is to make execution **deterministic and bounded**, because
 //! storage recipes must replay bit-exact forever (D5) and peer-supplied
 //! components are untrusted (their only threat is resource abuse — the CAS
@@ -18,7 +18,7 @@ mod bindings {
     // file.
     wasmtime::component::bindgen!({
         world: "transform",
-        path: "../../transforms/wit/v1",
+        path: "../../wit/v1",
     });
 }
 

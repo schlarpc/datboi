@@ -18,10 +18,16 @@ use datboi_runtime::stream::{
 };
 use datboi_runtime::{Limits, RuntimeError, SeekClass};
 
-const COMPONENT: &[u8] = include_bytes!("../../../transforms/dist/xf_preflate.wasm");
+/// The nix-built `xf-preflate` component (D66), embedded at compile time
+/// via `DATBOI_COMPONENTS_DIR` (build.rs re-exports it) — never a
+/// checked-in artifact.
+const COMPONENT: &[u8] = include_bytes!(concat!(
+    env!("DATBOI_COMPONENTS_DIR"),
+    "/datboi_xf_preflate.wasm"
+));
 
 /// blake3 of the fixture — the identity a recipe would pin.
-const COMPONENT_BLAKE3: &str = "07cf20529af4c8d2edfae717409ab2625260ac388a5ce0ccf5b7c37f715edf82";
+const COMPONENT_BLAKE3: &str = "9363c7225ab1b6e47e3a65ec81f1ab2db546164eeb65b8f3f1eea60a13c76e30";
 
 const MEMBER: &[u8] = include_bytes!("fixtures/preflate_member.deflate");
 const CORRECTIONS: &[u8] = include_bytes!("fixtures/preflate_corrections.bin");

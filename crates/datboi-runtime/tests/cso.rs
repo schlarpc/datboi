@@ -12,10 +12,16 @@ use datboi_runtime::stream::{
 };
 use datboi_runtime::{Limits, RuntimeError, SeekClass};
 
-const COMPONENT: &[u8] = include_bytes!("../../../transforms/dist/xf_cso.wasm");
+/// The nix-built `xf-cso` component (D66), embedded at compile time
+/// via `DATBOI_COMPONENTS_DIR` (build.rs re-exports it) — never a
+/// checked-in artifact.
+const COMPONENT: &[u8] = include_bytes!(concat!(
+    env!("DATBOI_COMPONENTS_DIR"),
+    "/datboi_xf_cso.wasm"
+));
 
 /// blake3 of the fixture — the identity a recipe would pin.
-const COMPONENT_BLAKE3: &str = "53fb3b8fbbea39d765eb7e9b7dc5786d788cf69e2cd2b0a42e943c17f68697c1";
+const COMPONENT_BLAKE3: &str = "5c12610c9c2584b662f8ee581923c8ec2d4a3b19e20f5558bc13600c55a08ab3";
 
 /// A fake disc image: repetitive spans (compress well), a high-entropy
 /// span (forces stored-raw blocks), and a non-block-aligned tail.

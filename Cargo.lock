@@ -808,13 +808,13 @@ dependencies = [
  "datboi-ingest",
  "datboi-runtime",
  "datboi-store-fs",
+ "datboi-xf-ecm",
  "fatfs",
  "flate2",
  "fscommon",
  "proptest",
  "tempfile",
  "thiserror",
- "xf-ecm",
 ]
 
 [[package]]
@@ -848,13 +848,13 @@ dependencies = [
  "datboi-index",
  "datboi-runtime",
  "datboi-store-fs",
+ "datboi-xf-ecm",
  "fastcdc",
  "flate2",
  "preflate-rs",
  "sevenz-rust2",
  "tempfile",
  "thiserror",
- "xf-ecm",
 ]
 
 [[package]]
@@ -864,10 +864,10 @@ dependencies = [
  "anyhow",
  "blake3",
  "datboi-core",
+ "datboi-xf-ecm",
  "thiserror",
  "wasmtime",
  "wat",
- "xf-ecm",
 ]
 
 [[package]]
@@ -904,6 +904,13 @@ dependencies = [
  "rustix",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "datboi-xf-ecm"
+version = "0.1.0"
+dependencies = [
+ "wit-bindgen 0.46.0",
 ]
 
 [[package]]
@@ -3626,13 +3633,6 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
-
-[[package]]
-name = "xf-ecm"
-version = "0.1.0"
-dependencies = [
- "wit-bindgen 0.46.0",
-]
 
 [[package]]
 name = "xml"

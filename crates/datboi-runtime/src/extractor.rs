@@ -31,7 +31,7 @@ use crate::{Limits, RuntimeError};
 mod bindings {
     wasmtime::component::bindgen!({
         world: "extractor",
-        path: "../../transforms/wit/ex1",
+        path: "../../wit/ex1",
         // Host methods return wasmtime::Result so contract violations
         // (MAX_READ) become deterministic traps.
         imports: { default: trappable },

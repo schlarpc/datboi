@@ -1,0 +1,40 @@
+[package]
+name = "datboi-ex-unrar"
+description = "RAR extractor component for the datboi:extractor@1 world (D58): the vendored unrar C++ moved inside the wasm sandbox — seekable archive stream in, member metadata + byte streams out, zero imports"
+version = "0.1.0"
+edition = "2024"
+authors = ["Chaz Schlarp"]
+# No SPDX id exists for the UnRAR license (decompression-only; forbids
+# recreating the compressor). SPDX LicenseRef- carries the custom terms;
+# full text in vendor/unrar/license.txt and README.md (D58).
+license = "LicenseRef-unRAR"
+repository = "https://github.com/schlarpc/datboi"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Guest bindings only for the wasm component; the host-native build (unit
+# tests, cargo metadata) skips both the bindings and the C++ (build.rs is a
+# no-op off wasm32).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen = { version = "0.46", default-features = false, features = ["macros", "realloc"] }
+
+# Standalone workspace ON PURPOSE (D54): each component builds against its
+# own lockfile so sibling crates can't perturb its bytes through shared
+# dependency resolution — component identity must be reproducible from this
+# directory alone (plus ../wit and the pinned wasi toolchain).
+[workspace]
+
+[lints.rust]
+# The guest is inherently unsafe (FFI into the C++ dll API + callback
+# trampoline); scoped `#[allow(unsafe_code)]` on the component module.
+unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+# Content-addressed artifact: favor small, stable output.
+opt-level = "s"
+lto = true
+strip = true

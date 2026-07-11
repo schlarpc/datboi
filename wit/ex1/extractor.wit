@@ -1,0 +1,105 @@
+/// datboi:extractor@1 — the EXTRACTOR profile (D58, ruled 2026-07-10).
+///
+/// STATUS: FROZEN 2026-07-10 — the ex-unrar conformance gate went green
+/// when D58 shipped (D7: worlds are immutable forever once frozen;
+/// changes become a future @2 world, never a revision here).
+///
+/// A sibling family to `datboi:transform@1/@2`, not a member of it: the
+/// component prefix encodes the world (`ex-` = extractor, `xf-` =
+/// transform). An extractor opens a CONTAINER — seekable archive stream in,
+/// member streams + metadata out — where a transform maps input bytes to
+/// claimed output bytes. The first (pathfinder) extractor is `ex-unrar`:
+/// the one memory-unsafe wild-byte parser in the tree, moved inside the
+/// sandbox (D58 census).
+///
+/// Determinism contract (D5/D46), identical doctrine to transform@2:
+///
+/// 1. The only imports are this package's own `types` interface — the
+///    resources below, implemented BY THE HOST (never wasi:io). No clock,
+///    no random, no filesystem: the archive bytes are the entire world.
+/// 2. The stream contract is exact: `read-at(offset, n)` returns exactly
+///    `n` bytes, short only where the range passes end-of-file; `write`
+///    accepts every chunk unconditionally (backpressure is host-side
+///    suspension the guest cannot observe).
+///
+/// Error surface (ruled): a trap REFUSES THE WHOLE ARCHIVE — the guest maps
+/// internal failure paths (unrar's ErrHandler, allocation failure, any
+/// diagnostic abort) onto wasm `unreachable`, matching the
+/// refuse-suspicious-archives posture. A `result` error is the polite twin
+/// (recognizably corrupt data, refused feature) — the host treats both as
+/// refusal; neither ever yields partial member bytes as success.
+///
+/// v1 scope cuts (ruled): NO encrypted archives (member- or
+/// header-encrypted), NO multi-volume sets — both refuse at `enumerate` /
+/// `extract` time. Links and NTFS streams are ignored (not listed, not
+/// extracted). The wasmtime memory cap turns decompression bombs (RAR5
+/// big-dictionary) into clean refusals.
+///
+/// Fuel meters guest instructions only; host time inside stream calls is
+/// free and irrelevant to guest-visible state.
+package datboi:extractor@1.0.0;
+
+interface types {
+    /// Host-implemented random-access input: the archive container.
+    /// Extraction is inherently seek-driven (header walks, solid-block
+    /// restarts), so the archive always arrives seekable — the host
+    /// materializes non-seekable routes first (spill rule,
+    /// docs/70-recipes.md).
+    resource file {
+        /// Read exactly `n` bytes at `offset`; short only where
+        /// `offset + n` passes end-of-file. Reads past EOF return empty.
+        read-at: func(offset: u64, n: u32) -> list<u8>;
+        /// Total container length in bytes (always known: CAS blob).
+        len: func() -> u64;
+    }
+
+    /// Host-implemented output sink for one member's bytes. The host
+    /// hash-tees every chunk (D4).
+    resource sink {
+        /// Accepts every chunk, unconditionally. Never fails, never
+        /// blocks visibly: backpressure suspends the guest fiber.
+        write: func(chunk: list<u8>);
+    }
+
+    /// One archive member, in archive order. `ix` is the member's stable
+    /// identity WITHIN this container blob: derive recipes pin
+    /// (container hash, ix), and `extract` addresses members by it.
+    record member {
+        /// Position in archive order among LISTED members (files only —
+        /// directories, links and NTFS streams are not listed and do not
+        /// consume an index).
+        ix: u32,
+        /// Member path as stored, converted to UTF-8 (unrar's wide-char
+        /// name, lossy where unpaired). Metadata, never an identity.
+        name: string,
+        /// Unpacked size in bytes.
+        size: u64,
+        /// Packed size in bytes (metadata; solid members share blocks).
+        packed-size: u64,
+        /// The container's declared CRC32 of the unpacked bytes (0 when
+        /// the format carried none). A declaration, not a verification —
+        /// the CAS hash on extraction is the identity (D4).
+        crc32: u32,
+        /// Member is part of a solid block (extraction of member `ix`
+        /// decodes its solid predecessors first; cost, not semantics).
+        solid: bool,
+    }
+}
+
+world extractor {
+    use types.{file, member, sink};
+
+    /// Enumerate the container's file members. Refuses (error) encrypted
+    /// and multi-volume archives and containers whose headers do not
+    /// parse. Pure metadata: no member bytes are decoded beyond what the
+    /// header walk requires.
+    export enumerate: func(archive: file) -> result<list<member>, string>;
+
+    /// Decode member `ix` (as numbered by `enumerate`) into `out`, running to
+    /// completion. The bytes written MUST equal the member's unpacked
+    /// bytes exactly — the host verifies against the claimed hash (D4),
+    /// so a buggy extractor wastes CPU but cannot corrupt the store.
+    /// Solid archives decode predecessor members internally (discarded);
+    /// replay cost is O(container), still deterministic.
+    export extract: func(archive: file, ix: u32, out: sink) -> result<_, string>;
+}

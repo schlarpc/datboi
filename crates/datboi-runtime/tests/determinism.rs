@@ -13,7 +13,7 @@
 
 use datboi_runtime::{Limits, RuntimeError, SeekClass, TransformHost};
 
-/// The frozen reference component: `transforms/xf-reference` built for
+/// The frozen reference component: `crates/datboi-xf-reference` built for
 /// wasm32-unknown-unknown and componentized with `wasm-tools component new`.
 const COMPONENT: &[u8] = include_bytes!("fixtures/xf_reference.wasm");
 
