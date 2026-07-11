@@ -287,6 +287,17 @@
           '';
         };
 
+      # D67: the datboi binary embeds the nix-built web dist —
+      # datboi-server's build.rs re-exports this for `include_dir!` (and
+      # falls back to invoking `nix build .#web` itself in a dev
+      # checkout, where this var is unset). Applied to the final
+      # build/test/clippy args — NOT to buildDepsOnly, so a web edit
+      # doesn't rebuild the dep cache (same placement as
+      # componentsEnvFor, D66).
+      webEnvFor = system: {
+        DATBOI_WEB_DIST = "${webFor system}";
+      };
+
     in
     {
       packages = eachSystem (system:
@@ -295,7 +306,7 @@
           hostArgs = hostArgsFor system;
         in
         {
-          default = craneLib.buildPackage (hostArgs // componentsEnvFor system // {
+          default = craneLib.buildPackage (hostArgs // componentsEnvFor system // webEnvFor system // {
             cargoArtifacts = hostDepsFor system;
             doCheck = false;
           });
@@ -342,7 +353,7 @@
               installPhase = "touch $out";
             };
 
-          clippy = craneLib.cargoClippy (hostArgs // componentsEnvFor system // {
+          clippy = craneLib.cargoClippy (hostArgs // componentsEnvFor system // webEnvFor system // {
             cargoArtifacts = hostArtifacts;
             cargoClippyExtraArgs = "--all-targets -- --deny warnings";
           });
@@ -351,7 +362,7 @@
             src = hostArgs.src;
           };
 
-          test = craneLib.cargoNextest (hostArgs // componentsEnvFor system // {
+          test = craneLib.cargoNextest (hostArgs // componentsEnvFor system // webEnvFor system // {
             cargoArtifacts = hostArtifacts;
             partitions = 1;
             partitionType = "count";
@@ -424,11 +435,12 @@
 
             RUST_BACKTRACE = "1";
             RUST_LOG = "debug";
-            # DATBOI_COMPONENTS_DIR is deliberately NOT set here (D66):
-            # in a dev checkout the embedding crates' build.rs runs
-            # `nix build .#transforms` itself and watches the component
-            # sources, so edits propagate on the next cargo build with
-            # no shell reload. Hermetic builds (crane) set the var.
+            # DATBOI_COMPONENTS_DIR / DATBOI_WEB_DIST are deliberately
+            # NOT set here (D66/D67): in a dev checkout the embedding
+            # crates' build.rs runs `nix build .#transforms` / `.#web`
+            # itself and watches the sources, so edits propagate on the
+            # next cargo build with no shell reload. Hermetic builds
+            # (crane) set the vars.
           };
         });
 

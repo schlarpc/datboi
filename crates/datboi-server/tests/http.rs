@@ -404,3 +404,51 @@ fn http_surface_end_to_end() {
     assert_eq!(status, 206);
     assert_eq!(body(resp), &big[8_388_600..8_388_616]);
 }
+
+#[test]
+fn embedded_web_ui_and_spa_fallback() {
+    let f = fixture();
+
+    // the SPA shell at / (the old plaintext root listing is gone — its
+    // content is /v1/views, asserted above)
+    let (status, resp) = get(f.addr, "/", &[]);
+    assert_eq!(status, 200);
+    assert_eq!(
+        resp.header("content-type"),
+        Some("text/html; charset=utf-8")
+    );
+    assert_eq!(resp.header("cache-control"), Some("no-cache"));
+    let page = resp.into_string().expect("html");
+    assert!(page.contains("<div id=\"app\""), "{page}");
+
+    // a real hashed asset, name learned from the shell itself (vite
+    // renames on every content change, so nothing here is static)
+    let href = page
+        .split('"')
+        .find(|s| s.starts_with("/assets/"))
+        .expect("index.html references a hashed asset")
+        .to_owned();
+    let (status, resp) = get(f.addr, &href, &[]);
+    assert_eq!(status, 200);
+    assert_eq!(
+        resp.header("cache-control"),
+        Some("public, max-age=31536000, immutable")
+    );
+    assert!(!body(resp).is_empty());
+
+    // a stale hashed name is a real 404 — html would only mask it
+    assert_eq!(get(f.addr, "/assets/nope-00000000.js", &[]).0, 404);
+
+    // SPA fallback: unrouted paths belong to the client router
+    let (status, resp) = get(f.addr, "/library/gba", &[]);
+    assert_eq!(status, 200);
+    assert!(
+        resp.into_string()
+            .expect("html")
+            .contains("<div id=\"app\"")
+    );
+
+    // ...but the fallback must not swallow the daemon's namespaces
+    assert_eq!(get(f.addr, "/healthz", &[]).0, 200);
+    assert_eq!(get(f.addr, "/v1/nope", &[]).0, 404);
+}

@@ -39,7 +39,6 @@ pub(crate) fn router(app: Arc<App>) -> Router {
         async move { dav.handle(req).await.map(Body::new) }
     };
     Router::new()
-        .route("/", get(root))
         .route("/healthz", get(|| async { "ok" }))
         .route("/v1/views", get(views_json))
         .route("/view/{name}", get(view_bare))
@@ -51,31 +50,14 @@ pub(crate) fn router(app: Arc<App>) -> Router {
         .route("/dav", any(dav_route.clone()))
         .route("/dav/", any(dav_route.clone()))
         .route("/dav/{*path}", any(dav_route))
+        // `/` and every path the API didn't claim belong to the web UI
+        // (D67): embedded dist with an SPA fallback. The old plaintext
+        // root listing died with it — its content is `/v1/views`.
+        .fallback(crate::web::fallback)
         .with_state(app)
 }
 
 // ---- handlers ----
-
-async fn root(State(app): State<Arc<App>>) -> Response {
-    run_blocking(move || {
-        let views =
-            vfs::view_tags(&app).map_err(|e| map_lookup(&e, StatusCode::INTERNAL_SERVER_ERROR))?;
-        let mut body = String::from(
-            "<!doctype html><meta charset=\"utf-8\"><title>datboi</title><h1>datboi views</h1><ul>",
-        );
-        for (name, snapshot) in &views {
-            body.push_str(&format!(
-                "<li><a href=\"/view/{}/\">{}</a> <small><code>{}</code></small></li>",
-                enc_seg(name),
-                html_escape(name),
-                snapshot.to_hex()
-            ));
-        }
-        body.push_str("</ul>");
-        Ok(html(StatusCode::OK, body))
-    })
-    .await
-}
 
 async fn views_json(State(app): State<Arc<App>>) -> Response {
     run_blocking(move || {
@@ -608,7 +590,7 @@ async fn run_blocking(f: impl FnOnce() -> Result<Response, Response> + Send + 's
     }
 }
 
-fn text(status: StatusCode, msg: &str) -> Response {
+pub(crate) fn text(status: StatusCode, msg: &str) -> Response {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")

@@ -65,6 +65,10 @@ getrandom = { version = "0.2", features = ["std"] }
 # rust_backend: no C dependency, deterministic output not required here
 # (decompression only — compression never reproduces bytes anyway, D24).
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Embeds the nix-built web dist (D67) — takes the DATBOI_WEB_DIST
+# env-var path directly (rust-embed rejected there as the bigger
+# surface for the same job).
+include_dir = "0.7"
 md-5 = "0.10"
 predicates = "3"
 proptest = "1"

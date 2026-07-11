@@ -14,6 +14,7 @@ mod dav;
 mod http;
 mod nfs;
 mod vfs;
+mod web;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
