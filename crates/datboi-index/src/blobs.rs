@@ -115,6 +115,20 @@ impl Db {
     }
 
     /// Record a successful full-hash verification (ingest or scrub).
+    /// When the blob's bytes were last store-verified (D4), if ever —
+    /// the "verified inputs" leg of the D63 carve-out predicate.
+    pub fn blob_verified_at(&self, blob_id: i64) -> Result<Option<i64>, IndexError> {
+        Ok(self
+            .cache()
+            .query_row(
+                "SELECT verified_at FROM blob WHERE blob_id = ?1",
+                params![blob_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
     pub fn set_verified(&self, blob_id: i64, at_unix: i64) -> Result<(), IndexError> {
         self.cache().execute(
             "UPDATE blob SET verified_at = ?2 WHERE blob_id = ?1",

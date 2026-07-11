@@ -7,7 +7,9 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 
 use datboi_core::assemble::{AssembleParams, Piece, translate};
+use datboi_core::hash::Blake3;
 use datboi_runtime::stream::RangeRead;
+use datboi_store_fs::obao;
 
 /// Fill `buf` completely from `src` at `offset`; erroring if the source
 /// ends first (callers have already validated bounds).
@@ -60,6 +62,53 @@ impl RangeRead for FileRandom {
             }
         }
         Ok(filled)
+    }
+
+    fn len(&self) -> u64 {
+        self.len
+    }
+}
+
+/// A resident literal leaf served through its OWN bao tree: every
+/// `read_at` re-validates the covering 16 KiB chunk groups against the
+/// leaf hash before returning bytes. The D63 carve-out's leaf reader —
+/// input-side verification standing in for the missing output bao.
+pub struct VerifiedRandom {
+    file: File,
+    len: u64,
+    hash: Blake3,
+    /// Pre-order obao4; empty is correct for blobs ≤ one chunk group.
+    sidecar: Vec<u8>,
+}
+
+impl VerifiedRandom {
+    #[must_use]
+    pub fn new(file: File, len: u64, hash: Blake3, sidecar: Vec<u8>) -> Self {
+        Self {
+            file,
+            len,
+            hash,
+            sidecar,
+        }
+    }
+}
+
+impl RangeRead for VerifiedRandom {
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+        if offset >= self.len {
+            return Ok(0);
+        }
+        let end = offset.saturating_add(buf.len() as u64).min(self.len);
+        let bytes =
+            obao::read_range_verified(&self.file, self.len, &self.hash, &self.sidecar, offset..end)
+                .map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("verified leaf {}: {e}", self.hash),
+                    )
+                })?;
+        buf[..bytes.len()].copy_from_slice(&bytes);
+        Ok(bytes.len())
     }
 
     fn len(&self) -> u64 {

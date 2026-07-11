@@ -35,14 +35,14 @@ use datboi_core::assemble::AssembleParams;
 use datboi_core::cbor::{self, Value};
 use datboi_core::hash::Blake3;
 use datboi_core::recipe::{Op, Recipe};
-use datboi_index::{Db, IndexError, Residency, VerifyState};
+use datboi_index::{Db, IndexError, RecipeSource, Residency, SeekClass, VerifyState};
 use datboi_runtime::stream::{
     RangeRead, SequentialInput, StreamHost, StreamInput, StreamTransform,
 };
 use datboi_runtime::{Limits, RuntimeError, TransformHost};
 use datboi_store_fs::{Namespace as StoreNs, PutOutcome, Store, StoreError};
 
-use crate::random::{AssembleRandom, FileRandom, SeqOverRandom, WindowSeq};
+use crate::random::{AssembleRandom, FileRandom, SeqOverRandom, VerifiedRandom, WindowSeq};
 
 /// deflate-decompress@1 window params (shared vocabulary with ingest —
 /// the op owns this schema, docs/70-recipes.md).
@@ -374,13 +374,16 @@ impl<'s> Executor<'s> {
     /// wasm seek path, the component's seekability is quarantined (rule
     /// 3) so the next read takes the sequential route.
     ///
-    /// NOTE (pended D49 amendment, open-questions.md): verification here
-    /// is unconditionally output-bao. The candidate carve-out for
-    /// locally-minted pure-builtin affine routes would slot in as a
-    /// policy check where `verify_window` is called.
+    /// Routes without a sidecar take the **D63 affine carve-out** when
+    /// they qualify (locally-minted + pure-builtin assemble + affine +
+    /// verified inputs, [`Self::affine_carveout`]): every served byte is
+    /// then verified input bytes (each leaf re-validated against its own
+    /// bao tree) or executor-generated fill. When a sidecar exists it is
+    /// always preferred — the carve-out is a floor, not a ceiling.
     ///
     /// # Errors
-    /// [`ExecError::MissingOutboard`] when no sidecar exists yet,
+    /// [`ExecError::MissingOutboard`] when no sidecar exists and the
+    /// carve-out does not apply,
     /// [`ExecError::RangeVerifyFailed`] (the EIO class) on mismatch.
     pub fn serve_range(
         &self,
@@ -417,26 +420,38 @@ impl<'s> Executor<'s> {
         let total = row
             .size
             .ok_or_else(|| ExecError::Malformed("blob size unknown".into()))?;
+        let start = offset.min(total);
+        let end = offset.saturating_add(len).min(total);
+        let plan = self.plan(db, hash, 0, &mut Vec::new())?;
+
         // Evicted small blobs (≤ one chunk group) have an empty outboard
         // by construction; the store can only infer that from a resident
         // file, so decide from the indexed size here.
         let sidecar = if obao::outboard_size(total) == 0 {
-            Vec::new()
+            Some(Vec::new())
         } else {
-            self.store
-                .get_obao(StoreNs::Data, hash)?
-                .ok_or(ExecError::MissingOutboard(*hash))?
+            self.store.get_obao(StoreNs::Data, hash)?
         };
-        let start = offset.min(total);
-        let end = offset.saturating_add(len).min(total);
+        let Some(sidecar) = sidecar else {
+            if self.affine_carveout(db, &plan)? {
+                let mut src = self.open_random_verified(&plan)?;
+                let mut buf = vec![0u8; usize::try_from(end - start).expect("range fits memory")];
+                random::read_at_exact(src.as_mut(), start, &mut buf).map_err(|e| {
+                    ExecError::RangeVerifyFailed {
+                        hash: *hash,
+                        detail: format!("affine carve-out (D63): {e}"),
+                    }
+                })?;
+                return Ok(buf);
+            }
+            return Err(ExecError::MissingOutboard(*hash));
+        };
         // Group-aligned window: bao validates whole 16 KiB groups.
         let astart = start - start % obao::GROUP_BYTES;
         let aend = end
             .checked_next_multiple_of(obao::GROUP_BYTES)
             .unwrap_or(u64::MAX)
             .min(total);
-
-        let plan = self.plan(db, hash, 0, &mut Vec::new())?;
         let (window, via_component) = self.produce_range(db, &plan, astart, aend)?;
         if window.len() as u64 != aend - astart {
             let detail = format!(
@@ -884,6 +899,121 @@ impl<'s> Executor<'s> {
                 _ => self.spill(plan),
             },
         }
+    }
+
+    /// The D63 carve-out predicate — tight, in code: every op node is a
+    /// recipe-backed builtin assemble (nothing computed: deflate and
+    /// wasm never qualify) whose row is locally-minted, affine, and
+    /// verified; every leaf is a resident, store-verified literal.
+    fn affine_carveout(&self, db: &Db, plan: &Plan) -> Result<bool, ExecError> {
+        match plan {
+            Plan::Literal { hash, .. } => {
+                let Some(row) = db.blob_by_hash(hash)? else {
+                    return Ok(false);
+                };
+                Ok(row.residency == Residency::Resident
+                    && self.store.has(StoreNs::Data, hash)
+                    && db.blob_verified_at(row.blob_id)?.is_some())
+            }
+            Plan::Op(op_plan) => {
+                if !matches!(op_plan.op, OpImpl::Assemble(_)) {
+                    return Ok(false);
+                }
+                // Synthetic nodes (no recipe row) never qualify.
+                let Some(recipe_id) = op_plan.recipe_id else {
+                    return Ok(false);
+                };
+                let row = db.recipe_by_id(recipe_id)?;
+                if row.source != RecipeSource::LocalIngest
+                    || row.seek_class != SeekClass::Affine
+                    || !matches!(
+                        row.verify,
+                        VerifyState::Verified | VerifyState::ReplayedLocal
+                    )
+                {
+                    return Ok(false);
+                }
+                for child in &op_plan.children {
+                    if !self.affine_carveout(db, child)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+        }
+    }
+
+    /// Random access over a carve-out-qualified plan: interior nodes are
+    /// pure assemble arithmetic, leaves re-validate every read against
+    /// their own bao tree ([`VerifiedRandom`]). Only called after
+    /// [`Self::affine_carveout`] said yes.
+    fn open_random_verified(&self, plan: &Plan) -> Result<Box<dyn RangeRead>, ExecError> {
+        use datboi_store_fs::obao;
+        match plan {
+            Plan::Literal { hash, len } => {
+                let sidecar = if obao::outboard_size(*len) == 0 {
+                    Vec::new()
+                } else {
+                    // A resident-verified literal may predate its sidecar
+                    // (only eviction guaranteed one until now); building
+                    // it is cheap and one-time.
+                    self.store.ensure_obao(StoreNs::Data, hash)?;
+                    self.store
+                        .get_obao(StoreNs::Data, hash)?
+                        .ok_or(ExecError::MissingOutboard(*hash))?
+                };
+                let file = self
+                    .store
+                    .get(StoreNs::Data, hash)?
+                    .ok_or(ExecError::NoRoute(*hash))?;
+                Ok(Box::new(VerifiedRandom::new(file, *len, *hash, sidecar)))
+            }
+            Plan::Op(op_plan) => match &op_plan.op {
+                OpImpl::Assemble(params) => {
+                    let children = op_plan
+                        .children
+                        .iter()
+                        .map(|c| self.open_random_verified(c))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Box::new(
+                        AssembleRandom::new(params.clone(), children)
+                            .map_err(ExecError::Malformed)?,
+                    ))
+                }
+                _ => Err(ExecError::Malformed(
+                    "carve-out plan contains a non-assemble node".into(),
+                )),
+            },
+        }
+    }
+
+    /// The D63 blessing pass: materialize-to-null through the sequential
+    /// route, computing the output obao in the same pass, and cache the
+    /// sidecar — promotes a carved-out route to full D49. Returns
+    /// `false` when the sidecar already existed.
+    ///
+    /// # Errors
+    /// [`ExecError::RangeVerifyFailed`] if the route's bytes do not hash
+    /// to the claim (nothing is stored); route/planning errors as usual.
+    pub fn bless_output(&self, db: &Db, hash: &Blake3) -> Result<bool, ExecError> {
+        if self.store.get_obao(StoreNs::Data, hash)?.is_some() {
+            return Ok(false);
+        }
+        if self.is_resident(db, hash)? {
+            return Ok(self.store.ensure_obao(StoreNs::Data, hash)?);
+        }
+        let plan = self.plan(db, hash, 0, &mut Vec::new())?;
+        let reader = self.open_sequential(&plan)?;
+        let (root, sidecar) = datboi_store_fs::obao::compute(reader, plan.len())
+            .map_err(|e| ExecError::Malformed(format!("blessing pass: {e}")))?;
+        if root != *hash {
+            return Err(ExecError::RangeVerifyFailed {
+                hash: *hash,
+                detail: format!("blessing pass produced {root}, not the claimed output"),
+            });
+        }
+        self.store.put_obao(StoreNs::Data, hash, &sidecar)?;
+        Ok(true)
     }
 
     fn spill(&self, plan: &Plan) -> Result<Box<dyn RangeRead>, ExecError> {
