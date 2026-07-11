@@ -448,8 +448,8 @@ impl<'a> Ingester<'a> {
     /// pin it by hash, so a later replay can load it).
     fn ensure_extractor(&mut self) -> Result<(), String> {
         if self.extractor.is_none() {
-            let host = ExtractorHost::new(datboi_runtime::Limits::default())
-                .map_err(|e| e.to_string())?;
+            let host =
+                ExtractorHost::new(datboi_runtime::Limits::default()).map_err(|e| e.to_string())?;
             let component = host.load(EX_UNRAR_WASM).map_err(|e| e.to_string())?;
             self.extractor = Some(ExtractorRt {
                 host,

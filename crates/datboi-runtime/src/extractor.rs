@@ -25,7 +25,7 @@ use std::io::Write;
 use wasmtime::component::{Component, HasSelf, Linker, Resource, ResourceTable};
 use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
 
-use crate::stream::{RangeRead, MAX_READ};
+use crate::stream::{MAX_READ, RangeRead};
 use crate::{Limits, RuntimeError};
 
 mod bindings {

@@ -114,8 +114,8 @@ fn rar_members_become_resident_blobs() {
     assert_eq!(recipes.len(), 1, "one covering derive recipe");
     let recipe_id = recipes[0].recipe_id;
 
-    let exec = datboi_exec::Executor::new(&store, datboi_exec::ExecConfig::default())
-        .expect("executor");
+    let exec =
+        datboi_exec::Executor::new(&store, datboi_exec::ExecConfig::default()).expect("executor");
 
     // Replay licenses the recipe (D25): running the ex-unrar component
     // rebuilds the member bit-exact and verifies its hash.
@@ -128,14 +128,20 @@ fn rar_members_become_resident_blobs() {
         matches!(outcome, datboi_exec::evict::EvictOutcome::Evicted { .. }),
         "member evicted: {outcome:?}"
     );
-    assert!(!store.has(StoreNs::Data, &member_hash), "member literal gone");
+    assert!(
+        !store.has(StoreNs::Data, &member_hash),
+        "member literal gone"
+    );
 
     let mut rebuilt = Vec::new();
     exec.open_stream(&db, &member_hash)
         .expect("route")
         .read_to_end(&mut rebuilt)
         .expect("read");
-    assert_eq!(&rebuilt, member, "member rebuilds bit-exact through ex-unrar");
+    assert_eq!(
+        &rebuilt, member,
+        "member rebuilds bit-exact through ex-unrar"
+    );
 }
 
 #[test]

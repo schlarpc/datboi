@@ -1250,18 +1250,25 @@ const EXTRACTOR_PARAM_MEMBER_IX: u64 = 1;
 
 fn decode_member_ix(params: &[u8]) -> Result<u32, ExecError> {
     let Ok(Value::Map(entries)) = cbor::decode(params) else {
-        return Err(ExecError::Malformed("extractor params must be a map".into()));
+        return Err(ExecError::Malformed(
+            "extractor params must be a map".into(),
+        ));
     };
     if entries.len() != 1 {
         return Err(ExecError::Malformed(
             "extractor params: exactly one field (member index)".into(),
         ));
     }
-    match entries.iter().find(|(k, _)| *k == EXTRACTOR_PARAM_MEMBER_IX) {
+    match entries
+        .iter()
+        .find(|(k, _)| *k == EXTRACTOR_PARAM_MEMBER_IX)
+    {
         Some((_, Value::Uint(n))) => {
             u32::try_from(*n).map_err(|_| ExecError::Malformed("member index out of range".into()))
         }
-        _ => Err(ExecError::Malformed("extractor member index missing".into())),
+        _ => Err(ExecError::Malformed(
+            "extractor member index missing".into(),
+        )),
     }
 }
 

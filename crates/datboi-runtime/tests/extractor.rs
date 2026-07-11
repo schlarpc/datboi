@@ -8,8 +8,8 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use datboi_runtime::extractor::ExtractorHost;
 use datboi_runtime::Limits;
+use datboi_runtime::extractor::ExtractorHost;
 
 /// A 'static, Send sink that captures written bytes for inspection.
 #[derive(Clone, Default)]
