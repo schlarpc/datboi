@@ -119,9 +119,12 @@ recovery-equivalence as a property test.
   literals, D60 analyzer config (`datboi analyzer`), D61 rehabilitate
   (was already in), D57 strict mode + retool clonelists
   (`dat clonelist`), name-fitting pipeline + alpha-bucketing +
-  ezflash-omega profile. REMAINING: MAME merge-mode rendering +
-  device_ref closure + softlist fidelity (D31 deferred set); the D58
-  unrar-wasm lane runs as its own track. ADDED TRACK (D58, pulled from M7): unrar-as-wasm
+  ezflash-omega profile. MAME merge-mode rendering — *shipped
+  2026-07-10, same session* (catalog::mame: non-merged with
+  device_ref closure / split / merged, `view define --mame-mode`,
+  ViewDef key 12, .chd extensions, dangling refs counted; loadflag
+  REBUILD semantics stay M7 transform territory as ruled).
+  **M4 IS COMPLETE.** The D58 unrar-wasm lane runs as its own track. ADDED TRACK (D58, pulled from M7): unrar-as-wasm
   extractor component — C-to-wasm lane lands now, rar members gain
   derive recipes and become evictable.
 - **M5 — "Other people can touch it"**: axum API, invites + passwords

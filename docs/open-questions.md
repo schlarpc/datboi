@@ -114,7 +114,29 @@ strict mode + retool clonelist consumption are M4 work items).
 
 ## Next sessions (pick up here)
 
-**Position as of 2026-07-10 (build session, after the decision
+**Position as of 2026-07-10 (third session of the day)**: **M4 IS
+COMPLETE.** After the FAT32 session (below), the M4 tail shipped in
+one sweep: D59 (chunking narrowed to route-less literals), D56
+(disk-headroom guard in materialize, statvfs via rustix), D60
+(analyzer config: family() on the trait, enable/params KV rows,
+`datboi analyzer` CLI, sweep gate), D61 (verified already
+implemented), name-fitting pipeline + alpha-bucketing +
+ezflash-omega profile (80-views.md owed work), D57 (strict 1G1R as
+selection-mode 2 + retool clonelists via `dat clonelist`,
+content-addressed with a config pointer), and MAME merge-mode
+rendering (catalog::mame — non-merged with transitive device_ref
+closure, split, merged; ViewDef CBOR key 12; `--mame-mode`;
+.chd extensions; dangling device_refs counted in EvalReport; D31's
+deferred set closed, loadflag rebuild semantics stay M7). The **D58
+unrar-wasm extractor lane** was delegated to a background agent in
+its own worktree (branch `d58-unrar-wasm`) — check its status/handoff
+next session if no report landed. NEXT: M5 (axum API, invites +
+passwords D30, ACLs, Svelte web UI D17 — a functional brief for the
+UI design pass was drafted this session), the D58 lane review/merge,
+and the carried caveat: validate ECM EDC/ECC against a real disc
+sector when the NAS corpus is reachable.
+
+**Previous position (2026-07-10, build session, after the decision
 session below)**: **FAT32 IMAGE SYNTHESIS SHIPPED — D62 + D63
 implemented in full.** Eight commits: (1) `fat32.rs` pure layout math
 in datboi-catalog (MBR default, 32 reserved sectors, strictly
