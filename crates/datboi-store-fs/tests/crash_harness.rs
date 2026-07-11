@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use datboi_store_fs::store::VerifyOutcome;
 use datboi_store_fs::{Namespace, Store};
 
-const CHILD: &str = env!("CARGO_BIN_EXE_crash-child");
+const CHILD: &str = env!("CARGO_BIN_EXE_datboi-crash-child");
 const BLOB_SIZE: usize = 512 * 1024;
 
 fn fresh_root() -> (tempfile::TempDir, PathBuf) {
@@ -98,7 +98,7 @@ fn run_child_single(root: &Path, dir: &Path, phase: &str, at_bytes: Option<usize
     if let Some(at) = at_bytes {
         cmd.env("DATBOI_CRASH_AT_BYTES", at.to_string());
     }
-    let status = cmd.status().expect("spawn crash-child");
+    let status = cmd.status().expect("spawn datboi-crash-child");
     assert!(
         !status.success(),
         "child was supposed to abort at phase {phase}, but exited cleanly"
@@ -165,7 +165,7 @@ fn sigkill_at_random_points_never_corrupts() {
             .env("DATBOI_STORE_ROOT", &root)
             .env("DATBOI_BLOB_SIZE", BLOB_SIZE.to_string())
             .spawn()
-            .expect("spawn crash-child loop");
+            .expect("spawn datboi-crash-child loop");
 
         // Vary the kill instant without a rand dependency: mix the loop index
         // with the wall clock's sub-millisecond jitter.

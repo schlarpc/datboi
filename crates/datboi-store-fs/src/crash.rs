@@ -5,7 +5,7 @@
 //! feature on, an injection point aborts the process (SIGABRT — no
 //! unwinding, no destructors, no flush) when `DATBOI_CRASH_PHASE` names it,
 //! modelling a `kill -9` at that exact step of the publish protocol. The
-//! `crash-child` test binary drives this; see `tests/crash_harness.rs`.
+//! `datboi-crash-child` test binary drives this; see `tests/crash_harness.rs`.
 
 /// A step in [`crate::store::Store::put_new`]'s publish protocol at which a
 /// crash can be injected — named for the step that just completed (mid-write

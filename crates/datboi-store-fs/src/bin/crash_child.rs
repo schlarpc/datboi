@@ -78,7 +78,7 @@ fn main() {
             }
         }
         other => {
-            eprintln!("crash-child: unknown mode {other:?} (want `single` or `loop`)");
+            eprintln!("datboi-crash-child: unknown mode {other:?} (want `single` or `loop`)");
             std::process::exit(2);
         }
     }

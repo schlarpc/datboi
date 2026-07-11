@@ -53,7 +53,7 @@ shapes, so drift fails `npm run check`.
 **After a rust API change:** regenerate the spec, then the TS types:
 
 ```sh
-cargo run -p datboi-api --bin gen-openapi   # repo root; refreshes openapi.json
+cargo run -p datboi-api --bin datboi-gen-openapi   # repo root; refreshes openapi.json
 npm run generate                            # here; refreshes schema.d.ts
 ```
 
