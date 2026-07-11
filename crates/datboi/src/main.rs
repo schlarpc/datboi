@@ -208,6 +208,16 @@ enum DatCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Link a retool clonelist to a dat source (D57): refines 1G1R
+    /// clone families in both held-first and strict modes.
+    Clonelist {
+        /// Source as <provider>/<system>.
+        source: String,
+        /// Retool clonelist JSON file.
+        file: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -253,6 +263,12 @@ enum ViewCommand {
         /// Ordered language priority for 1G1R (e.g. "En").
         #[arg(long, value_delimiter = ',', requires = "one_per_family")]
         langs: Vec<String>,
+        /// D57 strict 1G1R: pick purely from (dat, preferences) — the
+        /// preferred entry wins even when absent (its gaps ARE the
+        /// want list). Default is held-first: held copies outrank
+        /// preferred-but-absent ones.
+        #[arg(long, requires = "one_per_family")]
+        strict: bool,
         /// Constraint profile for the target device (see `view profiles`).
         #[arg(long)]
         profile: Option<String>,
@@ -379,6 +395,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Dat(DatCommand::Diff { source, json }) => {
             cmds::dat_diff(&cli.global.open()?, &source, json)
         }
+        Command::Dat(DatCommand::Clonelist { source, file, json }) => {
+            cmds::dat_clonelist(&cli.global.open()?, &source, &file, json)
+        }
         Command::Audit {
             source,
             missing,
@@ -404,6 +423,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 one_per_family,
                 regions,
                 langs,
+                strict,
                 profile,
                 image,
                 image_cluster_size,
@@ -415,7 +435,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 &name,
                 &source,
                 &template,
-                one_per_family.then_some(datboi_catalog::SelectionPolicy { regions, langs }),
+                one_per_family.then_some(datboi_catalog::SelectionPolicy {
+                    regions,
+                    langs,
+                    strict,
+                }),
                 profile,
                 image.then_some(datboi_catalog::ImageParams {
                     cluster_size: image_cluster_size,

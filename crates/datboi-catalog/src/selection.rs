@@ -8,10 +8,13 @@
 //! links when the dat has any; flat dats (standard No-Intro) fall back
 //! to igir-style inference — entries sharing a base name (everything
 //! before the first parenthetical, case-folded) are one family.
-//! Held-and-verified candidates outrank absent ones: the NAS serves
-//! what exists; re-evaluating after ingest upgrades the pick (that's
-//! what snapshots are for). Community clonelists (retool) are a later,
-//! additive input.
+//! Two modes per view (D57): **held-first** (default) — a
+//! held-and-verified candidate outranks the preferred-but-absent
+//! region (the NAS serves what exists; re-eval upgrades picks as
+//! holdings improve); **strict** — retool semantics, a pure function
+//! of (dat, preferences), for curation publication and want-lists.
+//! Retool clonelists ride as an additive family input in both modes
+//! ([`crate::clonelist`]).
 
 use std::collections::{HashMap, HashSet};
 
@@ -23,6 +26,13 @@ pub struct SelectionPolicy {
     pub regions: Vec<String>,
     /// e.g. `["En"]`; matched against `(En,Fr,De)`-style token groups.
     pub langs: Vec<String>,
+    /// D57 strict mode: selection is a pure function of
+    /// (dat, preferences), independent of holdings — the preferred
+    /// entry wins even when absent (its slots render as missing; a
+    /// strict view's gaps ARE the want list). Default (`false`) is
+    /// held-first: a held-and-verified clone outranks the
+    /// preferred-but-absent region.
+    pub strict: bool,
 }
 
 /// One entry as the selector sees it.
@@ -38,19 +48,34 @@ pub struct Candidate {
     pub held: u64,
 }
 
+/// A retool-style clonelist (D57, additive input): case-folded search
+/// terms → group name. Groups override both the dat's clone graph and
+/// base-name inference for the entries they name; everything else
+/// falls back as before.
+pub type Clonelist = HashMap<String, String>;
+
 /// Pick one entry per clone family. Deterministic: candidates are
-/// scored on (fully-held, dev-flag, region rank, language rank,
+/// scored on (fully-held*, dev-flag, region rank, language rank,
 /// revision DESC, name) and the winner is unique for a given input.
+/// (*held rank participates only in held-first mode; strict mode is a
+/// pure function of the dat and the preferences, D57.)
 #[must_use]
-pub fn select_1g1r(candidates: &[Candidate], policy: &SelectionPolicy) -> HashSet<i64> {
-    // Trust the dat's clone graph as soon as it demonstrates one; only
-    // fully-flat dats get name inference (mixing the two would let a
-    // coincidental base-name merge two families the dat says are
-    // distinct).
+pub fn select_1g1r(
+    candidates: &[Candidate],
+    policy: &SelectionPolicy,
+    clonelist: Option<&Clonelist>,
+) -> HashSet<i64> {
+    // Family construction: an explicit clonelist group wins; then the
+    // dat's clone graph as soon as it demonstrates one; only fully-flat
+    // dats get name inference (mixing declared links with inference
+    // would let a coincidental base-name merge two families the dat
+    // says are distinct).
     let dat_has_clones = candidates.iter().any(|c| c.cloneof_id.is_some());
     let mut families: HashMap<FamilyKey, Vec<&Candidate>> = HashMap::new();
     for c in candidates {
-        let key = if dat_has_clones {
+        let key = if let Some(group) = clonelist.and_then(|cl| lookup_group(cl, &c.name)) {
+            FamilyKey::Group(group.clone())
+        } else if dat_has_clones {
             FamilyKey::Id(c.cloneof_id.unwrap_or(c.entry_id))
         } else {
             FamilyKey::Name(base_name(&c.name))
@@ -66,17 +91,31 @@ pub fn select_1g1r(candidates: &[Candidate], policy: &SelectionPolicy) -> HashSe
         .collect()
 }
 
+/// Clonelist lookup: the full name (case-folded) first, then the
+/// tag-stripped short name — retool's two non-regex `nameType`s.
+fn lookup_group<'a>(clonelist: &'a Clonelist, name: &str) -> Option<&'a String> {
+    clonelist
+        .get(&name.to_lowercase())
+        .or_else(|| clonelist.get(&base_name(name)))
+}
+
 #[derive(Debug, PartialEq, Eq, Hash)]
 enum FamilyKey {
     Id(i64),
     Name(String),
+    Group(String),
 }
 
 type Score = (u8, u8, usize, usize, std::cmp::Reverse<u32>, String);
 
 fn score(c: &Candidate, policy: &SelectionPolicy) -> Score {
     let tokens = paren_tokens(&c.name);
-    let fully_held = u8::from(!(c.required > 0 && c.held == c.required));
+    // Strict mode (D57): holdings never influence the pick.
+    let fully_held = if policy.strict {
+        0
+    } else {
+        u8::from(!(c.required > 0 && c.held == c.required))
+    };
     let dev_flag = u8::from(tokens.iter().any(|t| is_dev_flag(t)));
     let region = axis_rank(&tokens, &policy.regions, normalize_region);
     let lang = axis_rank(&tokens, &policy.langs, str::to_ascii_lowercase);
@@ -200,6 +239,7 @@ mod tests {
         SelectionPolicy {
             regions: regions.iter().map(|s| (*s).to_owned()).collect(),
             langs: langs.iter().map(|s| (*s).to_owned()).collect(),
+            strict: false,
         }
     }
 
@@ -211,7 +251,7 @@ mod tests {
             cand(3, "Game, The (Japan)", true),
             cand(4, "Other Game (Japan)", true),
         ];
-        let picked = select_1g1r(&cands, &policy(&["USA", "Europe", "Japan"], &[]));
+        let picked = select_1g1r(&cands, &policy(&["USA", "Europe", "Japan"], &[]), None);
         assert!(picked.contains(&2), "USA outranks");
         assert!(picked.contains(&4), "each family yields one");
         assert_eq!(picked.len(), 2);
@@ -220,7 +260,7 @@ mod tests {
     #[test]
     fn held_beats_preferred_region() {
         let cands = vec![cand(1, "Game (USA)", false), cand(2, "Game (Europe)", true)];
-        let picked = select_1g1r(&cands, &policy(&["USA", "Europe"], &[]));
+        let picked = select_1g1r(&cands, &policy(&["USA", "Europe"], &[]), None);
         assert!(picked.contains(&2), "the NAS serves what it holds");
     }
 
@@ -230,7 +270,7 @@ mod tests {
             cand(1, "Game (USA) (Beta)", true),
             cand(2, "Game (Europe)", true),
         ];
-        let picked = select_1g1r(&cands, &policy(&["USA", "Europe"], &[]));
+        let picked = select_1g1r(&cands, &policy(&["USA", "Europe"], &[]), None);
         assert!(picked.contains(&2), "retail Europe over USA beta");
     }
 
@@ -240,7 +280,7 @@ mod tests {
             cand(1, "Game (Europe) (Fr,De)", true),
             cand(2, "Game (Europe) (En,Fr)", true),
         ];
-        let picked = select_1g1r(&cands, &policy(&["Europe"], &["En"]));
+        let picked = select_1g1r(&cands, &policy(&["Europe"], &["En"]), None);
         assert!(picked.contains(&2));
 
         let cands = vec![
@@ -248,7 +288,7 @@ mod tests {
             cand(2, "Game (Europe) (En) (Rev 2)", true),
             cand(3, "Game (Europe) (En) (Rev 1)", true),
         ];
-        let picked = select_1g1r(&cands, &policy(&["Europe"], &["En"]));
+        let picked = select_1g1r(&cands, &policy(&["Europe"], &["En"]), None);
         assert!(picked.contains(&2), "highest revision wins");
     }
 
@@ -261,7 +301,7 @@ mod tests {
         // A third entry whose base name collides with nothing declared:
         // with a clone graph present it is its own family.
         let c = cand(3, "Parent (Japan)", true);
-        let picked = select_1g1r(&[a, b, c], &policy(&["USA", "Europe", "Japan"], &[]));
+        let picked = select_1g1r(&[a, b, c], &policy(&["USA", "Europe", "Japan"], &[]), None);
         assert!(picked.contains(&1), "family {{1,2}} picks USA parent");
         assert!(picked.contains(&3), "undeclared sibling stays separate");
         assert_eq!(picked.len(), 2);
@@ -281,7 +321,59 @@ mod tests {
             cand(2, "Game (World) (B-Side)", true),
             cand(1, "Game (World) (A-Side)", true),
         ];
-        let picked = select_1g1r(&cands, &policy(&[], &[]));
+        let picked = select_1g1r(&cands, &policy(&[], &[]), None);
         assert!(picked.contains(&1), "lexicographic name is the last axis");
+    }
+
+    #[test]
+    fn strict_mode_ignores_holdings() {
+        // Same input where held-first picks Europe: strict picks the
+        // preferred-but-absent USA — its gaps are the want list (D57).
+        let cands = vec![cand(1, "Game (USA)", false), cand(2, "Game (Europe)", true)];
+        let mut p = policy(&["USA", "Europe"], &[]);
+        p.strict = true;
+        let picked = select_1g1r(&cands, &p, None);
+        assert!(picked.contains(&1), "pure function of (dat, preferences)");
+        // And it's holdings-independent: flipping held bits changes nothing.
+        let cands2 = vec![cand(1, "Game (USA)", true), cand(2, "Game (Europe)", false)];
+        assert_eq!(select_1g1r(&cands2, &p, None), picked);
+    }
+
+    #[test]
+    fn clonelist_groups_override_inference() {
+        // Base-name inference sees two families; the clonelist says the
+        // JP rename is the same game.
+        let cands = vec![
+            cand(1, "Game, The (USA)", true),
+            cand(2, "Gamu za Best (Japan)", true),
+        ];
+        let picked = select_1g1r(&cands, &policy(&["USA", "Japan"], &[]), None);
+        assert_eq!(picked.len(), 2, "without the clonelist: two families");
+
+        let mut cl = Clonelist::new();
+        cl.insert("game, the".into(), "Game, The".into());
+        cl.insert("gamu za best".into(), "Game, The".into());
+        let picked = select_1g1r(&cands, &policy(&["USA", "Japan"], &[]), Some(&cl));
+        assert_eq!(picked.len(), 1, "clonelist merges the rename");
+        assert!(picked.contains(&1), "USA preferred within the group");
+    }
+
+    #[test]
+    fn clonelist_composes_with_declared_clones() {
+        // The dat declares a clone pair; the clonelist names a THIRD
+        // entry the dat missed. Grouped entries leave the dat graph.
+        let a = cand(1, "Parent (USA)", true);
+        let mut b = cand(2, "Child (Europe)", true);
+        b.cloneof_id = Some(1);
+        let c = cand(3, "Totally Renamed (Japan)", true);
+        let mut cl = Clonelist::new();
+        cl.insert("parent".into(), "Parent".into());
+        cl.insert("totally renamed".into(), "Parent".into());
+        let picked = select_1g1r(&[a, b, c], &policy(&["USA"], &[]), Some(&cl));
+        // Parent + Renamed share a clonelist group (winner: USA parent);
+        // Child keeps its declared family, now parentless from the
+        // group's perspective — it still yields exactly one pick.
+        assert!(picked.contains(&1));
+        assert_eq!(picked.len(), 2);
     }
 }

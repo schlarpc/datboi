@@ -1218,3 +1218,101 @@ fn analyzer_policy_gates_sweeps() {
         .failure()
         .stderr(predicate::str::contains("unknown analyzer family"));
 }
+
+/// D57 end to end: strict mode picks the absent preferred region (its
+/// gap is the want list); a linked retool clonelist merges a rename
+/// into the family in both modes.
+#[test]
+fn strict_1g1r_and_clonelist() {
+    let u = Universe::new();
+    fs::create_dir_all(u.src()).unwrap();
+    let europe = b"the european bytes here".as_slice();
+    let renamed = b"the japanese rename!!!!".as_slice();
+    fs::write(u.src().join("europe.gba"), europe).unwrap();
+    fs::write(u.src().join("renamed.gba"), renamed).unwrap();
+    u.cmd().arg("ingest").arg(u.src()).assert().success();
+
+    let games = format!(
+        r#"  <game name="Game, The (USA)"><description>g</description>{}</game>
+  <game name="Game, The (Europe)"><description>g</description>{}</game>
+  <game name="Gamu za Best (Japan)"><description>g</description>{}</game>"#,
+        rom_xml("Game, The (USA).gba", b"usa bytes never ingested"),
+        rom_xml("Game, The (Europe).gba", europe),
+        rom_xml("Gamu za Best (Japan).gba", renamed),
+    );
+    let dat_path = u.root.path().join("strict.dat");
+    fs::write(&dat_path, dat_xml("Strict", &games)).unwrap();
+    u.cmd()
+        .args(["dat", "import"])
+        .arg(&dat_path)
+        .args(["--provider", "test", "--system", "strict"])
+        .assert()
+        .success();
+
+    // The clonelist merges the JP rename into the family.
+    let clonelist = r#"{"variants": [{"group": "Game, The", "titles": [
+        {"searchTerm": "Game, The"},
+        {"searchTerm": "Gamu za Best"}
+    ]}]}"#;
+    let cl_path = u.root.path().join("clones.json");
+    fs::write(&cl_path, clonelist).unwrap();
+    u.cmd()
+        .args(["dat", "clonelist", "test/strict"])
+        .arg(&cl_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 term(s)"));
+
+    // Held-first: USA absent, Europe held -> Europe serves; the
+    // clonelist keeps the JP rename OUT (one family, one row).
+    u.cmd()
+        .args(["view", "define", "held", "test/strict"])
+        .args([
+            "--template",
+            "{name}",
+            "--1g1r",
+            "--regions",
+            "USA,Europe,Japan",
+        ])
+        .assert()
+        .success();
+    let eval = u
+        .cmd()
+        .args(["view", "eval", "held", "--json"])
+        .assert()
+        .success();
+    let out: serde_json::Value = serde_json::from_slice(&eval.get_output().stdout).expect("json");
+    assert_eq!(out["families"], 1, "clonelist merged the rename");
+    assert_eq!(out["rows"], 1);
+    let manifest = u
+        .cmd()
+        .args(["view", "manifest", "held", "--json"])
+        .assert()
+        .success();
+    let m: serde_json::Value = serde_json::from_slice(&manifest.get_output().stdout).expect("json");
+    assert_eq!(m["rows"][0]["path"], "Game, The (Europe).gba");
+
+    // Strict: USA wins even though absent -> zero rows; the gap shows
+    // as a missing claim, not a silently different pick.
+    u.cmd()
+        .args(["view", "define", "pure", "test/strict"])
+        .args(["--template", "{name}", "--1g1r", "--strict"])
+        .args(["--regions", "USA,Europe,Japan"])
+        .assert()
+        .success();
+    let eval = u
+        .cmd()
+        .args(["view", "eval", "pure", "--json"])
+        .assert()
+        .success();
+    let out: serde_json::Value = serde_json::from_slice(&eval.get_output().stdout).expect("json");
+    assert_eq!(out["families"], 1);
+    assert_eq!(out["rows"], 0, "strict renders the absent winner as a gap");
+
+    // --strict requires --1g1r.
+    u.cmd()
+        .args(["view", "define", "bad", "test/strict"])
+        .args(["--template", "{name}", "--strict"])
+        .assert()
+        .failure();
+}

@@ -1491,6 +1491,30 @@ pub fn status(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Link a retool clonelist to a dat source (D57).
+pub fn dat_clonelist(env: &Env, source: &str, file: &Path, json: bool) -> anyhow::Result<ExitCode> {
+    let (provider, system) = split_source(source)?;
+    let bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
+    let report = datboi_catalog::import_clonelist(&env.db, &env.store, provider, system, &bytes)?;
+    if json {
+        println!(
+            "{}",
+            json!({
+                "source": source,
+                "clonelist": report.hash.to_hex(),
+                "terms": report.terms,
+                "skipped": report.skipped,
+            })
+        );
+    } else {
+        println!(
+            "clonelist for {source}: {} ({} term(s), {} skipped)",
+            report.hash, report.terms, report.skipped
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 // ---- views (M4: definitions, evaluation, manifests) ----
 
 #[allow(clippy::too_many_arguments)]

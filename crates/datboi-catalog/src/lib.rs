@@ -16,6 +16,7 @@
 //! `ReplayedLocal` (D25), untouched.
 
 pub mod audit;
+pub mod clonelist;
 pub mod diff;
 pub mod export;
 pub mod fat32;
@@ -28,6 +29,7 @@ pub mod unify;
 pub mod views;
 
 pub use audit::{AuditReport, EntryAudit, audit};
+pub use clonelist::{ClonelistReport, import_clonelist, load_clonelist};
 pub use diff::{DatDiff, diff_source};
 pub use export::export_dat;
 pub use image::{ImageParams, ImageReport, mint_image, missing_inputs};
@@ -58,6 +60,8 @@ pub enum CatalogError {
     Fat32(#[from] fat32::Fat32Error),
     #[error("image mint: {0}")]
     Image(String),
+    #[error("clonelist: {0}")]
+    Clonelist(String),
     #[error("export: {0}")]
     Export(String),
     #[error("unknown profile {0} (see `datboi view profiles`)")]

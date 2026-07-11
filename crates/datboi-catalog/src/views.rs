@@ -24,11 +24,12 @@ use crate::selection::{Candidate, SelectionPolicy, select_1g1r};
 use crate::{CatalogError, audit::current_revision, rollup::refresh_rollups, unify::relink_all};
 
 // Definition CBOR: {1: provider, 2: system, 3: template, 4: selection
-// mode (0 all / 1 one-per-family), 5: regions, 6: langs, 7: profile,
-// 8: image mode (1 = FAT32), 9: image cluster size, 10: image
-// partition (0/1), 11: image label}.
+// mode (0 all / 1 one-per-family held-first / 2 one-per-family strict,
+// D57), 5: regions, 6: langs, 7: profile, 8: image mode (1 = FAT32),
+// 9: image cluster size, 10: image partition (0/1), 11: image label}.
 // Keys 4–7 are additive: v1 definitions decode as mode 0, no profile.
 // Keys 8–11 are additive the same way (D62): absent = no image mode.
+// Mode 2 is additive within key 4's existing vocabulary.
 const DEFKEY_PROVIDER: u64 = 1;
 const DEFKEY_SYSTEM: u64 = 2;
 const DEFKEY_TEMPLATE: u64 = 3;
@@ -79,7 +80,10 @@ pub fn define_view(db: &Db, def: &ViewDef) -> Result<(), CatalogError> {
         (DEFKEY_TEMPLATE, Value::Text(def.template.clone())),
     ];
     if let Some(policy) = &def.selection {
-        pairs.push((DEFKEY_SELECTION, Value::Uint(1)));
+        pairs.push((
+            DEFKEY_SELECTION,
+            Value::Uint(if policy.strict { 2 } else { 1 }),
+        ));
         pairs.push((
             DEFKEY_REGIONS,
             Value::Array(policy.regions.iter().cloned().map(Value::Text).collect()),
@@ -152,7 +156,11 @@ pub fn get_view(db: &Db, name: &str) -> Result<Option<ViewDef>, CatalogError> {
     }
     let selection = match mode {
         0 => None,
-        1 => Some(SelectionPolicy { regions, langs }),
+        1 | 2 => Some(SelectionPolicy {
+            regions,
+            langs,
+            strict: mode == 2,
+        }),
         _ => return Err(CatalogError::Corrupt("view def")),
     };
     let image = match image_mode {
@@ -261,13 +269,16 @@ pub fn evaluate_view(
     };
 
     // 1G1R: resolve clone families over the whole revision and keep one
-    // entry per family (held-and-verified candidates outrank absent
-    // ones — see crate::selection).
+    // entry per family (held-first or strict per D57 — see
+    // crate::selection). A linked retool clonelist refines families in
+    // both modes.
     let (selected, families): (Option<HashSet<i64>>, Option<usize>) = match &def.selection {
         None => (None, None),
         Some(policy) => {
             let candidates = load_candidates(db, revision_id)?;
-            let picked = select_1g1r(&candidates, policy);
+            let clonelist =
+                crate::clonelist::load_clonelist(db, store, &def.provider, &def.system)?;
+            let picked = select_1g1r(&candidates, policy, clonelist.as_ref());
             let count = picked.len();
             (Some(picked), Some(count))
         }
