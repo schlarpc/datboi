@@ -127,14 +127,23 @@ content-addressed with a config pointer), and MAME merge-mode
 rendering (catalog::mame — non-merged with transitive device_ref
 closure, split, merged; ViewDef CBOR key 12; `--mame-mode`;
 .chd extensions; dangling device_refs counted in EvalReport; D31's
-deferred set closed, loadflag rebuild semantics stay M7). The **D58
-unrar-wasm extractor lane** was delegated to a background agent in
-its own worktree (branch `d58-unrar-wasm`) — check its status/handoff
-next session if no report landed. NEXT: M5 (axum API, invites +
-passwords D30, ACLs, Svelte web UI D17 — a functional brief for the
-UI design pass was drafted this session), the D58 lane review/merge,
-and the carried caveat: validate ECM EDC/ECC against a real disc
-sector when the NAS corpus is reachable.
+deferred set closed, loadflag rebuild semantics stay M7). The **D58 unrar-wasm extractor lane SHIPPED AND MERGED** the same
+day (background agent, 9 commits): `datboi:extractor@1` WIT world
+(`ex-` prefix), vendored unrar 7.1.0 with trap-conversion edits only
+(license clause honored), thin-Rust-over-C++-staticlib guest (the
+ruled-preferred shape), wasi cross-toolchain lane in the flake,
+ExtractorHost + conformance gate in datboi-runtime, exec
+`OpImpl::Extractor`, rar ingest through the component with
+container→member derive recipes (members now evictable; the test
+evicts and rebuilds bit-exact). **The D46 empty-import contract
+held** — zero WASI imports, no ruling owed. Notes: the stamped
+component lives at `transforms/dist/ex_unrar.wasm` (rebuild + re-copy
+if the crate changes); container bytes buffer in memory during
+extraction (fine at rom scale; a note if multi-GB rars appear).
+NEXT: M5 (axum API, invites + passwords D30, ACLs, Svelte web UI
+D17 — a functional brief for the UI design pass was drafted this
+session), and the carried caveat: validate ECM EDC/ECC against a
+real disc sector when the NAS corpus is reachable.
 
 **Previous position (2026-07-10, build session, after the decision
 session below)**: **FAT32 IMAGE SYNTHESIS SHIPPED — D62 + D63

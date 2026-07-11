@@ -124,9 +124,12 @@ recovery-equivalence as a property test.
   device_ref closure / split / merged, `view define --mame-mode`,
   ViewDef key 12, .chd extensions, dangling refs counted; loadflag
   REBUILD semantics stay M7 transform territory as ruled).
-  **M4 IS COMPLETE.** The D58 unrar-wasm lane runs as its own track. ADDED TRACK (D58, pulled from M7): unrar-as-wasm
-  extractor component — C-to-wasm lane lands now, rar members gain
-  derive recipes and become evictable.
+  **M4 IS COMPLETE.** ADDED TRACK (D58, pulled from M7) — *shipped +
+  merged 2026-07-10*: unrar-as-wasm extractor component
+  (`transforms/ex-unrar`, `datboi:extractor@1` world, wasi
+  cross-toolchain lane, zero imports — D46 held); rar members carry
+  derive recipes and are evictable. The C-to-wasm lane M7's 7-Zip
+  SDK / CHD / RVZ work needs now exists.
 - **M5 — "Other people can touch it"**: axum API, invites + passwords
   (D30), ACLs, Svelte web UI (D17).
 - **M6 — "Friends"**: iroh, partial-blob bitfields + irpc store facade
