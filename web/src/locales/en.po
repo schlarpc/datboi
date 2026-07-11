@@ -313,12 +313,8 @@ msgstr "{0} storage internals"
 msgid "box art — metadata provider, later"
 msgstr "box art — metadata provider, later"
 
-#: src/lib/components/FriendHeader.svelte
-#: src/lib/components/Header.svelte
-#: src/screens/Invite.svelte
-#: src/screens/Login.svelte
-msgid "logo slot — frog goes here"
-msgstr "logo slot — frog goes here"
+#~ msgid "logo slot — frog goes here"
+#~ msgstr "logo slot — frog goes here"
 
 #: src/lib/components/Header.svelte
 msgid "Library"

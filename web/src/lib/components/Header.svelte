@@ -11,6 +11,7 @@
   import { session } from '../session.svelte';
   import Link from './Link.svelte';
   import ThemeToggle from './ThemeToggle.svelte';
+  import logoUrl from '../assets/logo.svg';
 
   const items: { href: string; screens: Route['screen'][] }[] = [
     { href: '/', screens: ['library', 'audit'] },
@@ -35,15 +36,12 @@
 
   // Avatar shows only for named users; loopback callers have no user row.
   const initial = $derived(session.username?.slice(0, 1) ?? null);
-
-  // Reserved slot per both prototypes; the frog mark is future. The
-  // lowercase title copy needs a statement-level force-include.
-  // @wc-include
-  const logoTitle = 'logo slot — frog goes here';
 </script>
 
 <header>
-  <span class="logo-disc" title={logoTitle}></span>
+  <!-- Brand mark; the adjacent wordmark carries the name, so the frog is
+       decorative (empty alt) and not a second home link. -->
+  <img class="logo" src={logoUrl} alt="" width="30" height="30" />
   <!-- The wordmark is the brand, not copy. -->
   <!-- @wc-ignore -->
   <Link href="/" class="wordmark">datboi</Link>
@@ -88,12 +86,9 @@
     font-weight: 600;
   }
 
-  .logo-disc {
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    background: var(--ok);
-    border: 2px solid var(--ink);
+  .logo {
+    width: 30px;
+    height: 30px;
     flex: none;
   }
 

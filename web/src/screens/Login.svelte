@@ -7,17 +7,13 @@
   import { ApiError, login } from '../lib/api/client';
   import { router } from '../lib/router.svelte';
   import { session } from '../lib/session.svelte';
+  import logoUrl from '../lib/assets/logo.svg';
 
   let username = $state('');
   let password = $state('');
   let failed = $state(false);
   let otherError = $state<string | null>(null);
   let busy = $state(false);
-
-  // Same reserved frog slot as the header; lowercase title copy is
-  // force-included at statement level.
-  // @wc-include
-  const logoTitle = 'logo slot — frog goes here';
 
   async function submit(event: SubmitEvent) {
     event.preventDefault();
@@ -43,7 +39,7 @@
 <div class="page">
   <form class="card" onsubmit={submit}>
     <div class="brand">
-      <span class="logo-disc" title={logoTitle}></span>
+      <img class="logo" src={logoUrl} alt="" width="30" height="30" />
       <!-- @wc-ignore -->
       <span class="wordmark">datboi</span>
     </div>
@@ -91,12 +87,9 @@
     margin-bottom: 6px;
   }
 
-  .logo-disc {
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    background: var(--ok);
-    border: 2px solid var(--ink);
+  .logo {
+    width: 30px;
+    height: 30px;
   }
 
   .wordmark {
