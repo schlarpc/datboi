@@ -1013,3 +1013,81 @@ dependency does better; its one virtue — git-only artifact
 reproduction — is the accepted trade above), components as a
 deploy-time payload directory (a second distribution artifact
 contradicting single-binary for no D64 gain).
+
+## D67 — M5 web stack: Svelte 5 + Vite in web/, wuchale i18n, dist embeds like D66 (2026-07-11)
+
+The web UI (D17) lives in `web/` as a standalone npm project with its
+own `package-lock.json` — the lockfile boundary again (D54/D66):
+`web/` is NOT part of the host cargo source set, and the flake builds
+it as its own derivation whose source is a `lib.fileset` over `web/`
+alone, so rust edits never invalidate the web build and web edits
+never invalidate `cargoArtifacts`. Build pattern is rof-gui's
+(importNpmLock, no vendored-hash churn: `importNpmLock.buildNodeModules`
++ a `mkDerivation` running `vite build`), modernized where nixpkgs
+allows. The built dist embeds into the datboi binary exactly the way
+components do (D66): the flake sets `DATBOI_WEB_DIST` on the final
+build/test/clippy args (not `buildDepsOnly`), a
+`crates/datboi-server/build.rs` re-exports it with the same
+dev-checkout fallback (`nix build .#web --print-out-paths`, with
+rerun-if-changed watches on `web/`), and the server serves the
+embedded tree at `/` with an SPA fallback to `index.html` and
+immutable caching on Vite's content-hashed assets. Existing surfaces
+(`/view`, `/snap`, `/dav`, `/v1`) are untouched; the old plaintext
+root listing dies — its content moves into the UI and stays available
+as `/v1` JSON.
+
+i18n is FIRST-CLASS from the first commit: every user-facing string
+flows through **wuchale** (compile-time gettext-style catalogs,
+Svelte-5-native vite plugin), and strings whose English collides
+across meanings carry an explicit disambiguation context at the call
+site (`@wc-context`, real msgctxt in the PO catalog) — "claimed"
+(storage state, not a person's claim), "verified" (hash-checked, not
+human-approved), "view" (compiled shelf, not UI view) and friends are
+contexts, not comments. English is the source catalog and ships
+compiled; adding a locale is adding a PO file. wuchale is pre-1.0 —
+accepted eyes-open (catalogs are standard PO; the escape hatch to any
+gettext toolchain is the format itself), flagged in open-questions.
+
+*Rejected:* React/Solid (D17 stands); Paraglide (no per-string
+translator context in its message format — disambiguation only by key
+naming); Lingui (first-class context but no first-party Svelte
+extraction; the community bridge is a slow-moving single-maintainer
+package); committed `web/dist/` (same drift argument that killed
+`transforms/dist/` in D66); rust-embed (include_dir is smaller and
+takes the env-var path directly).
+
+## D68 — Auth v1 enforcement: sessions for browsers, tokens for tools, loopback stays owner (2026-07-11)
+
+Implements D30 with these rulings. Identities: `user` rows with
+argon2id password hashes; `role ∈ {owner, friend}`. Bootstrap and
+minting stay in the CLI (`datboi user invite [--owner]` prints a
+one-time invite URL; local shell access = admin, so the CLI needs no
+auth). Invites carry the role (state.db migration adds the column),
+expire (default 7 d), and are single-use; the browser accepts the
+invite by choosing username + password. Tokens (invite, session,
+bearer) are 32 random bytes, URL-safe; the DB stores only
+`blake3(token)` — a stolen state.db mints nothing. Browser sessions
+are the `datboi_session` cookie (HttpOnly, SameSite=Lax, Path=/,
+30 d); non-browser clients send the same token as
+`Authorization: Bearer`, minted by `datboi token`.
+
+Enforcement: **loopback connections are implicitly owner** — the
+existing CLI, tests, and single-user workflows keep working with zero
+ceremony, and a local shell already owns the daemon's files, so
+cookie-auth on 127.0.0.1 would be theater. Non-loopback: `/healthz`,
+the static UI, and the auth endpoints are open; everything else
+requires a valid session/bearer. ACLs are a `view_grant (user_id,
+view_name)` state table: owners see everything; friends see exactly
+their granted views (list, browse, download — the friend surface).
+WebDAV and NFS remain loopback-only-by-default serving surfaces in
+M5; authenticated DAV (basic auth against bearer tokens) is recorded
+as an open question rather than half-shipped. The non-loopback
+no-auth warning from M4 dies; binding wide now means "auth required",
+not "everyone is owner".
+
+*Rejected:* first-registered-user-becomes-owner (magic; an explicit
+`--owner` flag on the mint is one word); passkeys/OIDC now (D30
+already deferred them); storing raw tokens (hash costs nothing);
+per-entry ACLs (views are the sharing unit — D33's snapshots are what
+friends consume); loopback requiring auth (breaks every existing
+workflow to defend against an attacker who already has the disk).

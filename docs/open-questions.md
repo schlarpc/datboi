@@ -117,6 +117,37 @@ guard before materializing is an owed work item); 1G1R as **D57**
 (now a per-view mode {held-first, strict}, default held-first —
 strict mode + retool clonelist consumption are M4 work items).
 
+## Flagged for ruling (raised 2026-07-11, M5 web session)
+
+- **wuchale is pre-1.0** (D67 accepted this eyes-open). Catalogs are
+  standard gettext PO, so the worst case is swapping the compiler,
+  not the translations. Revisit when it hits 1.0 or stalls.
+- **Jobs tray backend**: the daemon has no persistent job registry —
+  analyzer sweeps, ingest, scrub run as CLI-process work today. M5
+  ships a minimal in-daemon jobs surface (`/v1/jobs`, in-memory) so
+  the tray has something truthful to render; durable job reports
+  (the design's "reachable from Jobs" eval/ingest reports) want a
+  real job table — design item for M5 polish or M6.
+- **Authenticated WebDAV** (basic auth against D68 bearer tokens)
+  so friends can mount views; NFS auth is likely never (protocol);
+  both stay loopback-only meanwhile.
+- **Quarantine review screen** was never designed (the wireframes
+  link `review →` into nothing). Storage page ships the count +
+  list; the review/resolve flow needs design.
+- **Shared API types**: 50-infra sketches "a `datboi-api` crate
+  generates TS". M5 hand-writes the TS types next to the client with
+  integration tests pinning the JSON shape (no serde derive in the
+  codebase makes codegen non-trivial). Revisit if drift bites.
+- **Web rulings made during implementation** (recorded here, not
+  D-numbered): nav = `Library · Views · Ingest · Storage · Admin`
+  (audit is the drill-down under Library; the hi-fi "Dats" tab
+  variant rejected as redundant with it); friend-facing surface
+  ships in M5 (it is what invites+ACLs exist for; M6 "Friends" is
+  the iroh daemon-to-daemon plane, a different thing); desktop-only
+  layout for now (all comps are 1160px; responsive is design work);
+  `▶ Play` (browser emulator cores) and box-art metadata provider
+  stay explicitly-future per the comps, UI reserves their slots.
+
 ## Next sessions (pick up here)
 
 **Position as of 2026-07-10 (third session of the day)**: **M4 IS
