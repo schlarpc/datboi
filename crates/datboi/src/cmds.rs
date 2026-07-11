@@ -1601,6 +1601,7 @@ pub fn view_eval(mut env: Env, name: &str, json: bool) -> anyhow::Result<ExitCod
                 "disambiguated": report.disambiguated,
                 "families": report.families,
                 "skipped_oversize": report.skipped_oversize,
+                "bucketed_dirs": report.bucketed_dirs,
                 "overfull_dirs": report.overfull_dirs,
             })
         );
@@ -1615,9 +1616,15 @@ pub fn view_eval(mut env: Env, name: &str, json: bool) -> anyhow::Result<ExitCod
                 report.skipped_oversize
             ));
         }
+        if report.bucketed_dirs > 0 {
+            extras.push_str(&format!(
+                ", {} dir(s) alpha-bucketed to fit the entry cap",
+                report.bucketed_dirs
+            ));
+        }
         if report.overfull_dirs > 0 {
             extras.push_str(&format!(
-                ", {} dir(s) over the profile entry cap",
+                ", {} dir(s) STILL over the profile entry cap",
                 report.overfull_dirs
             ));
         }

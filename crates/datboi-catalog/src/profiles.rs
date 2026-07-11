@@ -64,6 +64,15 @@ pub const PROFILES: &[Profile] = &[
         max_file_size: None,
         max_dir_entries: Some(10_000),
     },
+    Profile {
+        // EZ-Flash Omega (80-views.md, device data from the 2021
+        // prototype): 99-char names, 512 files per directory.
+        name: "ezflash-omega",
+        charset: Charset::Fat,
+        max_name_len: 99,
+        max_file_size: Some((4 << 30) - 1),
+        max_dir_entries: Some(512),
+    },
 ];
 
 /// Look up a built-in profile by name.
@@ -107,7 +116,168 @@ impl Profile {
         } else {
             cleaned
         };
-        cap_component(&cleaned, self.max_name_len.saturating_sub(SUFFIX_RESERVE))
+        let budget = self.max_name_len.saturating_sub(SUFFIX_RESERVE);
+        let fitted = fit_component(&cleaned, budget);
+        cap_component(&fitted, budget)
+    }
+}
+
+// ---- the name-fitting pipeline (80-views.md) ----
+//
+// Length caps are enforced by rewriting, not skipping: an ordered,
+// deterministic rule list applied until the name fits, and only then
+// the blunt truncate-with-suffix-reserve. A ROM dropped (or mangled)
+// for a 103-char dat name is a real loss; the same ROM as "(U)" is
+// not. Recovered from the 2021 prototype's EZ-Flash Omega mutator.
+
+/// Single-letter compressions for region/language tags inside
+/// parenthesized groups — the GoodTools-style codes.
+const REGION_CODES: &[(&str, &str)] = &[
+    ("USA", "U"),
+    ("Europe", "E"),
+    ("Japan", "J"),
+    ("World", "W"),
+    ("France", "F"),
+    ("Germany", "G"),
+    ("Spain", "S"),
+    ("Italy", "I"),
+    ("Australia", "A"),
+    ("Korea", "K"),
+    ("China", "C"),
+    ("Netherlands", "N"),
+    ("Brazil", "B"),
+];
+
+/// Apply the rewrite rules in order, stopping as soon as the component
+/// fits `budget` bytes. Rules never empty a component; a name that
+/// still doesn't fit falls through to [`cap_component`].
+fn fit_component(component: &str, budget: usize) -> String {
+    if component.len() <= budget {
+        return component.to_owned();
+    }
+    // Rule 1: strip noise prefixes ("2 Games in 1! - " and kin).
+    let mut name = strip_noise_prefix(component);
+    if name.len() <= budget {
+        return name;
+    }
+    // Rule 2: compress region tags ((USA, Europe) → (U,E)).
+    name = compress_region_tags(&name);
+    if name.len() <= budget {
+        return name;
+    }
+    // Rule 3: trim trailing junk (before the extension).
+    trim_trailing_junk(&name)
+}
+
+/// `"2 Games in 1! - "`, `"3 in 1 - "`, … — the compilation-cart noise
+/// that eats half a name budget while carrying no identity. ASCII
+/// case-insensitive cursor over the original string (every matched
+/// byte is ASCII, so the final slice is char-boundary safe).
+fn strip_noise_prefix(name: &str) -> String {
+    let b = name.as_bytes();
+    let mut i = 0usize;
+    let take = |i: &mut usize, lit: &str| -> bool {
+        let end = *i + lit.len();
+        if end <= name.len() && name[*i..end].eq_ignore_ascii_case(lit) {
+            *i = end;
+            true
+        } else {
+            false
+        }
+    };
+    // <digits> [" games"] " in " <digits> ["!"] " - "
+    let d0 = i;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == d0 {
+        return name.to_owned();
+    }
+    take(&mut i, " games");
+    if !take(&mut i, " in ") {
+        return name.to_owned();
+    }
+    let d1 = i;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == d1 {
+        return name.to_owned();
+    }
+    take(&mut i, "!");
+    if !take(&mut i, " - ") {
+        return name.to_owned();
+    }
+    if i >= name.len() {
+        return name.to_owned();
+    }
+    name[i..].to_owned()
+}
+
+/// Rewrite every parenthesized group whose comma-separated tokens ALL
+/// have single-letter codes: `(USA, Europe)` → `(U,E)`. Mixed groups
+/// (revision tags, etc.) stay untouched.
+fn compress_region_tags(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut rest = name;
+    while let Some(open) = rest.find('(') {
+        let Some(close_rel) = rest[open..].find(')') else {
+            break;
+        };
+        let close = open + close_rel;
+        out.push_str(&rest[..open]);
+        let inner = &rest[open + 1..close];
+        let codes: Option<Vec<&str>> = inner
+            .split(',')
+            .map(|tok| {
+                REGION_CODES
+                    .iter()
+                    .find(|(full, _)| full.eq_ignore_ascii_case(tok.trim()))
+                    .map(|(_, code)| *code)
+            })
+            .collect();
+        match codes {
+            Some(codes) => {
+                out.push('(');
+                out.push_str(&codes.join(","));
+                out.push(')');
+            }
+            None => out.push_str(&rest[open..=close]),
+        }
+        rest = &rest[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Drop trailing separators/empties from the stem: spaces, dots,
+/// dashes, and empty `()`/`[]` groups left behind by earlier rules.
+fn trim_trailing_junk(name: &str) -> String {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && ext.len() <= 16 => (stem, Some(ext)),
+        _ => (name, None),
+    };
+    let mut stem = stem.to_owned();
+    loop {
+        let before = stem.len();
+        while stem.ends_with(' ') || stem.ends_with('.') || stem.ends_with('-') {
+            stem.pop();
+        }
+        for empty in ["()", "[]"] {
+            if let Some(s) = stem.strip_suffix(empty) {
+                stem = s.to_owned();
+            }
+        }
+        if stem.len() == before || stem.is_empty() {
+            break;
+        }
+    }
+    if stem.is_empty() {
+        stem = "_".to_owned();
+    }
+    match ext {
+        Some(ext) => format!("{stem}.{ext}"),
+        None => stem,
     }
 }
 
@@ -172,6 +342,73 @@ mod tests {
             p.constrain_path("Alpha (USA).gba"),
             p.constrain_path("Alpha (USA).gba")
         );
+    }
+
+    // ---- the name-fitting pipeline (80-views.md) ----
+
+    #[test]
+    fn fitting_only_runs_when_over_budget() {
+        // Under budget: rewrite rules never touch the name, even though
+        // rules WOULD apply (region tag present).
+        assert_eq!(fit_component("Alpha (USA).gba", 99), "Alpha (USA).gba");
+    }
+
+    #[test]
+    fn noise_prefixes_strip() {
+        assert_eq!(
+            strip_noise_prefix("2 Games in 1! - Sonic Advance & ChuChu Rocket! (Europe).gba"),
+            "Sonic Advance & ChuChu Rocket! (Europe).gba"
+        );
+        assert_eq!(
+            strip_noise_prefix("3 in 1 - Life, Yahtzee, Payday (USA).gba"),
+            "Life, Yahtzee, Payday (USA).gba"
+        );
+        // Not noise: no marker shape.
+        assert_eq!(strip_noise_prefix("1942 (Japan).nes"), "1942 (Japan).nes");
+        assert_eq!(
+            strip_noise_prefix("2 Fast 2 Furious - The Game.gba"),
+            "2 Fast 2 Furious - The Game.gba"
+        );
+    }
+
+    #[test]
+    fn region_tags_compress() {
+        assert_eq!(
+            compress_region_tags("Game, The (USA, Europe) (Rev 1).gba"),
+            "Game, The (U,E) (Rev 1).gba"
+        );
+        assert_eq!(compress_region_tags("Solo (Japan).gba"), "Solo (J).gba");
+        // Mixed/unknown groups stay untouched.
+        assert_eq!(
+            compress_region_tags("Thing (Beta) (Proto 2).gba"),
+            "Thing (Beta) (Proto 2).gba"
+        );
+    }
+
+    #[test]
+    fn trailing_junk_trims() {
+        assert_eq!(trim_trailing_junk("Name - .gba"), "Name.gba");
+        assert_eq!(trim_trailing_junk("Name ().gba"), "Name.gba");
+        assert_eq!(trim_trailing_junk("Name...gba"), "Name.gba");
+    }
+
+    #[test]
+    fn ezflash_omega_fits_the_2021_shape() {
+        // The motivating case: a 103-char compilation name survives the
+        // 99-char (minus reserve) budget as MEANING, not truncation.
+        let p = profile("ezflash-omega").expect("builtin");
+        let long = "2 Games in 1! - Sonic Advance & Sonic Battle Ultra Mega Deluxe Championship Tournament Edition (USA, Europe) (Rev 2).gba";
+        assert!(long.len() - "2 Games in 1! - ".len() > 99 - SUFFIX_RESERVE);
+        let fitted = p.constrain_path(long);
+        assert!(fitted.len() <= 99 - SUFFIX_RESERVE);
+        assert!(
+            fitted.starts_with("Sonic Advance"),
+            "prefix stripped, identity kept: {fitted}"
+        );
+        assert!(fitted.contains("(U,E)"), "regions compressed: {fitted}");
+        assert!(fitted.ends_with(".gba"));
+        // Deterministic.
+        assert_eq!(fitted, p.constrain_path(long));
     }
 
     #[test]

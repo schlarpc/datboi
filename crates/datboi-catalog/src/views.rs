@@ -217,7 +217,11 @@ pub struct EvalReport {
     pub families: Option<usize>,
     /// Rows dropped because the profile's size cap can't hold them.
     pub skipped_oversize: usize,
-    /// Directories exceeding the profile's entry cap (rows kept).
+    /// Directories that got an alpha-bucket level because they exceeded
+    /// the profile's entry cap (80-views.md mitigation).
+    pub bucketed_dirs: usize,
+    /// Directories STILL exceeding the entry cap after bucketing
+    /// (rows kept; the report is the remedy).
     pub overfull_dirs: usize,
 }
 
@@ -350,7 +354,8 @@ pub fn evaluate_view(
         let mut path = def
             .template
             .replace("{entry}", &sanitize_component(&p.entry))
-            .replace("{name}", &sanitize_name(&p.claim));
+            .replace("{name}", &sanitize_name(&p.claim))
+            .replace("{alpha_bucket}", &alpha_bucket(&p.claim));
         if !path_is_canonical(&path) {
             path = sanitize_name(&path);
         }
@@ -377,30 +382,16 @@ pub fn evaluate_view(
         });
     }
 
-    // Entry-cap audit (report-only: dropping rows is worse than telling
-    // the operator their template needs another directory level).
+    // Entry-cap mitigation (80-views.md): file rows sitting directly in
+    // an over-cap directory move down one alpha-bucket level (`A`..`Z`,
+    // `#` for the rest) — mitigated, not just reported. What remains
+    // overfull after bucketing (subdir-heavy layouts) is reported.
+    let mut bucketed_dirs = 0usize;
     let mut overfull_dirs = 0usize;
     if let Some(profile) = profile
         && let Some(cap) = profile.max_dir_entries
     {
-        let mut children: HashMap<&str, HashSet<&str>> = HashMap::new();
-        for row in &rows {
-            // walk ancestors: each parent dir gains its immediate child
-            let mut node = row.path.as_str();
-            loop {
-                match node.rsplit_once('/') {
-                    Some((parent, leaf)) => {
-                        children.entry(parent).or_default().insert(leaf);
-                        node = parent;
-                    }
-                    None => {
-                        children.entry("").or_default().insert(node);
-                        break;
-                    }
-                }
-            }
-        }
-        overfull_dirs = children.values().filter(|c| c.len() > cap).count();
+        (bucketed_dirs, overfull_dirs) = bucket_overfull_dirs(&mut rows, cap, &mut disambiguated);
     }
 
     let snap = ViewSnapshot {
@@ -434,8 +425,102 @@ pub fn evaluate_view(
         disambiguated,
         families,
         skipped_oversize,
+        bucketed_dirs,
         overfull_dirs,
     })
+}
+
+/// The 80-views.md entry-cap mitigation: file rows sitting directly in
+/// an over-cap directory move down one alpha-bucket level; bucketed
+/// paths that collide with pre-existing rows get the deterministic
+/// hash-suffix remedy (or stay put if even that collides). Returns
+/// `(dirs bucketed, dirs still over cap)`.
+fn bucket_overfull_dirs(
+    rows: &mut [ViewRow],
+    cap: usize,
+    disambiguated: &mut usize,
+) -> (usize, usize) {
+    let overfull: HashSet<String> = dir_children(rows)
+        .into_iter()
+        .filter(|(_, c)| c.len() > cap)
+        .map(|(p, _)| p)
+        .collect();
+    if !overfull.is_empty() {
+        let mut seen: HashSet<String> = rows.iter().map(|r| r.path.clone()).collect();
+        for row in rows.iter_mut() {
+            let (parent, leaf) = match row.path.rsplit_once('/') {
+                Some((p, l)) => (p.to_owned(), l.to_owned()),
+                None => (String::new(), row.path.clone()),
+            };
+            if !overfull.contains(&parent) {
+                continue;
+            }
+            let bucket = alpha_bucket(&leaf);
+            let mut candidate = if parent.is_empty() {
+                format!("{bucket}/{leaf}")
+            } else {
+                format!("{parent}/{bucket}/{leaf}")
+            };
+            seen.remove(&row.path);
+            if !seen.insert(candidate.clone()) {
+                let tag = &row.hash.to_hex()[..8];
+                candidate = match candidate.rsplit_once('.') {
+                    Some((stem, ext)) if !stem.is_empty() => format!("{stem} ({tag}).{ext}"),
+                    _ => format!("{candidate} ({tag})"),
+                };
+                if !seen.insert(candidate.clone()) {
+                    seen.insert(row.path.clone());
+                    continue; // keep the un-bucketed path
+                }
+                *disambiguated += 1;
+            }
+            row.path = candidate;
+        }
+    }
+    let still_overfull = dir_children(rows)
+        .into_iter()
+        .filter(|(_, c)| c.len() > cap)
+        .count();
+    (overfull.len(), still_overfull)
+}
+
+/// Immediate children (files and subdirs) per directory; `""` is root.
+fn dir_children(rows: &[ViewRow]) -> HashMap<String, HashSet<String>> {
+    let mut children: HashMap<String, HashSet<String>> = HashMap::new();
+    for row in rows {
+        let mut node = row.path.as_str();
+        loop {
+            match node.rsplit_once('/') {
+                Some((parent, leaf)) => {
+                    children
+                        .entry(parent.to_owned())
+                        .or_default()
+                        .insert(leaf.to_owned());
+                    node = parent;
+                }
+                None => {
+                    children
+                        .entry(String::new())
+                        .or_default()
+                        .insert(node.to_owned());
+                    break;
+                }
+            }
+        }
+    }
+    children
+}
+
+/// `A`–`Z` from a name's FIRST character (uppercased); `#` for digits
+/// and everything else — the 80-views.md bucket vocabulary. First
+/// character, not first letter: device menus sort by leading char, and
+/// the bucket must agree with where the eye looks.
+fn alpha_bucket(name: &str) -> String {
+    let leaf = name.rsplit('/').next().unwrap_or(name);
+    match leaf.chars().next() {
+        Some(c) if c.is_ascii_alphabetic() => c.to_ascii_uppercase().to_string(),
+        _ => "#".to_owned(),
+    }
 }
 
 /// Load the revision's entries with clone links and holding status —
@@ -536,5 +621,74 @@ mod tests {
         assert_eq!(sanitize_name("sub\\dir/rom.bin"), "sub/dir/rom.bin");
         assert_eq!(sanitize_name("//../x"), "_/x");
         assert!(path_is_canonical(&sanitize_name("weird\\..\\path")));
+    }
+
+    fn row(path: &str) -> ViewRow {
+        ViewRow {
+            path: path.to_owned(),
+            hash: Blake3::compute(path.as_bytes()),
+            size: 1,
+            seek: 0,
+        }
+    }
+
+    #[test]
+    fn alpha_buckets_are_letters_or_hash() {
+        assert_eq!(alpha_bucket("Alpha (USA).gba"), "A");
+        assert_eq!(alpha_bucket("zelda.gba"), "Z");
+        assert_eq!(alpha_bucket("1942.nes"), "#");
+        assert_eq!(alpha_bucket("~weird~.bin"), "#");
+        assert_eq!(alpha_bucket("dir/beta.gba"), "B", "buckets by leaf");
+    }
+
+    #[test]
+    fn overfull_dirs_get_bucketed_not_just_reported() {
+        // Cap 3: root holds four children (three files + the `B` dir);
+        // bucketing brings it to three bucket dirs. One bucketed row
+        // collides with the pre-existing nested path.
+        let mut rows = vec![
+            row("Alpha.gba"),
+            row("Beta.gba"),
+            row("Charlie.gba"),
+            row("B/Beta.gba"), // pre-existing path at the bucket target
+        ];
+        let mut disambiguated = 0;
+        let (bucketed, still) = bucket_overfull_dirs(&mut rows, 3, &mut disambiguated);
+        assert_eq!(bucketed, 1, "root was over cap");
+        assert_eq!(still, 0, "mitigated");
+        let paths: Vec<&str> = rows.iter().map(|r| r.path.as_str()).collect();
+        assert!(paths.contains(&"A/Alpha.gba"), "{paths:?}");
+        assert!(paths.contains(&"C/Charlie.gba"), "{paths:?}");
+        assert!(
+            paths.contains(&"B/Beta.gba"),
+            "nested row untouched: {paths:?}"
+        );
+        // The colliding move got the hash-suffix remedy, not a drop.
+        assert_eq!(disambiguated, 1);
+        assert_eq!(rows.len(), 4, "no rows lost");
+        let unique: HashSet<&str> = paths.iter().copied().collect();
+        assert_eq!(unique.len(), 4, "paths stay unique: {paths:?}");
+        // Determinism: same input, same output.
+        let mut rows2 = vec![
+            row("Alpha.gba"),
+            row("Beta.gba"),
+            row("Charlie.gba"),
+            row("B/Beta.gba"),
+        ];
+        let mut d2 = 0;
+        bucket_overfull_dirs(&mut rows2, 3, &mut d2);
+        assert_eq!(
+            rows.iter().map(|r| &r.path).collect::<Vec<_>>(),
+            rows2.iter().map(|r| &r.path).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn under_cap_dirs_are_untouched() {
+        let mut rows = vec![row("a/x.gba"), row("a/y.gba"), row("b/z.gba")];
+        let mut disambiguated = 0;
+        let (bucketed, still) = bucket_overfull_dirs(&mut rows, 10, &mut disambiguated);
+        assert_eq!((bucketed, still, disambiguated), (0, 0, 0));
+        assert_eq!(rows[0].path, "a/x.gba");
     }
 }
