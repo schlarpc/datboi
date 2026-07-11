@@ -44,6 +44,8 @@ use datboi_formats::skipper::{Detector, Operation};
 use datboi_index::recipes::NewRecipe;
 use datboi_index::{Db, Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass};
 use datboi_runtime::extractor::ExtractorHost;
+use datboi_runtime::pipe;
+use datboi_runtime::stream::{FileRandom, RangeRead};
 use datboi_store_fs::{Namespace as StoreNs, PutOutcome, Store};
 
 use crate::zip::{Method, ZipError};
@@ -55,29 +57,6 @@ pub const EX_UNRAR_WASM: &[u8] = include_bytes!("../../../transforms/dist/ex_unr
 /// CBOR key for the extractor member index in an `ex-unrar/extract`
 /// recipe's params (D58); mirrors exec's `EXTRACTOR_PARAM_MEMBER_IX`.
 const EXTRACTOR_PARAM_MEMBER_IX: u64 = 1;
-
-/// A shared, in-memory sink for one extracted member (the extractor host
-/// writes here; we read the bytes back out to hash into the CAS).
-#[derive(Clone, Default)]
-struct SharedSink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-impl SharedSink {
-    fn into_inner(self) -> Vec<u8> {
-        std::sync::Arc::try_unwrap(self.0)
-            .map(|m| m.into_inner().expect("lock"))
-            .unwrap_or_else(|arc| arc.lock().expect("lock").clone())
-    }
-}
-
-impl std::io::Write for SharedSink {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().expect("lock").extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
 
 /// Streaming buffer size for member hashing.
 const CHUNK: usize = 64 * 1024;
@@ -283,7 +262,7 @@ impl<'a> Ingester<'a> {
                 report.errors.push((path.to_owned(), e));
             }
         } else if archive::looks_like_rar(&head[..head_len]) {
-            if let Err(e) = self.process_rar(&hash, blob_id, &mut blob, report) {
+            if let Err(e) = self.process_rar(&hash, blob_id, report) {
                 report.errors.push((path.to_owned(), e));
             }
         } else if !self.detectors.is_empty() {
@@ -369,35 +348,27 @@ impl<'a> Ingester<'a> {
         &mut self,
         container_hash: &Blake3,
         container_blob_id: i64,
-        blob: &mut File,
         report: &mut IngestReport,
     ) -> Result<(), String> {
-        // The component reads the container as a seekable resource; buffer
-        // the stored bytes (same bytes we just hashed) for random access.
-        blob.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-        let mut container = Vec::new();
-        blob.read_to_end(&mut container)
-            .map_err(|e| e.to_string())?;
-
         self.ensure_extractor()?;
-        let members = self.extractor_enumerate(&container)?;
+        let members = self.extractor_enumerate(container_hash)?;
 
         for member in &members {
             // Decode the member inside the sandbox, streaming into the CAS
-            // (hash computed on the way in).
-            let bytes = self.extractor_extract(&container, member.ix)?;
-            if bytes.len() as u64 != member.size {
+            // (hash computed on the way in). Neither the container nor the
+            // member is ever whole in memory.
+            let (member_hash, aliases) =
+                self.extractor_extract_into_store(container_hash, member)?;
+            if aliases.size != member.size {
+                // The mismatched bytes already landed in the CAS (streaming
+                // means we learn the size last); they are content-addressed
+                // and unreferenced — GC fodder, not corruption. Refuse the
+                // archive before minting any claim to them.
                 return Err(format!(
                     "member {:?}: extractor produced {} bytes, header claims {}",
-                    member.name,
-                    bytes.len(),
-                    member.size
+                    member.name, aliases.size, member.size
                 ));
             }
-            let (member_hash, aliases, _) = self
-                .store
-                .put_new(StoreNs::Data, std::io::Cursor::new(&bytes))
-                .map_err(|e| format!("storing member {:?}: {e}", member.name))?;
             let member_blob_id = self
                 .record_resident_blob(&member_hash, &aliases)
                 .map_err(|e| e.to_string())?;
@@ -479,28 +450,53 @@ impl<'a> Ingester<'a> {
         Ok(Blake3::compute(EX_UNRAR_WASM))
     }
 
+    /// The stored container as a seekable resource for the component —
+    /// a fresh handle per call (the extractor owns the cursor).
+    fn container_random(&self, hash: &Blake3) -> Result<Box<dyn RangeRead>, String> {
+        let file = self
+            .store
+            .get(StoreNs::Data, hash)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "rar container vanished from the store".to_owned())?;
+        Ok(Box::new(FileRandom::new(file).map_err(|e| e.to_string())?))
+    }
+
     fn extractor_enumerate(
         &self,
-        container: &[u8],
+        container: &Blake3,
     ) -> Result<Vec<datboi_runtime::extractor::Member>, String> {
         let rt = self.extractor.as_ref().expect("ensure_extractor first");
         rt.host
-            .enumerate(&rt.component, Box::new(container.to_vec()))
+            .enumerate(&rt.component, self.container_random(container)?)
             .map_err(|e| e.to_string())
     }
 
-    fn extractor_extract(&self, container: &[u8], ix: u32) -> Result<Vec<u8>, String> {
+    /// Decode one member into the CAS: the extractor pushes into a bounded
+    /// pipe on its own thread while `put_new` hashes and stores the pull
+    /// side. An extractor failure surfaces to the reader as an error (never
+    /// a clean EOF), so `put_new` deletes its temp and publishes nothing.
+    fn extractor_extract_into_store(
+        &self,
+        container: &Blake3,
+        member: &datboi_runtime::extractor::Member,
+    ) -> Result<(Blake3, AliasTuple), String> {
         let rt = self.extractor.as_ref().expect("ensure_extractor first");
-        let out = SharedSink::default();
-        rt.host
-            .extract(
-                &rt.component,
-                Box::new(container.to_vec()),
-                ix,
-                Box::new(out.clone()),
-            )
-            .map_err(|e| e.to_string())?;
-        Ok(out.into_inner())
+        let archive = self.container_random(container)?;
+        let (w, r, h) = pipe::pipe();
+        let ix = member.ix;
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                let _finished = h.finish_on_drop();
+                if let Err(e) = rt.host.extract(&rt.component, archive, ix, Box::new(w)) {
+                    h.fail(format!("extractor failed: {e}"));
+                }
+            });
+            let (hash, aliases, _) = self
+                .store
+                .put_new(StoreNs::Data, r)
+                .map_err(|e| format!("storing member {:?}: {e}", member.name))?;
+            Ok((hash, aliases))
+        })
     }
 
     fn process_zip(

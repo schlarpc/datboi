@@ -4,7 +4,7 @@
 //! hand out one of these.
 
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read};
 
 use datboi_core::assemble::{AssembleParams, Piece, translate};
 use datboi_core::hash::Blake3;
@@ -31,43 +31,7 @@ pub fn read_at_exact(src: &mut dyn RangeRead, offset: u64, buf: &mut [u8]) -> io
     Ok(())
 }
 
-/// A plain file as a random-access source (seek + read; `RangeRead`
-/// takes `&mut self`, so the file's cursor is ours to move).
-pub struct FileRandom {
-    file: File,
-    len: u64,
-}
-
-impl FileRandom {
-    pub fn new(file: File) -> io::Result<Self> {
-        let len = file.metadata()?.len();
-        Ok(Self { file, len })
-    }
-}
-
-impl RangeRead for FileRandom {
-    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
-        if offset >= self.len {
-            return Ok(0);
-        }
-        self.file.seek(SeekFrom::Start(offset))?;
-        let cap = usize::try_from((self.len - offset).min(buf.len() as u64)).expect("bounded");
-        let mut filled = 0usize;
-        while filled < cap {
-            match self.file.read(&mut buf[filled..cap]) {
-                Ok(0) => break,
-                Ok(n) => filled += n,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(filled)
-    }
-
-    fn len(&self) -> u64 {
-        self.len
-    }
-}
+pub use datboi_runtime::stream::FileRandom;
 
 /// A resident literal leaf served through its OWN bao tree: every
 /// `read_at` re-validates the covering 16 KiB chunk groups against the

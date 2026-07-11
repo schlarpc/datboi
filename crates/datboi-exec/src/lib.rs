@@ -22,8 +22,9 @@
 //! affect results — determinism needs no cooperative scheduler.
 
 pub mod evict;
-pub mod pipe;
 pub mod random;
+
+pub use datboi_runtime::pipe;
 
 use std::collections::HashMap;
 use std::io::{self, Cursor, Read, Seek, Write};

@@ -138,8 +138,11 @@ container→member derive recipes (members now evictable; the test
 evicts and rebuilds bit-exact). **The D46 empty-import contract
 held** — zero WASI imports, no ruling owed. Notes: the stamped
 component lives at `transforms/dist/ex_unrar.wasm` (rebuild + re-copy
-if the crate changes); container bytes buffer in memory during
-extraction (fine at rom scale; a note if multi-GB rars appear).
+if the crate changes); container bytes buffered in memory during
+extraction (fixed later the same day: ingest now serves the container
+to the component as a store-file `RangeRead` and streams each member
+through a pipe straight into `put_new` — nothing whole in memory;
+`pipe` + `FileRandom` moved from datboi-exec into datboi-runtime).
 NEXT: M5 (axum API, invites + passwords D30, ACLs, Svelte web UI
 D17 — a functional brief for the UI design pass was drafted this
 session), and the carried caveat: validate ECM EDC/ECC against a

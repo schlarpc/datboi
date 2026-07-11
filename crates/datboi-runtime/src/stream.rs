@@ -75,6 +75,47 @@ impl RangeRead for Vec<u8> {
     }
 }
 
+/// A plain file as a random-access source (seek + read; `RangeRead`
+/// takes `&mut self`, so the file's cursor is ours to move).
+pub struct FileRandom {
+    file: std::fs::File,
+    len: u64,
+}
+
+impl FileRandom {
+    /// # Errors
+    /// If the file's length cannot be stat'd.
+    pub fn new(file: std::fs::File) -> std::io::Result<Self> {
+        let len = file.metadata()?.len();
+        Ok(Self { file, len })
+    }
+}
+
+impl RangeRead for FileRandom {
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+        use std::io::{Read as _, Seek as _, SeekFrom};
+        if offset >= self.len {
+            return Ok(0);
+        }
+        self.file.seek(SeekFrom::Start(offset))?;
+        let cap = usize::try_from((self.len - offset).min(buf.len() as u64)).expect("bounded");
+        let mut filled = 0usize;
+        while filled < cap {
+            match self.file.read(&mut buf[filled..cap]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(filled)
+    }
+
+    fn len(&self) -> u64 {
+        self.len
+    }
+}
+
 /// One resolved input, recipe order.
 pub enum StreamInput {
     Sequential(SequentialInput),
