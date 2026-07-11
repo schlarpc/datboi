@@ -73,6 +73,23 @@ xbox-fatx ≤42 chars, mister) enforce filename charset/length, FAT32
 choke long before FAT32's 65k), deterministic collision disambiguation.
 Knobs live in profiles, not scattered — anti-RetroArch clause.
 
+Length caps are enforced by a **name-fitting pipeline**, not skipping:
+each profile carries an ordered, deterministic list of rewrite rules
+applied until the name fits — strip noise prefixes ("2 Games in 1! - "
+and kin), compress region tags ((USA)→(U), (Europe)→(E), (Japan)→(J)),
+trim trailing junk — then truncate with suffix reserve, and only
+skip+count if the name still collides after disambiguation. A ROM
+dropped for a 103-char dat name is a real loss; the same ROM as "(U)"
+is not. Likewise max_dir_entries is mitigated (alpha-bucket the
+template, `#/` for non-alpha), not just reported. (Both lifted from
+the 2021 Python prototype's EZ-Flash Omega mutator — the earliest
+per-projection constraint code in this project's lineage. Device data
+point preserved with it: EZ-Flash Omega = max 512 files/dir, max
+99-char filenames — its own profile, distinct from everdrive.)
+Shipped status (2026-07-10): the 07-09 profiles skip oversize rows and
+only report overfull dirs — the fitting pipeline + auto-bucketing are
+an owed M4 work item.
+
 ## Materialization
 
 Hybrid, snapshot-driven by seekability class (above). Eager

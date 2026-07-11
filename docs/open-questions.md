@@ -167,7 +167,10 @@ Priority order:
    synthesis (D62/D63), MAME merge-mode rendering (D31 deferred set),
    retool clonelists + strict 1G1R mode (D57), plus the ruled riders
    (D56 headroom guard, D59 eligibility narrowing, D60 config shape,
-   D61 rehabilitate). Then the user's stated post-M4 directions: M6
+   D61 rehabilitate) and the profile name-fitting pipeline +
+   dir-bucketing (80-views.md, recovered 2026-07-10 from the 2021
+   prototype's EZ-Flash Omega mutator; adds an ezflash-omega profile:
+   512 files/dir, 99-char names). Then the user's stated post-M4 directions: M6
    iroh, M7 formats/xf-s, ingest policies/background curing, deeper
    adversarial testing. Carried caveat from M3/ECM: validate EDC/ECC
    against a real disc sector when the NAS corpus is reachable.
