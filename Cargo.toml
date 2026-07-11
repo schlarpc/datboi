@@ -25,6 +25,7 @@ license = "MIT"
 repository = "https://github.com/schlarpc/datboi"
 
 [workspace.dependencies]
+datboi-api = { path = "crates/datboi-api" }
 datboi-catalog = { path = "crates/datboi-catalog" }
 datboi-core = { path = "crates/datboi-core" }
 datboi-exec = { path = "crates/datboi-exec" }
@@ -86,7 +87,14 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 # nfsserve lineage). Serves mount+portmap+nfs on one TCP port; no
 # kernel export, no root.
 nfsserve = "0.11"
-# Value-construction only (JSONB column text); no serde derive anywhere.
+# Trait bounds only (`T: Serialize`) outside the contract crate: D69
+# scopes the derive ban to identity-bearing encodings (CAS canonical
+# bytes, D18) — crates/datboi-api is the ONE crate that may enable the
+# derive feature.
+serde = "1"
+# Value construction (JSONB column text, CLI --json output) and the
+# contract crate's spec emission. Same D69 scoping as serde: derives
+# live in crates/datboi-api and nowhere else.
 serde_json = "1"
 sha1 = "0.10"
 sha2 = "0.10"
@@ -97,6 +105,9 @@ thiserror = "2"
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "macros", "signal", "sync", "time"] }
 # Blocking HTTP for `dat fetch` (D16): small, no async runtime in the CLI.
 ureq = "2"
+# OpenAPI 3.1 emission for the /v1 contract (D69). datboi-api only —
+# the ToSchema/path derives are part of the same D69 carve-out as serde.
+utoipa = "5"
 # Component model + cranelift only; no wasi/async/cache — a pure, minimal,
 # deterministic execution surface (D5/D6). `signals-based-traps` off keeps
 # behavior uniform; we gate resources with fuel + StoreLimits instead.

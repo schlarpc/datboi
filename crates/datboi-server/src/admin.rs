@@ -16,9 +16,12 @@ use axum::Json;
 use axum::extract::{Path as UrlPath, State};
 use axum::http::StatusCode;
 use axum::response::Response;
+use datboi_api::{
+    AdminUsersResponse, GrantAddRequest, InviteMintRequest, InviteMintResponse, InviteRow,
+    OkResponse, SessionsRevokedResponse, UserRow,
+};
 use datboi_core::hash::Blake3;
 use datboi_index::Role;
-use serde_json::json;
 
 use crate::App;
 use crate::api::{err, hex, require_owner};
@@ -62,35 +65,33 @@ pub(crate) async fn users(
             .collect();
         // Pending invites only: consumed ones live on as the user's
         // provenance, expired ones are dead weight the UI need not show.
-        let invites: Vec<_> = db
+        let invites: Vec<InviteRow> = db
             .list_invites()
             .map_err(internal)?
             .into_iter()
             .filter(|invite| invite.used_by.is_none() && invite.expires_at > now)
-            .map(|invite| {
-                json!({
-                    "token_hash": hex(&invite.token_hash),
-                    "role": auth::role_str(invite.role),
-                    "expires_at": invite.expires_at,
-                    "created_by": invite.created_by.and_then(|id| by_id.get(&id)),
-                })
+            .map(|invite| InviteRow {
+                token_hash: hex(&invite.token_hash),
+                role: auth::role_of(invite.role),
+                expires_at: invite.expires_at,
+                created_by: invite
+                    .created_by
+                    .and_then(|id| by_id.get(&id).map(|name| (*name).to_owned())),
             })
             .collect();
-        let users: Vec<_> = users
+        let users: Vec<UserRow> = users
             .iter()
-            .map(|user| {
-                json!({
-                    "username": user.username,
-                    "role": auth::role_str(user.role),
-                    "created_at": user.created_at,
-                    "grants": grants.get(&user.user_id).cloned().unwrap_or_default(),
-                    "sessions": sessions.get(&user.user_id).copied().unwrap_or(0),
-                })
+            .map(|user| UserRow {
+                username: user.username.clone(),
+                role: auth::role_of(user.role),
+                created_at: user.created_at,
+                grants: grants.get(&user.user_id).cloned().unwrap_or_default(),
+                sessions: sessions.get(&user.user_id).copied().unwrap_or(0),
             })
             .collect();
         Ok(json_response(
             StatusCode::OK,
-            &json!({"users": users, "invites": invites}),
+            &AdminUsersResponse { users, invites },
         ))
     })
     .await
@@ -103,21 +104,21 @@ const DAY_SECS: i64 = 24 * 60 * 60;
 pub(crate) async fn invite_create(
     State(app): State<Arc<App>>,
     Extension(caller): Extension<Caller>,
-    Json(body): Json<serde_json::Value>,
+    Json(body): Json<InviteMintRequest>,
 ) -> Response {
     run_blocking(move || {
         require_owner(&caller)?;
-        let role = match body.get("role").and_then(serde_json::Value::as_str) {
+        // Validated here, not by the extractor: an unknown role must
+        // stay a 400 with this message, not a 422 (D69 refactor keeps
+        // the wire behavior).
+        let role = match body.role.as_deref() {
             None | Some("friend") => Role::Friend,
             Some("owner") => Role::Owner,
             Some(_) => return Err(err(StatusCode::BAD_REQUEST, "role must be owner or friend")),
         };
         // D68 default: 7 days. Bounded — an effectively-eternal invite
         // is a standing credential, which is what invites exist to avoid.
-        let days = body
-            .get("expires_days")
-            .and_then(serde_json::Value::as_i64)
-            .unwrap_or(7);
+        let days = body.expires_days.unwrap_or(7);
         if !(1..=365).contains(&days) {
             return Err(err(
                 StatusCode::BAD_REQUEST,
@@ -139,10 +140,10 @@ pub(crate) async fn invite_create(
             .map_err(internal)?;
         Ok(json_response(
             StatusCode::OK,
-            &json!({
-                "url_path": format!("/invite#{token}"),
-                "expires_at": expires_at,
-            }),
+            &InviteMintResponse {
+                url_path: format!("/invite#{token}"),
+                expires_at,
+            },
         ))
     })
     .await
@@ -164,7 +165,7 @@ pub(crate) async fn invite_delete(
             .map_err(|_| err(StatusCode::BAD_REQUEST, "not a token hash"))?;
         let db = lock_db(&app);
         if db.delete_invite(&hash.0).map_err(internal)? {
-            Ok(json_response(StatusCode::OK, &json!({"ok": true})))
+            Ok(json_response(StatusCode::OK, &OkResponse { ok: true }))
         } else {
             Err(err(StatusCode::NOT_FOUND, "no such pending invite"))
         }
@@ -184,17 +185,20 @@ fn user_id_by_name(db: &datboi_index::Db, username: &str) -> Result<i64, Respons
 pub(crate) async fn grant_create(
     State(app): State<Arc<App>>,
     Extension(caller): Extension<Caller>,
-    Json(body): Json<serde_json::Value>,
+    Json(body): Json<GrantAddRequest>,
 ) -> Response {
     run_blocking(move || {
         require_owner(&caller)?;
-        let field = |key: &str| {
-            body.get(key)
-                .and_then(serde_json::Value::as_str)
+        // Handler-owned "missing field" 400s (same convention as the
+        // auth requests — D69 keeps the extractor out of validation).
+        let field = |value: &Option<String>, key: &str| {
+            value
+                .clone()
                 .ok_or_else(|| err(StatusCode::BAD_REQUEST, &format!("missing field {key:?}")))
         };
-        let username = field("username")?;
-        let view = field("view")?;
+        let username = field(&body.username, "username")?;
+        let view = field(&body.view, "view")?;
+        let (username, view) = (username.as_str(), view.as_str());
         let db = lock_db(&app);
         let user_id = user_id_by_name(&db, username)?;
         // A grant on a view that exists nowhere (no tag, no definition)
@@ -210,7 +214,7 @@ pub(crate) async fn grant_create(
             return Err(err(StatusCode::NOT_FOUND, "no such view"));
         }
         db.grant_view(user_id, view).map_err(internal)?;
-        Ok(json_response(StatusCode::OK, &json!({"ok": true})))
+        Ok(json_response(StatusCode::OK, &OkResponse { ok: true }))
     })
     .await
 }
@@ -225,7 +229,7 @@ pub(crate) async fn grant_delete(
         let db = lock_db(&app);
         let user_id = user_id_by_name(&db, &username)?;
         if db.revoke_view(user_id, &view).map_err(internal)? {
-            Ok(json_response(StatusCode::OK, &json!({"ok": true})))
+            Ok(json_response(StatusCode::OK, &OkResponse { ok: true }))
         } else {
             Err(err(StatusCode::NOT_FOUND, "no such grant"))
         }
@@ -245,7 +249,12 @@ pub(crate) async fn sessions_delete(
         let db = lock_db(&app);
         let user_id = user_id_by_name(&db, &username)?;
         let revoked = db.delete_sessions_for_user(user_id).map_err(internal)?;
-        Ok(json_response(StatusCode::OK, &json!({"revoked": revoked})))
+        Ok(json_response(
+            StatusCode::OK,
+            &SessionsRevokedResponse {
+                revoked: revoked as u64,
+            },
+        ))
     })
     .await
 }

@@ -20,20 +20,30 @@ use axum::Extension;
 use axum::extract::{Path as UrlPath, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::Response;
+use datboi_api::{
+    BlobInfo, ClaimState, Counts, Definition, Endpoints, EntriesPage, EntryDetail, EntryRow,
+    EntryState, FileRow, ImageStatus, JobsResponse, Quarantine, QuarantineItem, ResidencyState,
+    Revision, RomClaim, RomHashes, RouteInfo, RouteVerify, StorageResponse, System,
+    SystemsResponse, ViewDetail, ViewFilesPage, ViewSummary, ViewsResponse,
+};
 use datboi_catalog::ViewDef;
 use datboi_core::hash::Blake3;
 use datboi_index::{Db, Residency, VerifyState};
 use rusqlite::OptionalExtension as _;
-use serde_json::{Value, json};
 
 use crate::App;
 use crate::auth::{self, Caller};
 use crate::http::{enc_seg, json_response, run_blocking};
 use crate::vfs;
 
-/// Uniform API error shape: `{"error": "<message>"}`.
+/// Uniform API error shape (datboi-api, D69): `{"error": "<message>"}`.
 pub(crate) fn err(status: StatusCode, msg: &str) -> Response {
-    json_response(status, &json!({"error": msg}))
+    json_response(
+        status,
+        &datboi_api::ApiError {
+            error: msg.to_owned(),
+        },
+    )
 }
 
 fn internal(e: impl std::fmt::Display) -> Response {
@@ -71,12 +81,12 @@ const STATE_CASE: &str = "CASE \
      WHEN ea.have_verified + ea.have_claimed >= ea.required THEN 1 \
      ELSE 2 END";
 
-fn state_str(code: i64) -> &'static str {
+fn entry_state(code: i64) -> EntryState {
     match code {
-        0 => "verified",
-        1 => "claimed",
-        2 => "missing",
-        _ => "nodump",
+        0 => EntryState::Verified,
+        1 => EntryState::Claimed,
+        2 => EntryState::Missing,
+        _ => EntryState::Nodump,
     }
 }
 
@@ -203,7 +213,7 @@ pub(crate) async fn systems(
 /// recover`; clients treat it as a handle, not an identity — the
 /// durable identity is provider/system). Counts derive from the same
 /// entry_audit rollup `datboi audit` reads.
-fn systems_body(app: &App) -> Result<Value, Response> {
+fn systems_body(app: &App) -> Result<SystemsResponse, Response> {
     let db = lock_db(app);
     // Which stored ViewDefs reference each source.
     let mut views_by_source: HashMap<(String, String), Vec<String>> = HashMap::new();
@@ -270,28 +280,28 @@ fn systems_body(app: &App) -> Result<Value, Response> {
             .get(&(provider.clone(), system.clone()))
             .cloned()
             .unwrap_or_default();
-        out.push(json!({
-            "id": source_id,
-            "provider": provider,
-            "system": system,
-            "source": format!("{provider}/{system}"),
-            "revision": revision_id.map(|id| json!({
-                "id": id,
-                "version": version,
-                "date": dat_date,
-                "imported_at": imported_at,
-            })),
-            "counts": {
-                "verified": verified,
-                "claimed": claimed,
-                "missing": missing,
-                "nodump": nodump,
+        out.push(System {
+            id: source_id,
+            source: format!("{provider}/{system}"),
+            provider,
+            system,
+            revision: revision_id.map(|id| Revision {
+                id,
+                version,
+                date: dat_date,
+                imported_at,
+            }),
+            counts: Counts {
+                verified,
+                claimed,
+                missing,
+                nodump,
             },
-            "total": total,
-            "views": views,
-        }));
+            total,
+            views,
+        });
     }
-    Ok(json!({"systems": out}))
+    Ok(SystemsResponse { systems: out })
 }
 
 /// A source's current revision id; `Ok(None)` = source exists but has
@@ -350,16 +360,18 @@ pub(crate) async fn system_entries(
     .await
 }
 
-fn entries_body(app: &App, source_id: i64, page: &Page) -> Result<Value, Response> {
+fn entries_body(app: &App, source_id: i64, page: &Page) -> Result<EntriesPage, Response> {
     let db = lock_db(app);
     let conn = db.cache();
     let Some(revision_id) = resolve_revision(conn, source_id)? else {
         // Source exists but nothing imported yet: an empty audit, not a
         // miss.
-        return Ok(json!({
-            "entries": [], "total": 0,
-            "offset": page.offset, "limit": page.limit,
-        }));
+        return Ok(EntriesPage {
+            entries: Vec::new(),
+            total: 0,
+            offset: page.offset,
+            limit: page.limit,
+        });
     };
     let filter = format!(
         "e.revision_id = ?1
@@ -405,19 +417,21 @@ fn entries_body(app: &App, source_id: i64, page: &Page) -> Result<Value, Respons
         .into_iter()
         .map(|(name, state, size, wanted)| {
             let (algo, hash) = split_wanted(wanted.as_deref());
-            json!({
-                "name": name,
-                "state": state_str(state),
-                "size": size,
-                "wanted_hash": hash,
-                "wanted_hash_algo": algo,
-            })
+            EntryRow {
+                name,
+                state: entry_state(state),
+                size,
+                wanted_hash: hash,
+                wanted_hash_algo: algo,
+            }
         })
         .collect::<Vec<_>>();
-    Ok(json!({
-        "entries": entries, "total": total,
-        "offset": page.offset, "limit": page.limit,
-    }))
+    Ok(EntriesPage {
+        entries,
+        total,
+        offset: page.offset,
+        limit: page.limit,
+    })
 }
 
 fn split_wanted(wanted: Option<&str>) -> (Option<String>, Option<String>) {
@@ -448,12 +462,12 @@ pub(crate) async fn system_entry(
 /// Entry detail is keyed by NAME: `entry` carries
 /// `UNIQUE(revision_id, name)`, so within a system's current revision
 /// the name is a real key (claim names are not — MAME sets repeat them).
-fn entry_body(app: &App, source_id: i64, name: &str) -> Result<Value, Response> {
+fn entry_body(app: &App, source_id: i64, name: &str) -> Result<EntryDetail, Response> {
     // Blob hashes whose pin lists we compute after dropping the lock
     // (vfs::view_tags takes it internally).
     let mut pin_targets: Vec<(usize, Blake3)> = Vec::new();
-    let mut roms: Vec<Value> = Vec::new();
-    let entry_json = {
+    let mut roms: Vec<RomClaim> = Vec::new();
+    let mut detail = {
         let db = lock_db(app);
         let conn = db.cache();
         let Some(revision_id) = resolve_revision(conn, source_id)? else {
@@ -555,34 +569,31 @@ fn entry_body(app: &App, source_id: i64, name: &str) -> Result<Value, Response> 
             // identity_status codes (catalog rollup): 4 verified /
             // 3 claimed / 2 peer / 1 probable / 0 missing.
             let claim_state = if status == 2 {
-                "nodump"
+                ClaimState::Nodump
             } else {
                 match id_state {
-                    Some(4) => "verified",
-                    Some(3) => "claimed",
-                    Some(2) => "peer",
-                    Some(1) => "probable",
-                    _ => "missing",
+                    Some(4) => ClaimState::Verified,
+                    Some(3) => ClaimState::Claimed,
+                    Some(2) => ClaimState::Peer,
+                    Some(1) => ClaimState::Probable,
+                    _ => ClaimState::Missing,
                 }
             };
-            let mut hashes = serde_json::Map::new();
-            for (algo, digest) in [
-                ("crc32", &crc32),
-                ("md5", &md5),
-                ("sha1", &sha1),
-                ("sha256", &sha256),
-            ] {
-                if let Some(digest) = digest {
-                    hashes.insert(algo.to_owned(), Value::String(hex(digest)));
-                }
-            }
-            let mut rom = json!({
-                "name": claim_name,
-                "size": claim_size,
-                "state": claim_state,
-                "optional": optional,
-                "hashes": hashes,
-            });
+            let mut rom = RomClaim {
+                name: claim_name,
+                size: claim_size,
+                state: claim_state,
+                optional,
+                hashes: RomHashes {
+                    crc32: crc32.as_deref().map(hex),
+                    md5: md5.as_deref().map(hex),
+                    sha1: sha1.as_deref().map(hex),
+                    sha256: sha256.as_deref().map(hex),
+                },
+                blob: None,
+                routes: None,
+                pins: None,
+            };
             // Resolve the identity to a local blob the way view eval
             // does: strong-basis links only, smallest hash wins.
             let blob = identity_id
@@ -613,60 +624,60 @@ fn entry_body(app: &App, source_id: i64, name: &str) -> Result<Value, Response> 
                 // verified_at is the last full-hash store verification
                 // (ingest or scrub); the index records no method, so
                 // none is claimed here.
-                rom["blob"] = json!({
-                    "hash": hash.to_hex(),
-                    "residency": match residency {
-                        Residency::Resident => "resident",
-                        Residency::EvictedCovered => "evicted_covered",
-                        Residency::Absent => "absent",
+                rom.blob = Some(BlobInfo {
+                    hash: hash.to_hex(),
+                    residency: match residency {
+                        Residency::Resident => ResidencyState::Resident,
+                        Residency::EvictedCovered => ResidencyState::EvictedCovered,
+                        Residency::Absent => ResidencyState::Absent,
                     },
-                    "verified_at": verified_at,
+                    verified_at,
                 });
-                rom["routes"] = Value::Array(routes_json(&db, blob_id).map_err(internal)?);
+                rom.routes = Some(routes_info(&db, blob_id).map_err(internal)?);
                 pin_targets.push((roms.len(), hash));
             }
             roms.push(rom);
         }
         let (algo, hash) = split_wanted(wanted.as_deref());
-        json!({
-            "name": name,
-            "state": state_str(state),
-            "size": size,
-            "wanted_hash": hash,
-            "wanted_hash_algo": algo,
-            "revision": {
-                "id": revision_id,
-                "version": rev_version,
-                "date": rev_date,
-                "imported_at": rev_imported_at,
+        EntryDetail {
+            name: name.to_owned(),
+            state: entry_state(state),
+            size,
+            wanted_hash: hash,
+            wanted_hash_algo: algo,
+            revision: Revision {
+                id: revision_id,
+                version: rev_version,
+                date: rev_date,
+                imported_at: Some(rev_imported_at),
             },
-        })
+            roms: Vec::new(), // filled below, after the pin scan
+        }
     };
 
     // Pins: which views' CURRENT snapshots reference each blob (D33 —
     // the tag is what pins; manifests come from the decode cache).
     let tags = vfs::view_tags(app).map_err(internal)?;
     for (rom_index, hash) in pin_targets {
-        let pins: Vec<&str> = tags
+        let pins: Vec<String> = tags
             .iter()
             .filter(|(_, snap)| {
                 vfs::snapshot_index(app, *snap).is_ok_and(|idx| idx.contains_hash(&hash))
             })
-            .map(|(name, _)| name.as_str())
+            .map(|(name, _)| name.clone())
             .collect();
-        roms[rom_index]["pins"] = json!(pins);
+        roms[rom_index].pins = Some(pins);
     }
 
-    let mut body = entry_json;
-    body["roms"] = Value::Array(roms);
-    Ok(body)
+    detail.roms = roms;
+    Ok(detail)
 }
 
 /// Human-readable rebuild routes for one blob: non-poisoned recipes
 /// rendered as `verb ← sources` with a sources-resident flag (the
 /// design's source-availability dot). Source labels come from the
 /// rescan cache when a path is known, else the input's short hash.
-fn routes_json(db: &Db, blob_id: i64) -> Result<Vec<Value>, datboi_index::IndexError> {
+fn routes_info(db: &Db, blob_id: i64) -> Result<Vec<RouteInfo>, datboi_index::IndexError> {
     let mut routes = Vec::new();
     for recipe in db.recipes_for_output(blob_id)? {
         if recipe.verify == VerifyState::Failed {
@@ -698,16 +709,16 @@ fn routes_json(db: &Db, blob_id: i64) -> Result<Vec<Value>, datboi_index::IndexE
         } else {
             format!("{verb} ← {}", labels.join(" + "))
         };
-        routes.push(json!({
-            "route": route,
-            "source_present": sources_resident,
-            "verify": match recipe.verify {
-                VerifyState::Pending => "pending",
-                VerifyState::Verified => "verified",
-                VerifyState::ReplayedLocal => "replayed_local",
+        routes.push(RouteInfo {
+            route,
+            source_present: sources_resident,
+            verify: match recipe.verify {
+                VerifyState::Pending => RouteVerify::Pending,
+                VerifyState::Verified => RouteVerify::Verified,
+                VerifyState::ReplayedLocal => RouteVerify::ReplayedLocal,
                 VerifyState::Failed => unreachable!("filtered above"),
             },
-        }));
+        });
     }
     Ok(routes)
 }
@@ -733,7 +744,7 @@ pub(crate) async fn views(
 /// The union of tagged views (things being served) and stored ViewDefs
 /// (things defined but maybe never evaluated), ACL-filtered: friends
 /// see exactly their grants (D68).
-fn views_body(app: &App, caller: &Caller) -> Result<Value, Response> {
+fn views_body(app: &App, caller: &Caller) -> Result<ViewsResponse, Response> {
     let mut items: BTreeMap<String, (Option<Blake3>, Option<ViewDef>)> = BTreeMap::new();
     {
         let db = lock_db(app);
@@ -750,9 +761,9 @@ fn views_body(app: &App, caller: &Caller) -> Result<Value, Response> {
     }
     let views = items
         .iter()
-        .map(|(name, (snapshot, def))| view_json(app, name, *snapshot, def.as_ref()))
+        .map(|(name, (snapshot, def))| view_summary(app, name, *snapshot, def.as_ref()))
         .collect::<Vec<_>>();
-    Ok(json!({"views": views}))
+    Ok(ViewsResponse { views })
 }
 
 /// One view's listing entry. Row count / bytes / created_at come from
@@ -760,42 +771,58 @@ fn views_body(app: &App, caller: &Caller) -> Result<Value, Response> {
 /// this a hashmap hit after the first request); a missing or
 /// undecodable snapshot just omits them — the listing must not die of
 /// one damaged view.
-fn view_json(app: &App, name: &str, snapshot: Option<Blake3>, def: Option<&ViewDef>) -> Value {
-    let mut v = json!({
-        "name": name,
-        "snapshot": snapshot.map(|h| h.to_hex()),
-        "definition": def.map(def_json),
-    });
+fn view_summary(
+    app: &App,
+    name: &str,
+    snapshot: Option<Blake3>,
+    def: Option<&ViewDef>,
+) -> ViewSummary {
+    let mut v = ViewSummary {
+        name: name.to_owned(),
+        snapshot: snapshot.map(|h| h.to_hex()),
+        definition: def.map(definition),
+        rows: None,
+        bytes: None,
+        created_at: None,
+    };
     if let Some(hash) = snapshot
         && let Ok(idx) = vfs::snapshot_index(app, hash)
     {
         let (rows, bytes) = idx.stats();
-        v["rows"] = json!(rows);
-        v["bytes"] = json!(bytes);
-        v["created_at"] = json!(idx.created_at);
+        v.rows = Some(rows as u64);
+        v.bytes = Some(bytes);
+        v.created_at = Some(idx.created_at);
     }
     v
 }
 
 /// ViewDef summary: dat ref, 1G1R mode, profile, image params (D62).
-fn def_json(def: &ViewDef) -> Value {
-    json!({
-        "provider": def.provider,
-        "system": def.system,
-        "template": def.template,
-        "one_g_one_r": def.selection.as_ref().map(|policy| json!({
-            "mode": if policy.strict { "strict" } else { "held_first" },
-            "regions": policy.regions,
-            "langs": policy.langs,
-        })),
-        "profile": def.profile,
-        "image": def.image.as_ref().map(|image| json!({
-            "cluster_size": image.cluster_size,
-            "partition": image.partition,
-            "label": image.label,
-        })),
-        "mame_mode": def.mame.map(datboi_catalog::MameMode::as_str),
-    })
+fn definition(def: &ViewDef) -> Definition {
+    Definition {
+        provider: def.provider.clone(),
+        system: def.system.clone(),
+        template: def.template.clone(),
+        one_g_one_r: def.selection.as_ref().map(|policy| datboi_api::OneGOneR {
+            mode: if policy.strict {
+                datboi_api::OneGOneRMode::Strict
+            } else {
+                datboi_api::OneGOneRMode::HeldFirst
+            },
+            regions: policy.regions.clone(),
+            langs: policy.langs.clone(),
+        }),
+        profile: def.profile.clone(),
+        image: def.image.as_ref().map(|image| datboi_api::ImageParams {
+            cluster_size: image.cluster_size,
+            partition: image.partition,
+            label: image.label.clone(),
+        }),
+        mame_mode: def.mame.map(|mode| match mode {
+            datboi_catalog::MameMode::NonMerged => datboi_api::MameMode::NonMerged,
+            datboi_catalog::MameMode::Split => datboi_api::MameMode::Split,
+            datboi_catalog::MameMode::Merged => datboi_api::MameMode::Merged,
+        }),
+    }
 }
 
 // ---- GET /v1/views/{name} ----
@@ -814,7 +841,7 @@ pub(crate) async fn view_detail(
     .await
 }
 
-fn view_detail_body(app: &App, caller: &Caller, name: &str) -> Result<Value, Response> {
+fn view_detail_body(app: &App, caller: &Caller, name: &str) -> Result<ViewDetail, Response> {
     let (snapshot, def, image_minted) = {
         let db = lock_db(app);
         // View-scoped resource: denial answers exactly like a miss
@@ -837,24 +864,35 @@ fn view_detail_body(app: &App, caller: &Caller, name: &str) -> Result<Value, Res
                             .blob_by_hash(&hash)
                             .map_err(internal)?
                             .and_then(|row| row.size);
-                        Some(json!({"minted": true, "hash": hash.to_hex(), "bytes": size}))
+                        Some(ImageStatus {
+                            minted: true,
+                            hash: Some(hash.to_hex()),
+                            // Some(None) = minted but sizeless: the key
+                            // renders as null, not absent.
+                            bytes: Some(size),
+                        })
                     }
-                    None => Some(json!({"minted": false})),
+                    None => Some(ImageStatus {
+                        minted: false,
+                        hash: None,
+                        bytes: None,
+                    }),
                 }
             }
             None => None,
         };
         (snapshot, def, image_minted)
     };
-    let mut body = view_json(app, name, snapshot, def.as_ref());
-    // Relative serve endpoints; DAV is loopback-only in M5 (D68 —
-    // authenticated DAV is a recorded open question).
-    body["endpoints"] = json!({
-        "http": format!("/view/{}/", enc_seg(name)),
-        "dav": format!("/dav/{}/", enc_seg(name)),
-    });
-    body["image"] = image_minted.unwrap_or(Value::Null);
-    Ok(body)
+    Ok(ViewDetail {
+        summary: view_summary(app, name, snapshot, def.as_ref()),
+        // Relative serve endpoints; DAV is loopback-only in M5 (D68 —
+        // authenticated DAV is a recorded open question).
+        endpoints: Endpoints {
+            http: format!("/view/{}/", enc_seg(name)),
+            dav: format!("/dav/{}/", enc_seg(name)),
+        },
+        image: image_minted,
+    })
 }
 
 // ---- GET /v1/views/{name}/files ----
@@ -881,7 +919,12 @@ pub(crate) async fn view_files(
 /// Flat listing of a view's CURRENT snapshot manifest — the friend
 /// browse surface (spec §4.3). Same decoded-manifest cache the byte
 /// tree serves from, so a page here is a string scan, not a decode.
-fn view_files_body(app: &App, caller: &Caller, name: &str, page: &Page) -> Result<Value, Response> {
+fn view_files_body(
+    app: &App,
+    caller: &Caller,
+    name: &str,
+    page: &Page,
+) -> Result<ViewFilesPage, Response> {
     {
         // View-scoped resource: denial answers exactly like a miss
         // (auth.rs convention) so probing learns nothing.
@@ -905,19 +948,21 @@ fn view_files_body(app: &App, caller: &Caller, name: &str, page: &Page) -> Resul
             continue;
         }
         if total >= page.offset && (files.len() as u64) < page.limit {
-            files.push(json!({
-                "path": path,
-                "size": meta.size,
-                "hash": meta.hash.to_hex(),
-            }));
+            files.push(FileRow {
+                path: path.to_owned(),
+                size: meta.size,
+                hash: meta.hash.to_hex(),
+            });
         }
         total += 1;
     }
-    Ok(json!({
-        "files": files, "total": total,
-        "offset": page.offset, "limit": page.limit,
-        "snapshot": idx.snapshot.to_hex(),
-    }))
+    Ok(ViewFilesPage {
+        files,
+        total,
+        offset: page.offset,
+        limit: page.limit,
+        snapshot: idx.snapshot.to_hex(),
+    })
 }
 
 // ---- GET /v1/storage ----
@@ -939,7 +984,7 @@ pub(crate) async fn storage(
 /// the index records per-blob `verified_at`, never a scrub run — a
 /// run ledger is jobs-registry work (docs/open-questions.md, raised
 /// 2026-07-11).
-fn storage_body(app: &App) -> Result<Value, Response> {
+fn storage_body(app: &App) -> Result<StorageResponse, Response> {
     let db = lock_db(app);
     let conn = db.cache();
     // residency codes: 0 resident, 1 evicted-covered, 2 absent.
@@ -976,20 +1021,23 @@ fn storage_body(app: &App) -> Result<Value, Response> {
         .map_err(internal)?;
     // D49 rule 3: components whose seek path produced bad bytes.
     let quarantined = db.list_seek_quarantined().map_err(internal)?;
-    Ok(json!({
-        "blob_count": blob_count,
-        "on_disk_bytes": on_disk,
-        "represented_bytes": represented,
-        "literal_only_bytes": literal_only,
-        "quarantine": {
-            "count": quarantined.len(),
-            "items": quarantined.iter().map(|(component, at, reason)| json!({
-                "component": component.to_hex(),
-                "quarantined_at": at,
-                "reason": reason,
-            })).collect::<Vec<_>>(),
+    Ok(StorageResponse {
+        blob_count,
+        on_disk_bytes: on_disk,
+        represented_bytes: represented,
+        literal_only_bytes: literal_only,
+        quarantine: Quarantine {
+            count: quarantined.len() as u64,
+            items: quarantined
+                .into_iter()
+                .map(|(component, quarantined_at, reason)| QuarantineItem {
+                    component: component.to_hex(),
+                    quarantined_at,
+                    reason,
+                })
+                .collect(),
         },
-    }))
+    })
 }
 
 // ---- GET /v1/jobs ----
@@ -1000,7 +1048,7 @@ fn storage_body(app: &App) -> Result<Value, Response> {
 /// one exists — nothing here fakes progress.
 pub(crate) async fn jobs(Extension(caller): Extension<Caller>) -> Response {
     match require_owner(&caller) {
-        Ok(()) => json_response(StatusCode::OK, &json!({"jobs": []})),
+        Ok(()) => json_response(StatusCode::OK, &JobsResponse { jobs: Vec::new() }),
         Err(resp) => resp,
     }
 }
@@ -1061,13 +1109,13 @@ mod tests {
 
     #[test]
     fn state_vocabulary_round_trips() {
-        for (code, name) in [
-            (0, "verified"),
-            (1, "claimed"),
-            (2, "missing"),
-            (3, "nodump"),
+        for (code, name, state) in [
+            (0, "verified", EntryState::Verified),
+            (1, "claimed", EntryState::Claimed),
+            (2, "missing", EntryState::Missing),
+            (3, "nodump", EntryState::Nodump),
         ] {
-            assert_eq!(state_str(code), name);
+            assert_eq!(entry_state(code), state);
             assert_eq!(state_code(name), Some(code));
         }
         assert_eq!(state_code("peer"), None, "peer is not a filterable state");
@@ -1120,12 +1168,7 @@ mod tests {
 
         let names = |caller: &Caller| -> Vec<String> {
             let body = views_body(&app, caller).expect("views");
-            body["views"]
-                .as_array()
-                .expect("array")
-                .iter()
-                .map(|v| v["name"].as_str().expect("name").to_owned())
-                .collect()
+            body.views.into_iter().map(|v| v.name).collect()
         };
         assert_eq!(names(&Caller::Local), ["gba", "psx"]);
         assert_eq!(names(&pal), ["gba"]);
@@ -1133,10 +1176,10 @@ mod tests {
         // View detail: granted answers (even with the snapshot object
         // absent — stats just drop out); ungranted answers 404, not 403.
         let detail = view_detail_body(&app, &pal, "gba").expect("granted view");
-        assert_eq!(detail["name"], "gba");
-        assert_eq!(detail["endpoints"]["http"], "/view/gba/");
+        assert_eq!(detail.summary.name, "gba");
+        assert_eq!(detail.endpoints.http, "/view/gba/");
         assert!(
-            detail.get("rows").is_none(),
+            detail.summary.rows.is_none(),
             "undecodable snapshot: no stats"
         );
         let denied = view_detail_body(&app, &pal, "psx").expect_err("not granted");
@@ -1188,26 +1231,25 @@ mod tests {
             limit,
         };
         let body = view_files_body(&app, &pal, "gba", &page(None, 0, 200)).expect("granted");
-        assert_eq!(body["total"], 3);
-        assert_eq!(body["snapshot"], hash.to_hex());
-        let files = body["files"].as_array().expect("files");
-        assert_eq!(files.len(), 3);
-        assert_eq!(files[0]["path"], "Games/Alpha (USA).gba", "path-ordered");
-        assert_eq!(files[0]["size"], 9);
+        assert_eq!(body.total, 3);
+        assert_eq!(body.snapshot, hash.to_hex());
+        assert_eq!(body.files.len(), 3);
+        assert_eq!(body.files[0].path, "Games/Alpha (USA).gba", "path-ordered");
+        assert_eq!(body.files[0].size, 9);
         assert_eq!(
-            files[0]["hash"],
+            body.files[0].hash,
             Blake3::compute(b"Games/Alpha (USA).gba").to_hex()
         );
 
         // q is case-insensitive substring on the FULL path; total is
         // the filtered count, the window slides under it.
         let body = view_files_body(&app, &pal, "gba", &page(Some("ALPHA"), 0, 200)).expect("q");
-        assert_eq!(body["total"], 1);
-        assert_eq!(body["files"][0]["path"], "Games/Alpha (USA).gba");
+        assert_eq!(body.total, 1);
+        assert_eq!(body.files[0].path, "Games/Alpha (USA).gba");
         let body = view_files_body(&app, &pal, "gba", &page(Some("games/"), 1, 1)).expect("page");
-        assert_eq!(body["total"], 2);
-        assert_eq!(body["files"].as_array().expect("files").len(), 1);
-        assert_eq!(body["files"][0]["path"], "Games/Beta (Japan).gba");
+        assert_eq!(body.total, 2);
+        assert_eq!(body.files.len(), 1);
+        assert_eq!(body.files[0].path, "Games/Beta (Japan).gba");
 
         // Not granted / nonexistent: identical 404s (the auth.rs
         // convention — probing learns nothing).
@@ -1237,9 +1279,9 @@ mod tests {
 
         // Empty-universe read models still answer sanely for owners.
         let systems = systems_body(&app).expect("systems");
-        assert_eq!(systems["systems"].as_array().expect("array").len(), 0);
+        assert_eq!(systems.systems.len(), 0);
         let storage = storage_body(&app).expect("storage");
-        assert_eq!(storage["blob_count"], 0);
-        assert_eq!(storage["quarantine"]["count"], 0);
+        assert_eq!(storage.blob_count, 0);
+        assert_eq!(storage.quarantine.count, 0);
     }
 }

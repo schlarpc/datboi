@@ -1,0 +1,18 @@
+[package]
+name = "datboi-api"
+description = "The /v1 contract: one typed struct per operation shape; the only crate where serde/utoipa derives are legal — D69"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# D69 carve-out: THIS crate enables the derive feature; every other
+# host crate takes serde as trait bounds only.
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+utoipa.workspace = true
+
+[lints]
+workspace = true

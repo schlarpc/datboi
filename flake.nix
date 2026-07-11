@@ -58,6 +58,10 @@
             # headers (.h) and the license/patch provenance (.txt); the
             # build.rs cross-compiles them (D58).
             || (builtins.match ".*\\.(cpp|hpp|h|txt|def|rc|vcxproj)$" path != null)
+            # The checked-in /v1 contract spec (D69): datboi-api's
+            # staleness test include_str!s it, so hermetic builds need
+            # it in the source.
+            || (builtins.match ".*openapi\\.json$" path != null)
             || (craneLib.filterCargoSources path type);
           name = "source";
         };

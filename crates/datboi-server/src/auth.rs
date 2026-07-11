@@ -25,11 +25,12 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
+use datboi_api::{InviteAcceptRequest, LoginRequest, OkResponse, SessionResponse, WhoamiResponse};
 use datboi_core::hash::Blake3;
 use datboi_index::{Db, InviteOutcome, Role};
-use serde_json::json;
 
 use crate::App;
+use crate::api::err;
 use crate::http::{json_response, run_blocking, text};
 
 /// The browser session cookie (D68).
@@ -318,36 +319,52 @@ static DUMMY_HASH: LazyLock<String> =
 /// of 401 so the SPA can probe without special-casing errors.
 pub(crate) async fn whoami(req: Request) -> Response {
     let body = match req.extensions().get::<Caller>() {
-        Some(Caller::Local) => json!({
-            "authenticated": true, "role": "owner", "via": "loopback",
-        }),
+        Some(Caller::Local) => WhoamiResponse {
+            authenticated: true,
+            username: None, // loopback has no user row (D68)
+            role: Some(datboi_api::Role::Owner),
+            via: Some(datboi_api::Via::Loopback),
+        },
         Some(Caller::User {
             username,
             role,
             via,
             ..
-        }) => json!({
-            "authenticated": true,
-            "username": username,
-            "role": role_str(*role),
-            "via": match via { Via::Session => "session", Via::Bearer => "bearer" },
-        }),
-        _ => json!({"authenticated": false}),
+        }) => WhoamiResponse {
+            authenticated: true,
+            username: Some(username.clone()),
+            role: Some(role_of(*role)),
+            via: Some(match via {
+                Via::Session => datboi_api::Via::Session,
+                Via::Bearer => datboi_api::Via::Bearer,
+            }),
+        },
+        _ => WhoamiResponse {
+            authenticated: false,
+            username: None,
+            role: None,
+            via: None,
+        },
     };
     json_response(StatusCode::OK, &body)
 }
 
-pub(crate) fn role_str(role: Role) -> &'static str {
+/// Index role → contract role (datboi-api owns the wire spelling, D69).
+pub(crate) fn role_of(role: Role) -> datboi_api::Role {
     match role {
-        Role::Owner => "owner",
-        Role::Friend => "friend",
+        Role::Owner => datboi_api::Role::Owner,
+        Role::Friend => datboi_api::Role::Friend,
     }
 }
 
-fn str_field<'a>(body: &'a serde_json::Value, key: &str) -> Result<&'a str, Response> {
-    body.get(key)
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| text(StatusCode::BAD_REQUEST, &format!("missing field {key:?}")))
+/// Handler-owned required-field check: the request structs keep
+/// `Option` fields so a missing key stays a 400 with this message
+/// instead of becoming an extractor 422 (D69 refactor preserves the
+/// wire behavior; the spec still marks the fields required).
+fn str_field<'a>(field: &'a Option<String>, key: &str) -> Result<&'a str, Response> {
+    field
+        .as_deref()
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, &format!("missing field {key:?}")))
 }
 
 /// Lowercase alnum plus `-`/`_`, 1–32 chars.
@@ -364,27 +381,27 @@ fn valid_username(name: &str) -> bool {
 /// the user with the invite's role, and starts a session.
 pub(crate) async fn invite_accept(
     State(app): State<Arc<App>>,
-    Json(body): Json<serde_json::Value>,
+    Json(body): Json<InviteAcceptRequest>,
 ) -> Response {
     run_blocking(move || {
-        let token = str_field(&body, "token")?;
-        let username = str_field(&body, "username")?;
-        let password = str_field(&body, "password")?;
+        let token = str_field(&body.token, "token")?;
+        let username = str_field(&body.username, "username")?;
+        let password = str_field(&body.password, "password")?;
         if !valid_username(username) {
-            return Err(text(
+            return Err(err(
                 StatusCode::BAD_REQUEST,
                 "username must be 1-32 characters of [a-z0-9_-]",
             ));
         }
         if password.len() < 8 {
-            return Err(text(
+            return Err(err(
                 StatusCode::BAD_REQUEST,
                 "password must be at least 8 characters",
             ));
         }
         // Hash before taking the DB lock: argon2 is deliberately slow.
         let phc = hash_password(password)
-            .map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &format!("hashing: {e}")))?;
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &format!("hashing: {e}")))?;
         let now = now_unix();
         let db = app
             .db
@@ -392,16 +409,16 @@ pub(crate) async fn invite_accept(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let outcome = db
             .accept_invite(&token_hash(token), username, &phc, now)
-            .map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
         match outcome {
             InviteOutcome::Accepted { user_id, role } => {
                 session_response(&db, user_id, username, role, now)
             }
             InviteOutcome::InviteInvalid => {
-                Err(text(StatusCode::FORBIDDEN, "invalid or expired invite"))
+                Err(err(StatusCode::FORBIDDEN, "invalid or expired invite"))
             }
             InviteOutcome::UsernameTaken => {
-                Err(text(StatusCode::CONFLICT, "username already taken"))
+                Err(err(StatusCode::CONFLICT, "username already taken"))
             }
         }
     })
@@ -410,20 +427,17 @@ pub(crate) async fn invite_accept(
 
 /// POST /v1/auth/login {username, password}. One uniform failure
 /// answer; unknown users still pay for an argon2 verify (timing).
-pub(crate) async fn login(
-    State(app): State<Arc<App>>,
-    Json(body): Json<serde_json::Value>,
-) -> Response {
+pub(crate) async fn login(State(app): State<Arc<App>>, Json(body): Json<LoginRequest>) -> Response {
     run_blocking(move || {
-        let username = str_field(&body, "username")?;
-        let password = str_field(&body, "password")?;
+        let username = str_field(&body.username, "username")?;
+        let password = str_field(&body.password, "password")?;
         let user = {
             let db = app
                 .db
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             db.user_by_name(username)
-                .map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?
+                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?
         };
         // Verify OUTSIDE the DB lock — argon2 is ~100ms of pure CPU.
         let ok = match &user {
@@ -434,7 +448,7 @@ pub(crate) async fn login(
             }
         };
         let (Some(user), true) = (user, ok) else {
-            return Err(text(StatusCode::UNAUTHORIZED, "invalid credentials"));
+            return Err(err(StatusCode::UNAUTHORIZED, "invalid credentials"));
         };
         let now = now_unix();
         let db = app
@@ -461,7 +475,7 @@ pub(crate) async fn logout(State(app): State<Arc<App>>, req: Request) -> Respons
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let _ = db.delete_session(&hash);
         }
-        let mut resp = json_response(StatusCode::OK, &json!({"ok": true}));
+        let mut resp = json_response(StatusCode::OK, &OkResponse { ok: true });
         resp.headers_mut().insert(
             header::SET_COOKIE,
             HeaderValue::from_str(&cookie_clear()).expect("static cookie"),
@@ -481,18 +495,18 @@ fn session_response(
     now: i64,
 ) -> Result<Response, Response> {
     let token = mint_token()
-        .map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &format!("entropy: {e}")))?;
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &format!("entropy: {e}")))?;
     let expires_at = now + SESSION_TTL_SECS;
     db.create_session(&token_hash(&token), user_id, expires_at)
-        .map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
     let mut resp = json_response(
         StatusCode::OK,
-        &json!({
-            "authenticated": true,
-            "username": username,
-            "role": role_str(role),
-            "expires_at": expires_at,
-        }),
+        &SessionResponse {
+            authenticated: true,
+            username: username.to_owned(),
+            role: role_of(role),
+            expires_at,
+        },
     );
     resp.headers_mut().insert(
         header::SET_COOKIE,

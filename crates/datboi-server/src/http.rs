@@ -209,23 +209,27 @@ async fn view_image(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             // View-scoped resource: denial answers exactly like a miss
-            // (auth.rs convention) so probing learns nothing.
+            // (auth.rs convention) so probing learns nothing. Errors
+            // wear the typed /v1 shape (D69) — this is a /v1 route,
+            // however binary its success body.
             if !auth::view_allowed(&db, &caller, &name) {
-                return Err(text(StatusCode::NOT_FOUND, "no such view"));
+                return Err(api::err(StatusCode::NOT_FOUND, "no such view"));
             }
             let hash = db
                 .get_tag(&format!("image/{name}"))
-                .map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?
-                .ok_or_else(|| text(StatusCode::NOT_FOUND, "no image minted for this view"))?;
+                .map_err(|e| api::err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?
+                .ok_or_else(|| api::err(StatusCode::NOT_FOUND, "no image minted for this view"))?;
             // A tag pointing at an unindexed/sizeless blob is server-side
             // damage, not a client miss.
             let blob = db
                 .blob_by_hash(&hash)
-                .map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?
-                .ok_or_else(|| text(StatusCode::INTERNAL_SERVER_ERROR, "image blob not indexed"))?;
-            let size = blob
-                .size
-                .ok_or_else(|| text(StatusCode::INTERNAL_SERVER_ERROR, "image blob has no size"))?;
+                .map_err(|e| api::err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?
+                .ok_or_else(|| {
+                    api::err(StatusCode::INTERNAL_SERVER_ERROR, "image blob not indexed")
+                })?;
+            let size = blob.size.ok_or_else(|| {
+                api::err(StatusCode::INTERNAL_SERVER_ERROR, "image blob has no size")
+            })?;
             // D27 class, derived exactly like snapshot rows record it:
             // resident reads affinely, otherwise the best route's class
             // (the mint recipe is affine assemble, D62).
@@ -233,7 +237,7 @@ async fn view_image(
                 0
             } else {
                 db.recipes_for_output(blob.blob_id)
-                    .map_err(|e| text(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?
+                    .map_err(|e| api::err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?
                     .iter()
                     .filter(|r| r.verify != datboi_index::VerifyState::Failed)
                     .map(|r| match r.seek_class {
@@ -793,11 +797,16 @@ fn html(status: StatusCode, body: String) -> Response {
         .expect("static headers")
 }
 
-pub(crate) fn json_response(status: StatusCode, value: &serde_json::Value) -> Response {
+/// Serialize any contract type (datboi-api, D69) — or a plain
+/// `serde_json::Value` for the non-/v1 listing surface — as a JSON
+/// response.
+pub(crate) fn json_response<T: serde::Serialize>(status: StatusCode, value: &T) -> Response {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(value.to_string()))
+        .body(Body::from(
+            serde_json::to_string(value).expect("contract types serialize"),
+        ))
         .expect("static headers")
 }
 
