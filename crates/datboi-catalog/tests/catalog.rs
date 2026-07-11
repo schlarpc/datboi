@@ -125,6 +125,67 @@ fn count(db: &Db, sql: &str) -> i64 {
         .expect("count query")
 }
 
+/// The un-overridden provider chain (import.rs `provider_default`),
+/// pinned against the real header conventions surveyed 2026-07-11:
+/// No-Intro and TOSEC put the org in `<homepage>` and a maintainer
+/// credit roll in `<author>`; Redump uses the org for both; FBNeo puts
+/// its URL in homepage and the org in author.
+#[test]
+fn provider_defaults_prefer_the_org_over_the_credit_roll() {
+    let mut f = fixture();
+    let no_overrides = ImportOptions {
+        provider: None,
+        system: None,
+        imported_at: 1,
+    };
+    let mut import = |header: &str| {
+        let dat = format!(
+            r#"<?xml version="1.0"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+<datafile><header>{header}</header><game name="g"><description>g</description><rom name="g.bin" size="1" crc="00000000"/></game></datafile>"#
+        );
+        let report =
+            import_dat(&f.store, &mut f.db, dat.as_bytes(), &no_overrides).expect("import");
+        f.db.cache()
+            .query_row(
+                "SELECT provider, system FROM dat_source WHERE source_id = ?1",
+                [report.source_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .expect("source row")
+    };
+    // No-Intro shape: the contributor roll call is not the provider.
+    assert_eq!(
+        import(
+            "<name>nds</name><author>alice, bob, carol</author>\
+             <homepage>No-Intro</homepage><url>https://www.no-intro.org</url>"
+        ),
+        ("No-Intro".to_owned(), "nds".to_owned())
+    );
+    // TOSEC shape: per-dat maintainer lists, stable org in homepage.
+    assert_eq!(
+        import("<name>gb</name><author>Cassiel</author><homepage>TOSEC</homepage>").0,
+        "TOSEC"
+    );
+    // Redump shape: author and homepage agree.
+    assert_eq!(
+        import("<name>psx</name><author>redump.org</author><homepage>redump.org</homepage>").0,
+        "redump.org"
+    );
+    // FBNeo shape: a URL-shaped homepage yields to the author.
+    assert_eq!(
+        import(
+            "<name>arcade</name><author>FinalBurn Neo</author>\
+             <homepage>https://neo-source.com/</homepage>"
+        )
+        .0,
+        "FinalBurn Neo"
+    );
+    // No homepage → author; neither → unknown.
+    assert_eq!(import("<name>x1</name><author>tester</author>").0, "tester");
+    assert_eq!(import("<name>x2</name>").0, "unknown");
+}
+
 #[test]
 fn same_sha1_across_dats_unifies() {
     let mut f = fixture();

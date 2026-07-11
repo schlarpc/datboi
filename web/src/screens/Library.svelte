@@ -115,7 +115,13 @@
           <div class="body">
             <div class="head">
               <span class="name">{sys.system}</span>
-              <span class="rev">
+              <!-- Truncated, full text on hover: header-derived provider
+                   strings can be arbitrarily long and must not wreck the
+                   card (a No-Intro author roll call is ~700 chars). -->
+              <span
+                class="rev"
+                title={sys.revision?.version ? `${sys.provider} ${sys.revision.version}` : sys.provider}
+              >
                 <!-- Revision is data (provider label + dat version). -->
                 {sys.provider}{#if sys.revision?.version}&nbsp;{sys.revision.version}{/if}
               </span>
@@ -266,6 +272,12 @@
   .rev {
     font: 400 12px var(--font-data);
     color: var(--faint);
+    /* One line, ellipsized — the pct must stay on the card no matter
+       how long the header-derived provider string is. */
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .pct {

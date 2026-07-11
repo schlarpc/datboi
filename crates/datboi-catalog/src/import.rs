@@ -28,7 +28,8 @@ pub fn format_code(format: DatFormat) -> i64 {
 #[derive(Debug, Default)]
 pub struct ImportOptions<'a> {
     /// Dat source identity; defaults derive from the dat header
-    /// (provider ← author, system ← name — override for real providers).
+    /// (provider ← homepage-or-author, see [`provider_default`];
+    /// system ← name).
     pub provider: Option<&'a str>,
     pub system: Option<&'a str>,
     /// Unix seconds; the single wall-clock value an import may record.
@@ -69,7 +70,7 @@ pub fn import_dat(
 
     let provider = opts
         .provider
-        .or(dat.header.author.as_deref())
+        .or_else(|| provider_default(&dat.header))
         .unwrap_or("unknown");
     let system = opts
         .system
@@ -107,6 +108,30 @@ pub fn import_dat(
         claims,
         demoted_revisions,
     })
+}
+
+/// The un-overridden provider, from a survey of the real header
+/// conventions (2026-07-11: No-Intro, Redump, TOSEC, FBNeo dats):
+/// `<homepage>` carries the org name — `No-Intro`, `TOSEC`,
+/// `redump.org` — while `<author>` is the maintainer credit roll (79
+/// names in a current No-Intro dat; per-dat maintainer lists in
+/// TOSEC), which is neither a provider nor stable across revisions of
+/// the same source. So: homepage first, UNLESS it is URL-shaped —
+/// FBNeo puts its site there and its org name in author. Provider is
+/// half of the durable source identity (60-dats.md), which is why
+/// this chain prefers the stable org name.
+fn provider_default(header: &DatHeader) -> Option<&str> {
+    header
+        .homepage
+        .as_deref()
+        .map(str::trim)
+        .filter(|homepage| !homepage.is_empty() && !url_shaped(homepage))
+        .or(header.author.as_deref())
+}
+
+fn url_shaped(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("www.")
 }
 
 /// D38: keep the two newest revisions of a source materialized; strip the
