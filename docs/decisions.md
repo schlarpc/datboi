@@ -714,3 +714,195 @@ same-day), warning instead of refusing (a warning is
 policy nobody reads; the corpus lives forever), one shared workspace
 with canonical-at-mint bytes (tolerable but makes "reproducible"
 mean "from one blessed commit only").
+
+## D55 — Identity is the exact component hash; coverage inherits by declared lineage; migration is explicit (2026-07-10)
+
+Provenance and analyzer coverage key on the EXACT component hash —
+never on stamped name/version. D54 stamps are read only to enforce
+presence at load; nothing ever infers "same analyzer" from a label
+(a label is self-declared and unverifiable — a dirty build lies
+silently). A new component revision invalidates NOTHING: at
+registration the binary declares the revision's predecessor hashes
+(label-guided, but a policy statement, not an engine inference);
+blobs covered by a declared predecessor count as covered
+(grandfathered) by default; running the new revision over the old
+corpus is an EXPLICIT migration (background sweep queue, dat-aware
+ordering) — never automatic. Consequences: deploys are free (no
+re-sweep tax, no version-string trust); the D53-era framing
+"deferred analyzers re-cover the corpus structurally free" becomes
+"re-cover is one explicit command"; version-bump discipline is
+hygiene, not load-bearing (D54's tree-hash revision already scopes
+identity to content). Native analyzers keep self-declared
+`datboi-analyzer:<name>/<version>` tags — no component hash exists
+for binary-embedded code; accepted asymmetry that shrinks as
+analyzers become components (D58). *Rejected:* coverage keyed on
+stamped family+version (auto re-sweep on version bump; trusts an
+unverifiable label), coverage keyed on raw hash with mandatory
+backfill (full-corpus re-analysis per deploy).
+
+## D56 — M4 serving defaults ratified (2026-07-10)
+
+Three of the four builder defaults from the 07-09 session stand (the
+fourth, 1G1R, is D57): (1) **materialize-on-demand** for opaque long
+streams — one verified replay into the store (evictable again later)
+instead of O(n²) re-spill-per-window; follow-up owed: a disk-headroom
+guard before materializing; the residency planner's
+materialize-at-snapshot-activation remains the systematic successor.
+(2) **Bind policy**: 127.0.0.1:2352 default; any other bind is an
+explicit flag with a loud no-auth warning until M5 auth — real LAN
+deployments run in warning mode deliberately. (3) **DAV reads**:
+1 MiB serve_range calls with per-read route planning,
+default-until-profiled. *Rejected:* spill-per-window (makes large
+opaque blobs effectively unservable), preemptive route-handle caching
+(invalidation complexity before evidence it matters).
+
+## D57 — 1G1R is a per-view mode: {held-first, strict}, default held-first (2026-07-10)
+
+Both scoring modes exist per-view. **held-first** (default): a
+held-and-verified clone outranks the preferred-but-absent region;
+re-eval upgrades picks as holdings improve. Right for the serving
+NAS — the Japan copy beats no copy — and converges to strict as the
+collection completes. **strict** (retool semantics): selection is a
+pure function of (dat, preferences), independent of holdings; empty
+slots render as absent. Strict is the designated mode for M6 curation
+distribution (a published view must be recomputable from public
+inputs — held-first bakes the curator's collection accidents into the
+selection) and for gap-fill want-lists (a strict view's missing slots
+ARE the fetch list). Retool clonelists ride as an additive
+family/region input (D16 acquisition pattern: auto-fetch + manual
+drop), improving family construction in both modes; dat cloneof and
+base-name inference stay the fallbacks. *Rejected:* held-first-only
+(retrofits publication semantics later), strict-only
+(consumer-hostile on incomplete collections).
+
+## D58 — unrar goes to wasm: extractor components; the C-to-wasm lane pulls forward from M7 (2026-07-10)
+
+Census (2026-07-10): unrar_sys — 83 vendored C++ files — is the ONLY
+memory-unsafe code parsing wild bytes; every other wild-byte parser
+is pure Rust (preflate-rs 2 unsafe, sevenz-rust2 3, lzma-rust2 16,
+miniz_oxide 4, fastcdc 0; libbz2-rs-sys is the Trifecta Tech
+pure-Rust bzip2 rewrite despite the name). Ruling: native Rust
+analyzers are acceptable permanently (the "moderately safe" bar); the
+one C++ parser moves INSIDE the sandbox. unrar compiles via wasi-sdk
+into an **extractor component** (new world: seekable archive stream
+in → member streams + metadata out), with guest-side C++ glue driving
+unrar's own dll.cpp API; the unrar/unrar_sys crates drop from the
+tree entirely. Consequences: the C-to-wasm toolchain lane (planned
+for M7's 7-Zip SDK / CHD / RVZ work) lands now with the simplest
+possible pathfinder (one-way decode); extraction becomes
+deterministic-by-construction, so rar members can carry DERIVE
+RECIPES (container→member through the component) and become evictable
+— "permanently literal" was only ever about the rebuild direction;
+wasmtime's memory cap turns RAR5 big-dictionary bombs into clean
+refusals. Build plan: RAR_SMP off; ErrHandler→trap (archive fails
+whole, matching the refuse-suspicious-archives posture); File-class
+reroute onto stream imports preferred — a deterministic-WASI-shim
+fallback would amend D46's empty-linker posture and RETURNS AS A
+RULING if freestanding proves impractical. v1 scope cuts: no
+encrypted archives, no multi-volume (VolumeCall), links/NTFS streams
+ignored. Naming (ruled 2026-07-10): component prefix encodes the WIT
+world — `xf-` = transform@2, `ex-` = extractor — so this lands as
+`transforms/ex-unrar`; build/stamp/gate globs widen from `xf-*` to
+both prefixes. Guest shape (spike decides, not doctrine — component
+hash, world, and tree location are identical either way): the
+component is ~30k lines of C++ plus a thin interface layer, and the
+layer has two viable forms. Preferred: **thin Rust guest crate over a
+C++ staticlib** — unrar's dll.hpp API is already extern "C", so the
+guest is wit-bindgen rust for the world (pleasant resource bindings,
+uniform with xf- siblings' pipeline) + unsafe FFI into the dll API +
+a callback trampoline, with build.rs cross-compiling the vendored
+C++ via wasi-sdk (the unrar-rs pattern relocated inside the guest).
+Fallback if the build.rs sysroot/libc++ wrangling turns hostile:
+**pure C++, no cargo** — wit-bindgen's C generator + clang++ +
+`wasm-tools component new`; dead-simple build, worse interface
+ergonomics (hand-managed canonical-ABI resource handles). RarVM note: modern unrar already amputated the
+bytecode interpreter (rarvm.cpp is ExecuteStandardFilter only —
+embedded RAR3 VM programs are signature-matched to the seven standard
+filters or not executed at all, failing CRC → archive refused whole,
+matching our posture); RAR5 dropped the VM entirely. The historical
+#1 unrar exploit surface is thus already gone upstream, and what
+remains runs under wasmtime fuel/epoch bounds — containment native
+unrar cannot offer. Standard filters are pure functions, so derive
+recipes through the extractor stay deterministic. *Rejected:*
+subprocess jail (Landlock/seccomp — cheaper but keeps C++ outside the
+model and buys no derive routes), accept-in-process (wild archives,
+daemon privileges, real CVE history), dropping rar ingest.
+
+## D59 — Chunking eligibility: route-less literals only (2026-07-10)
+
+ChunkAnalyzer eligibility narrows from "every data blob ≥ 4 MiB" to
+"literal blobs ≥ 4 MiB with NO existing covering route" (threshold
+unchanged). Chunking's job is making big route-less literals
+evictable via cross-image dedup; routed blobs are already evictable,
+and identical content already dedups at the blob level. Containers
+remain eligible — they are literals, and that is where archive-corpus
+dedup actually lives. *Rejected:* chunk-everything (sweep I/O +
+recipe metadata for no marginal dedup).
+
+## D60 — Ingest-policy config: the minimal shape (2026-07-10)
+
+The D45-era "molten" config surface freezes at its minimal shape now
+that four analyzers exist to generalize from: per-analyzer
+**enable/disable** + **analyzer-owned opaque params** in the state.db
+config KV (rides the statesnap via the 07-09 payload keys), lineage
+declared at registration (D55), and sweep ordering stays a single
+global dat-aware policy — no per-analyzer ordering knobs.
+Deliberately NOT designed (no consumer exists): detector-registry
+confidence ordering, canonical-orientation preference. *Rejected:*
+designing the full vocabulary now (speculative config calcifies).
+
+## D61 — `scrub --rehabilitate`: an operator path out of Failed (2026-07-10)
+
+Failed stays terminal for the SYSTEM, but the operator gets an
+explicit door: `scrub --rehabilitate` re-replays Failed recipes with
+full verification; success clears the state and records a
+rehabilitation event in provenance; failure returns to Failed
+(self-limiting). Motivated by the pipe-race incident: a host bug
+wrongly poisoned a recipe and no un-poison path existed — a false
+verdict was as permanent as a true one. *Rejected:* purity
+(terminal-means-terminal — falsified by the incident),
+auto-rehabilitation (flapping must never mask corruption).
+
+## D62 — Reified views ratified: images are assemble recipes (M4 scope: read-only FAT32) (2026-07-10)
+
+The 80-views model is ratified as scoped: a reified image is a plain
+`assemble@1` recipe — skeleton blobs (boot sector, FATs, directory
+clusters) + windowed segments over content blobs (cluster-aligned) +
+fill for slack — minted by filesystem-layout math running in the
+policy tier at view-eval time (D23: policies emit recipes). Image
+params pin identity: volume serial derived from the snapshot hash,
+fixed timestamps, deterministic ordering. Skeleton correctness is a
+MINTING property no runtime verification can catch (a wrong FAT chain
+serves faithfully-wrong bytes), so **fsck-in-CI is mandatory**: parse
+the synthesized image and diff its tree against the view manifest,
+same rank as the golden tests. M4 scope is READ-ONLY synthesis;
+writable overlays ("writes are ingests", per-device overlay, save
+history for free) + dirty-image diff-back are pended to a design pass
+before nbd/live-write serving; until then, image-mode sync documents
+that REFLASHING CLOBBERS ON-DEVICE SAVES. *Rejected:* imperative
+image builder (an unmanaged artifact — no dedup/verify/evict, same
+layout math anyway), overlays-in-M4 (unproven design on the
+milestone's critical path).
+
+## D63 — D49 amendment: the affine carve-out (2026-07-10)
+
+Routes that are **locally-minted + pure-builtin (assemble/slice/fill)
++ affine-only + over verified inputs** may serve ranges WITHOUT an
+output bao: every served byte is either verified input bytes
+(windowed segments carry input-side bao; small skeleton blobs are
+fully hash-verified) or executor-generated fill. D49's threat was
+seekable TRANSFORM CODE whose seek path diverges from its sequential
+path — not the executor's own affine arithmetic, which is the same
+trust as the read path and the hash computation themselves. The
+carve-out trades D49's runtime check for test-time coverage of that
+arithmetic: the seek-equivalence property gate (random ranges ≡
+slices of full materialization) extends to synthesized assemble
+recipes. The predicate lives IN CODE, tight: wasm components never
+qualify (xf-ecm's manifest-seekable serving stays full D49); nothing
+computed qualifies. An optional background **blessing pass**
+(materialize-to-null, tee, cache the obao4) promotes a carved-out
+route to full D49 when residency allows — the carve-out is a floor,
+not a ceiling. This unblocks never-fully-materialized giant images
+(nbd-served OPL disks, TB-scale FAT32 exports). *Rejected:* universal
+D49 (giant reified images unservable), mandatory blessing (one full
+pass over TB-scale images for no additional served-byte guarantee).

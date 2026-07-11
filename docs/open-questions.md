@@ -18,15 +18,13 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
   `serve_range` mismatches re-hash the implicated route's literal
   leaves first; only an inputs-clean mismatch quarantines the
   component, corrupt inputs get named in the error instead.
-- **Analyzer identity for native analyzers**: implemented as
-  `blake3("datboi-analyzer:<name>/<version>")` tags with parameters
-  baked into the name (e.g. `fastcdc-v2020-nc2-64k-256k-1m/1`). Wasm
-  analyzers will use their component hash. Convention, not yet a
-  ruling.
-- **Chunking threshold + eligibility policy**: ChunkAnalyzer currently
-  chunks every data blob ≥ 4 MiB. Molten with the D45 config
-  vocabulary; also interacts with "don't chunk blobs that already have
-  cheaper routes."
+- ~~Analyzer identity / coverage semantics~~ ruled 2026-07-10 as
+  **D55**: exact-hash identity, lineage declared at registration,
+  grandfathered coverage, migration explicit; native analyzers keep
+  self-declared tags until they become components.
+- ~~Chunking threshold + eligibility policy~~ ruled 2026-07-10 as
+  **D59**: route-less literals ≥ 4 MiB only (threshold unchanged);
+  work item to narrow the shipped analyzer.
 - ~~Deflate rebuild: preflate, not parameter discovery~~ ruled
   2026-07-07 as **D53** after the spike (wasm build verified, zero
   imports; TorrentZip corpus bit-exact at ≈0.002% corrections):
@@ -41,19 +39,16 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
   matters: upstream issue / patch the fixed 4096-chain ceiling in
   complevel_estimator, or a fallback corrections codec. Revisit when
   wild-corpus hit rates are measurable (M3 sweep telemetry).
-- **xf- policy is creeping into core crates** (watch item, raised
-  2026-07-07 during the xf-preflate build-out): the component boundary
-  isolates *replay* (framing format owned by the component hash; the
-  executor knows nothing about preflate), but discovery is native and
-  coupled — datboi-ingest links preflate-rs directly and runs it
-  UNSANDBOXED over wild bytes (the D5 sandbox protects replay only),
-  and the datboi-runtime gate — nominally about the @2 world — now
-  pins a specific component fixture. Consistent with D23 (analyzers
-  are the policy tier) but worth watching: if a third native analyzer
-  dependency lands, consider (a) analyzers-as-wasm-components (the
-  identity convention already anticipates component hashes), (b) a
-  separate conformance test crate for shipped components, (c) at
-  minimum a hardened/fuzzed parsing path for wild containers.
+- **xf- policy creep / unsandboxed discovery** (watch item 2026-07-07;
+  censused + largely resolved 2026-07-10 as **D58**): the census found
+  unrar_sys (vendored C++) was the only memory-unsafe wild-byte
+  parser — D58 moves it inside the sandbox as the first extractor
+  component and pulls the C-to-wasm lane forward from M7. Native
+  *Rust* analyzers are acceptable permanently (ruled: the "moderately
+  safe" bar). Remaining hygiene, still open: fuzz targets for the
+  in-house wild-byte parsers (zip walker, CHD header, cue, ECM
+  splitter) in CI; a conformance test crate for shipped components
+  stays a someday.
 - **Sequential assemble over opaque children spills today**: the
   executor opens assemble children random-access, so a sequential read
   of concat-of-derived (e.g. concat over decompressed members) spills
@@ -63,11 +58,11 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
 
 ## Open (minor / deferred to build-time)
 
-- Ingest-policy config vocabulary, detector registry (ordering /
-  confidence beyond skipper XMLs), canonical-orientation preference per
-  swap/header family: deliberately molten until a second real analyzer
-  exists to generalize from (M3, post-D50). Fixpoint/provenance/dat-blindness
-  principles are ratified (D45/D47/D48); only the config surface waits.
+- ~~Ingest-policy config vocabulary~~ shape ruled 2026-07-10 as
+  **D60** (per-analyzer enable + opaque params in the config KV,
+  lineage at registration, global dat-aware ordering). Detector
+  registry ordering + canonical-orientation preference remain
+  deliberately undesigned within D60 until a consumer exists.
 
 - Shard fanout + inline-outboard threshold: frozen by the M1 NFS
   benchmark (spec in 90-roadmap.md), not by discussion.
@@ -81,27 +76,18 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
 - peer_have bitmap representation: deferred until mirror-scale peers are
   real.
 
-## Open (design work, ratify before M4 views)
+## Open (design work)
 
-- **Reified views: shares as projections, images as recipes.** Insight
-  (2026-07-06): every serving surface is a projection of a view
-  snapshot — *live* (NFS/SMB/WebDAV/TNFS dirents walk the manifest;
-  reads are verified blob range reads) or *reified* (the whole tree
-  encoded as one blob: FAT32/exFAT/ISO/PS2-HDL image). A reified image
-  is a plain `assemble@1` recipe — skeleton blobs (boot sector, FAT
-  tables, dir clusters) + windowed segments over content blobs + fill
-  for slack — with the filesystem-layout math running at view-eval
-  time in the policy tier (D23: policies emit recipes; policy code
-  needs no determinism because the emitted recipe self-verifies). No
-  format code in the read path: nbd serving, Etcher-burnable export,
-  and live share are one object at different residency; images are
-  recipe-covered by construction so they cost nothing to keep.
-  Design work owed: skeleton-generator tier, image params (fixed
-  timestamps etc. pin identity), and **writable overlays** — devices
-  write saves into shares and even into flashed images; the
-  datboi-shaped answer is "writes are ingests" (per-device overlay,
-  save history for free), but overlay semantics for live shares and
-  dirty-image diff-back are real unbuilt design.
+- ~~Reified views: shares as projections, images as recipes~~
+  **ratified 2026-07-10 as D62** (M4 scope: read-only FAT32
+  synthesis; pinned image params; fsck-in-CI mandatory).
+- **Writable overlays + dirty-image diff-back** (split out of the
+  D62 ratification, still real unbuilt design): devices write saves
+  into shares and into flashed images; the datboi-shaped answer is
+  "writes are ingests" (per-device overlay, save history for free),
+  but overlay semantics for live shares and diff-back for dirty
+  images must be designed before nbd/live-write serving. Until then
+  image-mode sync warns that reflashing clobbers on-device saves.
 - **Curation distribution without byte distribution** ("moxfield for
   roms"). Because a curated view is a snapshot hash + manifest +
   recipes, sharing it shares *curation, not content*: a curator
@@ -111,47 +97,45 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
   channels land (M6): manifest-only subscription UX, gap-fill
   economics, and how curator updates flow (D34's
   no-auto-promotion caveat applies).
-- **Pended D49 amendment — carve-out for locally-minted affine
-  routes.** Tension: D49 mandates output-bao verification on
-  recipe-served ranges, but the outboard requires one full
-  materialization — and giant synthesized images (nbd-served OPL
-  disks) are designed to never fully materialize. Candidate ruling
-  (user leans this way, NOT yet ruled): carve out locally-minted,
-  pure-builtin, affine-only routes over verified inputs
-  (input-side bao + trusted executor arithmetic suffices — D49's
-  target was seekable *transform code*, not `assemble` math), plus an
-  optional background "blessing" pass (materialize-to-null, tee,
-  cache the outboard) to promote them to full D49 status. M2's
-  verify-path implementation should keep this pluggable; rule no
-  later than M4.
+- ~~Pended D49 amendment — affine carve-out~~ **ruled 2026-07-10 as
+  D63** (in-code predicate: locally-minted + pure-builtin +
+  affine-only + verified inputs; wasm never qualifies;
+  seek-equivalence gate extends to synthesized recipes; optional
+  blessing pass promotes to full D49).
 
 ## Flagged for ruling (raised 2026-07-09, M4 serving session)
 
-Implementation policies shipped this session with defaults chosen by
-the builder — each is reversible and flagged here for ratification or
-reversal (details in commit messages + code comments):
-
-- **1G1R held-first scoring**: a held-and-verified clone outranks the
-  preferred-but-absent region; re-eval upgrades the pick after ingest.
-  Alternative (retool semantics): pure dat-level selection independent
-  of holdings. Held-first ships as the default because the serving NAS
-  is the consumer; flip or make per-view if curation-exactness should
-  win.
-- **Opaque long streams materialize on demand**: the daemon and
-  `view sync`, when streaming a large opaque-routed non-resident blob,
-  run one verified replay into the store (evictable again later)
-  instead of re-spilling per window. Storage-for-latency trade chosen
-  silently; the residency planner's materialize-at-snapshot-activation
-  (80-views.md) is the eventual systematic answer.
-- **Daemon bind policy**: 127.0.0.1:2352 default, any other bind is an
-  explicit flag with a loud no-auth warning (auth is M5).
-- **DAV read chunk**: 1 MiB serve_range calls (route re-planned per
-  read). Fine for consoles; revisit if per-read planning shows up in
-  profiles.
+All four builder defaults ratified 2026-07-10: materialize-on-demand,
+bind policy, and DAV read chunk as **D56** (rider: disk-headroom
+guard before materializing is an owed work item); 1G1R as **D57**
+(now a per-view mode {held-first, strict}, default held-first —
+strict mode + retool clonelist consumption are M4 work items).
 
 ## Next sessions (pick up here)
 
-**Position as of 2026-07-09**: **M4 serving core SHIPPED** — the
+**Position as of 2026-07-10**: **DECISION SESSION — every open ruling
+in the project resolved (D55–D63)**; no unruled gates remain. Ruled:
+D55 exact-hash identity/lineage/explicit-migration (note: component
+attribution itself was ALREADY ruled as D54 on 07-07 — the
+priority-list entry below it was stale; decisions.md is authoritative
+over this file's flags); D56 serving defaults (+ owed disk-headroom
+guard); D57 1G1R per-view {held-first, strict}; D58 unrar-to-wasm
+extractor components, C-to-wasm lane pulled forward from M7 (rar
+members gain derive recipes; WASI-shim fallback would amend D46 and
+returns as a ruling if freestanding fails); D59 chunking narrows to
+route-less literals; D60 minimal config shape; D61
+`scrub --rehabilitate`; D62 reified views (M4 = read-only FAT32,
+fsck-in-CI mandatory, overlays pended); D63 the D49 affine carve-out.
+NEXT (all implementation, no discussion owed): FAT32 image synthesis
+(D62/D63 — skeleton generator, image params, fsck-in-CI,
+seek-equivalence extension); MAME merge-mode rendering (D31 deferred
+set); retool clonelists + strict mode (D57); the D58 unrar-wasm lane
+(~1.5–2 wk: wasi-sdk in flake, RAR_SMP off, ErrHandler→trap,
+File-class reroute, extractor world, derive recipes); ruled riders —
+headroom guard (D56), chunking eligibility narrowing (D59), config
+shape (D60), rehabilitate (D61).
+
+**Previous position (2026-07-09)**: **M4 serving core SHIPPED** — the
 daemon exists (axum + tokio): HTTP Range serving of view snapshots
 (`/view/<name>/` per-request tag resolution, `/snap/<hash>/` immutable,
 strong content-hash ETags, single-range RFC 9110, D49-verified 8 MiB
@@ -177,30 +161,19 @@ synthesis (NEEDS the two rulings: reified views + D49 affine
 carve-out — user leaned toward the carve-out but has NOT ruled), MAME
 merge-mode rendering (D31 deferred set), retool clonelist consumption.
 
-**Previous position (2026-07-07 late session)**: **M1/M2/M3 COMPLETE**
-(bench-gated items indefinitely deferred by ruling). **M4 started** —
-shipped: `datboi/viewsnap/1` (canonical manifest object, golden-pinned),
-view definitions (state.db config KV) + evaluation (relink → rollups →
-have(verified) claims → layout template with deterministic collision
-suffixes → snapshot mint), the D33 flip as a `view/<name>` tag move
-(doubles as the D27 GC root), CLI `view define/eval/list/manifest` with
-an e2e test. NEXT: HTTP Range serving of snapshots (axum in
-datboi-server: resolve tag → manifest → executor serve_range; then
-WebDAV via dav-server), 1G1R selection + profiles, and the two rulings
-owed before image synthesis (reified views + D49 affine carve-out).
-Note: view defs/tags don't yet ride the statesnap payload — recovery
-loses them (additive payload key later; same class as the existing
-tag/config gap).
-
 Priority order:
 
-1. **M4 remainder**: FAT32 image synthesis (rule reified views + the
-   D49 carve-out first — the LAST unruled gate), MAME merge-mode
-   rendering (D31 deferred set), retool clonelists. Then the user's
-   stated post-M4 directions: M6 iroh, M7 formats/xf-s, ingest
-   policies/background curing, deeper adversarial testing.
-   Carried caveat from M3/ECM: validate EDC/ECC against a real disc
-   sector when the NAS corpus is reachable.
+1. **M4 remainder** (all gates ruled 2026-07-10): FAT32 image
+   synthesis (D62/D63), MAME merge-mode rendering (D31 deferred set),
+   retool clonelists + strict 1G1R mode (D57), plus the ruled riders
+   (D56 headroom guard, D59 eligibility narrowing, D60 config shape,
+   D61 rehabilitate). Then the user's stated post-M4 directions: M6
+   iroh, M7 formats/xf-s, ingest policies/background curing, deeper
+   adversarial testing. Carried caveat from M3/ECM: validate EDC/ECC
+   against a real disc sector when the NAS corpus is reachable.
+1b. **unrar-wasm extractor lane (D58)** — own track, ~1.5–2 weeks;
+   also the pathfinder for M7's C-to-wasm work (7-Zip SDK reuses the
+   toolchain and the guest-glue design).
 2. **7z rebuild via pinned-encoder parameter discovery — DEFERRED to
    the M7 rebuild long tail** (ruled 2026-07-07). Research concluded:
    no preflate-analog exists for LZMA anywhere; corrections can't
@@ -226,17 +199,14 @@ Priority order:
    recompressor exists for v3/v5; the encoder is closed and the unrar
    license forbids using its source to recreate compression. The
    extraction-based ingest is the final answer for rar.
-4. **Component attribution stamping** (decision owed, evidence in
-   hand): `wasm-tools metadata add` embeds name/description/authors/
-   license/source/revision as execution-inert custom sections — but
-   they change the component hash, so the stamping convention should
-   be ruled BEFORE any real corpus pins recipes. Candidate: stamp in
-   the flake install phase from crate metadata + git rev.
-5. **Recipe rehabilitation** (work item): `Failed` is terminal, but
-   this session produced a wrongly-poisoned recipe via the (now fixed)
-   pipe race — there is no operator path to un-poison a recipe whose
-   poisoning was a host bug. Candidate: `scrub --rehabilitate` that
-   re-replays Failed recipes and clears state on success.
+4. ~~Component attribution stamping~~ **was already ruled 2026-07-07
+   as D54** (tree-hash revision, load refusal, one crate = one
+   lockfile) — this entry was stale; the 2026-07-10 session added the
+   coverage/lineage semantics as **D55**. Lesson recorded:
+   decisions.md is authoritative; this file's flags can lag.
+5. ~~Recipe rehabilitation~~ ruled 2026-07-10 as **D61**
+   (`scrub --rehabilitate`); implementation is an M4-adjacent work
+   item.
 6. **M1 NFS store benchmark + aggregation (D36) — INDEFINITELY
    DEFERRED** (ruled 2026-07-07). A local-SSD run cannot answer what
    the bench gates (NFS metadata round-trips are the whole case for
@@ -251,8 +221,9 @@ Priority order:
    transactions — fast recover 13.7s → 2.5s per 50k (~20k blobs/s ⇒
    DB side of a 10M-blob recovery ≈ 8 min; the NFS walk then dominates,
    which is the part the deferred bench would tune).
-7. Rule the pended D49 affine carve-out no later than M4 views work.
-8. M4 views (80-views.md): shares-as-projections, images-as-recipes.
+7. ~~D49 affine carve-out~~ ruled 2026-07-10 as **D63**.
+8. ~~Reified views~~ ratified 2026-07-10 as **D62**; writable
+   overlays remain the open design item (pre-nbd).
 
 ## Resolved
 

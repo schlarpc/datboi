@@ -106,18 +106,25 @@ recovery-equivalence as a property test.
   temp+fsync+rename); in-process NFSv3 — *shipped 2026-07-09*
   (nfsserve, opt-in `--nfs-listen`, snapshot-pinned fileids); view
   defs/tags ride the statesnap — *shipped 2026-07-09* (additive payload
-  keys 8/9, recovery drill proves it). REMAINING: MAME merge-mode
-  rendering + device_ref closure + softlist fidelity (D31 deferred
-  set), retool clonelists, FAT32 image synthesis (gated on the
-  reified-views + D49 carve-out rulings).
+  keys 8/9, recovery drill proves it); all gates ruled 2026-07-10
+  (D55–D63 decision session — nothing in M4 waits on a ruling).
+  REMAINING: FAT32 image synthesis (D62 reified views + D63 affine
+  carve-out; fsck-in-CI mandatory), MAME merge-mode rendering +
+  device_ref closure + softlist fidelity (D31 deferred set), retool
+  clonelists + strict 1G1R mode (D57), ruled riders (D56 headroom
+  guard, D59 chunking eligibility, D60 config shape, D61
+  rehabilitate). ADDED TRACK (D58, pulled from M7): unrar-as-wasm
+  extractor component — C-to-wasm lane lands now, rar members gain
+  derive recipes and become evictable.
 - **M5 — "Other people can touch it"**: axum API, invites + passwords
   (D30), ACLs, Svelte web UI (D17).
 - **M6 — "Friends"**: iroh, partial-blob bitfields + irpc store facade
   (D14 stage 2), holdings channels + peer-availability audit state (D34),
   tickets.
 - **M7+ — frontier**: platform rebuild long tail (CHD/RVZ/NSZ, D12 key
-  flows; 7z-LZMA pinned-encoder param discovery rides here — same
-  C-to-wasm component lane, design recorded in open-questions),
+  flows; 7z-LZMA pinned-encoder param discovery rides here — the
+  C-to-wasm component lane it needs lands early via D58's unrar
+  extractor, design recorded in open-questions),
   read-only SMB1 server (D32), curated channels, waddup ZKP swarms,
   browser emulator cores.
 
