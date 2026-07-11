@@ -18,6 +18,7 @@
 pub mod audit;
 pub mod diff;
 pub mod export;
+pub mod fat32;
 pub mod import;
 pub mod profiles;
 pub mod rollup;
