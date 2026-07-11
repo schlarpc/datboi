@@ -771,6 +771,17 @@ pub fn sweep(
     };
     let report =
         datboi_ingest::refine::run_sweep(&mut env.db, &env.store, analyzer.as_mut(), limit)?;
+    if report.disabled {
+        let family = analyzer.family();
+        if json {
+            println!("{}", json!({"analyzer": analyzer.name(), "disabled": true}));
+        } else {
+            println!(
+                "analyzer family {family:?} is disabled (D60): `datboi analyzer enable {family}`"
+            );
+        }
+        return Ok(ExitCode::from(1));
+    }
     let remaining = env.db.sweep_queue_len(&analyzer.id())?;
     if json {
         println!(
@@ -806,6 +817,92 @@ pub fn sweep(
     } else {
         ExitCode::from(1)
     })
+}
+
+/// The shipped analyzer families (D60 config keys). Adding an analyzer
+/// is adding a row here + a `family()` on its impl.
+const ANALYZER_FAMILIES: &[&str] = &["noop", "chunk", "preflate", "ecm"];
+
+fn require_family(name: &str) -> anyhow::Result<&str> {
+    ANALYZER_FAMILIES
+        .iter()
+        .find(|f| **f == name)
+        .copied()
+        .with_context(|| {
+            format!(
+                "unknown analyzer family {name:?} (available: {})",
+                ANALYZER_FAMILIES.join(", ")
+            )
+        })
+}
+
+pub fn analyzer_list(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
+    use datboi_ingest::refine::{analyzer_enabled, analyzer_params};
+    let mut rows = Vec::new();
+    for family in ANALYZER_FAMILIES {
+        let enabled = analyzer_enabled(&env.db, family)?;
+        let params = analyzer_params(&env.db, family)?;
+        rows.push((family, enabled, params));
+    }
+    if json {
+        println!(
+            "{}",
+            json!({"analyzers": rows.iter().map(|(f, enabled, params)| json!({
+                "family": f,
+                "enabled": enabled,
+                "params_hex": params.as_ref().map(|p| p.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            })).collect::<Vec<_>>()})
+        );
+    } else {
+        for (family, enabled, params) in &rows {
+            println!(
+                "{family:<10} {}  params: {}",
+                if *enabled { "enabled " } else { "DISABLED" },
+                params
+                    .as_ref()
+                    .map_or_else(|| "-".into(), |p| format!("{} bytes", p.len())),
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn analyzer_set_enabled(env: &Env, name: &str, enabled: bool) -> anyhow::Result<ExitCode> {
+    let family = require_family(name)?;
+    datboi_ingest::refine::set_analyzer_enabled(&env.db, family, enabled)?;
+    println!(
+        "analyzer {family}: {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn analyzer_set_params(env: &Env, name: &str, hex: Option<&str>) -> anyhow::Result<ExitCode> {
+    let family = require_family(name)?;
+    let bytes = match hex {
+        Some(h) => {
+            anyhow::ensure!(
+                h.len().is_multiple_of(2) && h.chars().all(|c| c.is_ascii_hexdigit()),
+                "params must be an even-length hex string"
+            );
+            Some(
+                (0..h.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&h[i..i + 2], 16).expect("validated hex"))
+                    .collect::<Vec<u8>>(),
+            )
+        }
+        None => None,
+    };
+    datboi_ingest::refine::set_analyzer_params(&env.db, family, bytes.as_deref())?;
+    println!(
+        "analyzer {family}: params {}",
+        match &bytes {
+            Some(b) => format!("set ({} bytes)", b.len()),
+            None => "cleared".into(),
+        }
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 // ---- recover ----

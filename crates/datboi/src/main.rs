@@ -119,6 +119,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Ingest-policy config for background analyzers (D60): per-family
+    /// enable/disable + analyzer-owned opaque params in the config KV.
+    Analyzer {
+        #[command(subcommand)]
+        cmd: AnalyzerCommand,
+    },
     /// Filesystem views (M4, 80-views.md): define policies, evaluate
     /// them into immutable snapshots, list what exists.
     View {
@@ -142,6 +148,24 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum AnalyzerCommand {
+    /// List analyzer families with enable state and params presence.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Enable a family (the default state).
+    Enable { name: String },
+    /// Disable a family: its sweeps become no-ops until re-enabled.
+    Disable { name: String },
+    /// Set a family's opaque params (hex bytes; the analyzer owns the
+    /// encoding — nothing else interprets them).
+    SetParams { name: String, hex: String },
+    /// Clear a family's params.
+    ClearParams { name: String },
 }
 
 #[derive(Subcommand)]
@@ -434,6 +458,21 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             limit,
             json,
         } => cmds::sweep(cli.global.open()?, &analyzer, limit, json),
+        Command::Analyzer { cmd } => match cmd {
+            AnalyzerCommand::List { json } => cmds::analyzer_list(&cli.global.open()?, json),
+            AnalyzerCommand::Enable { name } => {
+                cmds::analyzer_set_enabled(&cli.global.open()?, &name, true)
+            }
+            AnalyzerCommand::Disable { name } => {
+                cmds::analyzer_set_enabled(&cli.global.open()?, &name, false)
+            }
+            AnalyzerCommand::SetParams { name, hex } => {
+                cmds::analyzer_set_params(&cli.global.open()?, &name, Some(&hex))
+            }
+            AnalyzerCommand::ClearParams { name } => {
+                cmds::analyzer_set_params(&cli.global.open()?, &name, None)
+            }
+        },
         Command::Scrub {
             sample,
             rehabilitate,

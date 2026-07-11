@@ -242,6 +242,10 @@ impl Analyzer for PreflateZipAnalyzer {
         Self::VERSIONED_NAME
     }
 
+    fn family(&self) -> &'static str {
+        "preflate"
+    }
+
     fn id(&self) -> Blake3 {
         analyzer_tag(Self::VERSIONED_NAME)
     }
@@ -620,6 +624,10 @@ impl Analyzer for ChunkAnalyzer {
         Self::VERSIONED_NAME
     }
 
+    fn family(&self) -> &'static str {
+        "chunk"
+    }
+
     fn id(&self) -> Blake3 {
         analyzer_tag(Self::VERSIONED_NAME)
     }
@@ -883,6 +891,10 @@ impl std::io::Read for EcmSplitReader<'_> {
 impl Analyzer for EcmAnalyzer {
     fn name(&self) -> &'static str {
         Self::VERSIONED_NAME
+    }
+
+    fn family(&self) -> &'static str {
+        "ecm"
     }
 
     fn id(&self) -> Blake3 {

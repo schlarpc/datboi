@@ -1136,3 +1136,85 @@ fn view_image_end_to_end() {
     assert_eq!(m2["image"], m["image"]);
     assert_eq!(m2["recipe"], m["recipe"]);
 }
+
+/// D60: per-analyzer enable/disable + opaque params in the config KV,
+/// enforced at the sweep entry point.
+#[test]
+fn analyzer_policy_gates_sweeps() {
+    let u = Universe::new();
+    fs::create_dir_all(u.src()).unwrap();
+    fs::write(u.src().join("blob.bin"), b"some bytes").unwrap();
+    u.cmd().arg("ingest").arg(u.src()).assert().success();
+
+    // Default: enabled; a noop sweep runs.
+    u.cmd()
+        .args(["sweep", "--analyzer", "noop"])
+        .assert()
+        .success();
+
+    // Disable → the sweep is a no-op with a pointed message + exit 1.
+    u.cmd()
+        .args(["analyzer", "disable", "noop"])
+        .assert()
+        .success();
+    u.cmd()
+        .args(["sweep", "--analyzer", "noop"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("disabled (D60)"));
+
+    // List reflects the state.
+    let list = u
+        .cmd()
+        .args(["analyzer", "list", "--json"])
+        .assert()
+        .success();
+    let l: serde_json::Value = serde_json::from_slice(&list.get_output().stdout).expect("json");
+    let noop = l["analyzers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["family"] == "noop")
+        .expect("noop row");
+    assert_eq!(noop["enabled"], false);
+
+    // Params round-trip (opaque; hex on the wire).
+    u.cmd()
+        .args(["analyzer", "set-params", "chunk", "deadbeef"])
+        .assert()
+        .success();
+    let list = u
+        .cmd()
+        .args(["analyzer", "list", "--json"])
+        .assert()
+        .success();
+    let l: serde_json::Value = serde_json::from_slice(&list.get_output().stdout).expect("json");
+    let chunk = l["analyzers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["family"] == "chunk")
+        .expect("chunk row");
+    assert_eq!(chunk["params_hex"], "deadbeef");
+    u.cmd()
+        .args(["analyzer", "clear-params", "chunk"])
+        .assert()
+        .success();
+
+    // Re-enable → sweeps run again.
+    u.cmd()
+        .args(["analyzer", "enable", "noop"])
+        .assert()
+        .success();
+    u.cmd()
+        .args(["sweep", "--analyzer", "noop"])
+        .assert()
+        .success();
+
+    // Unknown family: clean refusal.
+    u.cmd()
+        .args(["analyzer", "disable", "nonesuch"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown analyzer family"));
+}

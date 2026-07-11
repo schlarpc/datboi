@@ -41,6 +41,12 @@ pub trait Analyzer {
     /// Versioned, human-readable name (also the CLI selector).
     fn name(&self) -> &'static str;
 
+    /// Stable operator-facing family name — the D60 config key. Unlike
+    /// [`Analyzer::name`]/[`Analyzer::id`], it survives version bumps:
+    /// an operator's enable/disable choice carries across analyzer
+    /// revisions (identity re-runs the fixpoint; policy stays).
+    fn family(&self) -> &'static str;
+
     /// Identity hash — what provenance rows pin (D48).
     fn id(&self) -> Blake3;
 
@@ -68,6 +74,10 @@ impl Analyzer for NoopAnalyzer {
         "noop/1"
     }
 
+    fn family(&self) -> &'static str {
+        "noop"
+    }
+
     fn id(&self) -> Blake3 {
         analyzer_tag(self.name())
     }
@@ -93,6 +103,66 @@ pub struct SweepReport {
     pub negative: usize,
     /// (blob hash, error) — items left queued for a later sweep.
     pub errors: Vec<(Blake3, String)>,
+    /// The analyzer family is disabled (D60): nothing ran.
+    pub disabled: bool,
+}
+
+// ---- D60 ingest-policy config: the minimal shape ----
+//
+// Per-analyzer enable/disable + analyzer-owned opaque params in the
+// state.db config KV (`analyzer:<family>:enabled` / `:params`), which
+// rides the state snapshot like every other config row. Sweep ordering
+// stays a single global dat-aware policy — no per-analyzer knobs.
+
+fn enabled_key(family: &str) -> String {
+    format!("analyzer:{family}:enabled")
+}
+
+fn params_key(family: &str) -> String {
+    format!("analyzer:{family}:params")
+}
+
+/// Is the family enabled? Absent means yes (opt-out policy).
+///
+/// # Errors
+/// Index I/O.
+pub fn analyzer_enabled(db: &Db, family: &str) -> Result<bool, datboi_index::IndexError> {
+    Ok(db
+        .config_get(&enabled_key(family))?
+        .is_none_or(|v| v != b"0"))
+}
+
+/// # Errors
+/// Index I/O.
+pub fn set_analyzer_enabled(
+    db: &Db,
+    family: &str,
+    enabled: bool,
+) -> Result<(), datboi_index::IndexError> {
+    db.config_set(&enabled_key(family), if enabled { b"1" } else { b"0" })
+}
+
+/// Analyzer-owned opaque params (the analyzer defines the encoding;
+/// nothing else interprets them). Empty and absent are both `None`.
+///
+/// # Errors
+/// Index I/O.
+pub fn analyzer_params(db: &Db, family: &str) -> Result<Option<Vec<u8>>, datboi_index::IndexError> {
+    Ok(db
+        .config_get(&params_key(family))?
+        .filter(|v| !v.is_empty()))
+}
+
+/// Set (or clear, with `None`) a family's opaque params.
+///
+/// # Errors
+/// Index I/O.
+pub fn set_analyzer_params(
+    db: &Db,
+    family: &str,
+    params: Option<&[u8]>,
+) -> Result<(), datboi_index::IndexError> {
+    db.config_set(&params_key(family), params.unwrap_or(b""))
 }
 
 /// Run one sweep round: enqueue unanalyzed candidates (dat-blind),
@@ -107,6 +177,13 @@ pub fn run_sweep(
     analyzer: &mut dyn Analyzer,
     limit: usize,
 ) -> Result<SweepReport, datboi_index::IndexError> {
+    // D60: policy gate at the one entry point every sweep caller uses.
+    if !analyzer_enabled(db, analyzer.family())? {
+        return Ok(SweepReport {
+            disabled: true,
+            ..SweepReport::default()
+        });
+    }
     let id = analyzer.id();
     let now = now_unix();
     let mut report = SweepReport {
