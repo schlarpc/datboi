@@ -29,6 +29,17 @@ pub struct SessionRow {
     pub expires_at: i64,
 }
 
+/// One `invite` row (the admin-surface projection). Only the token's
+/// blake3 is ever stored, so this cannot leak a usable invite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InviteRow {
+    pub token_hash: [u8; 32],
+    pub created_by: Option<i64>,
+    pub role: Role,
+    pub expires_at: i64,
+    pub used_by: Option<i64>,
+}
+
 /// What [`Db::accept_invite`] decided, atomically.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InviteOutcome {
@@ -120,6 +131,44 @@ impl Db {
             params![token_hash.as_slice(), created_by, expires_at, role.code()],
         )?;
         Ok(())
+    }
+
+    /// Every invite row, soonest expiry first (the admin surface;
+    /// callers split pending from consumed/expired).
+    pub fn list_invites(&self) -> Result<Vec<InviteRow>, IndexError> {
+        let mut stmt = self.state().prepare_cached(
+            "SELECT token_hash, created_by, role, expires_at, used_by
+             FROM invite ORDER BY expires_at, token_hash",
+        )?;
+        stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, [u8; 32]>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+            ))
+        })?
+        .map(|raw| {
+            let (token_hash, created_by, role, expires_at, used_by) = raw?;
+            Ok(InviteRow {
+                token_hash,
+                created_by,
+                role: Role::from_code(role)?,
+                expires_at,
+                used_by,
+            })
+        })
+        .collect()
+    }
+
+    /// Revoke an UNUSED invite; consumed invites stay — they are the
+    /// account-provenance record. Returns whether a row died.
+    pub fn delete_invite(&self, token_hash: &[u8; 32]) -> Result<bool, IndexError> {
+        Ok(self.state().execute(
+            "DELETE FROM invite WHERE token_hash = ?1 AND used_by IS NULL",
+            params![token_hash.as_slice()],
+        )? > 0)
     }
 
     /// Consume an invite and create its user, atomically: the invite is

@@ -138,6 +138,16 @@ strict mode + retool clonelist consumption are M4 work items).
   generates TS". M5 hand-writes the TS types next to the client with
   integration tests pinning the JSON shape (no serde derive in the
   codebase makes codegen non-trivial). Revisit if drift bites.
+- **Scrub runs and verify methods aren't recorded**: the index keeps
+  per-blob `verified_at` only — no method, no scrub-run ledger — so
+  `/v1/storage` cannot report last-scrub and the entry drawer's
+  verify line shows a date without a "how". A run ledger belongs to
+  the same future job table as the Jobs tray backend above.
+- **System ids are cache surrogates**: `/v1/systems` keys on
+  `dat_source.source_id`, which `datboi recover` re-mints from
+  scratch. UI deep-links survive a browsing session, not a cache
+  rebuild — fine for M5; if bookmarkable system URLs ever matter,
+  the durable key is the provider/system pair, not the integer.
 - **Web rulings made during implementation** (recorded here, not
   D-numbered): nav = `Library · Views · Ingest · Storage · Admin`
   (audit is the drill-down under Library; the hi-fi "Dats" tab

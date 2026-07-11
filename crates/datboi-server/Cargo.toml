@@ -14,6 +14,8 @@ axum.workspace = true
 bytes.workspace = true
 getrandom.workspace = true
 async-trait.workspace = true
+# ViewDef decode + the audit read models behind /v1 (M5 web API).
+datboi-catalog.workspace = true
 datboi-core.workspace = true
 datboi-exec.workspace = true
 datboi-index.workspace = true
@@ -22,11 +24,13 @@ dav-server.workspace = true
 futures-core.workspace = true
 include_dir.workspace = true
 nfsserve.workspace = true
+# The /v1 read models query cache.db directly (same SQL family as
+# `datboi status`/`datboi audit` — see api.rs).
+rusqlite.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-datboi-catalog.workspace = true
 tempfile.workspace = true
 ureq.workspace = true
 

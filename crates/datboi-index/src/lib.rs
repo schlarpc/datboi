@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 pub use analysis::{AnalysisOutcome, SweepItem};
-pub use auth::{InviteOutcome, SessionRow, UserRow};
+pub use auth::{InviteOutcome, InviteRow, SessionRow, UserRow};
 pub use blobs::BlobRow;
 pub use recipes::GroundingMode;
 pub use types::{

@@ -148,6 +148,22 @@ impl ViewIndex {
         }
     }
 
+    /// (row count, total manifest bytes) — the cheap per-view stats the
+    /// M5 API surfaces (decoded once per snapshot via the cache).
+    pub fn stats(&self) -> (usize, u64) {
+        (
+            self.rows.len(),
+            self.rows.values().map(|meta| meta.size).sum(),
+        )
+    }
+
+    /// Does any manifest row reference `hash`? Powers the entry
+    /// drawer's "pinned by" list; a linear scan of an already-decoded
+    /// manifest is fine at view scale.
+    pub fn contains_hash(&self, hash: &Blake3) -> bool {
+        self.rows.values().any(|meta| meta.hash == *hash)
+    }
+
     /// Exact-path file lookup. Manifest paths are canonical
     /// (no `.`/`..`/empty components), so a hostile request path can
     /// only ever fail to match — nothing here touches a filesystem.

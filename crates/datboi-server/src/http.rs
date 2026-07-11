@@ -20,10 +20,12 @@ use axum::body::{Body, Bytes};
 use axum::extract::{Path as UrlPath, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
-use axum::routing::{any, get, post};
+use axum::routing::{any, delete, get, post};
 use axum::{Extension, Router};
 use datboi_core::hash::Blake3;
 use serde_json::json;
+
+use crate::{admin, api};
 
 use crate::App;
 use crate::auth::{self, Caller};
@@ -47,7 +49,30 @@ pub(crate) fn router(app: Arc<App>) -> Router {
         .route("/v1/auth/invite/accept", post(auth::invite_accept))
         .route("/v1/auth/login", post(auth::login))
         .route("/v1/auth/logout", post(auth::logout))
-        .route("/v1/views", get(views_json))
+        // The M5 read-model API (api.rs) + admin management (admin.rs).
+        // Owner-only except the view surface (friends see grants, D68).
+        .route("/v1/systems", get(api::systems))
+        .route("/v1/systems/{id}/entries", get(api::system_entries))
+        .route("/v1/systems/{id}/entries/{*name}", get(api::system_entry))
+        .route("/v1/views", get(api::views))
+        .route("/v1/views/{name}", get(api::view_detail))
+        .route("/v1/storage", get(api::storage))
+        .route("/v1/jobs", get(api::jobs))
+        .route("/v1/admin/users", get(admin::users))
+        .route("/v1/admin/invites", post(admin::invite_create))
+        .route(
+            "/v1/admin/invites/{token_hash}",
+            delete(admin::invite_delete),
+        )
+        .route("/v1/admin/grants", post(admin::grant_create))
+        .route(
+            "/v1/admin/grants/{username}/{view}",
+            delete(admin::grant_delete),
+        )
+        .route(
+            "/v1/admin/sessions/{username}",
+            delete(admin::sessions_delete),
+        )
         .route("/view/{name}", get(view_bare))
         .route("/view/{name}/", get(view_root))
         .route("/view/{name}/{*path}", get(view_path))
@@ -71,28 +96,8 @@ pub(crate) fn router(app: Arc<App>) -> Router {
 }
 
 // ---- handlers ----
-
-async fn views_json(State(app): State<Arc<App>>, Extension(caller): Extension<Caller>) -> Response {
-    run_blocking(move || {
-        let mut views =
-            vfs::view_tags(&app).map_err(|e| map_lookup(&e, StatusCode::INTERNAL_SERVER_ERROR))?;
-        // Friends see exactly their granted views (D68) — the listing
-        // is the friend surface's front door, so it filters too.
-        {
-            let db = app
-                .db
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            views.retain(|(name, _)| auth::view_allowed(&db, &caller, name));
-        }
-        let items: Vec<_> = views
-            .iter()
-            .map(|(name, snapshot)| json!({"name": name, "snapshot": snapshot.to_hex()}))
-            .collect();
-        Ok(json_response(StatusCode::OK, &json!({"views": items})))
-    })
-    .await
-}
+// (the /v1 JSON read models live in api.rs; only the byte-serving
+// tree surface remains here)
 
 async fn view_bare(UrlPath(name): UrlPath<String>) -> Response {
     redirect(&format!("/view/{}/", enc_seg(&name)))
@@ -716,7 +721,7 @@ fn html_escape(s: &str) -> String {
 }
 
 /// Percent-encode one path segment (RFC 3986 unreserved kept verbatim).
-fn enc_seg(s: &str) -> String {
+pub(crate) fn enc_seg(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for &b in s.as_bytes() {
         match b {

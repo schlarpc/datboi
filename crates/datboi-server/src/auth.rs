@@ -112,7 +112,7 @@ pub(crate) enum Via {
 
 impl Caller {
     /// Owners (and loopback) pass every ACL.
-    fn is_owner(&self) -> bool {
+    pub(crate) fn is_owner(&self) -> bool {
         match self {
             Self::Local => true,
             Self::User { role, .. } => *role == Role::Owner,
@@ -337,7 +337,7 @@ pub(crate) async fn whoami(req: Request) -> Response {
     json_response(StatusCode::OK, &body)
 }
 
-fn role_str(role: Role) -> &'static str {
+pub(crate) fn role_str(role: Role) -> &'static str {
     match role {
         Role::Owner => "owner",
         Role::Friend => "friend",
