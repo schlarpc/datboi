@@ -246,9 +246,12 @@
           });
 
         } // nixpkgs.lib.listToAttrs (map
-          # Transform unit tests run natively per crate (logic is
+          # Component unit tests run natively per crate (logic is
           # target-independent; wasm artifacts are exercised by the host
-          # determinism gates).
+          # determinism/extractor gates). `--no-tests=pass` because an
+          # extractor's logic can be entirely wasm-guest (ex-unrar's is C++
+          # under the sandbox; its conformance lives in datboi-runtime), so
+          # a crate legitimately has zero host-native tests.
           (crate:
             let
               args = builtins.removeAttrs (wasmCrateArgsFor system crate)
@@ -262,6 +265,7 @@
                 cargoArtifacts = craneLib.buildDepsOnly args;
                 partitions = 1;
                 partitionType = "count";
+                cargoNextestExtraArgs = "--no-tests=pass";
               });
             })
           wasmCrateNames));
