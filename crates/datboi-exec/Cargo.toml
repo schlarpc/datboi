@@ -22,6 +22,9 @@ crc32fast.workspace = true
 xf-ecm = { path = "../../transforms/xf-ecm" }
 datboi-catalog.workspace = true
 datboi-ingest.workspace = true
+# Independent FAT reader for the D62 read-back gate (never the writer).
+fatfs = "0.3"
+fscommon = "0.1"
 proptest.workspace = true
 
 [lints]

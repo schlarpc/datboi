@@ -191,6 +191,10 @@
             cargoArtifacts = hostArtifacts;
             partitions = 1;
             partitionType = "count";
+            # The D62 fsck-in-CI gate: fsck.vfat must exist and MUST run
+            # (the test skips gracefully outside nix; CI never skips).
+            nativeCheckInputs = [ (pkgsFor system).dosfstools ];
+            DATBOI_REQUIRE_FSCK = "1";
           });
 
         } // nixpkgs.lib.listToAttrs (map
@@ -234,6 +238,8 @@
               # wasm component tooling (transforms lane)
               pkgs.wasm-tools
               pkgs.wasmtime
+              # FAT32 image synthesis gate (D62 fsck-in-CI)
+              pkgs.dosfstools
               nix-direnv.packages.${system}.default
             ];
 
