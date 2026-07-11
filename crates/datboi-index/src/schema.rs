@@ -54,7 +54,8 @@ CREATE INDEX sweep_by_priority ON sweep_queue(priority DESC, enqueued_at);
 /// state.db gets REAL migrations forever: an older file is upgraded in
 /// place by [`STATE_MIGRATIONS`], never dropped. A newer-than-supported
 /// version is a hard error in both files (no downgrades).
-pub const STATE_SCHEMA_VERSION: u32 = 1;
+/// v2: invite.role + view_grant (auth v1, D30/D68).
+pub const STATE_SCHEMA_VERSION: u32 = 2;
 
 /// The state.db migration ladder: `STATE_MIGRATIONS[i]` is the SQL batch
 /// migrating version `i + 1` to `i + 2`; each step runs in its own
@@ -66,7 +67,20 @@ pub const STATE_SCHEMA_VERSION: u32 = 1;
 /// backfill. Anything a snapshot round-trips (D37) must keep
 /// round-tripping after the step — the snapshot codec is the cross-check
 /// that a migration didn't silently change state semantics.
-pub const STATE_MIGRATIONS: &[&str] = &[];
+pub const STATE_MIGRATIONS: &[&str] = &[
+    // v1 → v2 (D68): invites carry the role they mint, and the friend
+    // surface is a per-user view ACL. The ALTER needs a DEFAULT for any
+    // pre-existing rows; 1 = friend (least privilege). Writers always
+    // set role explicitly.
+    "
+ALTER TABLE invite ADD COLUMN role INTEGER NOT NULL DEFAULT 1;
+CREATE TABLE view_grant (
+  user_id   INTEGER NOT NULL REFERENCES user(user_id),
+  view_name TEXT NOT NULL,
+  PRIMARY KEY (user_id, view_name)
+) STRICT;
+",
+];
 
 /// `application_id` magics: "dtbc" / "dtbs" as big-endian ASCII.
 pub const CACHE_APP_ID: u32 = 0x6474_6263;
@@ -355,11 +369,15 @@ CREATE TABLE user (
   created_at INTEGER NOT NULL
 ) STRICT;
 
+-- Single-use, role-carrying, expiring (D68). token_hash is
+-- blake3(token): a stolen state.db mints nothing. The DEFAULT on role
+-- exists only for the v1→v2 ALTER; writers always set it explicitly.
 CREATE TABLE invite (
   token_hash BLOB PRIMARY KEY,
   created_by INTEGER REFERENCES user(user_id),
   expires_at INTEGER NOT NULL,
-  used_by    INTEGER
+  used_by    INTEGER,
+  role       INTEGER NOT NULL DEFAULT 1
 ) STRICT;
 
 -- Authoritative but truncatable; excluded from CAS snapshots.
@@ -367,6 +385,14 @@ CREATE TABLE session (
   token_hash BLOB PRIMARY KEY,
   user_id    INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
+) STRICT;
+
+-- The friend-surface ACL (D68): owners see everything; friends see
+-- exactly the views granted here (list, browse, download).
+CREATE TABLE view_grant (
+  user_id   INTEGER NOT NULL REFERENCES user(user_id),
+  view_name TEXT NOT NULL,
+  PRIMARY KEY (user_id, view_name)
 ) STRICT;
 
 CREATE TABLE peer_acl (

@@ -16,16 +16,17 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path as UrlPath, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
-use axum::routing::{any, get};
+use axum::routing::{any, get, post};
+use axum::{Extension, Router};
 use datboi_core::hash::Blake3;
 use serde_json::json;
 
 use crate::App;
+use crate::auth::{self, Caller};
 use crate::vfs::{self, LookupError, RowMeta, ViewIndex};
 
 /// Streamed responses move through the verified range path in windows
@@ -40,6 +41,12 @@ pub(crate) fn router(app: Arc<App>) -> Router {
     };
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        // Auth surface (D30/D68): open endpoints — the invitee/login
+        // caller has no identity yet by definition.
+        .route("/v1/auth/whoami", get(auth::whoami))
+        .route("/v1/auth/invite/accept", post(auth::invite_accept))
+        .route("/v1/auth/login", post(auth::login))
+        .route("/v1/auth/logout", post(auth::logout))
         .route("/v1/views", get(views_json))
         .route("/view/{name}", get(view_bare))
         .route("/view/{name}/", get(view_root))
@@ -54,15 +61,30 @@ pub(crate) fn router(app: Arc<App>) -> Router {
         // (D67): embedded dist with an SPA fallback. The old plaintext
         // root listing died with it — its content is `/v1/views`.
         .fallback(crate::web::fallback)
+        // Identity resolution + per-class enforcement (D68) wraps
+        // everything, fallback included.
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&app),
+            auth::gate,
+        ))
         .with_state(app)
 }
 
 // ---- handlers ----
 
-async fn views_json(State(app): State<Arc<App>>) -> Response {
+async fn views_json(State(app): State<Arc<App>>, Extension(caller): Extension<Caller>) -> Response {
     run_blocking(move || {
-        let views =
+        let mut views =
             vfs::view_tags(&app).map_err(|e| map_lookup(&e, StatusCode::INTERNAL_SERVER_ERROR))?;
+        // Friends see exactly their granted views (D68) — the listing
+        // is the friend surface's front door, so it filters too.
+        {
+            let db = app
+                .db
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            views.retain(|(name, _)| auth::view_allowed(&db, &caller, name));
+        }
         let items: Vec<_> = views
             .iter()
             .map(|(name, snapshot)| json!({"name": name, "snapshot": snapshot.to_hex()}))
@@ -82,6 +104,7 @@ async fn snap_bare(UrlPath(hash): UrlPath<String>) -> Response {
 
 async fn view_root(
     State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
     UrlPath(name): UrlPath<String>,
     method: Method,
     headers: HeaderMap,
@@ -89,6 +112,7 @@ async fn view_root(
 ) -> Response {
     serve_tree(
         app,
+        caller,
         TreeRef::View(name),
         String::new(),
         method,
@@ -100,16 +124,27 @@ async fn view_root(
 
 async fn view_path(
     State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
     UrlPath((name, path)): UrlPath<(String, String)>,
     method: Method,
     headers: HeaderMap,
     RawQuery(query): RawQuery,
 ) -> Response {
-    serve_tree(app, TreeRef::View(name), path, method, headers, query).await
+    serve_tree(
+        app,
+        caller,
+        TreeRef::View(name),
+        path,
+        method,
+        headers,
+        query,
+    )
+    .await
 }
 
 async fn snap_root(
     State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
     UrlPath(hash): UrlPath<String>,
     method: Method,
     headers: HeaderMap,
@@ -117,6 +152,7 @@ async fn snap_root(
 ) -> Response {
     serve_tree(
         app,
+        caller,
         TreeRef::Snap(hash),
         String::new(),
         method,
@@ -128,12 +164,22 @@ async fn snap_root(
 
 async fn snap_path(
     State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
     UrlPath((hash, path)): UrlPath<(String, String)>,
     method: Method,
     headers: HeaderMap,
     RawQuery(query): RawQuery,
 ) -> Response {
-    serve_tree(app, TreeRef::Snap(hash), path, method, headers, query).await
+    serve_tree(
+        app,
+        caller,
+        TreeRef::Snap(hash),
+        path,
+        method,
+        headers,
+        query,
+    )
+    .await
 }
 
 /// How the request named the tree: a mutable view tag (resolved per
@@ -143,8 +189,10 @@ enum TreeRef {
     Snap(String),
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_tree(
     app: Arc<App>,
+    caller: Caller,
     tree: TreeRef,
     path: String,
     method: Method,
@@ -152,17 +200,42 @@ async fn serve_tree(
     query: Option<String>,
 ) -> Response {
     run_blocking(move || {
+        // ACL (D68): owners see everything; friends see granted views
+        // and their current snapshots. Denials answer exactly like
+        // misses so probing leaks nothing about what exists.
         let (idx, immutable, url_base) = match &tree {
-            TreeRef::View(name) => (
-                vfs::view_index(&app, name)
-                    .map_err(|e| map_lookup(&e, StatusCode::INTERNAL_SERVER_ERROR))?,
-                false,
-                format!("/view/{}", enc_seg(name)),
-            ),
+            TreeRef::View(name) => {
+                let allowed = {
+                    let db = app
+                        .db
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    auth::view_allowed(&db, &caller, name)
+                };
+                if !allowed {
+                    return Err(text(StatusCode::NOT_FOUND, "no such view"));
+                }
+                (
+                    vfs::view_index(&app, name)
+                        .map_err(|e| map_lookup(&e, StatusCode::INTERNAL_SERVER_ERROR))?,
+                    false,
+                    format!("/view/{}", enc_seg(name)),
+                )
+            }
             TreeRef::Snap(hex) => {
                 let hash: Blake3 = hex
                     .parse()
                     .map_err(|_| text(StatusCode::BAD_REQUEST, "not a snapshot hash"))?;
+                let allowed = {
+                    let db = app
+                        .db
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    auth::snap_allowed(&db, &caller, &hash)
+                };
+                if !allowed {
+                    return Err(text(StatusCode::NOT_FOUND, "snapshot not in store"));
+                }
                 (
                     vfs::snapshot_index(&app, hash)
                         .map_err(|e| map_lookup(&e, StatusCode::NOT_FOUND))?,
@@ -580,7 +653,9 @@ fn listing_response(idx: &ViewIndex, prefix: &str, want_json: bool, immutable: b
 
 // ---- small helpers ----
 
-async fn run_blocking(f: impl FnOnce() -> Result<Response, Response> + Send + 'static) -> Response {
+pub(crate) async fn run_blocking(
+    f: impl FnOnce() -> Result<Response, Response> + Send + 'static,
+) -> Response {
     match tokio::task::spawn_blocking(f).await {
         Ok(Ok(resp) | Err(resp)) => resp,
         Err(join) => text(
@@ -606,7 +681,7 @@ fn html(status: StatusCode, body: String) -> Response {
         .expect("static headers")
 }
 
-fn json_response(status: StatusCode, value: &serde_json::Value) -> Response {
+pub(crate) fn json_response(status: StatusCode, value: &serde_json::Value) -> Response {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "application/json")

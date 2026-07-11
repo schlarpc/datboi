@@ -249,6 +249,115 @@ fn migrated_cache_equals_fresh_schema() {
     );
 }
 
+/// The anti-drift guarantee for the STATE ladder. ALTER TABLE rewrites
+/// the stored CREATE text differently from a fresh CREATE, so this
+/// compares normalized shapes (table_info + index list) instead of raw
+/// sql — same guarantee: a DDL edit without its ladder step fails here.
+#[test]
+fn migrated_state_equals_fresh_schema() {
+    /// The shipped v1 state DDL, frozen here the way the ladder itself
+    /// is frozen: a real v1 file is exactly this.
+    const V1_STATE_DDL: &str = r"
+CREATE TABLE tag (name TEXT PRIMARY KEY, hash BLOB NOT NULL, created_at INTEGER NOT NULL) STRICT;
+CREATE TABLE user (user_id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE,
+  argon2 TEXT NOT NULL, role INTEGER NOT NULL, created_at INTEGER NOT NULL) STRICT;
+CREATE TABLE invite (token_hash BLOB PRIMARY KEY, created_by INTEGER REFERENCES user(user_id),
+  expires_at INTEGER NOT NULL, used_by INTEGER) STRICT;
+CREATE TABLE session (token_hash BLOB PRIMARY KEY, user_id INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL) STRICT;
+CREATE TABLE peer_acl (node_id BLOB PRIMARY KEY, label TEXT, granted INTEGER NOT NULL) STRICT;
+CREATE TABLE view_def (name TEXT PRIMARY KEY, definition BLOB NOT NULL,
+  updated_at INTEGER NOT NULL) STRICT;
+CREATE TABLE channel (name TEXT PRIMARY KEY, kind INTEGER NOT NULL, promotion INTEGER NOT NULL,
+  head_hash BLOB, seq INTEGER NOT NULL DEFAULT 0) STRICT;
+CREATE TABLE subscription (peer_node BLOB NOT NULL, channel TEXT NOT NULL, policy INTEGER NOT NULL,
+  pinned_head BLOB, PRIMARY KEY (peer_node, channel)) STRICT;
+CREATE TABLE config (key TEXT PRIMARY KEY, value BLOB NOT NULL) STRICT;
+CREATE TABLE snapshot_log (seq INTEGER PRIMARY KEY, hash BLOB NOT NULL,
+  created_at INTEGER NOT NULL) STRICT;
+";
+
+    // Normalized shapes: for every table, its table_info rows; plus the
+    // (auto-)index name list. Formatting-insensitive on purpose.
+    let shapes = |conn: &rusqlite::Connection| -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT type, name FROM sqlite_master
+                 WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+            )
+            .expect("q");
+        let objects: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("q")
+            .collect::<Result<_, _>>()
+            .expect("q");
+        for (kind, name) in objects {
+            out.push(format!("{kind} {name}"));
+            if kind == "table" {
+                let mut info = conn
+                    .prepare(&format!("PRAGMA table_info({name})"))
+                    .expect("q");
+                let cols: Vec<String> = info
+                    .query_map([], |r| {
+                        Ok(format!(
+                            "  {} {} notnull={} dflt={:?} pk={}",
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, i64>(3)?,
+                            r.get::<_, Option<String>>(4)?,
+                            r.get::<_, i64>(5)?,
+                        ))
+                    })
+                    .expect("q")
+                    .collect::<Result<_, _>>()
+                    .expect("q");
+                out.extend(cols);
+            }
+        }
+        out
+    };
+
+    let fresh_dir = tempfile::tempdir().expect("tempdir");
+    let fresh = Db::open(fresh_dir.path()).expect("open");
+    let fresh_shapes = shapes(fresh.state());
+
+    // Build a real v1 state.db from the frozen DDL, then let open()
+    // walk the ladder.
+    let v1_dir = tempfile::tempdir().expect("tempdir");
+    {
+        let conn = rusqlite::Connection::open(v1_dir.path().join("state.db")).expect("raw open");
+        conn.execute_batch(V1_STATE_DDL).expect("v1 ddl");
+        conn.pragma_update(None, "application_id", 0x6474_6273_u32)
+            .expect("stamp app");
+        conn.pragma_update(None, "user_version", 1)
+            .expect("stamp v1");
+        // A row that must survive the migration, with the role default
+        // backfilling to friend (least privilege).
+        conn.execute(
+            "INSERT INTO invite (token_hash, expires_at) VALUES (x'11', 9999)",
+            [],
+        )
+        .expect("v1 row");
+    }
+    let migrated = Db::open(v1_dir.path()).expect("migrates");
+    assert_eq!(
+        shapes(migrated.state()),
+        fresh_shapes,
+        "STATE_MIGRATIONS must reproduce STATE_DDL shapes exactly"
+    );
+    let version: u32 = migrated
+        .state()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .expect("q");
+    assert_eq!(version, datboi_index::schema::STATE_SCHEMA_VERSION);
+    let role: i64 = migrated
+        .state()
+        .query_row("SELECT role FROM invite", [], |r| r.get(0))
+        .expect("row survived");
+    assert_eq!(role, datboi_index::Role::Friend.code(), "backfill default");
+}
+
 #[test]
 fn blob_and_alias_round_trip_multi_hit() {
     let (_dir, db) = open_db();
@@ -510,4 +619,91 @@ fn state_db_tags_config_snapshot() {
         .query_row("SELECT COUNT(*) FROM blob", [], |r| r.get(0))
         .unwrap();
     assert_eq!(blobs, 0);
+}
+
+#[test]
+fn auth_users_invites_sessions_grants() {
+    use datboi_index::{InviteOutcome, Role};
+
+    let (_dir, db) = open_db();
+
+    // -- invites: single-use, expiring, role-carrying (D68) --
+    let invite = [0xaa; 32];
+    db.mint_invite(&invite, None, Role::Friend, 1_000).unwrap();
+
+    // wrong token / expired token both answer InviteInvalid
+    assert_eq!(
+        db.accept_invite(&[0xbb; 32], "mika", "$phc$", 500).unwrap(),
+        InviteOutcome::InviteInvalid
+    );
+    assert_eq!(
+        db.accept_invite(&invite, "mika", "$phc$", 1_000).unwrap(),
+        InviteOutcome::InviteInvalid,
+        "expires_at is exclusive"
+    );
+
+    // a taken username must NOT consume the invite
+    let squatter = db.create_user("mika", "$phc$", Role::Owner, 1).unwrap();
+    assert_eq!(
+        db.accept_invite(&invite, "mika", "$phc$", 500).unwrap(),
+        InviteOutcome::UsernameTaken
+    );
+
+    // acceptance creates the user with the INVITE's role...
+    let outcome = db.accept_invite(&invite, "pal", "$phc2$", 500).unwrap();
+    let InviteOutcome::Accepted { user_id, role } = outcome else {
+        panic!("expected acceptance, got {outcome:?}");
+    };
+    assert_eq!(role, Role::Friend);
+    let pal = db.user_by_name("pal").unwrap().expect("created");
+    assert_eq!(
+        (pal.user_id, pal.role, pal.argon2.as_str()),
+        (user_id, Role::Friend, "$phc2$")
+    );
+
+    // ...exactly once
+    assert_eq!(
+        db.accept_invite(&invite, "other", "$phc$", 500).unwrap(),
+        InviteOutcome::InviteInvalid,
+        "single-use"
+    );
+
+    assert_eq!(db.user_by_name("nobody").unwrap().map(|u| u.user_id), None);
+    let names: Vec<_> = db
+        .list_users()
+        .unwrap()
+        .into_iter()
+        .map(|u| u.username)
+        .collect();
+    assert_eq!(names, ["mika", "pal"]);
+
+    // -- sessions: expiry-checked lookup, revocation --
+    let (s1, s2) = ([0x01; 32], [0x02; 32]);
+    db.create_session(&s1, user_id, 2_000).unwrap();
+    db.create_session(&s2, user_id, 3_000).unwrap();
+    assert_eq!(
+        db.session_user(&s1, 1_500).unwrap(),
+        Some((user_id, "pal".to_owned(), Role::Friend))
+    );
+    assert_eq!(db.session_user(&s1, 2_000).unwrap(), None, "expired");
+    assert_eq!(db.session_user(&[0xff; 32], 1_500).unwrap(), None);
+    assert_eq!(db.list_sessions().unwrap().len(), 2);
+    assert_eq!(db.delete_expired_sessions(2_500).unwrap(), 1);
+    assert!(db.delete_session(&s2).unwrap());
+    assert!(!db.delete_session(&s2).unwrap(), "already gone");
+    db.create_session(&s1, user_id, 9_000).unwrap();
+    db.create_session(&s2, user_id, 9_000).unwrap();
+    assert_eq!(db.delete_sessions_for_user(user_id).unwrap(), 2);
+    assert!(db.list_sessions().unwrap().is_empty());
+
+    // -- view grants (the friend-surface ACL) --
+    db.grant_view(user_id, "gba").unwrap();
+    db.grant_view(user_id, "gba").unwrap(); // idempotent
+    db.grant_view(user_id, "psx").unwrap();
+    db.grant_view(squatter, "gba").unwrap();
+    assert_eq!(db.grants_for_user(user_id).unwrap(), ["gba", "psx"]);
+    assert_eq!(db.all_grants().unwrap().len(), 3);
+    assert!(db.revoke_view(user_id, "psx").unwrap());
+    assert!(!db.revoke_view(user_id, "psx").unwrap(), "already revoked");
+    assert_eq!(db.grants_for_user(user_id).unwrap(), ["gba"]);
 }

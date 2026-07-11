@@ -27,8 +27,8 @@ struct Cli {
 enum Command {
     /// Run the daemon (12-factor; config via env / DATBOI_* variables).
     Serve {
-        /// Listen address. Loopback by default: there is no auth until
-        /// M5, so a wider bind is an explicit operator choice.
+        /// Listen address. Loopback by default; loopback connections
+        /// are implicitly owner, wider binds require auth (D68).
         #[arg(
             long,
             env = "DATBOI_LISTEN",
@@ -37,7 +37,8 @@ enum Command {
         )]
         listen: std::net::SocketAddr,
         /// Also serve NFSv3 on this address (off unless set). Consoles
-        /// need a LAN bind; the same no-auth caveat applies.
+        /// need a LAN bind; NFS carries NO auth (loopback-only-by-
+        /// default in M5, D68).
         #[arg(long, env = "DATBOI_NFS_LISTEN", value_name = "ADDR")]
         nfs_listen: Option<std::net::SocketAddr>,
     },
@@ -145,6 +146,83 @@ enum Command {
     },
     /// Store and database overview.
     Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Local accounts, invites, and view grants (auth v1, D30/D68).
+    /// Minting stays in the CLI: local shell access = admin.
+    User {
+        #[command(subcommand)]
+        cmd: UserCommand,
+    },
+    /// Mint a session token for a user and print it once (for remote
+    /// tools via `Authorization: Bearer`; loopback is already owner).
+    Token {
+        /// Username the token acts as.
+        #[arg(long)]
+        user: String,
+        /// Token lifetime in days.
+        #[arg(long, default_value_t = 30)]
+        expires_days: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Session administration (revocation is per-user, D68).
+    Session {
+        #[command(subcommand)]
+        cmd: SessionCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum UserCommand {
+    /// Mint a single-use invite URL (D68). The token rides in the URL
+    /// fragment so it never appears in server logs.
+    Invite {
+        /// Mint an owner invite instead of the default friend.
+        #[arg(long)]
+        owner: bool,
+        /// Invite lifetime in days.
+        #[arg(long, default_value_t = 7)]
+        expires_days: u32,
+        /// URL prefix for the printed invite (e.g. http://nas.local:2352).
+        /// Defaults to http://<DATBOI_LISTEN or 127.0.0.1:2352>.
+        #[arg(long)]
+        base_url: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List users with roles and grant counts.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Grant a user access to a view (friends see exactly their grants).
+    Grant {
+        username: String,
+        view: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Revoke a user's access to a view.
+    Revoke {
+        username: String,
+        view: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SessionCommand {
+    /// List live sessions (username + expiry).
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Revoke ALL of a user's sessions (cookies and bearer tokens).
+    Revoke {
+        username: String,
         #[arg(long)]
         json: bool,
     },
@@ -513,5 +591,41 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             json,
         } => cmds::scrub(&cli.global.open()?, sample, rehabilitate, json),
         Command::Status { json } => cmds::status(&cli.global.open()?, json),
+        Command::User { cmd } => match cmd {
+            UserCommand::Invite {
+                owner,
+                expires_days,
+                base_url,
+                json,
+            } => cmds::user_invite(
+                &cli.global.open()?,
+                owner,
+                expires_days,
+                base_url.as_deref(),
+                json,
+            ),
+            UserCommand::List { json } => cmds::user_list(&cli.global.open()?, json),
+            UserCommand::Grant {
+                username,
+                view,
+                json,
+            } => cmds::user_grant(&cli.global.open()?, &username, &view, true, json),
+            UserCommand::Revoke {
+                username,
+                view,
+                json,
+            } => cmds::user_grant(&cli.global.open()?, &username, &view, false, json),
+        },
+        Command::Token {
+            user,
+            expires_days,
+            json,
+        } => cmds::token_mint(&cli.global.open()?, &user, expires_days, json),
+        Command::Session { cmd } => match cmd {
+            SessionCommand::List { json } => cmds::session_list(&cli.global.open()?, json),
+            SessionCommand::Revoke { username, json } => {
+                cmds::session_revoke(&cli.global.open()?, &username, json)
+            }
+        },
     }
 }

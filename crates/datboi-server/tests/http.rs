@@ -23,6 +23,9 @@ fn big_bytes() -> Vec<u8> {
 struct Fixture {
     addr: SocketAddr,
     snapshot: String,
+    /// The daemon's database dir — tests may open a second handle (WAL
+    /// allows it) the way the CLI does against a live daemon.
+    db_dir: std::path::PathBuf,
     _root: tempfile::TempDir,
 }
 
@@ -96,7 +99,7 @@ fn fixture() -> Fixture {
 
     let server = Server::bind(&Config {
         store_root,
-        db_dir,
+        db_dir: db_dir.clone(),
         listen: SocketAddr::from_str("127.0.0.1:0").expect("addr"),
         nfs_listen: None,
     })
@@ -106,6 +109,7 @@ fn fixture() -> Fixture {
     Fixture {
         addr,
         snapshot: snap_hash.to_hex(),
+        db_dir,
         _root: root,
     }
 }
@@ -451,4 +455,183 @@ fn embedded_web_ui_and_spa_fallback() {
     // ...but the fallback must not swallow the daemon's namespaces
     assert_eq!(get(f.addr, "/healthz", &[]).0, 200);
     assert_eq!(get(f.addr, "/v1/nope", &[]).0, 404);
+}
+
+/// POST a JSON body; returns (status, response). The fixture's accept
+/// loop is warmed by the retrying `get` before any test calls this.
+fn post_json(
+    addr: SocketAddr,
+    path: &str,
+    body: &str,
+    headers: &[(&str, &str)],
+) -> (u16, ureq::Response) {
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let mut req = agent
+        .post(&format!("http://{addr}{path}"))
+        .set("Content-Type", "application/json");
+    for (k, v) in headers {
+        req = req.set(k, v);
+    }
+    match req.send_string(body) {
+        Ok(resp) => (resp.status(), resp),
+        Err(ureq::Error::Status(code, resp)) => (code, resp),
+        Err(e) => panic!("post transport error: {e}"),
+    }
+}
+
+/// Pull the session token out of a Set-Cookie header.
+fn cookie_token(resp: &ureq::Response) -> String {
+    let cookie = resp.header("set-cookie").expect("set-cookie").to_owned();
+    assert!(cookie.contains("HttpOnly"), "{cookie}");
+    assert!(cookie.contains("SameSite=Lax"), "{cookie}");
+    assert!(cookie.contains("Path=/"), "{cookie}");
+    cookie
+        .split(';')
+        .next()
+        .and_then(|kv| kv.strip_prefix("datboi_session="))
+        .expect("cookie names the session")
+        .to_owned()
+}
+
+/// The D68 browser flow end-to-end over loopback: whoami, invite
+/// acceptance (cookie set, session persisted), login, logout. The
+/// non-loopback enforcement matrix is unit-tested in auth.rs — resolve
+/// takes the peer address as a parameter for exactly that reason.
+#[test]
+fn auth_flow_over_http() {
+    use datboi_server::auth::{mint_token, token_hash};
+
+    let f = fixture();
+
+    // loopback is implicitly owner (D68): no ceremony, full visibility
+    let (status, resp) = get(f.addr, "/v1/auth/whoami", &[]);
+    assert_eq!(status, 200);
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.into_string().expect("json")).expect("parse");
+    assert_eq!(
+        (
+            v["authenticated"].as_bool(),
+            v["role"].as_str(),
+            v["via"].as_str()
+        ),
+        (Some(true), Some("owner"), Some("loopback"))
+    );
+
+    // mint an invite the way the CLI does: straight into state.db,
+    // second handle, daemon live (WAL tolerates the concurrent writer)
+    let db = Db::open(&f.db_dir).expect("second handle");
+    let invite = mint_token().expect("entropy");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64;
+    db.mint_invite(
+        &token_hash(&invite),
+        None,
+        datboi_index::Role::Friend,
+        now + 7 * 24 * 60 * 60,
+    )
+    .expect("mint");
+
+    // validation rejections
+    let (status, _) = post_json(
+        f.addr,
+        "/v1/auth/invite/accept",
+        &format!(r#"{{"token":"{invite}","username":"Bad Name","password":"hunter22"}}"#),
+        &[],
+    );
+    assert_eq!(status, 400, "username charset");
+    let (status, _) = post_json(
+        f.addr,
+        "/v1/auth/invite/accept",
+        &format!(r#"{{"token":"{invite}","username":"pal","password":"short"}}"#),
+        &[],
+    );
+    assert_eq!(status, 400, "password length");
+    let (status, _) = post_json(
+        f.addr,
+        "/v1/auth/invite/accept",
+        r#"{"token":"bogus","username":"pal","password":"hunter22"}"#,
+        &[],
+    );
+    assert_eq!(status, 403, "unknown invite");
+
+    // acceptance: user created with the invite's role, session cookie set
+    let (status, resp) = post_json(
+        f.addr,
+        "/v1/auth/invite/accept",
+        &format!(r#"{{"token":"{invite}","username":"pal","password":"hunter22"}}"#),
+        &[],
+    );
+    assert_eq!(status, 200);
+    let session = cookie_token(&resp);
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.into_string().expect("json")).expect("parse");
+    assert_eq!(
+        (v["username"].as_str(), v["role"].as_str()),
+        (Some("pal"), Some("friend"))
+    );
+    let resolved = db.session_user(&token_hash(&session), now).expect("q");
+    assert_eq!(
+        resolved.map(|(_, name, role)| (name, role)),
+        Some(("pal".to_owned(), datboi_index::Role::Friend)),
+        "session persisted under blake3(token)"
+    );
+
+    // single-use: the same invite mints nothing twice
+    let (status, _) = post_json(
+        f.addr,
+        "/v1/auth/invite/accept",
+        &format!(r#"{{"token":"{invite}","username":"other","password":"hunter22"}}"#),
+        &[],
+    );
+    assert_eq!(status, 403, "invite consumed");
+
+    // login: uniform 401 for wrong password and unknown user
+    let (status, _) = post_json(
+        f.addr,
+        "/v1/auth/login",
+        r#"{"username":"pal","password":"wrongwrong"}"#,
+        &[],
+    );
+    assert_eq!(status, 401);
+    let (status, _) = post_json(
+        f.addr,
+        "/v1/auth/login",
+        r#"{"username":"nobody","password":"wrongwrong"}"#,
+        &[],
+    );
+    assert_eq!(status, 401);
+    let (status, resp) = post_json(
+        f.addr,
+        "/v1/auth/login",
+        r#"{"username":"pal","password":"hunter22"}"#,
+        &[],
+    );
+    assert_eq!(status, 200);
+    let login_session = cookie_token(&resp);
+    assert_ne!(login_session, session, "every login mints a fresh token");
+
+    // logout deletes the presented session and clears the cookie
+    let (status, resp) = post_json(
+        f.addr,
+        "/v1/auth/logout",
+        "{}",
+        &[("Cookie", &format!("datboi_session={login_session}"))],
+    );
+    assert_eq!(status, 200);
+    let cleared = resp.header("set-cookie").expect("set-cookie");
+    assert!(cleared.contains("Max-Age=0"), "{cleared}");
+    assert_eq!(
+        db.session_user(&token_hash(&login_session), now)
+            .expect("q"),
+        None,
+        "logout revoked the session"
+    );
+    // ...but only that one: the acceptance session survives
+    assert!(
+        db.session_user(&token_hash(&session), now)
+            .expect("q")
+            .is_some()
+    );
 }

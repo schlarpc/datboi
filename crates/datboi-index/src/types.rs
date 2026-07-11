@@ -104,6 +104,15 @@ db_enum! {
 }
 
 db_enum! {
+    /// Account role (D30/D68): owners see everything; friends see
+    /// exactly their granted views. Invites carry the role they mint.
+    Role {
+        Owner = 0,
+        Friend = 1,
+    }
+}
+
+db_enum! {
     /// rom_claim kind (60-dats: disk = CHD internal sha1, no size).
     ClaimKind {
         Rom = 0,

@@ -36,6 +36,10 @@ datboi-server = { path = "crates/datboi-server" }
 datboi-store-fs = { path = "crates/datboi-store-fs" }
 
 anyhow = "1"
+# Password hashing for auth v1 (D30/D68): argon2id, default params. The
+# daemon is the only hasher — accounts are minted by accepting invites
+# over HTTP, so the CLI never needs it.
+argon2 = "0.5"
 assert_cmd = "2"
 # The NFSv3 VFS trait is #[async_trait]; implementing it requires the
 # same macro on our side.

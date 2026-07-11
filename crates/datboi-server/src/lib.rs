@@ -1,8 +1,8 @@
 //! The datboi daemon (docs/50-infra.md): axum + tokio, 12-factor config
 //! via env, serving view snapshots over HTTP with Range support (M4,
-//! docs/80-views.md). Localhost-only by default — there is no auth
-//! until M5, so binding beyond loopback is an explicit operator choice
-//! that gets a loud warning.
+//! docs/80-views.md). Loopback connections are implicitly owner;
+//! binding beyond loopback means non-loopback requests need a session
+//! or bearer token (auth v1, D30/D68 — see [`auth`]).
 //!
 //! Serving surfaces present SNAPSHOTS only (D33): `/view/<name>/…`
 //! resolves the `view/<name>` tag per request (so an eval flips the
@@ -10,6 +10,7 @@
 //! resolved snapshot), and `/snap/<hash>/…` addresses any snapshot
 //! immutably.
 
+pub mod auth;
 mod dav;
 mod http;
 mod nfs;
@@ -37,7 +38,8 @@ pub struct Config {
     /// out.
     pub listen: SocketAddr,
     /// NFSv3 listen address (`None` = NFS off). Consoles need a LAN
-    /// bind — the same no-auth warning applies until M5.
+    /// bind — but NFS carries no auth (D68 keeps it loopback-only-by-
+    /// default in M5), so a wide bind warns loudly.
     pub nfs_listen: Option<SocketAddr>,
 }
 
@@ -89,13 +91,24 @@ impl Server {
     /// Store/DB open failures, bind failures.
     pub fn bind(config: &Config) -> anyhow::Result<Self> {
         let app = App::open(&config.store_root, &config.db_dir)?;
-        for addr in std::iter::once(config.listen).chain(config.nfs_listen) {
-            if !addr.ip().is_loopback() {
-                eprintln!(
-                    "warning: listening on non-loopback {addr} with NO AUTHENTICATION \
-                     (auth is M5); anyone who can reach this socket can read every view"
-                );
-            }
+        // The M4 "NO AUTHENTICATION" warning died with D68: binding
+        // wide now means "auth required", not "everyone is owner".
+        if !config.listen.ip().is_loopback() {
+            eprintln!(
+                "note: listening on non-loopback {}: auth required — non-loopback requests \
+                 need a session or bearer token (D68; mint invites with `datboi user invite`)",
+                config.listen
+            );
+        }
+        if let Some(addr) = config.nfs_listen
+            && !addr.ip().is_loopback()
+        {
+            // NFS has no auth story yet (D68 keeps it loopback-only-by-
+            // default in M5), so a wide NFS bind stays a loud warning.
+            eprintln!(
+                "warning: NFS listening on non-loopback {addr} with NO AUTHENTICATION; \
+                 anyone who can reach this socket can read every view"
+            );
         }
         let listener = std::net::TcpListener::bind(config.listen)
             .with_context(|| format!("binding {}", config.listen))?;
@@ -145,9 +158,14 @@ impl Server {
             }
             let listener = tokio::net::TcpListener::from_std(self.listener)?;
             let router = http::router(self.app);
-            axum::serve(listener, router)
-                .with_graceful_shutdown(shutdown_signal())
-                .await?;
+            // ConnectInfo carries the peer address into the auth gate:
+            // loopback-is-owner (D68) needs to know who's asking.
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
             Ok(())
         })
     }

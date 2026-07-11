@@ -2123,3 +2123,207 @@ fn walk_target(
     }
     Ok(())
 }
+
+// ---- auth: users, invites, grants, tokens, sessions (D30/D68) ----
+
+/// Human-readable role name (mirrors the server's whoami vocabulary).
+fn role_str(role: datboi_index::Role) -> &'static str {
+    match role {
+        datboi_index::Role::Owner => "owner",
+        datboi_index::Role::Friend => "friend",
+    }
+}
+
+pub fn user_invite(
+    env: &Env,
+    owner: bool,
+    expires_days: u32,
+    base_url: Option<&str>,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let role = if owner {
+        datboi_index::Role::Owner
+    } else {
+        datboi_index::Role::Friend
+    };
+    let token = datboi_server::auth::mint_token().context("minting invite token")?;
+    let expires_at = now_unix() + i64::from(expires_days) * 24 * 60 * 60;
+    env.db.mint_invite(
+        &datboi_server::auth::token_hash(&token),
+        None,
+        role,
+        expires_at,
+    )?;
+    // The token rides in the FRAGMENT: browsers never send fragments,
+    // so the raw token stays out of server/proxy logs — the SPA reads
+    // location.hash and POSTs it to /v1/auth/invite/accept.
+    let base = base_url.map_or_else(
+        || {
+            format!(
+                "http://{}",
+                std::env::var("DATBOI_LISTEN").unwrap_or_else(|_| "127.0.0.1:2352".into())
+            )
+        },
+        |b| b.trim_end_matches('/').to_owned(),
+    );
+    let url = format!("{base}/invite#{token}");
+    if json {
+        println!(
+            "{}",
+            json!({
+                "url": url,
+                "token": token,
+                "role": role_str(role),
+                "expires_at": expires_at,
+            })
+        );
+    } else {
+        println!("{url}");
+        println!(
+            "single-use {} invite, expires in {expires_days} day(s)",
+            role_str(role)
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn user_list(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
+    let users = env.db.list_users()?;
+    let grants = env.db.all_grants()?;
+    let count = |user_id: i64| grants.iter().filter(|(id, _)| *id == user_id).count();
+    if json {
+        let items: Vec<_> = users
+            .iter()
+            .map(|u| {
+                json!({
+                    "username": u.username,
+                    "role": role_str(u.role),
+                    "created_at": u.created_at,
+                    "grants": count(u.user_id),
+                })
+            })
+            .collect();
+        println!("{}", json!({"users": items}));
+    } else if users.is_empty() {
+        println!("no users (mint an invite: datboi user invite)");
+    } else {
+        for u in &users {
+            println!(
+                "{}  {}  {} grant(s)",
+                u.username,
+                role_str(u.role),
+                count(u.user_id)
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn user_grant(
+    env: &Env,
+    username: &str,
+    view: &str,
+    grant: bool,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let user = env
+        .db
+        .user_by_name(username)?
+        .with_context(|| format!("no such user {username:?}"))?;
+    if grant {
+        // Grants may precede the view (they're just names), but a typo
+        // is the likelier story — warn, don't refuse.
+        if !datboi_catalog::list_views(&env.db)?
+            .iter()
+            .any(|v| v == view)
+        {
+            eprintln!("warning: no view named {view:?} is defined (grant recorded anyway)");
+        }
+        env.db.grant_view(user.user_id, view)?;
+    } else if !env.db.revoke_view(user.user_id, view)? {
+        eprintln!("note: {username} had no grant for {view:?}");
+    }
+    if json {
+        println!(
+            "{}",
+            json!({
+                "username": username,
+                "view": view,
+                "granted": grant,
+                "grants": env.db.grants_for_user(user.user_id)?,
+            })
+        );
+    } else {
+        println!(
+            "{} {} {view:?} (now: {})",
+            if grant { "granted" } else { "revoked" },
+            username,
+            env.db.grants_for_user(user.user_id)?.join(", ")
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn token_mint(
+    env: &Env,
+    username: &str,
+    expires_days: u32,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let user = env
+        .db
+        .user_by_name(username)?
+        .with_context(|| format!("no such user {username:?}"))?;
+    let token = datboi_server::auth::mint_token().context("minting session token")?;
+    let expires_at = now_unix() + i64::from(expires_days) * 24 * 60 * 60;
+    env.db.create_session(
+        &datboi_server::auth::token_hash(&token),
+        user.user_id,
+        expires_at,
+    )?;
+    if json {
+        println!(
+            "{}",
+            json!({"token": token, "username": username, "expires_at": expires_at})
+        );
+    } else {
+        // Printed exactly once — only blake3(token) survives on disk.
+        println!("{token}");
+        println!(
+            "send as `Authorization: Bearer <token>`; acts as {username}, expires in {expires_days} day(s)"
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn session_list(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
+    let sessions = env.db.list_sessions()?;
+    if json {
+        let items: Vec<_> = sessions
+            .iter()
+            .map(|s| json!({"username": s.username, "expires_at": s.expires_at}))
+            .collect();
+        println!("{}", json!({"sessions": items}));
+    } else if sessions.is_empty() {
+        println!("no sessions");
+    } else {
+        for s in &sessions {
+            println!("{}  expires_at {}", s.username, s.expires_at);
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn session_revoke(env: &Env, username: &str, json: bool) -> anyhow::Result<ExitCode> {
+    let user = env
+        .db
+        .user_by_name(username)?
+        .with_context(|| format!("no such user {username:?}"))?;
+    let revoked = env.db.delete_sessions_for_user(user.user_id)?;
+    if json {
+        println!("{}", json!({"username": username, "revoked": revoked}));
+    } else {
+        println!("revoked {revoked} session(s) for {username}");
+    }
+    Ok(ExitCode::SUCCESS)
+}

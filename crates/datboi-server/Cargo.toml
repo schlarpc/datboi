@@ -1,6 +1,6 @@
 [package]
 name = "datboi-server"
-description = "The datboi daemon (12-factor, localhost-only until M5 auth)"
+description = "The datboi daemon (12-factor; invite/session auth per D30/D68, loopback stays owner)"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,8 +9,10 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+argon2.workspace = true
 axum.workspace = true
 bytes.workspace = true
+getrandom.workspace = true
 async-trait.workspace = true
 datboi-core.workspace = true
 datboi-exec.workspace = true

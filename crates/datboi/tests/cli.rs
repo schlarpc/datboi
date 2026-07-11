@@ -1493,3 +1493,128 @@ fn mame_merge_modes() {
         .assert()
         .code(2);
 }
+
+/// The auth CLI surface (D30/D68) against the database directly: mint
+/// an invite, accept it (the accessor the daemon endpoint calls — no
+/// daemon in a CLI test), then drive grants, tokens, and sessions
+/// through the CLI and watch the listings change.
+#[test]
+fn auth_cli_surface() {
+    let u = Universe::new();
+
+    // Mint an owner invite; the URL carries the token in the FRAGMENT
+    // (never sent to servers, so never logged).
+    let out = u
+        .cmd()
+        .args(["user", "invite", "--owner", "--expires-days", "3", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    assert_eq!(v["role"], "owner");
+    let token = v["token"].as_str().expect("token").to_owned();
+    assert_eq!(
+        v["url"].as_str().expect("url"),
+        format!("http://127.0.0.1:2352/invite#{token}")
+    );
+
+    // No users yet — the invite is minted, not accepted.
+    let out = u
+        .cmd()
+        .args(["user", "list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    assert_eq!(v["users"].as_array().expect("array").len(), 0);
+
+    // Accept via the same accessor the daemon endpoint uses.
+    {
+        let db = datboi_index::Db::open(&u.db()).expect("open");
+        let outcome = db
+            .accept_invite(
+                &datboi_server::auth::token_hash(&token),
+                "mika",
+                "$argon2id$fake-for-cli-test$",
+                1_000,
+            )
+            .expect("accept");
+        assert!(
+            matches!(
+                outcome,
+                datboi_index::InviteOutcome::Accepted {
+                    role: datboi_index::Role::Owner,
+                    ..
+                }
+            ),
+            "{outcome:?}"
+        );
+    }
+
+    // user list shows the account with its role and grant count.
+    u.cmd()
+        .args(["user", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("mika  owner  0 grant(s)"));
+
+    // grant / revoke (unknown view warns but records)
+    u.cmd()
+        .args(["user", "grant", "mika", "gba"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("no view named"));
+    u.cmd()
+        .args(["user", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 grant(s)"));
+    u.cmd()
+        .args(["user", "revoke", "mika", "gba"])
+        .assert()
+        .success();
+    u.cmd()
+        .args(["user", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0 grant(s)"));
+
+    // token: printed once; the session shows up and revokes by user
+    let out = u
+        .cmd()
+        .args(["token", "--user", "mika", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    assert_eq!(v["username"], "mika");
+    assert_eq!(v["token"].as_str().expect("token").len(), 43);
+    u.cmd()
+        .args(["session", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("mika"));
+    u.cmd()
+        .args(["session", "revoke", "mika", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""revoked":1"#));
+    u.cmd()
+        .args(["session", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no sessions"));
+
+    // unknown users are runtime errors (exit 2, house convention)
+    u.cmd()
+        .args(["token", "--user", "nobody"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("no such user"));
+}
