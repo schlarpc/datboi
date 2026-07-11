@@ -60,7 +60,21 @@ boundary.
 clap-env); `tracing` structured JSON logs to stdout; single process; health
 endpoint; no pidfiles. Server keypair doubles as iroh identity.
 
-## Auth options (survey — ruled D30/D68: invite tokens → local accounts + sessions, shipped M5)
+## Container image (`packages.container`, linux only)
+
+nix2container-turbo (patched-skopeo `nix:` transport; SOCI index pushed
+via OCI referrers for lazy-pull runtimes). The input deliberately does
+NOT `follows` our nixpkgs: its skopeo patches track the skopeo version
+in its own pin. `docker run ghcr.io/schlarpc/datboi` starts `datboi
+serve`; busybox rides along so `docker run -it … sh` / `docker exec` is
+a working CLI playground. Config is the same clap/`DATBOI_*` surface as
+everywhere — the image just presets `DATBOI_STORE=/data/store`,
+`DATBOI_DB_DIR=/data/db` (two volumes because the two roots have
+different placement rules, D15: store may be network, DB dir must be
+container-local) and `DATBOI_LISTEN=0.0.0.0:2352` (loopback inside a
+container is unreachable; a wide bind means auth-required, D68).
+`.github/workflows/container.yml` pushes `:latest` + `:<sha>` to ghcr
+on main. (survey — ruled D30/D68: invite tokens → local accounts + sessions, shipped M5)
 
 | Option | Fit |
 |---|---|

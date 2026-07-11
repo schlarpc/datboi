@@ -1,0 +1,38 @@
+name: container
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v16
+
+      # skopeo (via the flake's copyTo scripts) reads ~/.docker/config.json,
+      # which this action writes.
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image
+        run: nix build .#container
+
+      # copyToRegistry pushes the flake-declared name:tag
+      # (ghcr.io/schlarpc/datboi:latest); copyTo adds the per-commit tag.
+      # Both carry the SOCI index push (OCI referrers) baked in by
+      # push.soci.enable.
+      - name: Push
+        run: |
+          nix run .#container.copyTo -- docker://ghcr.io/${{ github.repository }}:${{ github.sha }}
+          nix run .#container.copyToRegistry

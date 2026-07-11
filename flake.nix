@@ -13,13 +13,18 @@
 
     crane.url = "github:ipetkov/crane";
 
+    # NO nixpkgs.follows: its patched skopeo tracks the skopeo version
+    # in its own pin; following ours breaks the patch (and forfeits any
+    # cache hit).
+    nix2container-turbo.url = "github:schlarpc/nix2container-turbo";
+
     nix-direnv = {
       url = "github:nix-community/nix-direnv";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { self, nixpkgs, systems, rust-overlay, crane, nix-direnv, ... }:
+  outputs = { self, nixpkgs, systems, rust-overlay, crane, nix-direnv, nix2container-turbo, ... }:
     let
       eachSystem = nixpkgs.lib.genAttrs (import systems);
 
@@ -312,6 +317,66 @@
         DATBOI_WEB_DIST = "${webFor system}";
       };
 
+      # ---- container image (nix2container-turbo) ----
+      #
+      # `docker run` starts the daemon (web UI on :2352); busybox rides
+      # along so `docker run -it ... sh` / `docker exec` drop into a
+      # shell with the datboi CLI on PATH. All daemon config is the
+      # same clap/DATBOI_* surface as everywhere else — the image just
+      # presets the 12-factor env. Two volumes because the two roots
+      # have different placement rules (D15): the store may live on a
+      # network mount, the DB dir MUST be daemon-local disk.
+      containerFor = system:
+        let
+          pkgs = pkgsFor system;
+          n2ct = nix2container-turbo.lib.${system};
+          # /bin (datboi + busybox applets) and /etc/ssl (busybox wget
+          # etc.; datboi's ureq bundles webpki roots and needs nothing).
+          rootEnv = pkgs.buildEnv {
+            name = "datboi-container-root";
+            paths = [ self.packages.${system}.default pkgs.busybox pkgs.cacert ];
+            pathsToLink = [ "/bin" "/etc" ];
+          };
+          # Volume mount points pre-created (the server, unlike the CLI,
+          # does not create the db dir itself), plus /tmp and /root.
+          skeleton = pkgs.runCommand "datboi-container-skeleton" { } ''
+            mkdir -p $out/tmp $out/root $out/data/store $out/data/db
+          '';
+        in
+        n2ct.buildImage {
+          name = "ghcr.io/schlarpc/datboi";
+          tag = "latest";
+          copyToRoot = [ rootEnv skeleton ];
+          perms = [{
+            path = skeleton;
+            regex = "/tmp";
+            mode = "1777";
+          }];
+          config = {
+            Cmd = [ "/bin/datboi" "serve" ];
+            Env = [
+              "PATH=/bin"
+              "HOME=/root"
+              "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+              # Same clap env plumbing as the CLI: flags > DATBOI_*.
+              "DATBOI_STORE=/data/store"
+              "DATBOI_DB_DIR=/data/db"
+              # Loopback inside a container is unreachable; a wide bind
+              # means auth-required, not open (D68).
+              "DATBOI_LISTEN=0.0.0.0:2352"
+            ];
+            Volumes = {
+              "/data/store" = { };
+              "/data/db" = { };
+            };
+            ExposedPorts = { "2352/tcp" = { }; };
+            WorkingDir = "/root";
+          };
+          # The turbo point: SOCI index pushed alongside via OCI
+          # referrers, for lazy-pulling runtimes.
+          push.soci.enable = true;
+        };
+
     in
     {
       packages = eachSystem (system:
@@ -330,6 +395,8 @@
           transforms = transformsFor system;
 
           web = webFor system;
+        } // nixpkgs.lib.optionalAttrs (nixpkgs.lib.hasSuffix "-linux" system) {
+          container = containerFor system;
         });
 
       checks = eachSystem (system:
