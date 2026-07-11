@@ -39,12 +39,15 @@
 </script>
 
 <header>
-  <!-- Brand mark; the adjacent wordmark carries the name, so the frog is
-       decorative (empty alt) and not a second home link. -->
-  <img class="logo" src={logoUrl} alt="" width="30" height="30" />
-  <!-- The wordmark is the brand, not copy. -->
-  <!-- @wc-ignore -->
-  <Link href="/" class="wordmark">datboi</Link>
+  <!-- One home link wearing both the frog and the wordmark: the frog
+       stays decorative (empty alt — the wordmark carries the name) and
+       a screen reader hears one "/" link, not two adjacent ones. -->
+  <Link href="/" class="brand">
+    <img class="logo" src={logoUrl} alt="" width="30" height="30" />
+    <!-- The wordmark is the brand, not copy. -->
+    <!-- @wc-ignore -->
+    <span class="wordmark">datboi</span>
+  </Link>
   <nav>
     <Link href="/" class="nav-item {active === '/' ? 'nav-active' : ''}">Library</Link>
     <!-- "Views" = compiled shelves (D33), not UI views (spec §6). -->
@@ -92,11 +95,19 @@
     flex: none;
   }
 
-  header :global(a.wordmark) {
-    font: 800 15px var(--font-display);
-    letter-spacing: -0.02em;
+  /* Internal gap matches the header's own, so merging the two into
+     one anchor moved no pixels. */
+  header :global(a.brand) {
+    display: inline-flex;
+    align-items: center;
+    gap: 20px;
     color: var(--text);
     text-decoration: none;
+  }
+
+  .wordmark {
+    font: 800 15px var(--font-display);
+    letter-spacing: -0.02em;
   }
 
   nav {
