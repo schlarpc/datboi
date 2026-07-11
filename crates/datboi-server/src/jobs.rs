@@ -274,6 +274,9 @@ pub(crate) fn translate(report: IngestReport, staged: &StagedUpload) -> IngestRe
         members_extracted: report.members_extracted as u64,
         detector_hits: report.detector_hits as u64,
         skipper_skipped_large: report.skipper_skipped_large as u64,
+        // The pipeline never imports dats; run_job fills this lane
+        // directly for files it classified as dats (ingest.rs).
+        dats_imported: Vec::new(),
         errors: report
             .errors
             .iter()
@@ -306,6 +309,7 @@ fn merge(into: &mut IngestReportBody, from: IngestReportBody) {
     into.members_extracted += from.members_extracted;
     into.detector_hits += from.detector_hits;
     into.skipper_skipped_large += from.skipper_skipped_large;
+    into.dats_imported.extend(from.dats_imported);
     into.errors.extend(from.errors);
     into.member_skips.extend(from.member_skips);
     into.notes.extend(from.notes);

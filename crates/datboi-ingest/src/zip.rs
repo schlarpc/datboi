@@ -36,6 +36,8 @@ pub enum ZipError {
         "members share raw data ranges ({0} overlap(s)) — bomb-shaped archive, refusing all claims"
     )]
     OverlappingMembers(usize),
+    #[error("member {0:?}: data does not yield its declared size")]
+    MemberSizeMismatch(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,6 +174,58 @@ pub fn parse_members<R: Read + Seek>(file: &mut R) -> Result<Parsed, ZipError> {
     }
 
     Ok(Parsed { members, skipped })
+}
+
+/// The sole member of a single-member archive, decompressed — the
+/// zipped-dat probe (No-Intro/Redump ship dats zipped one-per-archive).
+#[derive(Debug)]
+pub struct SoleMember {
+    /// Declared (central directory) size; `bytes` is shorter only when
+    /// the read was `limit`-truncated.
+    pub uncomp_size: u64,
+    pub bytes: Vec<u8>,
+}
+
+/// Decompress the sole member of `file`, reading at most `limit` bytes
+/// — a small `limit` sniffs the member's head, a large one takes the
+/// whole thing. Answers `None` unless the central directory names
+/// EXACTLY one member inside the supported subset (a multi-member zip
+/// is a ROM container, never a zipped dat). When `limit` covers the
+/// declared size, the data must yield exactly that size —
+/// `hash_member`'s honesty rule, so a bomb costs declared work, not
+/// its full inflation.
+pub fn read_sole_member<R: Read + Seek>(
+    file: &mut R,
+    limit: u64,
+) -> Result<Option<SoleMember>, ZipError> {
+    let parsed = parse_members(file)?;
+    if parsed.members.len() != 1 || !parsed.skipped.is_empty() {
+        return Ok(None);
+    }
+    let member = &parsed.members[0];
+    file.seek(SeekFrom::Start(member.data_start))?;
+    let raw = file.take(member.comp_size);
+    // +1 in the full case: one extra byte proves the directory lied.
+    let full = limit >= member.uncomp_size;
+    let cap = if full {
+        member.uncomp_size.saturating_add(1)
+    } else {
+        limit
+    };
+    let mut bytes = Vec::new();
+    match member.method {
+        Method::Stored => raw.take(cap).read_to_end(&mut bytes)?,
+        Method::Deflate => flate2::read::DeflateDecoder::new(raw)
+            .take(cap)
+            .read_to_end(&mut bytes)?,
+    };
+    if full && bytes.len() as u64 != member.uncomp_size {
+        return Err(ZipError::MemberSizeMismatch(member.name.clone()));
+    }
+    Ok(Some(SoleMember {
+        uncomp_size: member.uncomp_size,
+        bytes,
+    }))
 }
 
 /// Locate the EOCD record: scan the tail window backwards for the last

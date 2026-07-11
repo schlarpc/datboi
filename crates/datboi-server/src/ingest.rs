@@ -11,13 +11,21 @@
 //!
 //! Custody over HTTP is always copy (D40's default): the browser
 //! cannot move the caller's originals, only send copies.
+//!
+//! The job is also the unified drop surface: each staged file is
+//! classified BY CONTENT — a dat (loose, or the sole member of a zip,
+//! the shape No-Intro/Redump ship) imports via `import_dat` into the
+//! report's `dats_imported` lane; everything else runs the pipeline.
+//! Names never decide (the house detection philosophy).
 
 // Same rationale as http.rs: fallible steps short-circuit with the
 // error Response itself.
 #![allow(clippy::result_large_err)]
 
 use std::collections::HashSet;
-use std::io::Write as _;
+use std::fs::File;
+use std::io::{Read as _, Write as _};
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::Extension;
@@ -25,14 +33,19 @@ use axum::body::{Body, Bytes};
 use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
-use datboi_api::{IngestRequest, IngestStartResponse, MatchedEntry, UploadResponse};
+use datboi_api::{
+    DatImportedItem, IngestErrorItem, IngestReportBody, IngestRequest, IngestStartResponse,
+    MatchedEntry, UploadResponse,
+};
+use datboi_catalog::{ImportOptions, import_dat};
 use datboi_index::Db;
-use datboi_ingest::Ingester;
+use datboi_ingest::{Ingester, zip};
 use futures_core::Stream as _;
 
 use crate::App;
 use crate::api::{err, parse_query, require_owner};
 use crate::auth::{self, Caller};
+use crate::dats::BODY_LIMIT as DAT_LIMIT;
 use crate::http::{json_response, run_blocking};
 use crate::jobs::{StagedUpload, translate};
 
@@ -259,18 +272,11 @@ fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
     };
     for upload in staged {
         app.jobs.set_current(id, &upload.name);
-        let report = {
-            let mut db = app
-                .db
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            Ingester::new(app.store, &mut db, &app.detectors).ingest(&[&upload.path])
-        };
+        let per_file = process_upload(app, &upload);
         // Win or lose, the staged copy is spent (a failure is recorded
         // in the report; the bytes that mattered are in the store).
         let _ = std::fs::remove_file(&upload.path);
-        app.jobs
-            .file_done(id, upload.bytes, translate(report, &upload));
+        app.jobs.file_done(id, upload.bytes, per_file);
     }
     // The pipeline stores content; identity linking + the D39 rollup
     // refresh are what make the shelf light up. The job owns finishing
@@ -296,6 +302,133 @@ fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
         }
     }
     app.jobs.finish(id, auth::now_unix());
+}
+
+/// How much of a file the dat sniff reads: `datboi_formats::detect`
+/// looks at the first 4 KiB at most, so reading more buys nothing —
+/// a 300 MB MAME listxml classifies from its head.
+const SNIFF_PREFIX: usize = 4096;
+
+/// What a staged file turned out to be. Content decides, never the
+/// name — the house detection philosophy, now on the drop surface too.
+enum Classified {
+    /// Detected dat bytes (loose, or extracted from a sole-member
+    /// zip), fully buffered: `import_dat` parses one contiguous slice,
+    /// and dats::BODY_LIMIT's 512 MiB reasoning bounds the buffer.
+    Dat(Vec<u8>),
+    /// Everything else is the pipeline's problem — including corrupt
+    /// or multi-member zips, whose judgment (and reporting) the
+    /// Ingester already owns.
+    Rom,
+}
+
+/// One staged file's outcome as a per-file report body: dats fill the
+/// `dats_imported` lane (pipeline counters stay pure), ROMs run the
+/// pipeline, and classification/import failures land in `errors` under
+/// the client's name — the job continues either way.
+fn process_upload(app: &App, upload: &StagedUpload) -> IngestReportBody {
+    match classify(&upload.path, upload.bytes) {
+        Ok(Classified::Dat(bytes)) => {
+            let mut db = app
+                .db
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match import_dat_upload(app, &mut db, &bytes, &upload.name) {
+                Ok(item) => IngestReportBody {
+                    dats_imported: vec![item],
+                    ..IngestReportBody::default()
+                },
+                Err(error) => error_body(&upload.name, &error),
+            }
+        }
+        Ok(Classified::Rom) => {
+            let mut db = app
+                .db
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let report = Ingester::new(app.store, &mut db, &app.detectors).ingest(&[&upload.path]);
+            translate(report, upload)
+        }
+        Err(e) => error_body(&upload.name, &format!("classify: {e}")),
+    }
+}
+
+/// Classify by content. Zip trouble (unparsable directory, lying
+/// sizes) deliberately answers `Rom`, not an error: the pipeline
+/// stores the literal and reports the problem with more context than
+/// a probe could.
+fn classify(path: &Path, size: u64) -> std::io::Result<Classified> {
+    let mut file = File::open(path)?;
+    let mut head = Vec::with_capacity(SNIFF_PREFIX);
+    (&mut file)
+        .take(SNIFF_PREFIX as u64)
+        .read_to_end(&mut head)?;
+    if size <= DAT_LIMIT as u64 && datboi_formats::detect(&head).is_some() {
+        return Ok(Classified::Dat(std::fs::read(path)?));
+    }
+    if zip::looks_like_zip(&head) {
+        // The common zipped-dat shape (No-Intro/Redump ship them one
+        // per archive): EXACTLY one member whose head detects as a
+        // dat. A multi-member zip is a ROM container by construction.
+        let probe = match zip::read_sole_member(&mut file, SNIFF_PREFIX as u64) {
+            Ok(Some(probe)) => probe,
+            Ok(None) | Err(_) => return Ok(Classified::Rom),
+        };
+        if probe.uncomp_size <= DAT_LIMIT as u64
+            && datboi_formats::detect(&probe.bytes).is_some()
+            && let Ok(Some(full)) = zip::read_sole_member(&mut file, DAT_LIMIT as u64)
+        {
+            return Ok(Classified::Dat(full.bytes));
+        }
+    }
+    Ok(Classified::Rom)
+}
+
+/// Import classified dat bytes and answer the report row — resolved
+/// provider/system the same way dats.rs does (the caller never saw the
+/// dat header). No overrides: content arrived nameless.
+fn import_dat_upload(
+    app: &App,
+    db: &mut Db,
+    bytes: &[u8],
+    name: &str,
+) -> Result<DatImportedItem, String> {
+    let report = import_dat(
+        app.store,
+        db,
+        bytes,
+        &ImportOptions {
+            provider: None,
+            system: None,
+            imported_at: auth::now_unix(),
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    let (provider, system) = db
+        .cache()
+        .query_row(
+            "SELECT provider, system FROM dat_source WHERE source_id = ?1",
+            [report.source_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(DatImportedItem {
+        path: name.to_owned(),
+        provider,
+        system,
+        entries: report.entries,
+    })
+}
+
+/// A per-file failure as a report body: one error row, client name.
+fn error_body(name: &str, error: &str) -> IngestReportBody {
+    IngestReportBody {
+        errors: vec![IngestErrorItem {
+            path: name.to_owned(),
+            error: error.to_owned(),
+        }],
+        ..IngestReportBody::default()
+    }
 }
 
 /// The report caps the named matches here; `matched_total` carries the

@@ -80,6 +80,7 @@ export type UploadReceipt = Schemas['UploadResponse'];
 export type IngestParams = Schemas['IngestRequest'];
 export type IngestStarted = Schemas['IngestStartResponse'];
 export type IngestReport = Schemas['IngestReportBody'];
+export type DatImportedItem = Schemas['DatImportedItem'];
 
 // ---- GET /v1/jobs (+ /{id}) ----
 

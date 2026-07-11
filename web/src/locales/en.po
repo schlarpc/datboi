@@ -886,7 +886,9 @@ msgstr "{0}{1} files"
 msgid "snap {0}<0/><1/>"
 msgstr "snap {0}<0/><1/>"
 
-#. 0: report.provider; 1: report.system; 2: report.entries.toLocaleString()
+#. 0: d.provider; 1: d.system; 2: d.entries.toLocaleString()
+#. 0: dat.provider; 1: dat.system; 2: dat.entries.toLocaleString()
+#: src/screens/Ingest.svelte
 #: src/screens/Library.svelte
 msgid "{0}/{1} — {2} entries"
 msgstr "{0}/{1} — {2} entries"
@@ -896,9 +898,8 @@ msgstr "{0}/{1} — {2} entries"
 msgid "importing {0}…"
 msgstr "importing {0}…"
 
-#: src/screens/Library.svelte
-msgid "+ import a dat to start a new system — drop files here or click to pick"
-msgstr "+ import a dat to start a new system — drop files here or click to pick"
+#~ msgid "+ import a dat to start a new system — drop files here or click to pick"
+#~ msgstr "+ import a dat to start a new system — drop files here or click to pick"
 
 #: src/screens/Library.svelte
 msgctxt "dat import result"
@@ -919,9 +920,8 @@ msgstr "uploading… {0}%"
 msgid "ingesting…"
 msgstr "ingesting…"
 
-#: src/screens/Ingest.svelte
-msgid "drop ROMs, zips, or folders here — or click to pick files"
-msgstr "drop ROMs, zips, or folders here — or click to pick files"
+#~ msgid "drop ROMs, zips, or folders here — or click to pick files"
+#~ msgstr "drop ROMs, zips, or folders here — or click to pick files"
 
 #: src/screens/Ingest.svelte
 msgid "…or pick a whole folder"
@@ -1001,3 +1001,15 @@ msgstr "…and {0} more"
 #: src/screens/Ingest.svelte
 msgid "<0/> matched"
 msgstr "<0/> matched"
+
+#: src/screens/Ingest.svelte
+msgid "drop ROMs, zips, dats, or folders here — or click to pick files"
+msgstr "drop ROMs, zips, dats, or folders here — or click to pick files"
+
+#: src/screens/Ingest.svelte
+msgid "<0/> dats imported"
+msgstr "<0/> dats imported"
+
+#: src/screens/Library.svelte
+msgid "+ import a dat (zipped is fine) to start a new system — drop files here or click to pick"
+msgstr "+ import a dat (zipped is fine) to start a new system — drop files here or click to pick"

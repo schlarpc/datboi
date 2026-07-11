@@ -4,21 +4,24 @@
    * GET /v1/systems in the full cartridge register: band, 2px ink,
    * offset shadow, stacked bar with ink frame, views chips.
    */
-  import { importDat, systems as fetchSystems } from '../lib/api/client';
+  import { jobDetail, startIngest, systems as fetchSystems, uploadRom } from '../lib/api/client';
   import type { System } from '../lib/api/types';
   import { bandFor } from '../lib/bands';
   import Link from '../lib/components/Link.svelte';
   import StackedBar from '../lib/components/StackedBar.svelte';
+  import { jobsSignal } from '../lib/jobs.svelte';
   import { router } from '../lib/router.svelte';
   import { completenessPct } from '../lib/state';
 
   let systems = $state<System[] | null>(null);
   let error = $state<string | null>(null);
 
-  // Dat import (POST /v1/dats/import): the dashed card is a drop zone
-  // and a click-to-pick. Files import sequentially — each import is
-  // one whole-file request with no progress stream, so "importing
-  // <name>…" on the card is the honest maximum of feedback.
+  // Dat import rides the unified ingest flow (the job classifies each
+  // file by content — dat, zipped dat, or ROM — so zipped dats just
+  // work): stage each file, start one job, poll it to done, then read
+  // the receipts from the report's dats-imported and errors lanes.
+  // The card stays compact — "importing <name>…" is enough here, the
+  // jobs tray carries the progress bar.
   let fileInput = $state<HTMLInputElement | null>(null);
   let dragOver = $state(false);
   let importing = $state<string | null>(null);
@@ -32,18 +35,11 @@
   });
 
   async function importFiles(files: FileList): Promise<void> {
+    const staged: string[] = [];
     for (const file of Array.from(files)) {
       importing = file.name;
       try {
-        const report = await importDat(file);
-        imports.push({
-          name: file.name,
-          ok: true,
-          detail: `${report.provider}/${report.system} — ${report.entries.toLocaleString()} entries`,
-        });
-        // The shelf just changed (new source, or a source's current
-        // revision flipped) — re-fetch rather than guess the rollups.
-        systems = (await fetchSystems()).systems;
+        staged.push((await uploadRom(file.name, file)).upload);
       } catch (e) {
         imports.push({
           name: file.name,
@@ -52,7 +48,49 @@
         });
       }
     }
+    if (staged.length > 0) {
+      try {
+        const started = await startIngest(staged);
+        jobsSignal.bump(); // wake the tray now, not on its own cadence
+        const job = await follow(started.job);
+        for (const dat of job.report.dats_imported) {
+          imports.push({
+            name: dat.path,
+            ok: true,
+            detail: `${dat.provider}/${dat.system} — ${dat.entries.toLocaleString()} entries`,
+          });
+        }
+        for (const refusal of job.report.errors) {
+          imports.push({ name: refusal.path, ok: false, detail: refusal.error });
+        }
+        if (job.error != null) {
+          imports.push({ name: 'ingest', ok: false, detail: job.error });
+        }
+        // The shelf just changed (new source, or a source's current
+        // revision flipped) — re-fetch rather than guess the rollups.
+        systems = (await fetchSystems()).systems;
+      } catch (e) {
+        imports.push({
+          name: 'ingest',
+          ok: false,
+          detail: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
     importing = null;
+  }
+
+  /** Poll the job to a terminal state; the card label tracks `current`. */
+  async function follow(id: number): Promise<Awaited<ReturnType<typeof jobDetail>>> {
+    for (;;) {
+      const job = await jobDetail(id);
+      if (job.state !== 'running') {
+        jobsSignal.bump(); // flip the tray row to done promptly
+        return job;
+      }
+      importing = job.current ?? importing;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
   }
 
   function onDrop(e: DragEvent): void {
@@ -161,7 +199,7 @@
     <input
       bind:this={fileInput}
       type="file"
-      accept=".dat,.xml"
+      accept=".dat,.xml,.zip"
       multiple
       hidden
       onchange={onPick}
@@ -181,7 +219,7 @@
       {#if importing !== null}
         <span>importing {importing}…</span>
       {:else}
-        <span>+ import a dat to start a new system — drop files here or click to pick</span>
+        <span>+ import a dat (zipped is fine) to start a new system — drop files here or click to pick</span>
       {/if}
     </button>
     {#if imports.length > 0}

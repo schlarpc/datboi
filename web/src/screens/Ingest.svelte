@@ -5,7 +5,9 @@
    * them), watch each upload stream with a true byte progress bar,
    * then follow the background job (POST /v1/ingest → poll
    * GET /v1/jobs/{id}) to the step-2 report card — new blobs · dupes ·
-   * archive members · refused.
+   * archive members · refused. Dats are welcome too: the job
+   * classifies each file by content (dat / zipped dat / ROM) and the
+   * report carries a dats-imported lane.
    *
    * Custody over HTTP is always copy (D40's default): the browser
    * can't move your originals, only send copies. NAS-local ingest
@@ -168,7 +170,7 @@
     {:else if phase === 'ingesting'}
       <span>ingesting…</span>
     {:else}
-      <span>drop ROMs, zips, or folders here — or click to pick files</span>
+      <span>drop ROMs, zips, dats, or folders here — or click to pick files</span>
     {/if}
   </button>
   <p class="pick-folder">
@@ -243,6 +245,22 @@
               …and {(job.matched_total - job.matched.length).toLocaleString()} more
             </li>
           {/if}
+        </ul>
+      {/if}
+      {#if job !== null && job.report.dats_imported.length > 0}
+        <!-- The dat lane: files the job classified (by content) as
+             dats — loose or zipped — and imported instead of
+             ingesting. Same register as the matched list. -->
+        <p class="matched-head">
+          <b>{job.report.dats_imported.length.toLocaleString()}</b> dats imported
+        </p>
+        <ul class="matched">
+          {#each job.report.dats_imported as d, i (i)}
+            <li>
+              <span class="file">{d.path}</span>
+              <span class="source">{d.provider}/{d.system} — {d.entries.toLocaleString()} entries</span>
+            </li>
+          {/each}
         </ul>
       {/if}
       {#if job !== null}

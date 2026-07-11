@@ -231,6 +231,25 @@ strict mode + retool clonelist consumption are M4 work items).
   end, so freshly ingested content lights the shelf immediately —
   previously that pair only ran at dat import/view eval, leaving a
   matching upload dark until an unrelated eval happened by.
+- **The drop surfaces unified** (2026-07-11, same day): users
+  shouldn't need to know which upload box wants which bytes, and
+  No-Intro/Redump ship dats ZIPPED — which nothing accepted. So the
+  ingest job now classifies every staged file by content (the house
+  philosophy: magic bytes and `datboi_formats::detect`, names never
+  decide): a file whose head detects as a dat imports via
+  `import_dat` (full-buffer, the dats.rs 512 MiB reasoning); a zip
+  whose central directory names EXACTLY one member whose head
+  detects as a dat imports that member (extraction bounded by the
+  declared size — `zip::read_sole_member` in datboi-ingest, riding
+  the D35 walker; a multi-member zip is a ROM container by
+  construction and is never sniffed further); everything else runs
+  the pipeline unchanged. The report gained a `dats_imported` lane
+  (client name + resolved provider/system + entries) — pipeline
+  counters stay pure, a dat import is not a `files_scanned`. The
+  Library empty-card now rides the same staged flow (upload → job →
+  poll → receipts from the dats lane), so zipped dats finally
+  import from either screen; `POST /v1/dats/import` stays as the
+  direct-API contract path.
 
 ## Next sessions (pick up here)
 

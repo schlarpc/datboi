@@ -161,6 +161,34 @@
         ],
         "type": "object"
       },
+      "DatImportedItem": {
+        "description": "One dat an ingest job imported (the unified drop surface: content\nclassifies each file as dat / zipped dat / ROM — names never\ndecide).",
+        "properties": {
+          "entries": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "The client's original name for the file.",
+            "type": "string"
+          },
+          "provider": {
+            "description": "Resolved provider/system — the `/v1/systems` identity the dat\nlanded in (the caller never saw the dat header).",
+            "type": "string"
+          },
+          "system": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "provider",
+          "system",
+          "entries"
+        ],
+        "type": "object"
+      },
       "Definition": {
         "description": "ViewDef summary: dat ref, 1G1R mode, profile, image params (D62).",
         "properties": {
@@ -518,6 +546,13 @@
             "minimum": 0,
             "type": "integer"
           },
+          "dats_imported": {
+            "description": "Files the job classified (by content) as dats — loose or the\nsole member of a zip — and imported instead of ingesting. Its\nown lane: pipeline counters above stay pure, a dat import is\nnot a `files_scanned`.",
+            "items": {
+              "$ref": "#/components/schemas/DatImportedItem"
+            },
+            "type": "array"
+          },
           "detector_hits": {
             "format": "int64",
             "minimum": 0,
@@ -593,6 +628,7 @@
           "members_extracted",
           "detector_hits",
           "skipper_skipped_large",
+          "dats_imported",
           "errors",
           "member_skips",
           "notes"

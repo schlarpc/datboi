@@ -2,8 +2,8 @@ import { fireEvent, render, screen } from '@testing-library/svelte';
 import { loadLocale } from 'wuchale/load-utils';
 import { afterEach, expect, test, vi } from 'vitest';
 import '../locales/main.loader.svelte.js';
-import type { System } from '../lib/api/types';
-import { installFetch } from '../test/mock-api';
+import type { IngestReport, JobDetailBody, System } from '../lib/api/types';
+import { installFetch, installUploadXhr } from '../test/mock-api';
 import Library from './Library.svelte';
 
 await loadLocale('en');
@@ -31,6 +31,43 @@ const snes: System = {
 };
 
 afterEach(() => vi.unstubAllGlobals());
+
+/** A finished one-file ingest job whose report carries the given lanes
+ * — the Library card reads only `dats_imported` and `errors`. */
+function doneJob(report: Partial<IngestReport>): JobDetailBody {
+  return {
+    id: 1,
+    name: 'ingest — 1 file',
+    progress: 100,
+    kind: 'ingest',
+    state: 'done',
+    files_total: 1,
+    files_done: 1,
+    bytes_total: 4,
+    bytes_done: 4,
+    started_at: 1000,
+    finished_at: 1001,
+    report: {
+      files_scanned: 0,
+      files_unchanged: 0,
+      files_stored: 0,
+      files_already_present: 0,
+      chd_v5: 0,
+      members_claimed: 0,
+      members_extracted: 0,
+      detector_hits: 0,
+      skipper_skipped_large: 0,
+      dats_imported: [],
+      errors: [],
+      member_skips: [],
+      notes: [],
+      ...report,
+    },
+    matched: [],
+    matched_total: 0,
+    error: null,
+  };
+}
 
 test('cards render counts, revision, and the subtitle totals', async () => {
   installFetch({ systems: [gba, snes] });
@@ -87,20 +124,16 @@ test('views chips render; the empty card is the dat drop zone', async () => {
   expect(screen.getByText(/drop files here or click to pick/)).toBeTruthy();
 });
 
-test('picking a dat imports it, logs the receipt, and refreshes the shelf', async () => {
+test('picking a dat stages it through the ingest job, logs the receipt, and refreshes the shelf', async () => {
   const handler = installFetch({
     systems: [gba],
-    datImport: {
-      source_id: 3,
-      revision_id: 9,
-      dat_blob: 'a'.repeat(64),
-      provider: 'redump',
-      system: 'psx',
-      entries: 1300,
-      claims: 1450,
-      demoted_revisions: [],
-    },
+    jobTimeline: [
+      doneJob({
+        dats_imported: [{ path: 'psx.dat', provider: 'redump', system: 'psx', entries: 1300 }],
+      }),
+    ],
   });
+  const sent = installUploadXhr();
   render(Library);
   await screen.findByText('gba');
 
@@ -109,15 +142,26 @@ test('picking a dat imports it, logs the receipt, and refreshes the shelf', asyn
   const file = new File(['<datafile/>'], 'psx.dat');
   await fireEvent.change(input!, { target: { files: [file] } });
 
+  // The receipt comes from the job report's dats lane.
   expect(await screen.findByText('psx.dat')).toBeTruthy();
   expect(screen.getByText('redump/psx — 1,300 entries')).toBeTruthy();
+  // The file rode the unified flow: staged upload, then one job.
+  expect(sent.map((s) => s.name)).toEqual(['psx.dat']);
+  const starts = handler.mock.calls.filter(([input_]) => String(input_) === '/v1/ingest');
+  expect(starts.length).toBe(1);
   // The import mutated the shelf, so the screen re-fetched it.
   const systemFetches = handler.mock.calls.filter(([input_]) => String(input_) === '/v1/systems');
   expect(systemFetches.length).toBe(2);
 });
 
-test('a refused dat logs the server error against the file name', async () => {
-  installFetch({ systems: [gba], datImportFail: true });
+test('a refused dat logs the job-report error against the file name', async () => {
+  installFetch({
+    systems: [gba],
+    jobTimeline: [
+      doneJob({ errors: [{ path: 'junk.dat', error: 'unknown dat format' }] }),
+    ],
+  });
+  installUploadXhr();
   render(Library);
   await screen.findByText('gba');
 

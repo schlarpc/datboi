@@ -658,9 +658,28 @@ pub struct IngestReportBody {
     /// Files over the skipper sniff cap — stored, but not
     /// detector-checked.
     pub skipper_skipped_large: u64,
+    /// Files the job classified (by content) as dats — loose or the
+    /// sole member of a zip — and imported instead of ingesting. Its
+    /// own lane: pipeline counters above stay pure, a dat import is
+    /// not a `files_scanned`.
+    pub dats_imported: Vec<DatImportedItem>,
     pub errors: Vec<IngestErrorItem>,
     pub member_skips: Vec<IngestMemberSkipItem>,
     pub notes: Vec<String>,
+}
+
+/// One dat an ingest job imported (the unified drop surface: content
+/// classifies each file as dat / zipped dat / ROM — names never
+/// decide).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DatImportedItem {
+    /// The client's original name for the file.
+    pub path: String,
+    /// Resolved provider/system — the `/v1/systems` identity the dat
+    /// landed in (the caller never saw the dat header).
+    pub provider: String,
+    pub system: String,
+    pub entries: u64,
 }
 
 /// A file the pipeline could not process.
@@ -919,7 +938,15 @@ mod tests {
             current: None,
             started_at: 1_000,
             finished_at: None,
-            report: IngestReportBody::default(),
+            report: IngestReportBody {
+                dats_imported: vec![DatImportedItem {
+                    path: "dats/nds.zip".into(),
+                    provider: "no-intro".into(),
+                    system: "nds".into(),
+                    entries: 42,
+                }],
+                ..IngestReportBody::default()
+            },
             matched: vec![MatchedEntry {
                 name: "Mario Kart DS (USA, Australia)".into(),
                 source: "no-intro/nds".into(),
@@ -935,6 +962,9 @@ mod tests {
         assert_eq!(v["finished_at"], serde_json::Value::Null);
         assert_eq!(v["error"], serde_json::Value::Null);
         assert_eq!(v["report"]["files_stored"], 0);
+        // The dat lane rides the report, keyed by the client's name.
+        assert_eq!(v["report"]["dats_imported"][0]["path"], "dats/nds.zip");
+        assert_eq!(v["report"]["dats_imported"][0]["entries"], 42);
         assert_eq!(v["matched"][0]["source"], "no-intro/nds");
         assert_eq!(v["matched_total"], 1);
     }

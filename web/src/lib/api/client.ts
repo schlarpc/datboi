@@ -155,7 +155,10 @@ export const entryDetail = (systemId: number | string, name: string): Promise<En
  * POST /v1/dats/import — the raw dat file bytes ARE the body (no
  * multipart), same operation as `datboi dat import`. Provider/system
  * overrides ride the query string; omitted, they resolve from the dat
- * header server-side.
+ * header server-side. The web UI no longer calls this — its drop
+ * surfaces route through the unified ingest flow (uploadRom +
+ * startIngest; the job classifies dats by content) — but the endpoint
+ * is versioned contract for direct API users, so the fn stays.
  */
 export function importDat(file: Blob, params: DatImportParams = {}): Promise<DatImportBody> {
   const query = new URLSearchParams();

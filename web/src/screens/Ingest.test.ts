@@ -20,6 +20,7 @@ const emptyReport: IngestReport = {
   members_extracted: 0,
   detector_hits: 0,
   skipper_skipped_large: 0,
+  dats_imported: [],
   errors: [],
   member_skips: [],
   notes: [],
@@ -117,6 +118,28 @@ test('refusals list per-file reasons from the report', async () => {
   expect(await screen.findByText('central directory lies')).toBeTruthy();
   expect(screen.getByText('bad.zip :: x.bin')).toBeTruthy();
   expect(screen.getByText('zip64 member')).toBeTruthy();
+});
+
+test('the dats lane renders imported dats with their resolved identity', async () => {
+  installFetch({
+    jobTimeline: [
+      doneJob({
+        files_scanned: 1,
+        files_stored: 1,
+        dats_imported: [
+          { path: 'nds.zip', provider: 'no-intro', system: 'nds', entries: 5000 },
+        ],
+      }),
+    ],
+  });
+  installUploadXhr();
+  render(Ingest);
+
+  await pickFiles([new File(['aaaa'], 'alpha.gba'), new File(['zzzz'], 'nds.zip')]);
+
+  expect(await screen.findByText(/dats imported/)).toBeTruthy();
+  expect(screen.getByText('nds.zip')).toBeTruthy();
+  expect(screen.getByText('no-intro/nds — 5,000 entries')).toBeTruthy();
 });
 
 test('a failed upload is reported without starting a job', async () => {

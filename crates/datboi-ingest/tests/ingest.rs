@@ -473,6 +473,66 @@ fn overlapping_members_refuse_all_claims() {
     assert!(world.store.has(Namespace::Data, &Blake3::compute(&bytes)));
 }
 
+/// The zipped-dat probe (the server's drop-surface classifier): the
+/// sole member of a single-member zip comes out bounded by `limit`;
+/// anything with a different shape answers None; a lying declared
+/// size errors instead of yielding short bytes.
+#[test]
+fn read_sole_member_is_single_member_only_and_bounded() {
+    use datboi_ingest::zip::{ZipError, read_sole_member};
+
+    let payload = b"the sole member's bytes";
+    let mut zb = ZipBuilder::new();
+    zb.add("only.dat", payload, true, 0);
+    let mut cursor = std::io::Cursor::new(zb.finish());
+
+    // Full read: size-verified bytes.
+    let m = read_sole_member(&mut cursor, 1 << 20)
+        .expect("parse")
+        .expect("sole member");
+    assert_eq!(
+        (m.bytes.as_slice(), m.uncomp_size),
+        (payload.as_slice(), payload.len() as u64)
+    );
+
+    // Sniff read: a prefix, never more than asked — the declared size
+    // still rides along so the caller can plan the full read.
+    let m = read_sole_member(&mut cursor, 4)
+        .expect("parse")
+        .expect("sole member");
+    assert_eq!(
+        (m.bytes.as_slice(), m.uncomp_size),
+        (&payload[..4], payload.len() as u64)
+    );
+
+    // Two members: a ROM container, not the zipped-dat shape.
+    let mut zb = ZipBuilder::new();
+    zb.add("a.bin", b"aaaa", false, 0);
+    zb.add("b.bin", b"bbbb", false, 0);
+    let mut cursor = std::io::Cursor::new(zb.finish());
+    assert!(
+        read_sole_member(&mut cursor, 1 << 20)
+            .expect("parse")
+            .is_none()
+    );
+
+    // A declared size the data can't honor is an error, not short
+    // bytes (the bomb test's lie, one member, full read).
+    let mut zb = ZipBuilder::new();
+    zb.add("liar.dat", payload, false, 0);
+    let mut bytes = zb.finish();
+    let lie = ((payload.len() + 7) as u32).to_le_bytes();
+    bytes[22..26].copy_from_slice(&lie); // local header uncomp_size
+    let eocd = bytes.len() - 22;
+    let cd_off = u32::from_le_bytes(bytes[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
+    bytes[cd_off + 24..cd_off + 28].copy_from_slice(&lie); // CD uncomp_size
+    let mut cursor = std::io::Cursor::new(bytes);
+    assert!(matches!(
+        read_sole_member(&mut cursor, 1 << 20),
+        Err(ZipError::MemberSizeMismatch(name)) if name == "liar.dat"
+    ));
+}
+
 #[test]
 fn zip_member_data_offsets_honor_local_headers() {
     // Local header with a longer extra field than the central directory

@@ -344,6 +344,97 @@ fn ingested_member_lights_up_the_shelf() {
     assert_eq!(counts["missing"], 0, "{v}");
 }
 
+/// The unified drop surface: one job classifies every staged file by
+/// content — loose dat, zipped dat, or ROM — imports the dats, and
+/// runs the pipeline over the rest. The boundary case that must not
+/// wobble: a multi-member zip is a ROM container, never a zipped dat.
+#[test]
+fn job_classifies_dats_zipped_dats_and_roms_by_content() {
+    let f = fixture();
+
+    /// One-game Logiqx dat (the tests/api.rs template) with a distinct
+    /// header identity per call — provider resolves from the author.
+    fn logiqx(system: &str, author: &str, game: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+<datafile><header><name>{system}</name><description>Test dat</description><version>r1</version><author>{author}</author></header>
+<game name="{game}"><description>{game}</description><rom name="{game}.bin" size="5" crc="12345678" sha1="000102030405060708090a0b0c0d0e0f10111213"/></game>
+</datafile>"#
+        )
+    }
+    let gba_dat = logiqx("gba", "no-intro", "Alpha (USA)");
+    let psx_dat = logiqx("psx", "redump", "Beta (Japan)");
+    let psx_zip = stored_zip(&[("psx.dat", psx_dat.as_bytes())]);
+    let rom_zip = stored_zip(&[
+        ("one.gba", b"member one bytes" as &[u8]),
+        ("two.gba", b"member two bytes"),
+    ]);
+
+    let mut tokens = Vec::new();
+    for (name, bytes) in [
+        ("alpha.gba", b"loose rom bytes" as &[u8]),
+        ("gba.dat", gba_dat.as_bytes()),
+        ("psx.zip", psx_zip.as_slice()),
+        ("pack.zip", rom_zip.as_slice()),
+    ] {
+        let (status, v) = post_bytes(f.addr, &format!("/v1/ingest/uploads?name={name}"), bytes);
+        assert_eq!(status, 200, "{v}");
+        tokens.push(v["upload"].as_str().expect("token").to_owned());
+    }
+    let (status, v) = post_json(
+        f.addr,
+        "/v1/ingest",
+        &format!(r#"{{"uploads":["{}"]}}"#, tokens.join("\",\"")),
+    );
+    assert_eq!(status, 200, "{v}");
+    let done = wait_done(f.addr, v["job"].as_i64().expect("job id"));
+    assert_eq!(done["state"], "done", "{done}");
+    assert_eq!(done["files_done"], 4);
+
+    // The dat lane: both dats imported, wearing the client names and
+    // the identities their headers resolved to.
+    let report = &done["report"];
+    let dats = report["dats_imported"].as_array().expect("dats lane");
+    assert_eq!(dats.len(), 2, "{report}");
+    let row = |path: &str| {
+        dats.iter()
+            .find(|d| d["path"] == path)
+            .unwrap_or_else(|| panic!("no dat row for {path}: {report}"))
+    };
+    let gba = row("gba.dat");
+    assert_eq!(
+        (gba["provider"].as_str(), gba["system"].as_str()),
+        (Some("no-intro"), Some("gba"))
+    );
+    assert_eq!(gba["entries"], 1);
+    let psx = row("psx.zip");
+    assert_eq!(
+        (psx["provider"].as_str(), psx["system"].as_str()),
+        (Some("redump"), Some("psx"))
+    );
+    assert_eq!(psx["entries"], 1);
+
+    // Pipeline counters stay pure: only the ROM and the two-member
+    // zip went through it, and the zip stayed a ROM container.
+    assert_eq!(report["files_scanned"], 2, "{report}");
+    assert_eq!(report["files_stored"], 2, "{report}");
+    assert_eq!(report["members_claimed"], 2, "two-member zip is ROM ingest");
+    assert_eq!(report["errors"], serde_json::json!([]));
+
+    // The imports are live: both sources on the shelf.
+    let (status, v) = get(f.addr, "/v1/systems");
+    assert_eq!(status, 200);
+    let mut sources: Vec<&str> = v["systems"]
+        .as_array()
+        .expect("systems")
+        .iter()
+        .map(|s| s["source"].as_str().expect("source"))
+        .collect();
+    sources.sort_unstable();
+    assert_eq!(sources, ["no-intro/gba", "redump/psx"], "{v}");
+}
+
 #[test]
 fn upload_and_start_reject_bad_requests() {
     let f = fixture();
