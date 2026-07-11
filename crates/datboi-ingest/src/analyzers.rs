@@ -642,6 +642,22 @@ impl Analyzer for ChunkAnalyzer {
                 detail: Some(format!("below {CHUNK_THRESHOLD}-byte chunking threshold")),
             });
         }
+        // D59: chunking's job is making big ROUTE-LESS literals
+        // evictable via cross-image dedup. A blob with any non-failed
+        // covering recipe is already evictable through that route;
+        // chunking it would add sweep I/O + recipe metadata for no
+        // marginal dedup.
+        let routed = db
+            .recipes_for_output(item.blob_id)
+            .map_err(|e| e.to_string())?
+            .iter()
+            .any(|r| r.verify != datboi_index::VerifyState::Failed);
+        if routed {
+            return Ok(AnalysisResult {
+                outcome: AnalysisOutcome::Negative,
+                detail: Some("already covered by a rebuild route (D59)".into()),
+            });
+        }
         let Some(file) = store
             .get(StoreNs::Data, &item.hash)
             .map_err(|e| e.to_string())?

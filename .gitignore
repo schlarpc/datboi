@@ -8,3 +8,4 @@
 *.db-shm
 /prompt.txt
 transforms/*/target/
+/.claude/

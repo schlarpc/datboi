@@ -114,3 +114,67 @@ fn chunk_sweep_dedupes_and_eviction_shrinks_the_store() {
         );
     }
 }
+
+/// D59: a big literal that already has a covering route is NOT chunked —
+/// it's already evictable through that route; chunking it would add
+/// recipe metadata for no marginal dedup.
+#[test]
+fn chunking_skips_already_routed_blobs() {
+    use datboi_index::recipes::NewRecipe;
+    use datboi_index::{Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(dir.path().join("store")).expect("store");
+    let mut db = Db::open(dir.path()).expect("db");
+
+    let size = 6 << 20;
+    let big = pattern(size, 0x5555_6666_7777_8888);
+    let big_hash = Blake3::compute(&big);
+    store
+        .put(StoreNs::Data, big_hash, big.as_slice())
+        .expect("put");
+    let big_id = db
+        .upsert_blob(
+            &big_hash,
+            Some(size as u64),
+            IndexNs::Data,
+            Residency::Resident,
+        )
+        .expect("upsert");
+
+    // Give it a covering route (row-level is enough: eligibility reads
+    // the OR-graph, it never executes the recipe).
+    let meta_hash = Blake3::compute(b"pretend recipe object");
+    let meta_id = db
+        .upsert_blob(&meta_hash, Some(32), IndexNs::Meta, Residency::Resident)
+        .expect("upsert meta");
+    db.insert_recipe(&NewRecipe {
+        blob_id: meta_id,
+        op_kind: OpKind::Builtin,
+        op_name: "assemble@1",
+        seek_class: SeekClass::Affine,
+        source: RecipeSource::LocalIngest,
+        inputs: &[(0, big_id, None)],
+        outputs: &[(0, big_id, size as u64, None)],
+    })
+    .expect("insert recipe");
+
+    let blobs_before: i64 = db
+        .cache()
+        .query_row("SELECT COUNT(*) FROM blob", [], |row| row.get(0))
+        .expect("count");
+    let sweep = run_sweep(&mut db, &store, &mut ChunkAnalyzer, 10_000).expect("sweep");
+    assert_eq!(sweep.errors.len(), 0, "{:?}", sweep.errors);
+    assert_eq!(sweep.positive, 0, "routed blob is skipped (D59)");
+    assert!(sweep.analyzed >= 1, "it still got its negative row");
+    let blobs_after: i64 = db
+        .cache()
+        .query_row("SELECT COUNT(*) FROM blob", [], |row| row.get(0))
+        .expect("count");
+    assert_eq!(blobs_before, blobs_after, "no chunk blobs were minted");
+    assert_eq!(
+        db.recipes_for_output(big_id).expect("recipes").len(),
+        1,
+        "no chunk recipe was added"
+    );
+}
