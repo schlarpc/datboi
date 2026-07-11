@@ -326,6 +326,7 @@ msgid "healthy"
 msgstr "healthy"
 
 #: src/lib/components/JobRow.svelte
+#: src/lib/components/JobsTray.svelte
 msgid "done ✓"
 msgstr "done ✓"
 
@@ -1013,3 +1014,22 @@ msgstr "<0/> dats imported"
 #: src/screens/Library.svelte
 msgid "+ import a dat (zipped is fine) to start a new system — drop files here or click to pick"
 msgstr "+ import a dat (zipped is fine) to start a new system — drop files here or click to pick"
+
+#. 0: jobs.length
+#: src/lib/components/JobsTray.svelte
+msgid "▾ jobs ({0})"
+msgstr "▾ jobs ({0})"
+
+#: src/lib/components/JobsTray.svelte
+msgid "no jobs yet — ingest something"
+msgstr "no jobs yet — ingest something"
+
+#: src/lib/components/JobsTray.svelte
+msgctxt "job state"
+msgid "failed"
+msgstr "failed"
+
+#. 0: detail.files_done; 1: detail.files_total; 2: detail.matched_total; 3: refused(detail)
+#: src/lib/components/JobsTray.svelte
+msgid "{0}/{1} files <0/> · {2} matched · {3} refused"
+msgstr "{0}/{1} files <0/> · {2} matched · {3} refused"

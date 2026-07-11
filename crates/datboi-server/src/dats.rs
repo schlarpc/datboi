@@ -81,6 +81,14 @@ pub(crate) async fn import(
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
+        // Operator log line (stderr is the log until the durable job
+        // table — see ingest.rs run_job): a dat import rewrites what
+        // the catalog wants, and the response body vanishes with the
+        // request.
+        eprintln!(
+            "dat import: {provider}/{system} rev {} ({} entries)",
+            report.revision_id, report.entries
+        );
         Ok(json_response(
             StatusCode::OK,
             &DatImportResponse {
@@ -99,9 +107,8 @@ pub(crate) async fn import(
 }
 
 /// A dat that won't parse is the caller's problem (400); store/index
-/// failures are ours (500). Note the parse verdict lands AFTER the
-/// blob is in the CAS — import_dat stores first by design (D15), and
-/// the CLI path behaves identically.
+/// failures are ours (500). import_dat validates before storing, so a
+/// refused body leaves no blob behind.
 fn import_err(e: CatalogError) -> Response {
     let status = match &e {
         CatalogError::Parse(_) => StatusCode::BAD_REQUEST,

@@ -250,6 +250,16 @@ pub(crate) async fn start(
 /// only, not the whole batch) and progress moves at file boundaries —
 /// the honest granularity, since the pipeline reports nothing finer.
 fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
+    // These stderr lines are the operator log until the durable job
+    // table exists (the recorded open question) — a restart erases the
+    // registry, and a 40-minute job deserves a trace outside it. Plain
+    // eprintln by ruling: a logging framework stays a non-goal until a
+    // real need shows up.
+    eprintln!(
+        "ingest job {id}: {} files, {} bytes",
+        staged.len(),
+        staged.iter().map(|f| f.bytes).sum::<u64>()
+    );
     // Baseline for the "matched" report: whatever was satisfied before
     // this job ran isn't news, however the content arrived.
     let before = {
@@ -264,8 +274,9 @@ fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
                 for upload in &staged {
                     let _ = std::fs::remove_file(&upload.path);
                 }
-                app.jobs
-                    .fail(id, &format!("matched baseline: {e}"), auth::now_unix());
+                let error = format!("matched baseline: {e}");
+                eprintln!("ingest job {id}: FAILED — {error}");
+                app.jobs.fail(id, &error, auth::now_unix());
                 return;
             }
         }
@@ -273,6 +284,14 @@ fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
     for upload in staged {
         app.jobs.set_current(id, &upload.name);
         let per_file = process_upload(app, &upload);
+        // A dat sliding in on the ROM surface is worth its own line —
+        // it changes what the catalog wants, not just what's stored.
+        for dat in &per_file.dats_imported {
+            eprintln!(
+                "ingest job {id}: imported dat {}/{} ({} entries)",
+                dat.provider, dat.system, dat.entries
+            );
+        }
         // Win or lose, the staged copy is spent (a failure is recorded
         // in the report; the bytes that mattered are in the store).
         let _ = std::fs::remove_file(&upload.path);
@@ -295,13 +314,29 @@ fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
         match refreshed {
             Ok((matched, total)) => app.jobs.set_matched(id, matched, total),
             Err(e) => {
-                app.jobs
-                    .fail(id, &format!("catalog refresh: {e}"), auth::now_unix());
+                let error = format!("catalog refresh: {e}");
+                eprintln!("ingest job {id}: FAILED — {error}");
+                app.jobs.fail(id, &error, auth::now_unix());
                 return;
             }
         }
     }
     app.jobs.finish(id, auth::now_unix());
+    // The registry accumulated the report; the finish line summarizes
+    // it with the web report card's arithmetic (Ingest.svelte): dupes =
+    // present + unchanged, members = claimed + extracted, refused =
+    // errors + member skips + skipper-capped files.
+    if let Some(d) = app.jobs.detail(id) {
+        let r = &d.report;
+        eprintln!(
+            "ingest job {id}: done — {} stored, {} dupes, {} members, {} refused, {} matched",
+            r.files_stored,
+            r.files_already_present + r.files_unchanged,
+            r.members_claimed + r.members_extracted,
+            r.errors.len() as u64 + r.member_skips.len() as u64 + r.skipper_skipped_large,
+            d.matched_total
+        );
+    }
 }
 
 /// How much of a file the dat sniff reads: `datboi_formats::detect`
