@@ -13,6 +13,7 @@ datboi-core.workspace = true
 datboi-formats.workspace = true
 datboi-index.workspace = true
 datboi-store-fs.workspace = true
+positioned-io = { version = "0.3", default-features = false }
 quick-xml.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true

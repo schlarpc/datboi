@@ -19,6 +19,7 @@ pub mod audit;
 pub mod diff;
 pub mod export;
 pub mod fat32;
+pub mod image;
 pub mod import;
 pub mod profiles;
 pub mod rollup;
@@ -29,6 +30,7 @@ pub mod views;
 pub use audit::{AuditReport, EntryAudit, audit};
 pub use diff::{DatDiff, diff_source};
 pub use export::export_dat;
+pub use image::{ImageParams, ImageReport, mint_image, missing_inputs};
 pub use import::{ImportOptions, ImportReport, import_dat};
 pub use profiles::{PROFILES, Profile};
 pub use rollup::refresh_rollups;
@@ -52,6 +54,10 @@ pub enum CatalogError {
     Io(#[from] std::io::Error),
     #[error("corrupt {0} record")]
     Corrupt(&'static str),
+    #[error(transparent)]
+    Fat32(#[from] fat32::Fat32Error),
+    #[error("image mint: {0}")]
+    Image(String),
     #[error("export: {0}")]
     Export(String),
     #[error("unknown profile {0} (see `datboi view profiles`)")]

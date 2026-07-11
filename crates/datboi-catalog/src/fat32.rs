@@ -240,9 +240,9 @@ fn build_tree(files: &[FileEntry]) -> Result<Tree, Fat32Error> {
     let mut names: std::collections::HashSet<(usize, String)> = std::collections::HashSet::new();
 
     let ensure_dir = |dirs: &mut Vec<Dir>,
-                          by_path: &mut BTreeMap<String, usize>,
-                          names: &mut std::collections::HashSet<(usize, String)>,
-                          path: &str|
+                      by_path: &mut BTreeMap<String, usize>,
+                      names: &mut std::collections::HashSet<(usize, String)>,
+                      path: &str|
      -> Result<usize, Fat32Error> {
         if let Some(&ix) = by_path.get(path) {
             return Ok(ix);
