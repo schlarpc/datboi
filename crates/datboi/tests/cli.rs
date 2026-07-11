@@ -1316,3 +1316,180 @@ fn strict_1g1r_and_clonelist() {
         .assert()
         .failure();
 }
+
+/// D31 deferred set, end to end: one synthetic listxml (bios machine,
+/// parent with merge-tagged bios rom + device_refs, clone with
+/// merge-tagged parent rom, a device machine, one dangling ref)
+/// rendered in all three merge modes.
+#[test]
+fn mame_merge_modes() {
+    let u = Universe::new();
+    fs::create_dir_all(u.src()).unwrap();
+    let bios = b"neogeo bios rom bytes".as_slice();
+    let parent = b"parent game rom bytes".as_slice();
+    let child = b"clone-only rom bytes!".as_slice();
+    let z80 = b"z80 device rom bytes!".as_slice();
+    for (name, data) in [
+        ("bios.rom", bios),
+        ("parent.rom", parent),
+        ("child.rom", child),
+        ("z80.rom", z80),
+    ] {
+        fs::write(u.src().join(name), data).unwrap();
+    }
+    u.cmd().arg("ingest").arg(u.src()).assert().success();
+
+    fn mame_rom(name: &str, content: &[u8], merge: Option<&str>) -> String {
+        let mut hasher = AliasHasher::new();
+        hasher.update(content);
+        let t = hasher.finalize();
+        let merge = merge.map_or(String::new(), |m| format!(r#" merge="{m}""#));
+        format!(
+            r#"<rom name="{name}"{merge} size="{}" crc="{}" sha1="{}"/>"#,
+            t.size,
+            hex(&t.crc32),
+            hex(&t.sha1),
+        )
+    }
+    let listxml = format!(
+        r#"<?xml version="1.0"?>
+<mame build="0.270">
+  <machine name="neogeo" isbios="yes" runnable="no">
+    <description>BIOS</description>
+    {bios_rom}
+  </machine>
+  <machine name="parent" romof="neogeo">
+    <description>Parent</description>
+    {bios_merge}
+    {parent_rom}
+    <device_ref name="z80"/>
+    <device_ref name="missing_dev"/>
+  </machine>
+  <machine name="child" cloneof="parent" romof="parent">
+    <description>Child</description>
+    {parent_merge}
+    {child_rom}
+    <device_ref name="z80"/>
+  </machine>
+  <machine name="z80" isdevice="yes" runnable="no">
+    <description>Z80</description>
+    {z80_rom}
+  </machine>
+</mame>
+"#,
+        bios_rom = mame_rom("bios.rom", bios, None),
+        bios_merge = mame_rom("bios.rom", bios, Some("bios.rom")),
+        parent_rom = mame_rom("parent.rom", parent, None),
+        parent_merge = mame_rom("parent.rom", parent, Some("parent.rom")),
+        child_rom = mame_rom("child.rom", child, None),
+        z80_rom = mame_rom("z80.rom", z80, None),
+    );
+    let dat_path = u.root.path().join("mame.xml");
+    fs::write(&dat_path, listxml).unwrap();
+    u.cmd()
+        .args(["dat", "import"])
+        .arg(&dat_path)
+        .args(["--provider", "mame", "--system", "arcade"])
+        .assert()
+        .success();
+
+    let manifest_paths = |name: &str| -> Vec<String> {
+        let manifest = u
+            .cmd()
+            .args(["view", "manifest", name, "--json"])
+            .assert()
+            .success();
+        let m: serde_json::Value =
+            serde_json::from_slice(&manifest.get_output().stdout).expect("json");
+        m["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["path"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    // Non-merged: standalone sets with device closure; no z80 set; the
+    // dangling ref is counted, not fatal.
+    u.cmd()
+        .args(["view", "define", "full", "mame/arcade"])
+        .args(["--template", "{entry}/{name}", "--mame-mode", "non-merged"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("mame non-merged"));
+    let eval = u
+        .cmd()
+        .args(["view", "eval", "full", "--json"])
+        .assert()
+        .success();
+    let out: serde_json::Value = serde_json::from_slice(&eval.get_output().stdout).expect("json");
+    assert_eq!(out["dangling_device_refs"], 1);
+    let mut paths = manifest_paths("full");
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec![
+            "child/child.rom",
+            "child/parent.rom",
+            "child/z80.rom",
+            "neogeo/bios.rom",
+            "parent/bios.rom",
+            "parent/parent.rom",
+            "parent/z80.rom",
+        ],
+        "standalone sets incl. inherited + device roms; no z80 set"
+    );
+
+    // Split: own roms only; devices and bios are their own sets.
+    u.cmd()
+        .args(["view", "define", "split", "mame/arcade"])
+        .args(["--template", "{entry}/{name}", "--mame-mode", "split"])
+        .assert()
+        .success();
+    u.cmd().args(["view", "eval", "split"]).assert().success();
+    let mut paths = manifest_paths("split");
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec![
+            "child/child.rom",
+            "neogeo/bios.rom",
+            "parent/parent.rom",
+            "z80/z80.rom",
+        ],
+        "merge-tagged roms live only in their parent sets"
+    );
+
+    // Merged: the clone folds into the parent set.
+    u.cmd()
+        .args(["view", "define", "merged", "mame/arcade"])
+        .args(["--template", "{entry}/{name}", "--mame-mode", "merged"])
+        .assert()
+        .success();
+    u.cmd().args(["view", "eval", "merged"]).assert().success();
+    let mut paths = manifest_paths("merged");
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec![
+            "neogeo/bios.rom",
+            "parent/child.rom",
+            "parent/parent.rom",
+            "z80/z80.rom",
+        ],
+        "clone roms fold into the parent set"
+    );
+
+    // Guardrails: mame mode on a non-listxml source refuses at eval;
+    // --mame-mode + --1g1r refuses at parse time.
+    u.cmd()
+        .args(["view", "define", "bad", "mame/arcade"])
+        .args(["--mame-mode", "merged", "--1g1r"])
+        .assert()
+        .failure();
+    u.cmd()
+        .args(["view", "define", "worse", "mame/arcade"])
+        .args(["--mame-mode", "zipped"])
+        .assert()
+        .code(2);
+}

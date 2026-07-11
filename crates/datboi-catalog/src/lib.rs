@@ -22,6 +22,7 @@ pub mod export;
 pub mod fat32;
 pub mod image;
 pub mod import;
+pub mod mame;
 pub mod profiles;
 pub mod rollup;
 pub mod selection;
@@ -34,6 +35,7 @@ pub use diff::{DatDiff, diff_source};
 pub use export::export_dat;
 pub use image::{ImageParams, ImageReport, mint_image, missing_inputs};
 pub use import::{ImportOptions, ImportReport, import_dat};
+pub use mame::MameMode;
 pub use profiles::{PROFILES, Profile};
 pub use rollup::refresh_rollups;
 pub use selection::SelectionPolicy;
@@ -62,6 +64,8 @@ pub enum CatalogError {
     Image(String),
     #[error("clonelist: {0}")]
     Clonelist(String),
+    #[error("mame mode: {0}")]
+    Mame(String),
     #[error("export: {0}")]
     Export(String),
     #[error("unknown profile {0} (see `datboi view profiles`)")]

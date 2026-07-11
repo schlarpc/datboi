@@ -272,6 +272,7 @@ fn view_def_image_params_round_trip() {
         selection: None,
         profile: None,
         image: None,
+        mame: None,
     };
     define_view(&fx.db, &base).expect("define");
     assert_eq!(

@@ -1524,6 +1524,7 @@ pub fn view_define(
     source: &str,
     template: &str,
     selection: Option<datboi_catalog::SelectionPolicy>,
+    mame: Option<datboi_catalog::MameMode>,
     profile: Option<String>,
     image: Option<datboi_catalog::ImageParams>,
     json: bool,
@@ -1537,6 +1538,7 @@ pub fn view_define(
         selection,
         profile,
         image,
+        mame,
     };
     datboi_catalog::define_view(&env.db, &def)?;
     if json {
@@ -1555,6 +1557,7 @@ pub fn view_define(
                     "partition": i.partition,
                     "label": i.label,
                 })),
+                "mame_mode": def.mame.map(datboi_catalog::MameMode::as_str),
             })
         );
     } else {
@@ -1575,8 +1578,12 @@ pub fn view_define(
             ),
             None => String::new(),
         };
+        let mame = match def.mame {
+            Some(m) => format!(", mame {}", m.as_str()),
+            None => String::new(),
+        };
         println!(
-            "defined view {name} over {source} (template {template:?}, selection {sel}, profile {prof}{img})"
+            "defined view {name} over {source} (template {template:?}, selection {sel}, profile {prof}{img}{mame})"
         );
     }
     Ok(ExitCode::SUCCESS)
@@ -1627,6 +1634,7 @@ pub fn view_eval(mut env: Env, name: &str, json: bool) -> anyhow::Result<ExitCod
                 "skipped_oversize": report.skipped_oversize,
                 "bucketed_dirs": report.bucketed_dirs,
                 "overfull_dirs": report.overfull_dirs,
+                "dangling_device_refs": report.dangling_device_refs,
             })
         );
     } else {
@@ -1650,6 +1658,12 @@ pub fn view_eval(mut env: Env, name: &str, json: bool) -> anyhow::Result<ExitCod
             extras.push_str(&format!(
                 ", {} dir(s) STILL over the profile entry cap",
                 report.overfull_dirs
+            ));
+        }
+        if report.dangling_device_refs > 0 {
+            extras.push_str(&format!(
+                ", {} dangling device_ref(s)",
+                report.dangling_device_refs
             ));
         }
         println!(

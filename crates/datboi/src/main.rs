@@ -269,6 +269,11 @@ enum ViewCommand {
         /// preferred-but-absent ones.
         #[arg(long, requires = "one_per_family")]
         strict: bool,
+        /// Render a MAME listxml source as merge-mode sets:
+        /// non-merged (standalone sets, device_ref closure), split,
+        /// or merged (clones fold into parents). Exclusive with --1g1r.
+        #[arg(long, conflicts_with = "one_per_family")]
+        mame_mode: Option<String>,
         /// Constraint profile for the target device (see `view profiles`).
         #[arg(long)]
         profile: Option<String>,
@@ -424,6 +429,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 regions,
                 langs,
                 strict,
+                mame_mode,
                 profile,
                 image,
                 image_cluster_size,
@@ -440,6 +446,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     langs,
                     strict,
                 }),
+                mame_mode
+                    .as_deref()
+                    .map(datboi_catalog::MameMode::parse)
+                    .transpose()?,
                 profile,
                 image.then_some(datboi_catalog::ImageParams {
                     cluster_size: image_cluster_size,

@@ -41,6 +41,8 @@ const DEFKEY_IMAGE: u64 = 8;
 const DEFKEY_IMAGE_CLUSTER: u64 = 9;
 const DEFKEY_IMAGE_PARTITION: u64 = 10;
 const DEFKEY_IMAGE_LABEL: u64 = 11;
+// Key 12 (additive): MAME merge mode, MameMode::code() vocabulary.
+const DEFKEY_MAME_MODE: u64 = 12;
 
 /// A named view definition (the mutable policy layer).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +60,9 @@ pub struct ViewDef {
     pub profile: Option<String>,
     /// `Some` = the view also reifies as a FAT32 image (D62).
     pub image: Option<crate::image::ImageParams>,
+    /// `Some` = render a MAME listxml source as merge-mode sets
+    /// (D31 deferred set; [`crate::mame`]). Exclusive with 1G1R.
+    pub mame: Option<crate::mame::MameMode>,
 }
 
 fn def_key(name: &str) -> String {
@@ -73,6 +78,13 @@ pub fn define_view(db: &Db, def: &ViewDef) -> Result<(), CatalogError> {
         && crate::profiles::profile(name).is_none()
     {
         return Err(CatalogError::UnknownProfile(name.clone()));
+    }
+    if def.mame.is_some() && def.selection.is_some() {
+        return Err(CatalogError::Mame(
+            "1G1R selection and MAME merge modes are mutually exclusive \
+             (families vs sets answer different questions)"
+                .into(),
+        ));
     }
     let mut pairs = vec![
         (DEFKEY_PROVIDER, Value::Text(def.provider.clone())),
@@ -110,6 +122,9 @@ pub fn define_view(db: &Db, def: &ViewDef) -> Result<(), CatalogError> {
             pairs.push((DEFKEY_IMAGE_LABEL, Value::Text(label.clone())));
         }
     }
+    if let Some(mode) = def.mame {
+        pairs.push((DEFKEY_MAME_MODE, Value::Uint(mode.code())));
+    }
     let bytes = cbor::encode(&Value::Map(pairs)).expect("static keys");
     db.config_set(&def_key(&def.name), &bytes)?;
     Ok(())
@@ -131,6 +146,7 @@ pub fn get_view(db: &Db, name: &str) -> Result<Option<ViewDef>, CatalogError> {
     let (mut mode, mut regions, mut langs, mut profile) = (0u64, Vec::new(), Vec::new(), None);
     let (mut image_mode, mut image_cluster, mut image_partition, mut image_label) =
         (0u64, None, 1u64, None);
+    let mut mame_mode = 0u64;
     for (key, value) in pairs {
         match (key, value) {
             (DEFKEY_PROVIDER, Value::Text(v)) => provider = Some(v),
@@ -151,6 +167,7 @@ pub fn get_view(db: &Db, name: &str) -> Result<Option<ViewDef>, CatalogError> {
             }
             (DEFKEY_IMAGE_PARTITION, Value::Uint(v)) => image_partition = v,
             (DEFKEY_IMAGE_LABEL, Value::Text(v)) => image_label = Some(v),
+            (DEFKEY_MAME_MODE, Value::Uint(v)) => mame_mode = v,
             _ => return Err(CatalogError::Corrupt("view def")),
         }
     }
@@ -179,6 +196,12 @@ pub fn get_view(db: &Db, name: &str) -> Result<Option<ViewDef>, CatalogError> {
         }
         _ => return Err(CatalogError::Corrupt("view def")),
     };
+    let mame = match mame_mode {
+        0 => None,
+        code => {
+            Some(crate::mame::MameMode::from_code(code).ok_or(CatalogError::Corrupt("view def"))?)
+        }
+    };
     Ok(Some(ViewDef {
         name: name.to_owned(),
         provider: provider.ok_or(CatalogError::Corrupt("view def"))?,
@@ -187,6 +210,7 @@ pub fn get_view(db: &Db, name: &str) -> Result<Option<ViewDef>, CatalogError> {
         selection,
         profile,
         image,
+        mame,
     }))
 }
 
@@ -231,6 +255,9 @@ pub struct EvalReport {
     /// Directories STILL exceeding the entry cap after bucketing
     /// (rows kept; the report is the remedy).
     pub overfull_dirs: usize,
+    /// MAME modes only: `device_ref` names with no entry in the
+    /// revision (real listxml has them; counted, never fatal).
+    pub dangling_device_refs: usize,
 }
 
 /// Evaluate a definition into an immutable snapshot, publish it (meta
@@ -306,7 +333,32 @@ pub fn evaluate_view(
         size: u64,
     }
     let mut picked: Vec<Picked> = Vec::new();
-    {
+    let mut dangling_device_refs = 0usize;
+    if let Some(mode) = def.mame {
+        // MAME merge-mode rendering (D31 deferred set, now in): the
+        // mame module computes set membership; the shared layout /
+        // profile / collision path below is unchanged.
+        let format: i64 = db.cache().query_row(
+            "SELECT format FROM dat_revision WHERE revision_id = ?1",
+            params![revision_id],
+            |row| row.get(0),
+        )?;
+        if format != crate::import::format_code(datboi_formats::DatFormat::MameListXml) {
+            return Err(CatalogError::Mame(format!(
+                "view {:?} sets a merge mode but {}/{} is not a MAME listxml source",
+                def.name, def.provider, def.system
+            )));
+        }
+        let render = crate::mame::render_sets(db, revision_id, mode)?;
+        dangling_device_refs = render.dangling_device_refs;
+        picked.extend(render.rows.into_iter().map(|r| Picked {
+            entry_id: r.entry_id,
+            entry: r.set_name,
+            claim: r.file_name,
+            hash: r.hash,
+            size: r.size,
+        }));
+    } else {
         let conn = db.cache();
         let mut stmt = conn.prepare(
             "SELECT e.entry_id, e.name, rc.name, MIN(b.hash), MAX(b.size)
@@ -438,6 +490,7 @@ pub fn evaluate_view(
         skipped_oversize,
         bucketed_dirs,
         overfull_dirs,
+        dangling_device_refs,
     })
 }
 
