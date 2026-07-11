@@ -1,0 +1,57 @@
+msgid ""
+msgstr ""
+"Plural-Forms: nplurals=2; plural=n == 1 ? 0 : 1;\n"
+"Source-Language: en\n"
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#: src/App.svelte
+msgctxt "compiled shelf"
+msgid "Views"
+msgstr "Views"
+
+#: src/App.svelte
+msgctxt "storage state"
+msgid "verified"
+msgstr "verified"
+
+#: src/App.svelte
+msgid "bytes on hand, hash checked against the catalog"
+msgstr "bytes on hand, hash checked against the catalog"
+
+#: src/App.svelte
+msgctxt "storage state"
+msgid "claimed"
+msgstr "claimed"
+
+#: src/App.svelte
+msgid "bytes rebuildable, not yet re-verified"
+msgstr "bytes rebuildable, not yet re-verified"
+
+#: src/App.svelte
+msgctxt "storage state"
+msgid "missing"
+msgstr "missing"
+
+#: src/App.svelte
+msgid "no blob or claim names this hash"
+msgstr "no blob or claim names this hash"
+
+#: src/App.svelte
+msgctxt "storage state"
+msgid "no dump"
+msgstr "no dump"
+
+#: src/App.svelte
+msgid "the catalog marks this entry as never dumped — nothing to have"
+msgstr "the catalog marks this entry as never dumped — nothing to have"
+
+#: src/App.svelte
+msgid "The shelf"
+msgstr "The shelf"
+
+#: src/App.svelte
+msgid "dat/rom management on content-addressed storage"
+msgstr "dat/rom management on content-addressed storage"

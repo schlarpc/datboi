@@ -1,0 +1,14 @@
+# npm install output (nix devshell symlinks this from the store instead)
+node_modules/
+
+# vite build output (embedded into the datboi binary via nix — D66/D67)
+dist/
+
+# vite cache (relocated from node_modules/.vite; see vite.config.ts)
+.vite/
+
+# wuchale-generated files: only the .po catalogs are sources of truth.
+# Loaders, the data module, and compiled catalogs are (re)written at startup.
+src/locales/.wuchale/
+src/locales/data.js
+src/locales/*.loader*.js

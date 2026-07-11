@@ -235,6 +235,58 @@
         DATBOI_COMPONENTS_DIR = "${transformsFor system}/lib";
       };
 
+      # ---- web UI (web/, D67) ----
+      #
+      # web/ is a standalone npm project with its own package-lock.json —
+      # the lockfile boundary again (D54/D66): its derivation source is a
+      # fileset over web/ ALONE, so a rust edit can never invalidate the
+      # web build and a web edit never touches cargoArtifacts. Excluding
+      # install/build output is belt-and-braces (untracked paths never
+      # reach a flake's source anyway, hence maybeMissing).
+      webSrc = nixpkgs.lib.fileset.toSource {
+        root = ./web;
+        fileset = nixpkgs.lib.fileset.difference ./web (nixpkgs.lib.fileset.unions [
+          (nixpkgs.lib.fileset.maybeMissing ./web/node_modules)
+          (nixpkgs.lib.fileset.maybeMissing ./web/dist)
+          (nixpkgs.lib.fileset.maybeMissing ./web/.vite)
+        ]);
+      };
+
+      webPackageJson = builtins.fromJSON (builtins.readFile ./web/package.json);
+
+      # node_modules built purely from package-lock.json (rof-gui pattern,
+      # docs/50-infra.md) — no npmDepsHash to churn on every lockfile edit.
+      webNodeModulesFor = system: (pkgsFor system).importNpmLock.buildNodeModules {
+        npmRoot = webSrc;
+        inherit (pkgsFor system) nodejs;
+      };
+
+      # The vite dist the datboi binary will embed and serve at / with an
+      # SPA fallback (DATBOI_WEB_DIST, wired like DATBOI_COMPONENTS_DIR —
+      # D66/D67). Tests live in checks.web-test, not here: the rust build
+      # will depend on this derivation, and UI test churn must not sit on
+      # that path.
+      webFor = system:
+        let pkgs = pkgsFor system;
+        in
+        pkgs.stdenv.mkDerivation {
+          pname = "datboi-web";
+          version = webPackageJson.version;
+          src = webSrc;
+          nativeBuildInputs = [ pkgs.nodejs ];
+          buildPhase = ''
+            runHook preBuild
+            ln -s ${webNodeModulesFor system}/node_modules node_modules
+            npm run build
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            cp -r dist $out
+            runHook postInstall
+          '';
+        };
+
     in
     {
       packages = eachSystem (system:
@@ -251,6 +303,8 @@
           datboi = self.packages.${system}.default;
 
           transforms = transformsFor system;
+
+          web = webFor system;
         });
 
       checks = eachSystem (system:
@@ -262,6 +316,31 @@
         {
           build = self.packages.${system}.default;
           transforms = self.packages.${system}.transforms;
+          web = self.packages.${system}.web;
+
+          # svelte-check + vitest over the same fileset source. `npm run
+          # extract` first: the wuchale loader modules are generated files
+          # (gitignored), and svelte-check needs them on disk to resolve
+          # App.svelte's loader import (vitest regenerates them itself via
+          # the vite plugin; extraction is deterministic and offline, D67).
+          web-test =
+            let pkgs = pkgsFor system;
+            in
+            pkgs.stdenv.mkDerivation {
+              pname = "datboi-web-test";
+              version = webPackageJson.version;
+              src = webSrc;
+              nativeBuildInputs = [ pkgs.nodejs ];
+              buildPhase = ''
+                runHook preBuild
+                ln -s ${webNodeModulesFor system}/node_modules node_modules
+                npm run extract
+                npm run check
+                npm test
+                runHook postBuild
+              '';
+              installPhase = "touch $out";
+            };
 
           clippy = craneLib.cargoClippy (hostArgs // componentsEnvFor system // {
             cargoArtifacts = hostArtifacts;
@@ -330,7 +409,18 @@
               # FAT32 image synthesis gate (D62 fsck-in-CI)
               pkgs.dosfstools
               nix-direnv.packages.${system}.default
+              # web/ toolchain (D67): the link hook symlinks the store-built
+              # node_modules into web/ on shell entry (npmRoot below, rof-gui
+              # pattern). web/.npmrc has package-lock-only=true, so
+              # `npm install` only edits the lockfile; re-enter the shell to
+              # realize new deps.
+              pkgs.nodejs
+              pkgs.importNpmLock.hooks.linkNodeModulesHook
             ];
+
+            npmDeps = webNodeModulesFor system;
+            # Relative to where the shell is entered — the repo root (direnv).
+            npmRoot = "web";
 
             RUST_BACKTRACE = "1";
             RUST_LOG = "debug";
