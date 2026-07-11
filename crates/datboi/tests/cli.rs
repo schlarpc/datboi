@@ -1043,3 +1043,96 @@ fn view_define_eval_manifest() {
     assert_eq!(l["views"][0]["name"], "everdrive");
     assert_eq!(l["views"][0]["snapshot"], out2["snapshot"]);
 }
+
+/// D62 end to end through the real binary: define --image, eval,
+/// `view image --out`, then fsck the exported bytes and re-mint for
+/// idempotence. The clobber warning must always appear.
+#[test]
+fn view_image_end_to_end() {
+    let u = Universe::new();
+    fs::create_dir_all(u.src()).unwrap();
+    let alpha = b"alpha rom content".as_slice();
+    let beta = b"beta rom content, somewhat longer".as_slice();
+    fs::write(u.src().join("alpha.gba"), alpha).unwrap();
+    fs::write(u.src().join("beta.gba"), beta).unwrap();
+    u.cmd().arg("ingest").arg(u.src()).assert().success();
+
+    let games = format!(
+        r#"  <game name="Alpha"><description>Alpha</description>{}</game>
+  <game name="Beta"><description>Beta</description>{}</game>"#,
+        rom_xml("alpha.gba", alpha),
+        rom_xml("beta.gba", beta),
+    );
+    let dat_path = u.root.path().join("fixture.dat");
+    fs::write(&dat_path, dat_xml("Test GBA", &games)).unwrap();
+    u.cmd()
+        .args(["dat", "import"])
+        .arg(&dat_path)
+        .args(["--provider", "test", "--system", "gba"])
+        .assert()
+        .success();
+
+    u.cmd()
+        .args(["view", "define", "card", "test/gba"])
+        .args(["--template", "{name}", "--profile", "fat32"])
+        .args(["--image", "--image-cluster-size", "512"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("image fat32"));
+    u.cmd().args(["view", "eval", "card"]).assert().success();
+
+    let img_path = u.root.path().join("card.img");
+    let mint = u
+        .cmd()
+        .args(["view", "image", "card", "--json", "--out"])
+        .arg(&img_path)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("CLOBBERS on-device saves"));
+    let m: serde_json::Value = serde_json::from_slice(&mint.get_output().stdout).expect("json");
+    assert_eq!(m["rows"], 2);
+    assert_eq!(m["obao_stored"], true);
+    let size = m["size"].as_u64().expect("size");
+    assert_eq!(fs::metadata(&img_path).expect("exported").len(), size);
+
+    // The MBR default: partition table present at sector 0.
+    let image = fs::read(&img_path).expect("read image");
+    assert_eq!(&image[510..512], &[0x55, 0xAA]);
+    assert_eq!(image[0x1BE + 4], 0x0C, "FAT32-LBA partition");
+
+    // fsck the filesystem itself (fsck.vfat takes no offset: hand it
+    // the partition slice). Skips gracefully when fsck.vfat is absent;
+    // nix CI enforces via DATBOI_REQUIRE_FSCK.
+    let slice_path = u.root.path().join("partition.img");
+    fs::write(&slice_path, &image[1 << 20..]).expect("write slice");
+    match Command::new("fsck.vfat")
+        .arg("-n")
+        .arg(&slice_path)
+        .output()
+    {
+        Ok(out) => assert!(
+            out.status.success(),
+            "fsck.vfat: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            assert!(
+                std::env::var_os("DATBOI_REQUIRE_FSCK").is_none_or(|v| v != "1"),
+                "DATBOI_REQUIRE_FSCK=1 but fsck.vfat is not installed"
+            );
+            eprintln!("skipping fsck.vfat (not installed)");
+        }
+        Err(e) => panic!("running fsck.vfat: {e}"),
+    }
+
+    // Re-mint without eval: content-addressed no-op, same image hash.
+    let remint = u
+        .cmd()
+        .args(["view", "image", "card", "--json"])
+        .assert()
+        .success();
+    let m2: serde_json::Value = serde_json::from_slice(&remint.get_output().stdout).expect("json");
+    assert_eq!(m2["image"], m["image"]);
+    assert_eq!(m2["recipe"], m["recipe"]);
+}

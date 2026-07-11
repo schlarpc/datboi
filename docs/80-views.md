@@ -48,7 +48,7 @@ snapshots are never evicted.
 | In-process userspace NFSv3 (nfsserve/nfs3_server lineage, VFS trait) | primary mount, phase 2 |
 | FUSE (fuser) | optional where available, never required |
 | SMB | sidecar Samba (generated smb.conf, NT1 only on isolated retro share) initially; **own read-only memory-safe SMB1 server** for OPL/OG-Xbox is an accepted future workstream (narrow, documented op subset; safer than NT1-in-Samba) |
-| FAT32 image synthesis (fatfs) | day-one-ish output transform; virtual-image mode maps FAT data extents affinely onto recipe outputs — stream a full SD image without materializing files |
+| FAT32 image synthesis | **shipped 2026-07-10** (D62/D63): hand-rolled layout math in the policy tier mints one `assemble@1` recipe per image (skeleton blobs + cluster-aligned content windows + fill); `view image <name> [--out]`; MBR default, params on the ViewDef (CBOR keys 8–11); obao blessed at mint, D63 carve-out serves un-blessed giants; fsck-in-CI + independent fatfs read-back mandatory (the `fatfs` crate is the *oracle*, never the writer) |
 | SD sync (`view sync <view> /media/sd`) | cheap, day-one-ish; flashcart users sync, not mount |
 | iSCSI | rejected for now (no credible Rust server; virtual-image machinery covers block-device needs if ever exported via nbd/ublk) |
 

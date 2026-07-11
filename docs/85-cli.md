@@ -42,7 +42,13 @@ datboi snapshot                      # mint a signed state snapshot (D15/D43);
 - M3 (shrink): `datboi gc plan|run`, `datboi aggregate`, `datboi convert`
   (in-store representation).
 - M4: `datboi view create|eval|serve|sync|image`, `datboi select`
-  (1G1R dry-runs).
+  (1G1R dry-runs). Shipped `view image` shape (2026-07-10, D62):
+  `view image <name> [--out <path>] [--no-obao] [--json]` — mints the
+  FAT32 image recipe from the current snapshot, flips `image/<name>`,
+  optionally exports bytes through the verified range path; always
+  warns that reflashing clobbers on-device saves. Image params ride
+  `view define --image [--image-cluster-size N]
+  [--image-no-partition] [--image-label L]`.
 - M5: `datboi user invite|list`, `datboi token`.
 - M6: `datboi peer add|list`, `datboi channel publish|subscribe`,
   `datboi fetch --from-peer`.

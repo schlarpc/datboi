@@ -108,12 +108,17 @@ recovery-equivalence as a property test.
   defs/tags ride the statesnap — *shipped 2026-07-09* (additive payload
   keys 8/9, recovery drill proves it); all gates ruled 2026-07-10
   (D55–D63 decision session — nothing in M4 waits on a ruling).
-  REMAINING: FAT32 image synthesis (D62 reified views + D63 affine
-  carve-out; fsck-in-CI mandatory), MAME merge-mode rendering +
-  device_ref closure + softlist fidelity (D31 deferred set), retool
-  clonelists + strict 1G1R mode (D57), ruled riders (D56 headroom
-  guard, D59 chunking eligibility, D60 config shape, D61
-  rehabilitate). ADDED TRACK (D58, pulled from M7): unrar-as-wasm
+  FAT32 image synthesis — *shipped 2026-07-10* (D62/D63 in full:
+  pure layout math in the policy tier, one `assemble@1` recipe per
+  image, `view image` CLI with `--out` export, obao blessed at mint
+  by default, D63 carve-out + seek-equivalence gate + predicate
+  refusal matrix, fsck-in-CI via dosfstools + independent fatfs
+  read-back, evictor pinned-root guard for image/* and view/* tags).
+  REMAINING: MAME merge-mode rendering + device_ref closure +
+  softlist fidelity (D31 deferred set), retool clonelists + strict
+  1G1R mode (D57), ruled riders (D56 headroom guard, D59 chunking
+  eligibility, D60 config shape, D61 rehabilitate), profile
+  name-fitting pipeline + dir bucketing (80-views.md). ADDED TRACK (D58, pulled from M7): unrar-as-wasm
   extractor component — C-to-wasm lane lands now, rar members gain
   derive recipes and become evictable.
 - **M5 — "Other people can touch it"**: axum API, invites + passwords

@@ -80,7 +80,8 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
 
 - ~~Reified views: shares as projections, images as recipes~~
   **ratified 2026-07-10 as D62** (M4 scope: read-only FAT32
-  synthesis; pinned image params; fsck-in-CI mandatory).
+  synthesis; pinned image params; fsck-in-CI mandatory); **shipped
+  the same day** (see position note).
 - **Writable overlays + dirty-image diff-back** (split out of the
   D62 ratification, still real unbuilt design): devices write saves
   into shares and into flashed images; the datboi-shaped answer is
@@ -113,8 +114,46 @@ strict mode + retool clonelist consumption are M4 work items).
 
 ## Next sessions (pick up here)
 
-**Position as of 2026-07-10**: **DECISION SESSION — every open ruling
-in the project resolved (D55–D63)**; no unruled gates remain. Ruled:
+**Position as of 2026-07-10 (build session, after the decision
+session below)**: **FAT32 IMAGE SYNTHESIS SHIPPED — D62 + D63
+implemented in full.** Eight commits: (1) `fat32.rs` pure layout math
+in datboi-catalog (MBR default, 32 reserved sectors, strictly
+sequential chains so every file is one contiguous cluster-aligned
+window, LFN + deterministic ~N tails, fixed 2000-01-01 timestamps,
+serial/disk-signature from snapshot hash, golden-pinned skeletons);
+(2) `image.rs` mint — one `assemble@1` recipe per image, skeleton
+blobs + inline literal sectors + content windows + fill, output hash
+AND obao computed in one streaming pass (blessed at mint by default,
+ruled), `image/<name>` tag = D33 flip + GC root, idempotent; (3)
+ViewDef image params (additive CBOR keys 8–11) + `view image` CLI
+(--out exports through verified windows; always prints the
+clobbers-saves warning); (4) the D63 carve-out in `serve_range` —
+plan-then-sidecar, verify-when-sidecar-exists precedence, tight
+in-code predicate (assemble-only, LocalIngest, Affine,
+Verified/ReplayedLocal, resident store-verified leaves), leaves
+served through per-read bao re-validation (`VerifiedRandom`),
+`bless_output` promotion; (5) the seek-equivalence gate (boundary ±1
++ seeded random ranges vs sequential materialization) + predicate
+refusal matrix (computed node / Peer source / unverified leaf /
+non-resident leaf) + blessing test; (6) fsck-in-CI — dosfstools in
+the nix test check with DATBOI_REQUIRE_FSCK=1 (CI can never skip),
+independent `fatfs`-crate read-back tree-diff vs the manifest; (7)
+the evictor pinned-root guard evict.rs promised (`image/*` inputs +
+`view/*` opaque rows, `Blocked::PinnedByView`, strict on undecodable
+pins); (8) docs. End-to-end CLI drive in cli.rs (define --image →
+eval → image --out → fsck clean → idempotent re-mint). Session
+rulings (AskUserQuestion): separate `view image` command (not inside
+eval — eval stays residency-free), MBR on by default, obao stored at
+mint by default (`--no-obao` opts into carve-out serving), GC guard
+included now. NEXT (M4 remainder): MAME merge-mode rendering (D31
+deferred set), retool clonelists + strict 1G1R (D57), ruled riders
+(D56 headroom guard, D59 eligibility narrowing, D60 config shape,
+D61 rehabilitate), name-fitting pipeline + dir bucketing
+(80-views.md); then the D58 unrar-wasm lane.
+
+**Previous position (2026-07-10, decision session)**: **DECISION
+SESSION — every open ruling in the project resolved (D55–D63)**; no
+unruled gates remain. Ruled:
 D55 exact-hash identity/lineage/explicit-migration (note: component
 attribution itself was ALREADY ruled as D54 on 07-07 — the
 priority-list entry below it was stale; decisions.md is authoritative
@@ -163,8 +202,8 @@ merge-mode rendering (D31 deferred set), retool clonelist consumption.
 
 Priority order:
 
-1. **M4 remainder** (all gates ruled 2026-07-10): FAT32 image
-   synthesis (D62/D63), MAME merge-mode rendering (D31 deferred set),
+1. **M4 remainder**: ~~FAT32 image synthesis (D62/D63)~~ **shipped
+   2026-07-10**; MAME merge-mode rendering (D31 deferred set),
    retool clonelists + strict 1G1R mode (D57), plus the ruled riders
    (D56 headroom guard, D59 eligibility narrowing, D60 config shape,
    D61 rehabilitate) and the profile name-fitting pipeline +
