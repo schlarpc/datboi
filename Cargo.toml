@@ -8,6 +8,12 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# Bare `cargo run` means the CLI. Also scopes bare build/test to the
+# datboi dep tree (build coverage is unchanged — the CLI pulls in every
+# member — and CI passes --workspace to nextest/clippy so check
+# coverage can't shrink) and keeps the gen-openapi dev tool out of the
+# nix package's bin/.
+default-members = ["crates/datboi"]
 exclude = [
   "crates/datboi-xf-cso",
   "crates/datboi-xf-ecm",

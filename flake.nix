@@ -440,7 +440,9 @@
 
           clippy = craneLib.cargoClippy (hostArgs // componentsEnvFor system // webEnvFor system // {
             cargoArtifacts = hostArtifacts;
-            cargoClippyExtraArgs = "--all-targets -- --deny warnings";
+            # --workspace: default-members is just `cargo run` ergonomics
+            # (root Cargo.toml); lints must cover every member.
+            cargoClippyExtraArgs = "--workspace --all-targets -- --deny warnings";
           });
 
           fmt = craneLib.cargoFmt {
@@ -451,6 +453,8 @@
             cargoArtifacts = hostArtifacts;
             partitions = 1;
             partitionType = "count";
+            # --workspace: see the clippy note above.
+            cargoNextestExtraArgs = "--workspace";
             # The D62 fsck-in-CI gate: fsck.vfat must exist and MUST run
             # (the test skips gracefully outside nix; CI never skips).
             nativeCheckInputs = [ (pkgsFor system).dosfstools ];
