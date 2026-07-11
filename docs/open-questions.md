@@ -134,10 +134,13 @@ strict mode + retool clonelist consumption are M4 work items).
 - **Quarantine review screen** was never designed (the wireframes
   link `review →` into nothing). Storage page ships the count +
   list; the review/resolve flow needs design.
-- **Shared API types**: 50-infra sketches "a `datboi-api` crate
-  generates TS". M5 hand-writes the TS types next to the client with
-  integration tests pinning the JSON shape (no serde derive in the
-  codebase makes codegen non-trivial). Revisit if drift bites.
+- ~~Shared API types~~ ruled 2026-07-11 (same day) as **D69**: the
+  derive rule is scoped to identity bytes; a typed `datboi-api`
+  crate owns every /v1 shape, emits checked-in OpenAPI behind a
+  staleness gate, and the web build generates TS from it. The M5
+  stopgap (hand-written TS pinned by integration tests) is dead.
+  Browser hardening (CSP + Fetch-Metadata CSRF) ruled alongside as
+  **D70**.
 - **Scrub runs and verify methods aren't recorded**: the index keeps
   per-blob `verified_at` only — no method, no scrub-run ledger — so
   `/v1/storage` cannot report last-scrub and the entry drawer's
