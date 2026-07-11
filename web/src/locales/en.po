@@ -82,6 +82,7 @@ msgstr "# datboi missing-list · {0} {1} {2}"
 #. 0: error
 #. 0: error
 #. 0: error
+#. 0: failure
 #. 0: error
 #. 0: otherError
 #. 0: error
@@ -90,6 +91,7 @@ msgstr "# datboi missing-list · {0} {1} {2}"
 #: src/screens/Admin.svelte
 #: src/screens/Audit.svelte
 #: src/screens/Browse.svelte
+#: src/screens/Ingest.svelte
 #: src/screens/Library.svelte
 #: src/screens/Login.svelte
 #: src/screens/Shelves.svelte
@@ -327,9 +329,8 @@ msgstr "healthy"
 msgid "done ✓"
 msgstr "done ✓"
 
-#: src/lib/components/JobsTray.svelte
-msgid "recent activity log — needs a job registry"
-msgstr "recent activity log — needs a job registry"
+#~ msgid "recent activity log — needs a job registry"
+#~ msgstr "recent activity log — needs a job registry"
 
 #. 0: jobs.length
 #: src/lib/components/JobsTray.svelte
@@ -495,35 +496,28 @@ msgstr "not surfaced by the API yet — the CLI knows"
 msgid "hash and claim content into the store"
 msgstr "hash and claim content into the store"
 
-#: src/screens/Ingest.svelte
-msgctxt "ingest custody"
-msgid "copy — source untouched"
-msgstr "copy — source untouched"
+#~ msgctxt "ingest custody"
+#~ msgid "copy — source untouched"
+#~ msgstr "copy — source untouched"
 
-#: src/screens/Ingest.svelte
-msgid "default"
-msgstr "default"
+#~ msgid "default"
+#~ msgstr "default"
 
-#: src/screens/Ingest.svelte
-msgctxt "ingest custody"
-msgid "move — destroys source layout"
-msgstr "move — destroys source layout"
+#~ msgctxt "ingest custody"
+#~ msgid "move — destroys source layout"
+#~ msgstr "move — destroys source layout"
 
-#: src/screens/Ingest.svelte
-msgid "not implemented yet"
-msgstr "not implemented yet"
+#~ msgid "not implemented yet"
+#~ msgstr "not implemented yet"
 
-#: src/screens/Ingest.svelte
-msgid "WHERE & HOW"
-msgstr "WHERE & HOW"
+#~ msgid "WHERE & HOW"
+#~ msgstr "WHERE & HOW"
 
-#: src/screens/Ingest.svelte
-msgid "ingest is CLI-only for now — run:"
-msgstr "ingest is CLI-only for now — run:"
+#~ msgid "ingest is CLI-only for now — run:"
+#~ msgstr "ingest is CLI-only for now — run:"
 
-#: src/screens/Ingest.svelte
-msgid "progress and the report (new blobs · dupes · archive members · refused) print in the CLI today — they land here when the daemon grows a job registry"
-msgstr "progress and the report (new blobs · dupes · archive members · refused) print in the CLI today — they land here when the daemon grows a job registry"
+#~ msgid "progress and the report (new blobs · dupes · archive members · refused) print in the CLI today — they land here when the daemon grows a job registry"
+#~ msgstr "progress and the report (new blobs · dupes · archive members · refused) print in the CLI today — they land here when the daemon grows a job registry"
 
 #: src/screens/Storage.svelte
 msgid "what the store holds vs what it represents"
@@ -915,3 +909,86 @@ msgstr "imported"
 msgctxt "dat import result"
 msgid "refused"
 msgstr "refused"
+
+#. 0: pct(uploadedBytes, totalBytes)
+#: src/screens/Ingest.svelte
+msgid "uploading… {0}%"
+msgstr "uploading… {0}%"
+
+#: src/screens/Ingest.svelte
+msgid "ingesting…"
+msgstr "ingesting…"
+
+#: src/screens/Ingest.svelte
+msgid "drop ROMs, zips, or folders here — or click to pick files"
+msgstr "drop ROMs, zips, or folders here — or click to pick files"
+
+#: src/screens/Ingest.svelte
+msgid "…or pick a whole folder"
+msgstr "…or pick a whole folder"
+
+#: src/screens/Ingest.svelte
+msgctxt "upload state"
+msgid "staged ✓"
+msgstr "staged ✓"
+
+#: src/screens/Ingest.svelte
+msgctxt "upload state"
+msgid "queued"
+msgstr "queued"
+
+#: src/screens/Ingest.svelte
+msgid "UPLOADS"
+msgstr "UPLOADS"
+
+#. 0: job.current
+#: src/screens/Ingest.svelte
+msgid "— processing {0}…"
+msgstr "— processing {0}…"
+
+#: src/screens/Ingest.svelte
+msgid "INGESTING"
+msgstr "INGESTING"
+
+#. 0: job.files_done; 1: job.files_total
+#: src/screens/Ingest.svelte
+msgid "{0} / {1} files <0/>"
+msgstr "{0} / {1} files <0/>"
+
+#: src/screens/Ingest.svelte
+msgctxt "files the pipeline would not take"
+msgid "refused"
+msgstr "refused"
+
+#: src/screens/Ingest.svelte
+msgid "<0/> new blobs"
+msgstr "<0/> new blobs"
+
+#: src/screens/Ingest.svelte
+msgid "<0/> dupes"
+msgstr "<0/> dupes"
+
+#: src/screens/Ingest.svelte
+msgid "<0/> archive members"
+msgstr "<0/> archive members"
+
+#. 0: job.report.members_claimed.toLocaleString(); 1: job.report.members_extracted.toLocaleString()
+#: src/screens/Ingest.svelte
+msgid "{0} claimed in place · {1} extracted"
+msgstr "{0} claimed in place · {1} extracted"
+
+#: src/screens/Ingest.svelte
+msgid "REPORT"
+msgstr "REPORT"
+
+#: src/screens/Ingest.svelte
+msgid "uploads are copies — your originals stay where they are. for content already on the NAS, ingest in place instead:"
+msgstr "uploads are copies — your originals stay where they are. for content already on the NAS, ingest in place instead:"
+
+#: src/screens/Ingest.svelte
+msgid "NAS-local ingest runs in the CLI:"
+msgstr "NAS-local ingest runs in the CLI:"
+
+#: src/lib/components/JobsTray.svelte
+msgid "recent activity log — needs a durable job table"
+msgstr "recent activity log — needs a durable job table"

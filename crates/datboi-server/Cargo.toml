@@ -20,7 +20,11 @@ datboi-api.workspace = true
 datboi-catalog.workspace = true
 datboi-core.workspace = true
 datboi-exec.workspace = true
+# Detector type for the loaded skipper set (App carries it).
+datboi-formats.workspace = true
 datboi-index.workspace = true
+# The upload-ingest job runs the same pipeline `datboi ingest` does.
+datboi-ingest.workspace = true
 datboi-store-fs.workspace = true
 dav-server.workspace = true
 futures-core.workspace = true
@@ -36,6 +40,8 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+# stored_zip fixture builder for the ingest integration test.
+crc32fast.workspace = true
 tempfile.workspace = true
 ureq.workspace = true
 

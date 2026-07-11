@@ -709,6 +709,30 @@ impl Store {
             self.temp_token,
         ))
     }
+
+    /// A fresh staging path in tmp/ for externally-produced bytes (the
+    /// daemon's upload ingest). Same uniqueness discipline as put
+    /// temps (pid + open-token + counter) and the same sweep
+    /// ([`Self::cleanup_temp`] — which never recurses, so staged
+    /// uploads MUST stay flat files). `hint` (the original leaf name,
+    /// sanitized to `[A-Za-z0-9._-]`, ≤64 chars) keeps downstream path
+    /// labels (rescan cache, route provenance) legible.
+    pub fn staging_path(&self, hint: &str) -> PathBuf {
+        let n = self.temp_counter.fetch_add(1, Ordering::Relaxed);
+        let hint: String = hint
+            .chars()
+            .map(|c| match c {
+                'A'..='Z' | 'a'..='z' | '0'..='9' | '.' | '_' | '-' => c,
+                _ => '_',
+            })
+            .take(64)
+            .collect();
+        self.root.join("tmp").join(format!(
+            "{:08x}-{:016x}-{n:x}-{hint}.temp",
+            std::process::id(),
+            self.temp_token,
+        ))
+    }
 }
 
 /// Read-side tee: every byte pulled by the outboard builder also lands in
@@ -891,6 +915,30 @@ mod tests {
             }
         }
         out
+    }
+
+    /// Staged uploads live in tmp/ under sanitized names and are swept
+    /// exactly like put temps.
+    #[test]
+    fn staging_paths_are_flat_sanitized_and_swept() {
+        let (_dir, store) = temp_store();
+        let path = store.staging_path("../we ird/Namé (v1).zip");
+        assert_eq!(
+            path.parent().expect("parent").file_name(),
+            Some(std::ffi::OsStr::new("tmp")),
+            "flat file directly in tmp/: {path:?}"
+        );
+        let name = path.file_name().expect("name").to_str().expect("utf8");
+        assert!(
+            name.ends_with("-.._we_ird_Nam___v1_.zip.temp"),
+            "sanitized hint survives recognizably: {name}"
+        );
+        // Distinct per call even for the same hint.
+        assert_ne!(path, store.staging_path("../we ird/Namé (v1).zip"));
+        fs::write(&path, b"staged").expect("write");
+        let removed = store.cleanup_temp(Duration::ZERO).expect("sweep");
+        assert_eq!(removed, 1);
+        assert!(!path.exists(), "swept with the rest of tmp/");
     }
 
     #[test]

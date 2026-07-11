@@ -550,7 +550,14 @@ mod tests {
             ];
             mint_snapshot(&store, &db, rows, 1_780_000_000)
         };
-        let app = App::open(&store_root, &db_dir).expect("app");
+        let app = App::open(&crate::Config {
+            store_root,
+            db_dir,
+            listen: "127.0.0.1:0".parse().expect("addr"),
+            nfs_listen: None,
+            detectors_dir: None,
+        })
+        .expect("app");
         let fs = NfsFs::new(Arc::clone(&app));
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()

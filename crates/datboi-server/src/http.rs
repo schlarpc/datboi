@@ -25,7 +25,7 @@ use axum::{Extension, Router};
 use datboi_core::hash::Blake3;
 use serde_json::json;
 
-use crate::{admin, api, dats};
+use crate::{admin, api, dats, ingest};
 
 use crate::App;
 use crate::auth::{self, Caller};
@@ -62,12 +62,21 @@ pub(crate) fn router(app: Arc<App>) -> Router {
             "/v1/dats/import",
             post(dats::import).layer(DefaultBodyLimit::max(dats::BODY_LIMIT)),
         )
+        // Ingest uploads STREAM to staging (never buffered), so no
+        // body cap — the D56-style headroom guard in the handler is
+        // the real limit.
+        .route(
+            "/v1/ingest/uploads",
+            post(ingest::upload).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/v1/ingest", post(ingest::start))
         .route("/v1/views", get(api::views))
         .route("/v1/views/{name}", get(api::view_detail))
         .route("/v1/views/{name}/files", get(api::view_files))
         .route("/v1/views/{name}/image", get(view_image))
         .route("/v1/storage", get(api::storage))
         .route("/v1/jobs", get(api::jobs))
+        .route("/v1/jobs/{id}", get(api::job_detail))
         .route("/v1/admin/users", get(admin::users))
         .route("/v1/admin/invites", post(admin::invite_create))
         .route(

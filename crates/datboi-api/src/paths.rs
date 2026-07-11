@@ -23,9 +23,10 @@ use utoipa::{Modify, OpenApi, ToSchema};
 
 use crate::{
     AdminUsersResponse, ApiError, DatImportResponse, EntriesPage, EntryDetail, EntryState,
-    GrantAddRequest, InviteAcceptRequest, InviteMintRequest, InviteMintResponse, JobsResponse,
-    LoginRequest, OkResponse, SessionResponse, SessionsRevokedResponse, StorageResponse,
-    SystemsResponse, ViewDetail, ViewFilesPage, ViewsResponse, WhoamiResponse,
+    GrantAddRequest, IngestRequest, IngestStartResponse, InviteAcceptRequest, InviteMintRequest,
+    InviteMintResponse, JobDetail, JobsResponse, LoginRequest, OkResponse, SessionResponse,
+    SessionsRevokedResponse, StorageResponse, SystemsResponse, UploadResponse, ViewDetail,
+    ViewFilesPage, ViewsResponse, WhoamiResponse,
 };
 
 /// Marker schema for the minted-image download body: raw octets, not
@@ -39,6 +40,12 @@ struct ImageBytes(Vec<u8>);
 #[derive(ToSchema)]
 #[schema(value_type = String, format = Binary)]
 struct DatBytes(Vec<u8>);
+
+/// Marker schema for the ingest upload body: the raw file bytes,
+/// streamed to staging — same one-file-IS-the-request shape as dats.
+#[derive(ToSchema)]
+#[schema(value_type = String, format = Binary)]
+struct RomBytes(Vec<u8>);
 
 // ---- auth (open: the caller has no identity yet by definition) ----
 
@@ -165,7 +172,7 @@ fn system_entry() {}
     tag = "systems",
     security(("session_cookie" = []), ("bearer_token" = [])),
     params(
-        ("provider" = Option<String>, Query, description = "Dat source provider override (default: the dat header's author)"),
+        ("provider" = Option<String>, Query, description = "Dat source provider override (default derives from the dat header: homepage when it names an org, else author)"),
         ("system" = Option<String>, Query, description = "Dat source system override (default: the dat header's name)"),
     ),
     request_body(content = DatBytes, content_type = "application/octet-stream", description = "The dat file bytes"),
@@ -246,6 +253,50 @@ fn view_files() {}
 )]
 fn view_image() {}
 
+// ---- ingest (owner-only) ----
+
+/// Stage one file for ingest: the body is the raw bytes, streamed to
+/// the store's staging area (never buffered in memory — files run to
+/// GBs). The answered token is spent in `POST /v1/ingest`; tokens and
+/// staged bytes are ephemeral (daemon restart forgets them, the
+/// staging sweep removes them).
+#[utoipa::path(
+    post,
+    path = "/v1/ingest/uploads",
+    tag = "ingest",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    params(
+        ("name" = String, Query, description = "Client-relative file name (`/`-separated, no `..`); report entries wear this name"),
+    ),
+    request_body(content = RomBytes, content_type = "application/octet-stream", description = "The file bytes"),
+    responses(
+        (status = 200, description = "Staged; spend the token in POST /v1/ingest", body = UploadResponse),
+        (status = 400, description = "Missing/bad name, empty body, or aborted/short body", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+        (status = 507, description = "Insufficient store headroom for the declared Content-Length", body = ApiError),
+    ),
+)]
+fn ingest_upload() {}
+
+/// Ingest staged uploads: spends the tokens all-or-nothing, answers a
+/// job id immediately, and runs the pipeline in the background — the
+/// same hash/claim/archive semantics as `datboi ingest`, one file at a
+/// time. Custody over HTTP is always copy: the browser cannot move
+/// your originals.
+#[utoipa::path(
+    post,
+    path = "/v1/ingest",
+    tag = "ingest",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    request_body = IngestRequest,
+    responses(
+        (status = 200, description = "Job started; poll GET /v1/jobs/{id}", body = IngestStartResponse),
+        (status = 400, description = "Missing/empty uploads, or an unknown/expired token", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+    ),
+)]
+fn ingest_start() {}
+
 // ---- storage + jobs (owner-only) ----
 
 /// Storage stats from the blob index — `datboi status` without the
@@ -262,19 +313,35 @@ fn view_image() {}
 )]
 fn storage() {}
 
-/// Running jobs. Truthful stub: no job registry exists yet, so the
-/// list is always empty.
+/// The in-memory job registry: running jobs plus recently finished
+/// ones (the registry keeps a bounded tail; a daemon restart forgets
+/// everything — durable job reports are a recorded open question).
 #[utoipa::path(
     get,
     path = "/v1/jobs",
     tag = "jobs",
     security(("session_cookie" = []), ("bearer_token" = [])),
     responses(
-        (status = 200, description = "Always empty in M5", body = JobsResponse),
+        (status = 200, description = "Running + recently finished jobs, newest first", body = JobsResponse),
         (status = 403, description = "Owner only", body = ApiError),
     ),
 )]
 fn jobs() {}
+
+/// One job with counters and its (growing, then final) ingest report.
+#[utoipa::path(
+    get,
+    path = "/v1/jobs/{id}",
+    tag = "jobs",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    params(("id" = i64, Path, description = "Job id from POST /v1/ingest")),
+    responses(
+        (status = 200, description = "Job detail", body = JobDetail),
+        (status = 403, description = "Owner only", body = ApiError),
+        (status = 404, description = "No such job (or the registry forgot it)", body = ApiError),
+    ),
+)]
+fn job_detail() {}
 
 // ---- admin (owner-only) ----
 
@@ -425,12 +492,15 @@ impl Modify for SecurityAddon {
         system_entries,
         system_entry,
         dat_import,
+        ingest_upload,
+        ingest_start,
         views,
         view_detail,
         view_files,
         view_image,
         storage,
         jobs,
+        job_detail,
         admin_users,
         invite_create,
         invite_delete,

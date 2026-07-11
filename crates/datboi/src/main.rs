@@ -442,6 +442,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 db_dir,
                 listen,
                 nfs_listen,
+                // The global --detectors/DATBOI_DETECTORS flag: web
+                // ingest applies the same skipper set CLI ingest does.
+                detectors_dir: cli.global.detectors.clone(),
             })?;
             Ok(ExitCode::SUCCESS)
         }

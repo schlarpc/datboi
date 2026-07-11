@@ -20,7 +20,10 @@ import type {
   EntriesParams,
   EntryDetail,
   GrantParams,
+  IngestParams,
+  IngestStarted,
   InviteAcceptParams,
+  JobDetailBody,
   JobsBody,
   LoginParams,
   MintedInvite,
@@ -30,6 +33,7 @@ import type {
   SessionInfo,
   StorageBody,
   SystemsBody,
+  UploadReceipt,
   ViewDetail,
   ViewFilesBody,
   ViewFilesParams,
@@ -187,7 +191,63 @@ export const viewImageUrl = (name: string): string =>
 
 export const storage = (): Promise<StorageBody> => request('GET', '/v1/storage');
 
+// ---- ingest ----
+
+/**
+ * POST /v1/ingest/uploads — stage one file. XHR, not fetch: upload
+ * progress events don't exist on fetch, and multi-GB uploads without
+ * a progress bar are a hostile UI. Error/401 handling mirrors
+ * request().
+ */
+export function uploadRom(
+  name: string,
+  file: Blob,
+  onProgress?: (sent: number, total: number) => void,
+): Promise<UploadReceipt> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/v1/ingest/uploads?name=${encodeURIComponent(name)}`);
+    xhr.setRequestHeader('content-type', 'application/octet-stream');
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress?.(e.loaded, e.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText) as UploadReceipt);
+        return;
+      }
+      let message = xhr.statusText;
+      try {
+        const parsed: unknown = JSON.parse(xhr.responseText);
+        if (
+          typeof parsed === 'object' &&
+          parsed !== null &&
+          typeof (parsed as { error?: unknown }).error === 'string'
+        ) {
+          message = (parsed as { error: string }).error;
+        }
+      } catch {
+        // not JSON — keep the status text
+      }
+      if (xhr.status === 401) {
+        unauthorizedHandler?.();
+        router.replace('/login');
+      }
+      reject(new ApiError(xhr.status, message));
+    };
+    xhr.onerror = () => reject(new ApiError(0, 'network error during upload'));
+    xhr.send(file);
+  });
+}
+
+/** POST /v1/ingest — spend staged tokens, start the background job. */
+export const startIngest = (uploads: string[]): Promise<IngestStarted> =>
+  request('POST', '/v1/ingest', { body: { uploads } satisfies IngestParams });
+
 export const jobs = (): Promise<JobsBody> => request('GET', '/v1/jobs');
+
+export const jobDetail = (id: number): Promise<JobDetailBody> =>
+  request('GET', `/v1/jobs/${id}`);
 
 // ---- admin ----
 

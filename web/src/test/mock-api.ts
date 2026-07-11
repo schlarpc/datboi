@@ -15,6 +15,8 @@ import type {
   DatImportBody,
   EntryDetail,
   EntryRow,
+  Job,
+  JobDetailBody,
   MintedInvite,
   StorageBody,
   System,
@@ -30,9 +32,15 @@ export interface MockUniverse {
   /** Entry detail by name; default derives a minimal one from the row. */
   detail?: (name: string) => EntryDetail | undefined;
   storage?: StorageBody;
-  /** The contract's Job is shapeless (no registry yet, D69), so fixtures
-   * carry whatever forward-written fields the tray narrows to. */
-  jobs?: Record<string, unknown>[];
+  /** GET /v1/jobs rows (the in-memory registry's tray render). */
+  jobs?: Job[];
+  /** GET /v1/jobs/{id} script: each poll SHIFTS one entry until the
+   * last, which then repeats — tests script running→done timelines. */
+  jobTimeline?: JobDetailBody[];
+  /** POST /v1/ingest answer; defaults to job 1. */
+  ingestJob?: number;
+  /** POST /v1/ingest rejects (unknown token shape). */
+  ingestFail?: boolean;
   /** Full detail bodies; the list endpoint serves the same objects
    * (extra fields are harmless — the real list is a subset). */
   views?: ViewDetail[];
@@ -158,6 +166,20 @@ export function installFetch(universe: MockUniverse) {
       if (path === '/v1/jobs') {
         return json(200, { jobs: universe.jobs ?? [] });
       }
+      const jobMatch = path.match(/^\/v1\/jobs\/(\d+)$/);
+      if (jobMatch) {
+        const timeline = universe.jobTimeline;
+        if (timeline === undefined || timeline.length === 0) {
+          return json(404, { error: 'no such job' });
+        }
+        const detail = timeline.length > 1 ? timeline.shift() : timeline[0];
+        return json(200, detail);
+      }
+      if (path === '/v1/ingest' && method === 'POST') {
+        return universe.ingestFail === true
+          ? json(400, { error: 'unknown or expired upload: tok-x' })
+          : json(200, { job: universe.ingestJob ?? 1 });
+      }
       if (path === '/v1/admin/users') {
         if (universe.adminStatus !== undefined) {
           return json(universe.adminStatus, { error: 'owner only' });
@@ -202,6 +224,56 @@ export function installFetch(universe: MockUniverse) {
   );
   vi.stubGlobal('fetch', handler);
   return handler;
+}
+
+/**
+ * Fake XMLHttpRequest for the uploadRom path (XHR doesn't ride the
+ * fetch stub): fires one scripted progress event then onload. Returns
+ * the record of what was "sent" so tests assert names and sizes.
+ */
+export function installUploadXhr(opts: { fail?: boolean } = {}) {
+  const sent: { name: string; size: number }[] = [];
+  let count = 0;
+  class FakeXhr {
+    upload: {
+      onprogress:
+        | null
+        | ((e: { lengthComputable: boolean; loaded: number; total: number }) => void);
+    } = { onprogress: null };
+
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    status = 0;
+    responseText = '';
+    private url = '';
+
+    open(_method: string, url: string): void {
+      this.url = url;
+    }
+
+    setRequestHeader(): void {}
+
+    send(body: Blob): void {
+      const name = decodeURIComponent(this.url.split('name=')[1] ?? '');
+      const size = body.size;
+      sent.push({ name, size });
+      count += 1;
+      const token = `tok-${count}`;
+      queueMicrotask(() => {
+        this.upload.onprogress?.({ lengthComputable: true, loaded: size, total: size });
+        if (opts.fail === true) {
+          this.status = 400;
+          this.responseText = JSON.stringify({ error: 'induced upload failure' });
+        } else {
+          this.status = 200;
+          this.responseText = JSON.stringify({ upload: token, bytes: size });
+        }
+        this.onload?.();
+      });
+    }
+  }
+  vi.stubGlobal('XMLHttpRequest', FakeXhr as unknown as typeof XMLHttpRequest);
+  return sent;
 }
 
 /** Stub navigator.clipboard (happy-dom's needs permission wiring);

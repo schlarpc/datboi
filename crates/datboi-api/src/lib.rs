@@ -355,7 +355,8 @@ pub struct DatImportResponse {
     pub revision_id: i64,
     /// blake3 of the dat blob now in the CAS, lowercase hex.
     pub dat_blob: String,
-    /// Resolved provider (override, else the dat header's author).
+    /// Resolved provider (override, else derived from the dat header —
+    /// homepage when it names an org, else author).
     pub provider: String,
     /// Resolved system (override, else the dat header's name).
     pub system: String,
@@ -524,19 +525,148 @@ pub struct QuarantineItem {
     pub reason: String,
 }
 
-// ---- GET /v1/jobs ----
+// ---- POST /v1/ingest/uploads ----
+
+/// One staged upload's receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UploadResponse {
+    /// Opaque staging token — spend it in `POST /v1/ingest`. Tokens
+    /// are in-memory: a daemon restart forgets them (the staged bytes
+    /// are swept with the rest of the store's tmp/).
+    pub upload: String,
+    /// Bytes received and staged.
+    pub bytes: u64,
+}
+
+// ---- POST /v1/ingest ----
+
+/// Start an ingest job over staged uploads. Same Option-for-400
+/// convention as the auth requests; the field is contractually
+/// required.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct IngestRequest {
+    /// Staging tokens from `POST /v1/ingest/uploads`, spent
+    /// all-or-nothing.
+    #[schema(required = true)]
+    pub uploads: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct IngestStartResponse {
+    /// Poll `GET /v1/jobs/{id}` for progress and the report.
+    pub job: i64,
+}
+
+// ---- GET /v1/jobs (+ /{id}) ----
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct JobsResponse {
     pub jobs: Vec<Job>,
 }
 
-/// Placeholder: the daemon has no job registry — ingest/scrub/eviction
-/// run as CLI processes today (docs/open-questions.md, "Jobs tray
-/// backend"), so the list is always empty and no job shape is
-/// specified yet. Nothing here fakes progress.
+/// What a job is doing. One variant today; scrub/eval/evict join it
+/// when they graduate from CLI-only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct Job {}
+#[serde(rename_all = "lowercase")]
+pub enum JobKind {
+    Ingest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum JobRunState {
+    Running,
+    Done,
+    Failed,
+}
+
+/// One row of the in-memory job registry (the jobs tray render). The
+/// registry does not survive a daemon restart — durable job reports
+/// are a recorded open question, not implied here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Job {
+    pub id: i64,
+    /// Display name, e.g. `ingest — 3 files`.
+    pub name: String,
+    /// 0–100, byte-weighted at FILE granularity (the pipeline reports
+    /// no intra-file progress); clamped to 99 while running so only a
+    /// finished job reads 100.
+    pub progress: u8,
+    pub kind: JobKind,
+    pub state: JobRunState,
+}
+
+/// GET /v1/jobs/{id}: the row plus counters and the (growing, then
+/// final) report. File paths in the report are the CLIENT's original
+/// names — staging paths never leak.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct JobDetail {
+    #[serde(flatten)]
+    pub job: Job,
+    pub files_total: u64,
+    pub files_done: u64,
+    pub bytes_total: u64,
+    pub bytes_done: u64,
+    /// Original name of the file being processed; omitted between
+    /// files and once finished.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<String>,
+    /// Unix seconds.
+    pub started_at: i64,
+    /// Unix seconds; null while running.
+    #[schema(required = true)]
+    pub finished_at: Option<i64>,
+    /// Cumulative across completed files — grows while running, final
+    /// when done.
+    pub report: IngestReportBody,
+    /// Infrastructure failure only; per-file refusals live in the
+    /// report.
+    #[schema(required = true)]
+    pub error: Option<String>,
+}
+
+/// The ingest pipeline's report (datboi-ingest `IngestReport`), as
+/// wire JSON. Same counters the CLI prints.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct IngestReportBody {
+    pub files_scanned: u64,
+    /// Rescan-cache hits: same path, mtime, and size as last time.
+    pub files_unchanged: u64,
+    /// New blobs stored.
+    pub files_stored: u64,
+    /// Content already in the store (dupes).
+    pub files_already_present: u64,
+    pub chd_v5: u64,
+    /// Zip members claimed in place (the container stays the literal).
+    pub members_claimed: u64,
+    /// 7z/rar members extracted as resident blobs.
+    pub members_extracted: u64,
+    pub detector_hits: u64,
+    /// Files over the skipper sniff cap — stored, but not
+    /// detector-checked.
+    pub skipper_skipped_large: u64,
+    pub errors: Vec<IngestErrorItem>,
+    pub member_skips: Vec<IngestMemberSkipItem>,
+    pub notes: Vec<String>,
+}
+
+/// A file the pipeline could not process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct IngestErrorItem {
+    /// The client's original name for the file.
+    pub path: String,
+    pub error: String,
+}
+
+/// An archive member the pipeline refused (zip64, encrypted,
+/// unsupported method, central-directory lies, …).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct IngestMemberSkipItem {
+    /// The client's original name for the container.
+    pub path: String,
+    pub member: String,
+    pub reason: String,
+}
 
 // ---- GET /v1/admin/users ----
 
@@ -673,12 +803,15 @@ mod tests {
             "/v1/systems/{id}/entries",
             "/v1/systems/{id}/entries/{name}",
             "/v1/dats/import",
+            "/v1/ingest/uploads",
+            "/v1/ingest",
             "/v1/views",
             "/v1/views/{name}",
             "/v1/views/{name}/files",
             "/v1/views/{name}/image",
             "/v1/storage",
             "/v1/jobs",
+            "/v1/jobs/{id}",
             "/v1/admin/users",
             "/v1/admin/invites",
             "/v1/admin/invites/{token_hash}",
@@ -751,5 +884,38 @@ mod tests {
         assert_eq!(v["name"], "gba");
         assert_eq!(v["image"], serde_json::Value::Null);
         assert!(v.get("summary").is_none(), "flattened, not nested");
+    }
+
+    /// JobDetail flattens the tray row to the top level; `current` is
+    /// omitted between files while `finished_at` stays an explicit
+    /// null until the job ends.
+    #[test]
+    fn job_detail_wire_shape() {
+        let detail = JobDetail {
+            job: Job {
+                id: 3,
+                name: "ingest — 2 files".into(),
+                progress: 40,
+                kind: JobKind::Ingest,
+                state: JobRunState::Running,
+            },
+            files_total: 2,
+            files_done: 1,
+            bytes_total: 100,
+            bytes_done: 40,
+            current: None,
+            started_at: 1_000,
+            finished_at: None,
+            report: IngestReportBody::default(),
+            error: None,
+        };
+        let v = serde_json::to_value(&detail).expect("json");
+        assert_eq!(v["id"], 3, "flattened, not nested under job");
+        assert_eq!(v["state"], "running");
+        assert_eq!(v["kind"], "ingest");
+        assert!(v.get("current").is_none(), "between files: omitted");
+        assert_eq!(v["finished_at"], serde_json::Value::Null);
+        assert_eq!(v["error"], serde_json::Value::Null);
+        assert_eq!(v["report"]["files_stored"], 0);
     }
 }

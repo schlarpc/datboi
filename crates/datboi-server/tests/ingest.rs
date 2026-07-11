@@ -1,0 +1,316 @@
+//! End-to-end web ingest: staged streaming uploads → background job →
+//! polled report, against a live daemon over an empty universe.
+//! Loopback is implicitly owner (D68); friend 403s are unit territory
+//! (api.rs convention).
+
+use std::net::SocketAddr;
+use std::str::FromStr as _;
+use std::time::{Duration, Instant};
+
+use datboi_index::Db;
+use datboi_server::{Config, Server};
+use datboi_store_fs::Store;
+
+struct Fixture {
+    addr: SocketAddr,
+    store_root: std::path::PathBuf,
+    _root: tempfile::TempDir,
+}
+
+fn fixture() -> Fixture {
+    let root = tempfile::tempdir().expect("tempdir");
+    let store_root = root.path().join("store");
+    let db_dir = root.path().join("db");
+    // The daemon opens (and creates) its own handles; touching them
+    // here first just mirrors the api.rs fixture shape.
+    drop(Store::open(&store_root).expect("store"));
+    drop(Db::open(&db_dir).expect("db"));
+    let server = Server::bind(&Config {
+        store_root: store_root.clone(),
+        db_dir,
+        listen: SocketAddr::from_str("127.0.0.1:0").expect("addr"),
+        nfs_listen: None,
+        detectors_dir: None,
+    })
+    .expect("bind");
+    let addr = server.local_addr().expect("addr");
+    std::thread::spawn(move || server.serve());
+    Fixture {
+        addr,
+        store_root,
+        _root: root,
+    }
+}
+
+/// GET; retries briefly while the accept loop warms up.
+fn get(addr: SocketAddr, path: &str) -> (u16, serde_json::Value) {
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let req = agent.get(&format!("http://{addr}{path}"));
+    for _ in 0..50 {
+        match req.clone().call() {
+            Ok(resp) => return (resp.status(), parse(resp)),
+            Err(ureq::Error::Status(code, resp)) => return (code, parse(resp)),
+            Err(ureq::Error::Transport(_)) => {
+                std::thread::sleep(Duration::from_millis(40));
+            }
+        }
+    }
+    panic!("server never came up at {addr}");
+}
+
+/// POST raw bytes with a Content-Length (the sized upload path).
+fn post_bytes(addr: SocketAddr, path: &str, body: &[u8]) -> (u16, serde_json::Value) {
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let req = agent
+        .post(&format!("http://{addr}{path}"))
+        .set("Content-Type", "application/octet-stream");
+    match req.send_bytes(body) {
+        Ok(resp) => (resp.status(), parse(resp)),
+        Err(ureq::Error::Status(code, resp)) => (code, parse(resp)),
+        Err(e) => panic!("POST {path} transport error: {e}"),
+    }
+}
+
+/// POST from a reader with no Content-Length — ureq sends chunked,
+/// exercising the headroom-guard bypass and the stream writer.
+fn post_chunked(addr: SocketAddr, path: &str, body: Vec<u8>) -> (u16, serde_json::Value) {
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let req = agent
+        .post(&format!("http://{addr}{path}"))
+        .set("Content-Type", "application/octet-stream");
+    match req.send(std::io::Cursor::new(body)) {
+        Ok(resp) => (resp.status(), parse(resp)),
+        Err(ureq::Error::Status(code, resp)) => (code, parse(resp)),
+        Err(e) => panic!("POST {path} transport error: {e}"),
+    }
+}
+
+fn post_json(addr: SocketAddr, path: &str, body: &str) -> (u16, serde_json::Value) {
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let req = agent
+        .post(&format!("http://{addr}{path}"))
+        .set("Content-Type", "application/json");
+    match req.send_string(body) {
+        Ok(resp) => (resp.status(), parse(resp)),
+        Err(ureq::Error::Status(code, resp)) => (code, parse(resp)),
+        Err(e) => panic!("POST {path} transport error: {e}"),
+    }
+}
+
+fn parse(resp: ureq::Response) -> serde_json::Value {
+    let text = resp.into_string().expect("body");
+    serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text))
+}
+
+/// Poll the job until it leaves `running` (bounded — ingest of a few
+/// KB must not take ten seconds).
+fn wait_done(addr: SocketAddr, job: i64) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (status, v) = get(addr, &format!("/v1/jobs/{job}"));
+        assert_eq!(status, 200, "{v}");
+        if v["state"] != "running" {
+            return v;
+        }
+        assert!(Instant::now() < deadline, "job never finished: {v}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Minimal STORED-only zip (mirrors the datboi-ingest fixture approach).
+fn stored_zip(members: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut central = Vec::new();
+    for (name, data) in members {
+        let crc = {
+            let mut h = crc32fast::Hasher::new();
+            h.update(data);
+            h.finalize()
+        };
+        let lho = u32::try_from(out.len()).unwrap();
+        let (nlen, size) = (
+            u16::try_from(name.len()).unwrap(),
+            u32::try_from(data.len()).unwrap(),
+        );
+        // Local file header.
+        out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+        out.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        out.extend_from_slice(&0u16.to_le_bytes()); // flags
+        out.extend_from_slice(&0u16.to_le_bytes()); // method: STORED
+        out.extend_from_slice(&0u32.to_le_bytes()); // dos time+date
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes()); // csize
+        out.extend_from_slice(&size.to_le_bytes()); // usize
+        out.extend_from_slice(&nlen.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // extra len
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(data);
+        // Central directory entry.
+        central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+        central.extend_from_slice(&20u16.to_le_bytes()); // made by
+        central.extend_from_slice(&20u16.to_le_bytes()); // needed
+        central.extend_from_slice(&0u16.to_le_bytes()); // flags
+        central.extend_from_slice(&0u16.to_le_bytes()); // method
+        central.extend_from_slice(&0u32.to_le_bytes()); // time+date
+        central.extend_from_slice(&crc.to_le_bytes());
+        central.extend_from_slice(&size.to_le_bytes());
+        central.extend_from_slice(&size.to_le_bytes());
+        central.extend_from_slice(&nlen.to_le_bytes());
+        central.extend_from_slice(&0u16.to_le_bytes()); // extra
+        central.extend_from_slice(&0u16.to_le_bytes()); // comment
+        central.extend_from_slice(&0u16.to_le_bytes()); // disk
+        central.extend_from_slice(&0u16.to_le_bytes()); // int attrs
+        central.extend_from_slice(&0u32.to_le_bytes()); // ext attrs
+        central.extend_from_slice(&lho.to_le_bytes());
+        central.extend_from_slice(name.as_bytes());
+    }
+    let cd_offset = u32::try_from(out.len()).unwrap();
+    let cd_size = u32::try_from(central.len()).unwrap();
+    let count = u16::try_from(members.len()).unwrap();
+    out.extend_from_slice(&central);
+    out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // disk
+    out.extend_from_slice(&0u16.to_le_bytes()); // cd disk
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&cd_size.to_le_bytes());
+    out.extend_from_slice(&cd_offset.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // comment len
+    out
+}
+
+#[test]
+fn upload_ingest_and_report_end_to_end() {
+    let f = fixture();
+    let rom = b"alpha rom content";
+    let zip = stored_zip(&[("inner.gba", b"zip member content" as &[u8])]);
+
+    // Stage a loose ROM (sized) and a zip (chunked, no Content-Length).
+    let (status, v) = post_bytes(f.addr, "/v1/ingest/uploads?name=roms%2Falpha.gba", rom);
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["bytes"], rom.len() as u64);
+    let rom_token = v["upload"].as_str().expect("token").to_owned();
+
+    let (status, v) = post_chunked(
+        f.addr,
+        "/v1/ingest/uploads?name=roms%2Fpack.zip",
+        zip.clone(),
+    );
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["bytes"], zip.len() as u64);
+    let zip_token = v["upload"].as_str().expect("token").to_owned();
+
+    // Both staged files exist until the job spends them.
+    let tmp = f.store_root.join("tmp");
+    assert_eq!(std::fs::read_dir(&tmp).expect("tmp").count(), 2);
+
+    // Start the job.
+    let (status, v) = post_json(
+        f.addr,
+        "/v1/ingest",
+        &format!(r#"{{"uploads":["{rom_token}","{zip_token}"]}}"#),
+    );
+    assert_eq!(status, 200, "{v}");
+    let job = v["job"].as_i64().expect("job id");
+
+    // Tokens are spent all-or-nothing: reuse refuses.
+    let (status, v) = post_json(
+        f.addr,
+        "/v1/ingest",
+        &format!(r#"{{"uploads":["{rom_token}"]}}"#),
+    );
+    assert_eq!(status, 400, "{v}");
+
+    let done = wait_done(f.addr, job);
+    assert_eq!(done["state"], "done", "{done}");
+    assert_eq!(done["progress"], 100);
+    assert_eq!(done["files_total"], 2);
+    assert_eq!(done["files_done"], 2);
+    assert_eq!(done["bytes_done"], (rom.len() + zip.len()) as u64);
+    assert!(done["finished_at"].is_i64(), "{done}");
+    assert!(done.get("current").is_none(), "finished: no current file");
+    let report = &done["report"];
+    assert_eq!(report["files_scanned"], 2);
+    assert_eq!(report["files_stored"], 2, "{report}");
+    assert_eq!(report["members_claimed"], 1, "the zip member");
+    assert_eq!(report["errors"], serde_json::json!([]));
+    assert_eq!(report["member_skips"], serde_json::json!([]));
+
+    // The tray row: finished job, honest name, 100%.
+    let (status, v) = get(f.addr, "/v1/jobs");
+    assert_eq!(status, 200);
+    let row = &v["jobs"][0];
+    assert_eq!(row["id"], job);
+    assert_eq!(row["name"], "ingest — 2 files");
+    assert_eq!(
+        (row["progress"].as_u64(), row["state"].as_str()),
+        (Some(100), Some("done"))
+    );
+
+    // The bytes landed: rom + zip container + the claimed member's
+    // index row (the container holds its bytes, D35 — but the member
+    // is a first-class blob row).
+    let (_, v) = get(f.addr, "/v1/storage");
+    assert_eq!(v["blob_count"], 3, "{v}");
+
+    // Staged copies are spent — tmp/ is empty again.
+    assert_eq!(std::fs::read_dir(&tmp).expect("tmp").count(), 0);
+
+    // Re-uploading the same ROM dedupes as already-present.
+    let (_, v) = post_bytes(f.addr, "/v1/ingest/uploads?name=again%2Falpha.gba", rom);
+    let token = v["upload"].as_str().expect("token").to_owned();
+    let (_, v) = post_json(
+        f.addr,
+        "/v1/ingest",
+        &format!(r#"{{"uploads":["{token}"]}}"#),
+    );
+    let done = wait_done(f.addr, v["job"].as_i64().expect("id"));
+    assert_eq!(done["report"]["files_already_present"], 1, "{done}");
+    assert_eq!(done["report"]["files_stored"], 0);
+    let (_, v) = get(f.addr, "/v1/storage");
+    assert_eq!(v["blob_count"], 3, "no new blob");
+}
+
+#[test]
+fn upload_and_start_reject_bad_requests() {
+    let f = fixture();
+
+    // name is required and must be a sane relative path
+    assert_eq!(post_bytes(f.addr, "/v1/ingest/uploads", b"x").0, 400);
+    assert_eq!(
+        post_bytes(f.addr, "/v1/ingest/uploads?name=%2Fetc%2Fpasswd", b"x").0,
+        400
+    );
+    assert_eq!(
+        post_bytes(f.addr, "/v1/ingest/uploads?name=a%2F..%2Fb.gba", b"x").0,
+        400
+    );
+    // empty body
+    let (status, v) = post_bytes(f.addr, "/v1/ingest/uploads?name=a.gba", b"");
+    assert_eq!((status, v["error"].as_str()), (400, Some("empty upload")));
+
+    // start: missing field, empty list, bogus token
+    assert_eq!(post_json(f.addr, "/v1/ingest", "{}").0, 400);
+    assert_eq!(post_json(f.addr, "/v1/ingest", r#"{"uploads":[]}"#).0, 400);
+    let (status, v) = post_json(f.addr, "/v1/ingest", r#"{"uploads":["nope"]}"#);
+    assert_eq!(status, 400);
+    assert!(
+        v["error"]
+            .as_str()
+            .expect("msg")
+            .contains("unknown or expired"),
+        "{v}"
+    );
+
+    // job detail misses
+    assert_eq!(get(f.addr, "/v1/jobs/999").0, 404);
+    assert_eq!(get(f.addr, "/v1/jobs/abc").0, 400);
+
+    // nothing rejected left residue behind
+    assert_eq!(
+        std::fs::read_dir(f.store_root.join("tmp"))
+            .expect("tmp")
+            .count(),
+        0
+    );
+}

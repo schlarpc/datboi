@@ -17,6 +17,8 @@ mod dats;
 mod dav;
 mod hardening;
 mod http;
+mod ingest;
+mod jobs;
 mod nfs;
 mod vfs;
 mod web;
@@ -45,6 +47,9 @@ pub struct Config {
     /// bind — but NFS carries no auth (D68 keeps it loopback-only-by-
     /// default in M5), so a wide bind warns loudly.
     pub nfs_listen: Option<SocketAddr>,
+    /// Header-skipper detector XML directory (same as the CLI's
+    /// `--detectors`); `None` = ingest runs without skipper variants.
+    pub detectors_dir: Option<PathBuf>,
 }
 
 /// Shared server state. One SQLite handle behind a mutex serializes
@@ -57,6 +62,10 @@ pub(crate) struct App {
     /// Decoded manifests by snapshot hash. Immutable objects, so
     /// entries never invalidate; bounded by wholesale clear.
     pub(crate) manifests: Mutex<HashMap<Blake3, Arc<vfs::ViewIndex>>>,
+    /// Staged uploads + the in-memory job registry (web ingest).
+    pub(crate) jobs: jobs::Registry,
+    /// Header-skipper detectors, loaded once at open (CLI parity).
+    pub(crate) detectors: Vec<datboi_formats::skipper::Detector>,
 }
 
 /// A bound-but-not-yet-serving daemon, so callers (and tests) can learn
@@ -69,21 +78,39 @@ pub struct Server {
 
 impl App {
     /// Open store + databases into shared daemon state.
-    fn open(store_root: &std::path::Path, db_dir: &std::path::Path) -> anyhow::Result<Arc<Self>> {
+    fn open(config: &Config) -> anyhow::Result<Arc<Self>> {
+        let store_root = &config.store_root;
         let store = Store::open(store_root)
             .with_context(|| format!("opening store at {}", store_root.display()))?;
         // The executor borrows the store for its lifetime; the daemon's
         // lifetime IS the process lifetime, so one leaked Store is the
         // honest expression of that (no self-referential gymnastics).
         let store: &'static Store = Box::leak(Box::new(store));
-        let db = Db::open(db_dir)
-            .with_context(|| format!("opening databases in {}", db_dir.display()))?;
+        // Best-effort sweep of crash-orphaned temps — including staged
+        // uploads a dead daemon left behind (same 24 h the CLI uses).
+        if let Err(e) = store.cleanup_temp(std::time::Duration::from_secs(24 * 60 * 60)) {
+            eprintln!("warning: temp sweep: {e}");
+        }
+        let detectors = match &config.detectors_dir {
+            Some(dir) => {
+                let (detectors, errors) = datboi_ingest::load_detectors(dir);
+                for (path, err) in errors {
+                    eprintln!("warning: detector {}: {err}", path.display());
+                }
+                detectors
+            }
+            None => Vec::new(),
+        };
+        let db = Db::open(&config.db_dir)
+            .with_context(|| format!("opening databases in {}", config.db_dir.display()))?;
         let exec = Executor::new(store, ExecConfig::default())?;
         Ok(Arc::new(App {
             db: Mutex::new(db),
             exec,
             store,
             manifests: Mutex::new(HashMap::new()),
+            jobs: jobs::Registry::new(),
+            detectors,
         }))
     }
 }
@@ -94,7 +121,7 @@ impl Server {
     /// # Errors
     /// Store/DB open failures, bind failures.
     pub fn bind(config: &Config) -> anyhow::Result<Self> {
-        let app = App::open(&config.store_root, &config.db_dir)?;
+        let app = App::open(config)?;
         // The M4 "NO AUTHENTICATION" warning died with D68: binding
         // wide now means "auth required", not "everyone is owner".
         if !config.listen.ip().is_loopback() {

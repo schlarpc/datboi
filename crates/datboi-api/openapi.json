@@ -132,7 +132,7 @@
             "type": "integer"
           },
           "provider": {
-            "description": "Resolved provider (override, else the dat header's author).",
+            "description": "Resolved provider (override, else derived from the dat header —\nhomepage when it names an org, else author).",
             "type": "string"
           },
           "revision_id": {
@@ -472,6 +472,165 @@
         ],
         "type": "object"
       },
+      "IngestErrorItem": {
+        "description": "A file the pipeline could not process.",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "path": {
+            "description": "The client's original name for the file.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "error"
+        ],
+        "type": "object"
+      },
+      "IngestMemberSkipItem": {
+        "description": "An archive member the pipeline refused (zip64, encrypted,\nunsupported method, central-directory lies, …).",
+        "properties": {
+          "member": {
+            "type": "string"
+          },
+          "path": {
+            "description": "The client's original name for the container.",
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "member",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "IngestReportBody": {
+        "description": "The ingest pipeline's report (datboi-ingest `IngestReport`), as\nwire JSON. Same counters the CLI prints.",
+        "properties": {
+          "chd_v5": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "detector_hits": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/IngestErrorItem"
+            },
+            "type": "array"
+          },
+          "files_already_present": {
+            "description": "Content already in the store (dupes).",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "files_scanned": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "files_stored": {
+            "description": "New blobs stored.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "files_unchanged": {
+            "description": "Rescan-cache hits: same path, mtime, and size as last time.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "member_skips": {
+            "items": {
+              "$ref": "#/components/schemas/IngestMemberSkipItem"
+            },
+            "type": "array"
+          },
+          "members_claimed": {
+            "description": "Zip members claimed in place (the container stays the literal).",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "members_extracted": {
+            "description": "7z/rar members extracted as resident blobs.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "skipper_skipped_large": {
+            "description": "Files over the skipper sniff cap — stored, but not\ndetector-checked.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "files_scanned",
+          "files_unchanged",
+          "files_stored",
+          "files_already_present",
+          "chd_v5",
+          "members_claimed",
+          "members_extracted",
+          "detector_hits",
+          "skipper_skipped_large",
+          "errors",
+          "member_skips",
+          "notes"
+        ],
+        "type": "object"
+      },
+      "IngestRequest": {
+        "description": "Start an ingest job over staged uploads. Same Option-for-400\nconvention as the auth requests; the field is contractually\nrequired.",
+        "properties": {
+          "uploads": {
+            "description": "Staging tokens from `POST /v1/ingest/uploads`, spent\nall-or-nothing.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "uploads"
+        ],
+        "type": "object"
+      },
+      "IngestStartResponse": {
+        "properties": {
+          "job": {
+            "description": "Poll `GET /v1/jobs/{id}` for progress and the report.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "job"
+        ],
+        "type": "object"
+      },
       "InviteAcceptRequest": {
         "description": "Invite acceptance: consumes the invite atomically, creates the user\nwith the invite's role, and starts a session.",
         "properties": {
@@ -579,8 +738,126 @@
         "type": "object"
       },
       "Job": {
-        "description": "Placeholder: the daemon has no job registry — ingest/scrub/eviction\nrun as CLI processes today (docs/open-questions.md, \"Jobs tray\nbackend\"), so the list is always empty and no job shape is\nspecified yet. Nothing here fakes progress.",
+        "description": "One row of the in-memory job registry (the jobs tray render). The\nregistry does not survive a daemon restart — durable job reports\nare a recorded open question, not implied here.",
+        "properties": {
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/JobKind"
+          },
+          "name": {
+            "description": "Display name, e.g. `ingest — 3 files`.",
+            "type": "string"
+          },
+          "progress": {
+            "description": "0–100, byte-weighted at FILE granularity (the pipeline reports\nno intra-file progress); clamped to 99 while running so only a\nfinished job reads 100.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/JobRunState"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "progress",
+          "kind",
+          "state"
+        ],
         "type": "object"
+      },
+      "JobDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Job"
+          },
+          {
+            "properties": {
+              "bytes_done": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "bytes_total": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "current": {
+                "description": "Original name of the file being processed; omitted between\nfiles and once finished.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "error": {
+                "description": "Infrastructure failure only; per-file refusals live in the\nreport.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "files_done": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "files_total": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "finished_at": {
+                "description": "Unix seconds; null while running.",
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "report": {
+                "$ref": "#/components/schemas/IngestReportBody",
+                "description": "Cumulative across completed files — grows while running, final\nwhen done."
+              },
+              "started_at": {
+                "description": "Unix seconds.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "files_total",
+              "files_done",
+              "bytes_total",
+              "bytes_done",
+              "started_at",
+              "finished_at",
+              "report",
+              "error"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "GET /v1/jobs/{id}: the row plus counters and the (growing, then\nfinal) report. File paths in the report are the CLIENT's original\nnames — staging paths never leak."
+      },
+      "JobKind": {
+        "description": "What a job is doing. One variant today; scrub/eval/evict join it\nwhen they graduate from CLI-only.",
+        "enum": [
+          "ingest"
+        ],
+        "type": "string"
+      },
+      "JobRunState": {
+        "enum": [
+          "running",
+          "done",
+          "failed"
+        ],
+        "type": "string"
       },
       "JobsResponse": {
         "properties": {
@@ -767,6 +1044,11 @@
           "owner",
           "friend"
         ],
+        "type": "string"
+      },
+      "RomBytes": {
+        "description": "Marker schema for the ingest upload body: the raw file bytes,\nstreamed to staging — same one-file-IS-the-request shape as dats.",
+        "format": "binary",
         "type": "string"
       },
       "RomClaim": {
@@ -1036,6 +1318,26 @@
         },
         "required": [
           "systems"
+        ],
+        "type": "object"
+      },
+      "UploadResponse": {
+        "description": "One staged upload's receipt.",
+        "properties": {
+          "bytes": {
+            "description": "Bytes received and staged.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "upload": {
+            "description": "Opaque staging token — spend it in `POST /v1/ingest`. Tokens\nare in-memory: a daemon restart forgets them (the staged bytes\nare swept with the rest of the store's tmp/).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload",
+          "bytes"
         ],
         "type": "object"
       },
@@ -1820,7 +2122,7 @@
         "operationId": "dat_import",
         "parameters": [
           {
-            "description": "Dat source provider override (default: the dat header's author)",
+            "description": "Dat source provider override (default derives from the dat header: homepage when it names an org, else author)",
             "in": "query",
             "name": "provider",
             "required": false,
@@ -1898,19 +2200,39 @@
         ]
       }
     },
-    "/v1/jobs": {
-      "get": {
-        "operationId": "jobs",
+    "/v1/ingest": {
+      "post": {
+        "operationId": "ingest_start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JobsResponse"
+                  "$ref": "#/components/schemas/IngestStartResponse"
                 }
               }
             },
-            "description": "Always empty in M5"
+            "description": "Job started; poll GET /v1/jobs/{id}"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Missing/empty uploads, or an unknown/expired token"
           },
           "403": {
             "content": {
@@ -1931,7 +2253,188 @@
             "bearer_token": []
           }
         ],
-        "summary": "Running jobs. Truthful stub: no job registry exists yet, so the\nlist is always empty.",
+        "summary": "Ingest staged uploads: spends the tokens all-or-nothing, answers a\njob id immediately, and runs the pipeline in the background — the\nsame hash/claim/archive semantics as `datboi ingest`, one file at a\ntime. Custody over HTTP is always copy: the browser cannot move\nyour originals.",
+        "tags": [
+          "ingest"
+        ]
+      }
+    },
+    "/v1/ingest/uploads": {
+      "post": {
+        "operationId": "ingest_upload",
+        "parameters": [
+          {
+            "description": "Client-relative file name (`/`-separated, no `..`); report entries wear this name",
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "$ref": "#/components/schemas/RomBytes"
+              }
+            }
+          },
+          "description": "The file bytes",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadResponse"
+                }
+              }
+            },
+            "description": "Staged; spend the token in POST /v1/ingest"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Missing/bad name, empty body, or aborted/short body"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          },
+          "507": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Insufficient store headroom for the declared Content-Length"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Stage one file for ingest: the body is the raw bytes, streamed to\nthe store's staging area (never buffered in memory — files run to\nGBs). The answered token is spent in `POST /v1/ingest`; tokens and\nstaged bytes are ephemeral (daemon restart forgets them, the\nstaging sweep removes them).",
+        "tags": [
+          "ingest"
+        ]
+      }
+    },
+    "/v1/jobs": {
+      "get": {
+        "operationId": "jobs",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobsResponse"
+                }
+              }
+            },
+            "description": "Running + recently finished jobs, newest first"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "The in-memory job registry: running jobs plus recently finished\nones (the registry keeps a bounded tail; a daemon restart forgets\neverything — durable job reports are a recorded open question).",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/v1/jobs/{id}": {
+      "get": {
+        "operationId": "job_detail",
+        "parameters": [
+          {
+            "description": "Job id from POST /v1/ingest",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDetail"
+                }
+              }
+            },
+            "description": "Job detail"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "No such job (or the registry forgot it)"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "One job with counters and its (growing, then final) ingest report.",
         "tags": [
           "jobs"
         ]

@@ -1,31 +1,54 @@
 <script lang="ts">
   /**
-   * Persistent jobs tray (spec §2.2), bottom of every owner screen.
-   * /v1/jobs truthfully returns an empty list today (no job registry —
-   * docs/open-questions.md § "Jobs tray backend"), so the live render
-   * is the collapsed idle state `▸ jobs (0)`; the per-job rows exist
-   * (JobRow) and light up when a registry lands. One fetch, no polling
-   * — polling an endpoint known to answer [] would be theater.
+   * Persistent jobs tray (spec §2.2), bottom of every owner screen,
+   * fed by the in-memory job registry (/v1/jobs). Cadence keeps the
+   * old "no theater" rule: one fetch on mount, then a 2 s re-poll
+   * ONLY while a job is actually running — an idle daemon still costs
+   * exactly one request per mount. jobsSignal (a screen just started
+   * a job) restarts the loop immediately.
    *
    * `activity ▾` (recent activity log) is reserved per the spec but
-   * disabled: there is no activity feed to expand yet.
+   * disabled: finished jobs vanish with the in-memory registry, so a
+   * real feed wants the durable job table (open-questions).
    */
   import { jobs as fetchJobs } from '../api/client';
-  import JobRow, { isTrayJob, type TrayJob } from './JobRow.svelte';
+  import type { Job } from '../api/types';
+  import { jobsSignal } from '../jobs.svelte';
+  import JobRow from './JobRow.svelte';
 
-  let jobs = $state<TrayJob[]>([]);
+  let jobs = $state<Job[]>([]);
 
   // Lowercase title copy — forced into the catalog at statement level.
   // @wc-include
-  const activityTitle = 'recent activity log — needs a job registry';
+  const activityTitle = 'recent activity log — needs a durable job table';
+
+  const POLL_MS = 2000;
 
   $effect(() => {
-    fetchJobs().then(
-      // The contract's Job is shapeless (no registry yet, D69) — narrow
-      // to the tray's rendering shape; unrenderable items are dropped.
-      (body) => (jobs = (body.jobs as unknown[]).filter(isTrayJob)),
-      () => (jobs = []), // tray degrades to idle on any error
-    );
+    void jobsSignal.version; // a bump re-runs the effect: immediate refetch
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+    const poll = () => {
+      fetchJobs().then(
+        (body) => {
+          if (cancelled) return;
+          jobs = body.jobs;
+          if (body.jobs.some((job) => job.state === 'running')) {
+            timer = setTimeout(poll, POLL_MS);
+          }
+        },
+        () => {
+          // Degrade to idle on any error (a friend's 403 included)
+          // and stop polling.
+          if (!cancelled) jobs = [];
+        },
+      );
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   });
 </script>
 

@@ -1,10 +1,11 @@
 //! The M5 v1 read-model API (D30/D68 auth; scope ruling 2026-07-11):
 //! systems/entries audit rollups, view metadata, storage stats — JSON
 //! renders of the same queries the CLI's `audit`/`status` commands run.
-//! Mutating pipeline actions (ingest, eviction, scrub, view eval) stay
-//! CLI-only in M5; the UI deep-links CLI instructions instead. Dat
-//! import is the one exception — request-sized, no progress to stream
-//! — and lives in dats.rs.
+//! Mutating actions have been graduating out of the original
+//! CLI-only ruling: dat import (dats.rs, request-sized) and ingest
+//! (ingest.rs, staged uploads + the jobs.rs registry). Eviction,
+//! scrub, and view eval remain CLI-only; the UI deep-links CLI
+//! instructions for those.
 //!
 //! Everything here is owner-only except the view surface, which is the
 //! friend surface (D68 grants). Owner-only misses answer 403; view-
@@ -1042,15 +1043,42 @@ fn storage_body(app: &App) -> Result<StorageResponse, Response> {
     })
 }
 
-// ---- GET /v1/jobs ----
+// ---- GET /v1/jobs (+ /{id}) ----
 
-/// The daemon has no job registry: ingest/scrub/eviction run as CLI
-/// processes today (docs/open-questions.md § raised 2026-07-11, "Jobs
-/// tray backend"). An empty list is the truthful render until a real
-/// one exists — nothing here fakes progress.
-pub(crate) async fn jobs(Extension(caller): Extension<Caller>) -> Response {
+/// The in-memory job registry (jobs.rs): running jobs plus a bounded
+/// finished tail. Scrub/eviction still run as CLI processes; a
+/// durable job table stays the recorded open question ("Jobs tray
+/// backend").
+pub(crate) async fn jobs(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+) -> Response {
     match require_owner(&caller) {
-        Ok(()) => json_response(StatusCode::OK, &JobsResponse { jobs: Vec::new() }),
+        Ok(()) => json_response(
+            StatusCode::OK,
+            &JobsResponse {
+                jobs: app.jobs.list(),
+            },
+        ),
+        Err(resp) => resp,
+    }
+}
+
+pub(crate) async fn job_detail(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+    UrlPath(id): UrlPath<String>,
+) -> Response {
+    match require_owner(&caller) {
+        Ok(()) => {
+            let Ok(id) = id.parse::<i64>() else {
+                return err(StatusCode::BAD_REQUEST, "job id must be an integer");
+            };
+            match app.jobs.detail(id) {
+                Some(detail) => json_response(StatusCode::OK, &detail),
+                None => err(StatusCode::NOT_FOUND, "no such job"),
+            }
+        }
         Err(resp) => resp,
     }
 }
@@ -1135,7 +1163,14 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_dir = dir.path().join("db");
         std::fs::create_dir_all(&db_dir).expect("db dir");
-        let app = App::open(&dir.path().join("store"), &db_dir).expect("app");
+        let app = App::open(&crate::Config {
+            store_root: dir.path().join("store"),
+            db_dir,
+            listen: "127.0.0.1:0".parse().expect("addr"),
+            nfs_listen: None,
+            detectors_dir: None,
+        })
+        .expect("app");
         (dir, app)
     }
 

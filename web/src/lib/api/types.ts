@@ -74,17 +74,18 @@ export type ViewFilesBody = Schemas['ViewFilesPage'];
 export type QuarantineItem = Schemas['QuarantineItem'];
 export type StorageBody = Schemas['StorageResponse'];
 
-// ---- GET /v1/jobs ----
+// ---- POST /v1/ingest/uploads + /v1/ingest ----
 
-/**
- * Deliberately shapeless (`Record<string, never>`): the daemon has no job
- * registry yet, so the contract specifies no job fields and the list is
- * always empty. The tray's forward-written RENDERING shape lives in
- * JobRow.svelte (UI territory) — it narrows at runtime and re-derives from
- * here when the registry lands.
- */
+export type UploadReceipt = Schemas['UploadResponse'];
+export type IngestParams = Schemas['IngestRequest'];
+export type IngestStarted = Schemas['IngestStartResponse'];
+export type IngestReport = Schemas['IngestReportBody'];
+
+// ---- GET /v1/jobs (+ /{id}) ----
+
 export type Job = Schemas['Job'];
 export type JobsBody = Schemas['JobsResponse'];
+export type JobDetailBody = Schemas['JobDetail'];
 
 // ---- /v1/admin/* ----
 

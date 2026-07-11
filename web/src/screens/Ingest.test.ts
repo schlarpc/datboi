@@ -1,0 +1,122 @@
+import { fireEvent, render, screen } from '@testing-library/svelte';
+import { loadLocale } from 'wuchale/load-utils';
+import { afterEach, expect, test, vi } from 'vitest';
+import '../locales/main.loader.svelte.js';
+import type { IngestReport, JobDetailBody } from '../lib/api/types';
+import { installFetch, installUploadXhr } from '../test/mock-api';
+import Ingest from './Ingest.svelte';
+
+await loadLocale('en');
+
+afterEach(() => vi.unstubAllGlobals());
+
+const emptyReport: IngestReport = {
+  files_scanned: 0,
+  files_unchanged: 0,
+  files_stored: 0,
+  files_already_present: 0,
+  chd_v5: 0,
+  members_claimed: 0,
+  members_extracted: 0,
+  detector_hits: 0,
+  skipper_skipped_large: 0,
+  errors: [],
+  member_skips: [],
+  notes: [],
+};
+
+function doneJob(report: Partial<IngestReport>): JobDetailBody {
+  return {
+    id: 1,
+    name: 'ingest — 2 files',
+    progress: 100,
+    kind: 'ingest',
+    state: 'done',
+    files_total: 2,
+    files_done: 2,
+    bytes_total: 8,
+    bytes_done: 8,
+    started_at: 1000,
+    finished_at: 1002,
+    report: { ...emptyReport, ...report },
+    error: null,
+  };
+}
+
+function pickFiles(files: File[]): Promise<void> {
+  const input = document.querySelectorAll<HTMLInputElement>('input[type="file"]')[0];
+  expect(input).toBeTruthy();
+  return fireEvent.change(input, { target: { files } }) as unknown as Promise<void>;
+}
+
+test('pick → upload → auto-ingest → report card', async () => {
+  installFetch({
+    jobTimeline: [
+      doneJob({
+        files_scanned: 2,
+        files_stored: 1,
+        files_already_present: 1,
+        members_claimed: 3,
+      }),
+    ],
+  });
+  const sent = installUploadXhr();
+  render(Ingest);
+
+  await pickFiles([new File(['aaaa'], 'alpha.gba'), new File(['zzzz'], 'pack.zip')]);
+
+  // Both files were uploaded with their names.
+  expect(await screen.findByText('alpha.gba')).toBeTruthy();
+  expect(screen.getByText('pack.zip')).toBeTruthy();
+  expect(sent.map((s) => s.name)).toEqual(['alpha.gba', 'pack.zip']);
+
+  // The job finished immediately (scripted), so the report renders.
+  expect(await screen.findByText(/new blobs/)).toBeTruthy();
+  expect(screen.getByText(/dupes/)).toBeTruthy();
+  expect(screen.getByText(/archive members/)).toBeTruthy();
+  expect(screen.getByText('refused')).toBeTruthy();
+  expect(screen.getByText(/3.*claimed in place/)).toBeTruthy();
+});
+
+test('refusals list per-file reasons from the report', async () => {
+  installFetch({
+    jobTimeline: [
+      doneJob({
+        files_scanned: 1,
+        errors: [{ path: 'bad.zip', error: 'central directory lies' }],
+        member_skips: [{ path: 'bad.zip', member: 'x.bin', reason: 'zip64 member' }],
+      }),
+    ],
+  });
+  installUploadXhr();
+  render(Ingest);
+
+  await pickFiles([new File(['zzzz'], 'bad.zip')]);
+
+  expect(await screen.findByText('central directory lies')).toBeTruthy();
+  expect(screen.getByText('bad.zip :: x.bin')).toBeTruthy();
+  expect(screen.getByText('zip64 member')).toBeTruthy();
+});
+
+test('a failed upload is reported without starting a job', async () => {
+  const handler = installFetch({});
+  installUploadXhr({ fail: true });
+  render(Ingest);
+
+  await pickFiles([new File(['aaaa'], 'alpha.gba')]);
+
+  expect(await screen.findByText('induced upload failure')).toBeTruthy();
+  const starts = handler.mock.calls.filter(([input]) => String(input) === '/v1/ingest');
+  expect(starts.length).toBe(0);
+});
+
+test('a refused ingest start surfaces as the failure line', async () => {
+  installFetch({ ingestFail: true });
+  installUploadXhr();
+  render(Ingest);
+
+  await pickFiles([new File(['aaaa'], 'alpha.gba')]);
+
+  expect(await screen.findByText(/something went wrong/)).toBeTruthy();
+  expect(screen.getByText(/unknown or expired upload/)).toBeTruthy();
+});

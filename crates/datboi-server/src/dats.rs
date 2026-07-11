@@ -1,9 +1,10 @@
-//! Dat import over HTTP (docs/60-dats.md) — the one mutating catalog
-//! action the web UI owns. The M5 scope ruling keeps pipeline actions
-//! (ingest, eval, mint, evict, scrub) CLI-only because they want live
-//! progress and a job registry; dat import has neither problem — it is
-//! request-sized (bytes in, report out), and the CLI path buffers the
+//! Dat import over HTTP (docs/60-dats.md) — the first mutating action
+//! to graduate from the M5 CLI-only ruling, because it is
+//! request-sized: bytes in, report out, and the CLI path buffers the
 //! whole file exactly the same way (`std::fs::read` in cmds.rs).
+//! Ingest graduated after it with the opposite shape (streamed
+//! staging + a background job — see ingest.rs); eval, mint, evict,
+//! and scrub still wait on their CLI processes.
 
 // Same rationale as http.rs: fallible steps short-circuit with the
 // error Response itself.
