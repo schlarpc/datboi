@@ -23,7 +23,8 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
   grandfathered coverage, migration explicit; native analyzers keep
   self-declared tags until they become components. Amended 2026-07-10
   as **D65**: lineage + grandfathering dropped (never implemented);
-  replaced by a local active set + surfaced disagreement, per the
+  the deploy is the policy (shipped components, explicit directives
+  beyond that) and disagreement between rows is surfaced, per the
   forward-compat principle ruled as **D64**.
 - ~~Chunking threshold + eligibility policy~~ ruled 2026-07-10 as
   **D59**: route-less literals ≥ 4 MiB only (threshold unchanged);

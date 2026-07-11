@@ -922,17 +922,21 @@ core without a core update. "Latest" is not a privileged concept
 anywhere in the system: recipes pin exact component hashes, so new
 components can never break old recipes (D5 by construction) and old
 components' facts are never invalidated by new arrivals (D55/D65).
-Trust in a component is a LOCAL adoption decision (add its hash to
-the active set, D65) — never inherited from a publisher's claim of
-version, ancestry, or recency, which are labels and therefore
-unverifiable (D54/D55 energy). Litmus test: any design that assumes
-a single operator linearly ordering component revisions at a deploy
-ceremony is wrong-shaped and gets rejected on sight — components
-form an unordered, locally-curated population, not a release train.
+REPLAY of a peer recipe with a peer component requires no trust
+decision at all — sandboxed, deterministic, fuel-limited, output
+hash-verified (D5/D6); the construction is trustless. The only
+trust decision is what runs over YOUR corpus to produce facts:
+what you deployed, or what you explicitly directed (D65) — never
+anything inherited from a publisher's claim of version, ancestry,
+or recency, which are labels and therefore unverifiable (D54/D55
+energy). Litmus test: any design that assumes a single operator
+linearly ordering component revisions is wrong-shaped and gets
+rejected on sight — the component population is unordered; a node
+runs its deployed slice of it and replays anything.
 *Rejected:* leaving this emergent from D5/D6 without a ruling (it
 silently contradicted D55's registration lineage until challenged).
 
-## D65 — D55 amendment: no lineage — active set + surfaced disagreement (2026-07-10)
+## D65 — D55 amendment: no lineage — the deploy is the policy; disagreement is surfaced (2026-07-10)
 
 D55's core stands: identity is the exact component hash, labels are
 never trusted, analysis rows are append-only facts and are never
@@ -948,22 +952,31 @@ structurally cannot happen, because nothing inherits. Lineage was
 also wrong-shaped for D64: peer-arriving components have no linear
 order, and inheriting coverage across a publisher's ancestry claim
 is the trust-an-unverifiable-label failure D55 rejected, one level
-up. The replacement is smaller: (1) an **active set** — a local
-mutable list of analyzer hashes we currently want run. The sweep
-target is "blobs missing a row for an active hash"; adopting a
-component (peer or own build) = adding its hash; retiring =
-removing it. Retired hashes stop chasing new blobs; their rows stay
-forever (dozens of analyzer hashes are dozens of CAS blobs plus
-cheap index rows — nobody cares). (2) a **conflict rule** — rows
-from different hashes may disagree about the same bytes; both are
-facts. Active outranks retired in reports and gates; two ACTIVE
-hashes disagreeing is a surfaced anomaly, never silently resolved
-(D39 energy: disagreement is signal; distinct states don't
-collapse). Native analyzers' self-declared tags remain the accepted
-asymmetry (D55/D58). *Rejected:* predecessor-declaration
-registration (a trust statement dressed as metadata; assumes
-operator-ordered linear revisions, wrong-shaped per D64),
-grandfathered coverage (fails cheap and quiet — inherited green
-until someone remembers to migrate), newest-wins conflict
-resolution (no "newest" without lineage, and disagreement is worth
-seeing).
+up. The replacement is smaller: (1) **the deploy is the policy** —
+datboi runs the components it SHIPPED with. They are seeded into
+the CAS (ingest already does this) and referenced by hash in
+recipes and facts, so a recipe that travels p2p carries its
+component as an ordinary blob under ordinary ACLs. The sweep
+target is "blobs missing a row for a shipped analyzer hash" (× the
+D60 per-analyzer enable); anything beyond the shipped slice — e.g.
+a peer-published analyzer — runs by EXPLICIT DIRECTIVE and
+produces ordinary per-hash facts. No registration, no adoption
+list. Superseded components stop chasing new blobs by no longer
+shipping; their rows stay forever (dozens of analyzer hashes are
+dozens of CAS blobs plus cheap index rows — nobody cares). (2) a
+**conflict rule** — rows from different hashes may disagree about
+the same bytes; both are facts. Reports and gates prefer the
+shipped hash's row; a contradiction between rows is a surfaced
+anomaly, never silently resolved (D39 energy: disagreement is
+signal; distinct states don't collapse). Native analyzers'
+self-declared tags remain the accepted asymmetry (D55/D58).
+*Rejected:* predecessor-declaration registration (a trust
+statement dressed as metadata; assumes operator-ordered linear
+revisions, wrong-shaped per D64), grandfathered coverage (fails
+cheap and quiet — inherited green until someone remembers to
+migrate), newest-wins conflict resolution (no "newest" without
+lineage, and disagreement is worth seeing), a standing mutable
+"active set" registry (first cut of this amendment, replaced
+same-day: a config surface with no consumer — the deploy already
+is the policy, and if per-hash selection ever needs config, D60's
+per-analyzer enable is its ruled home).
