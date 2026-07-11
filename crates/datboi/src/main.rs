@@ -436,11 +436,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let Some(store_root) = cli.global.store.clone() else {
                 anyhow::bail!("store root not set: pass --store or set DATBOI_STORE");
             };
-            let Some(db_dir) = cli.global.db_dir.clone() else {
-                anyhow::bail!(
-                    "database dir not set: pass --db-dir or set DATBOI_DB_DIR (local disk, not NFS)"
-                );
-            };
+            let db_dir = cli.global.resolve_db_dir()?;
             datboi_server::run(&datboi_server::Config {
                 store_root,
                 db_dir,

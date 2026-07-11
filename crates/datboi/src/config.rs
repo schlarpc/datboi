@@ -1,11 +1,12 @@
 //! CLI environment resolution: flags > `DATBOI_*` env (12-factor,
 //! docs/50-infra.md).
 //!
-//! The store root and DB dir are both REQUIRED and deliberately have no
-//! default relative to each other: the store may live on NFS while
-//! embedded databases must stay on daemon-local disk (D15/D37).
-//! Ergonomic defaults can come later; wrong defaults here risk a redb-on-
-//! NFS-class mistake.
+//! The store root is REQUIRED and has no default: it may live on NFS, so
+//! a wrong guess risks a redb-on-NFS-class mistake (D15/D37). The DB dir
+//! defaults to `$XDG_STATE_HOME/datboi` (fallback `~/.local/state/datboi`)
+//! — that's daemon-local disk by construction, which is exactly the
+//! placement D15 requires. The container image overrides it with an
+//! explicit local volume (docs/50-infra.md).
 
 use std::path::PathBuf;
 
@@ -23,7 +24,8 @@ pub struct GlobalArgs {
     pub store: Option<PathBuf>,
 
     /// Database directory (cache.db, state.db) — MUST be local disk,
-    /// never NFS (D15).
+    /// never NFS (D15). Defaults to `$XDG_STATE_HOME/datboi`
+    /// (`~/.local/state/datboi`).
     #[arg(long, env = "DATBOI_DB_DIR", global = true, value_name = "DIR")]
     pub db_dir: Option<PathBuf>,
 
@@ -98,17 +100,48 @@ pub fn load_or_create_identity(db_dir: &std::path::Path) -> anyhow::Result<Ident
     Ok(identity)
 }
 
+/// The default DB dir per the XDG Base Directory spec: `$XDG_STATE_HOME`
+/// (relative values ignored per spec), falling back to `~/.local/state`.
+/// The DBs (and the D15 identity key) are local per-instance state that
+/// must persist across restarts — state, not config or cache. `None` only
+/// when neither var yields an absolute base (headless with no `$HOME`).
+fn default_db_dir() -> Option<PathBuf> {
+    if let Some(state) = std::env::var_os("XDG_STATE_HOME") {
+        let state = PathBuf::from(state);
+        if state.is_absolute() {
+            return Some(state.join("datboi"));
+        }
+    }
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    if home.as_os_str().is_empty() {
+        return None;
+    }
+    Some(home.join(".local/state/datboi"))
+}
+
 impl GlobalArgs {
+    /// The resolved DB dir: `--db-dir`/`DATBOI_DB_DIR` if set, else the
+    /// XDG default. `Db::open` creates it (D15 owns its preconditions).
+    pub fn resolve_db_dir(&self) -> anyhow::Result<PathBuf> {
+        if let Some(dir) = &self.db_dir {
+            return Ok(dir.clone());
+        }
+        default_db_dir().ok_or_else(|| {
+            anyhow::anyhow!(
+                "database dir not set and no $XDG_STATE_HOME or $HOME to derive a \
+                 default: pass --db-dir or set DATBOI_DB_DIR (local disk, not NFS)"
+            )
+        })
+    }
+
     pub fn open(&self) -> anyhow::Result<Env> {
         let Some(store_root) = &self.store else {
             bail!("store root not set: pass --store or set DATBOI_STORE");
         };
-        let Some(db_dir) = &self.db_dir else {
-            bail!("database dir not set: pass --db-dir or set DATBOI_DB_DIR (local disk, not NFS)");
-        };
+        let db_dir = self.resolve_db_dir()?;
         let store = Store::open(store_root)
             .with_context(|| format!("opening store at {}", store_root.display()))?;
-        let db = Db::open(db_dir)
+        let db = Db::open(&db_dir)
             .with_context(|| format!("opening databases in {}", db_dir.display()))?;
         let (detectors, detector_errors) = match &self.detectors {
             Some(dir) => datboi_ingest::load_detectors(dir),
@@ -117,7 +150,7 @@ impl GlobalArgs {
         Ok(Env {
             store,
             db,
-            db_dir: db_dir.clone(),
+            db_dir,
             detectors,
             detector_errors,
         })
