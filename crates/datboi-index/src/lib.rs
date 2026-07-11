@@ -50,6 +50,16 @@ pub enum IndexError {
     RecipeNotFound(i64),
     #[error("invalid {what} code {code} in database")]
     Decode { what: &'static str, code: i64 },
+    #[error("preparing db dir {path}: {source}")]
+    DbDir {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error(
+        "db dir {path} is on {fs}; state.db/cache.db must live on daemon-local disk, \
+         never a network filesystem (D15) — only the store may be remote"
+    )]
+    DbDirOnNetworkFs { path: PathBuf, fs: &'static str },
 }
 
 pub struct Db {
@@ -65,6 +75,15 @@ impl Db {
     /// latest CAS snapshot) first — tags and the dat-source list decide
     /// what gets re-imported. [`Db::open`] therefore opens state first.
     pub fn open(dir: &Path) -> Result<Self, IndexError> {
+        // The constructor owns its preconditions (the Store::open
+        // pattern): create the dir — SQLite won't create a missing
+        // parent — and refuse network filesystems (D15). Callers used
+        // to each carry the create_dir_all themselves; `serve` forgot.
+        std::fs::create_dir_all(dir).map_err(|source| IndexError::DbDir {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        reject_network_fs(dir)?;
         let state_path = dir.join("state.db");
         let cache_path = dir.join("cache.db");
         let state = open_file(
@@ -122,6 +141,53 @@ impl Db {
     pub fn cache_path(&self) -> &Path {
         &self.cache_path
     }
+}
+
+/// statfs `f_type` magics of network filesystems the embedded databases
+/// must never live on (D15): SQLite WAL + shm mmap over NFS/SMB is
+/// silent-corruption territory. Deliberately a blocklist of certainly-
+/// network types — FUSE is unlisted because it's indistinguishable from
+/// a local filesystem at this layer.
+#[cfg(target_os = "linux")]
+const NETWORK_FS_MAGICS: &[(i64, &str)] = &[
+    (0x6969, "nfs"),
+    (0x517b, "smb"),
+    (0xff53_4d42, "cifs"),
+    (0xfe53_4d42, "smb2"),
+    (0x0102_1997, "9p"),
+    (0x00c3_6400, "ceph"),
+    (0x5346_414f, "afs"),
+    (0x7375_7245, "coda"),
+    (0x0bd0_0bd0, "lustre"),
+    (0x0116_1970, "gfs2"),
+    (0x7461_636f, "ocfs2"),
+];
+
+/// The D15 guard: fail fast if `dir` sits on a known network filesystem.
+/// Best-effort by construction (an unknown fstype passes), but it turns
+/// the doc-comment rule into code for every filesystem worth worrying
+/// about.
+#[cfg(target_os = "linux")]
+fn reject_network_fs(dir: &Path) -> Result<(), IndexError> {
+    let stat = rustix::fs::statfs(dir).map_err(|errno| IndexError::DbDir {
+        path: dir.to_path_buf(),
+        source: errno.into(),
+    })?;
+    // Identity on 64-bit (f_type is already i64); real on 32-bit (i32).
+    #[allow(clippy::useless_conversion)]
+    let f_type = i64::from(stat.f_type);
+    if let Some((_, fs)) = NETWORK_FS_MAGICS.iter().find(|(magic, _)| *magic == f_type) {
+        return Err(IndexError::DbDirOnNetworkFs {
+            path: dir.to_path_buf(),
+            fs,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn reject_network_fs(_dir: &Path) -> Result<(), IndexError> {
+    Ok(())
 }
 
 /// What to do with a validly-ours file whose schema version is OLDER

@@ -75,9 +75,6 @@ impl App {
         // lifetime IS the process lifetime, so one leaked Store is the
         // honest expression of that (no self-referential gymnastics).
         let store: &'static Store = Box::leak(Box::new(store));
-        // Like the CLI path (config.rs): SQLite won't create the parent.
-        std::fs::create_dir_all(db_dir)
-            .with_context(|| format!("creating db dir {}", db_dir.display()))?;
         let db = Db::open(db_dir)
             .with_context(|| format!("opening databases in {}", db_dir.display()))?;
         let exec = Executor::new(store, ExecConfig::default())?;

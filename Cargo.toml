@@ -89,6 +89,10 @@ quick-xml = "0.38"
 # version (and thus JSONB availability) moves — a system libsqlite would
 # reintroduce exactly the version drift the design forbids elsewhere.
 rusqlite = { version = "0.37", features = ["bundled"] }
+# statfs for the D15 guard in datboi-index: refuse to open the embedded
+# databases on a network filesystem. Safe wrapper — the workspace warns
+# on unsafe_code.
+rustix = { version = "1", features = ["fs"] }
 # In-process userspace NFSv3 (docs/80-views.md: the primary mount,
 # nfsserve lineage). Serves mount+portmap+nfs on one TCP port; no
 # kernel export, no root.

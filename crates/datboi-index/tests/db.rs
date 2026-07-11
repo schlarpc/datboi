@@ -707,3 +707,16 @@ fn auth_users_invites_sessions_grants() {
     assert!(!db.revoke_view(user_id, "psx").unwrap(), "already revoked");
     assert_eq!(db.grants_for_user(user_id).unwrap(), ["gba"]);
 }
+
+/// `Db::open` owns its preconditions: a missing (even nested) db dir is
+/// created rather than surfacing as SQLITE_CANTOPEN — the `serve` --db-dir
+/// regression.
+#[test]
+fn open_creates_missing_db_dir() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let dir = root.path().join("does/not/exist/yet");
+    let db = Db::open(&dir).expect("open creates the dir");
+    drop(db);
+    assert!(dir.join("state.db").is_file());
+    assert!(dir.join("cache.db").is_file());
+}

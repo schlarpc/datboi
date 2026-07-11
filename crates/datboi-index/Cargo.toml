@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 datboi-core.workspace = true
 rusqlite.workspace = true
+rustix.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

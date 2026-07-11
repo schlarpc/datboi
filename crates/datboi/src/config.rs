@@ -108,8 +108,6 @@ impl GlobalArgs {
         };
         let store = Store::open(store_root)
             .with_context(|| format!("opening store at {}", store_root.display()))?;
-        std::fs::create_dir_all(db_dir)
-            .with_context(|| format!("creating db dir {}", db_dir.display()))?;
         let db = Db::open(db_dir)
             .with_context(|| format!("opening databases in {}", db_dir.display()))?;
         let (detectors, detector_errors) = match &self.detectors {
