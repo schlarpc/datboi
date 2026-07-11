@@ -4,7 +4,10 @@ description = "RAR extractor component for the datboi:extractor@1 world (D58): t
 version = "0.1.0"
 edition = "2024"
 authors = ["Chaz Schlarp"]
-license = "freeware"
+# No SPDX id exists for the UnRAR license (decompression-only; forbids
+# recreating the compressor). SPDX LicenseRef- carries the custom terms;
+# full text in vendor/unrar/license.txt and README.md (D58).
+license = "LicenseRef-unRAR"
 repository = "https://github.com/schlarpc/datboi"
 
 [lib]

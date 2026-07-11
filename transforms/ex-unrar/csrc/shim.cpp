@@ -188,37 +188,26 @@ int link(const char *, const char *) { __builtin_trap(); }
 int symlink(const char *, const char *) { __builtin_trap(); }
 int utime(const char *, const void *) { __builtin_trap(); }
 
-// stdio streams: referenced by crypt.cpp's /dev/urandom reader (salt
-// generation — an ENCODE path unrar's decoder never runs) and consio's
-// stream globals (SILENT compiles the actual console I/O out, but the
-// object still names the globals). No FILE ever opens or is written;
-// wasi-libc's real stdio machinery (fd_read/fd_write importers) must
-// never be pulled, so the globals are null here and the accessors are
-// inert or trapping.
+// stdio: referenced by crypt.cpp's /dev/urandom reader (a salt-generation
+// ENCODE path unrar's decoder never runs) and consio's console globals
+// (SILENT compiles the actual output out, but the object still names them).
+//
+// Rather than redefine wasi-libc's stream globals (which duplicate-conflicts
+// with libc.a in the final link), we let libc keep `stdin`/`stdout`/`stderr`
+// and instead TRAP the low-level stdio BACKENDS those streams bottom out in.
+// wasi-libc's `__stdio_{read,write,seek,close}` and `__stdout_write` are the
+// only things that would reach the fd_* imports; overriding them here breaks
+// the chain, so no import survives and nothing conflicts. None is ever
+// called at runtime (no FILE opens; SILENT means no console writes).
 FILE *fopen(const char *, const char *) { return nullptr; }
 size_t fread(void *, size_t, size_t, FILE *) { __builtin_trap(); }
 int fclose(FILE *) { __builtin_trap(); }
-FILE *const stdin = nullptr;
-FILE *const stdout = nullptr;
-FILE *const stderr = nullptr;
-// musl-internal twins (referenced by __stdio_exit): defining them here
-// keeps wasi-libc's stream objects — and their fd_read/fd_write/fd_seek
-// importing machinery — out of the link entirely.
-FILE *volatile __stdin_used = nullptr;
-FILE *volatile __stdout_used = nullptr;
-FILE *volatile __stderr_used = nullptr;
-// The stream FILE objects themselves (referenced by vfprintf/vfscanf/...):
-// zeroed dummies. Any real I/O through them would call a null function
-// pointer — an immediate deterministic wasm trap.
-alignas(16) char __stdin_FILE[256] = {0};
-alignas(16) char __stdout_FILE[256] = {0};
-alignas(16) char __stderr_FILE[256] = {0};
-int fileno(FILE *) {
-  errno = EBADF;
-  return -1;
-}
-int fflush(FILE *) { return 0; }
-void setbuf(FILE *, char *) {}
+using off_t_stdio = long long;
+size_t __stdio_read(void *, unsigned char *, size_t) { __builtin_trap(); }
+size_t __stdio_write(void *, const unsigned char *, size_t) { __builtin_trap(); }
+size_t __stdout_write(void *, const unsigned char *, size_t) { __builtin_trap(); }
+off_t_stdio __stdio_seek(void *, off_t_stdio, int) { __builtin_trap(); }
+int __stdio_close(void *) { __builtin_trap(); }
 
 // Directory scans and fs queries: an empty, unknowable filesystem.
 // (DIR is opaque; nothing ever gets a non-null one, so readdir/closedir
