@@ -900,6 +900,7 @@ dependencies = [
  "datboi-core",
  "positioned-io",
  "proptest",
+ "rustix",
  "tempfile",
  "thiserror",
 ]

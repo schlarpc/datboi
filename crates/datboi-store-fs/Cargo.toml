@@ -14,6 +14,10 @@ datboi-core.workspace = true
 positioned-io = { version = "0.3", default-features = false }
 thiserror.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# statvfs for the D56 disk-headroom guard.
+rustix = { version = "1", default-features = false, features = ["fs", "std"] }
+
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true

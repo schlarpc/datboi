@@ -49,6 +49,10 @@ use crate::random::{AssembleRandom, FileRandom, SeqOverRandom, VerifiedRandom, W
 const DEFLATE_PARAM_OFFSET: u64 = 1;
 const DEFLATE_PARAM_LEN: u64 = 2;
 
+/// D56 headroom guard: fixed safety margin on top of the claimed size
+/// (+ obao overhead) before materialize-on-demand may write.
+const MATERIALIZE_SLACK: u64 = 64 << 20;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ExecError {
     #[error("no materializable route to {0}")]
@@ -75,6 +79,10 @@ pub enum ExecError {
     Io(#[from] io::Error),
     #[error("no outboard for {0}: recipe-served range reads require one (D49)")]
     MissingOutboard(Blake3),
+    #[error(
+        "insufficient disk headroom to materialize {hash}: need ~{need} bytes, {have} available (D56)"
+    )]
+    InsufficientHeadroom { hash: Blake3, need: u64, have: u64 },
     #[error("range verification failed for {hash}: {detail}")]
     RangeVerifyFailed { hash: Blake3, detail: String },
 }
@@ -324,9 +332,15 @@ impl<'s> Executor<'s> {
     /// picks a route and replays the covering recipe (which stores every
     /// sibling output too — one execution verifies all, docs/70-recipes.md).
     ///
+    /// Guarded by the D56 disk-headroom check: materialize-on-demand
+    /// refuses cleanly (nothing written) when the store filesystem
+    /// lacks room for the claimed bytes + outboard + slack, instead of
+    /// hitting ENOSPC mid-replay.
+    ///
     /// # Errors
     /// [`ExecError::NoRoute`] when no non-poisoned recipe chain grounds
-    /// out in resident literals.
+    /// out in resident literals; [`ExecError::InsufficientHeadroom`]
+    /// when the guard refuses.
     pub fn materialize(&self, db: &Db, hash: &Blake3) -> Result<(), ExecError> {
         if self.is_resident(db, hash)? {
             return Ok(());
@@ -334,6 +348,21 @@ impl<'s> Executor<'s> {
         let Some(row) = db.blob_by_hash(hash)? else {
             return Err(ExecError::NoRoute(*hash));
         };
+        if let (Some(size), Some(have)) = (row.size, self.store.available_bytes()?) {
+            // Claimed bytes + obao (~size/256) + a fixed safety margin;
+            // a replay may also store sibling outputs, which the margin
+            // absorbs for realistic recipes.
+            let need = size
+                .saturating_add(size / 256)
+                .saturating_add(MATERIALIZE_SLACK);
+            if have < need {
+                return Err(ExecError::InsufficientHeadroom {
+                    hash: *hash,
+                    need,
+                    have,
+                });
+            }
+        }
         let mut last_err = None;
         for recipe in db.recipes_for_output(row.blob_id)? {
             if recipe.verify == VerifyState::Failed {

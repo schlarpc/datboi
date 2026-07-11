@@ -282,6 +282,23 @@ impl Store {
         }
     }
 
+    /// Free bytes on the filesystem holding the store root — the D56
+    /// disk-headroom guard's input. `None` where the platform can't
+    /// answer (the guard then stays permissive rather than blocking
+    /// every materialization).
+    pub fn available_bytes(&self) -> Result<Option<u64>, StoreError> {
+        #[cfg(unix)]
+        {
+            let st = rustix::fs::statvfs(&self.root)
+                .map_err(|e| StoreError::io(&self.root, io::Error::from(e)))?;
+            Ok(Some(st.f_bavail.saturating_mul(st.f_frsize)))
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(None)
+        }
+    }
+
     /// Walk one namespace's shard tree — the recovery-scan primitive
     /// (D15). Yields `(hash, size)` per blob file; foreign files come back
     /// as [`StoreError::Foreign`] items so callers can count them without

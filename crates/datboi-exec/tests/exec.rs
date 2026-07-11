@@ -794,3 +794,39 @@ fn no_route_is_a_clean_error() {
         Err(ExecError::NoRoute(_))
     ));
 }
+
+/// D56 headroom guard: a claimed output too large for the store's
+/// filesystem refuses cleanly BEFORE any replay writes bytes.
+#[test]
+fn materialize_refuses_without_disk_headroom() {
+    let mut w = world();
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+
+    // An absent blob claiming ~1 EiB, with a (row-level) covering
+    // recipe so the route exists — the guard must fire first.
+    let huge = Blake3::compute(b"claimed enormous output");
+    let huge_id =
+        w.db.upsert_blob(&huge, Some(1 << 60), IndexNs::Data, Residency::Absent)
+            .expect("upsert");
+    let meta = Blake3::compute(b"headroom recipe object");
+    let meta_id =
+        w.db.upsert_blob(&meta, Some(32), IndexNs::Meta, Residency::Resident)
+            .expect("upsert meta");
+    w.db.insert_recipe(&NewRecipe {
+        blob_id: meta_id,
+        op_kind: OpKind::Builtin,
+        op_name: "assemble@1",
+        seek_class: SeekClass::Affine,
+        source: RecipeSource::LocalIngest,
+        inputs: &[],
+        outputs: &[(0, huge_id, 1 << 60, None)],
+    })
+    .expect("insert");
+
+    match exec.materialize(&w.db, &huge) {
+        Err(ExecError::InsufficientHeadroom { need, have, .. }) => {
+            assert!(need > have, "guard arithmetic: need {need} > have {have}");
+        }
+        other => panic!("expected InsufficientHeadroom, got {other:?}"),
+    }
+}
