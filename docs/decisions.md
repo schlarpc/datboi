@@ -738,7 +738,11 @@ for binary-embedded code; accepted asymmetry that shrinks as
 analyzers become components (D58). *Rejected:* coverage keyed on
 stamped family+version (auto re-sweep on version bump; trusts an
 unverifiable label), coverage keyed on raw hash with mandatory
-backfill (full-corpus re-analysis per deploy).
+backfill (full-corpus re-analysis per deploy). *Amended by D65:
+predecessor declarations and grandfathered coverage are dropped
+(never implemented); exact-hash identity, append-only facts, and
+explicit migration stand. See D64 for the principle that vetoed the
+lineage machinery.*
 
 ## D56 — M4 serving defaults ratified (2026-07-10)
 
@@ -906,3 +910,60 @@ not a ceiling. This unblocks never-fully-materialized giant images
 (nbd-served OPL disks, TB-scale FAT32 exports). *Rejected:* universal
 D49 (giant reified images unservable), mandatory blessing (one full
 pass over TB-scale images for no additional served-byte guarantee).
+
+## D64 — Forward compatibility is the point: core and components evolve independently (2026-07-10)
+
+The unstated thesis behind D5/D6, ruled now because it just vetoed
+machinery (D65): the component population and the core binary are
+INDEPENDENT axes of evolution. Future analyzers, transforms, and
+extractors arrive as components — from our own repo or from peers
+(D6: peer code is wasm, never native) — and run under an existing
+core without a core update. "Latest" is not a privileged concept
+anywhere in the system: recipes pin exact component hashes, so new
+components can never break old recipes (D5 by construction) and old
+components' facts are never invalidated by new arrivals (D55/D65).
+Trust in a component is a LOCAL adoption decision (add its hash to
+the active set, D65) — never inherited from a publisher's claim of
+version, ancestry, or recency, which are labels and therefore
+unverifiable (D54/D55 energy). Litmus test: any design that assumes
+a single operator linearly ordering component revisions at a deploy
+ceremony is wrong-shaped and gets rejected on sight — components
+form an unordered, locally-curated population, not a release train.
+*Rejected:* leaving this emergent from D5/D6 without a ruling (it
+silently contradicted D55's registration lineage until challenged).
+
+## D65 — D55 amendment: no lineage — active set + surfaced disagreement (2026-07-10)
+
+D55's core stands: identity is the exact component hash, labels are
+never trusted, analysis rows are append-only facts and are never
+invalidated. The middle DIES, unimplemented: predecessor
+declarations and grandfathered coverage are dropped. The "re-sweep
+tax" that motivated grandfathering conflated eager-and-blocking with
+background: re-covering is opportunistic idle-time sweep work (the
+pending-sweep table's existing shape) or a manual directive, so
+deploys still block on nothing and the corpus converges to genuinely
+FRESH coverage instead of inherited claims — the failure mode where
+a bugfixed analyzer silently trusts its buggy predecessor's rows
+structurally cannot happen, because nothing inherits. Lineage was
+also wrong-shaped for D64: peer-arriving components have no linear
+order, and inheriting coverage across a publisher's ancestry claim
+is the trust-an-unverifiable-label failure D55 rejected, one level
+up. The replacement is smaller: (1) an **active set** — a local
+mutable list of analyzer hashes we currently want run. The sweep
+target is "blobs missing a row for an active hash"; adopting a
+component (peer or own build) = adding its hash; retiring =
+removing it. Retired hashes stop chasing new blobs; their rows stay
+forever (dozens of analyzer hashes are dozens of CAS blobs plus
+cheap index rows — nobody cares). (2) a **conflict rule** — rows
+from different hashes may disagree about the same bytes; both are
+facts. Active outranks retired in reports and gates; two ACTIVE
+hashes disagreeing is a surfaced anomaly, never silently resolved
+(D39 energy: disagreement is signal; distinct states don't
+collapse). Native analyzers' self-declared tags remain the accepted
+asymmetry (D55/D58). *Rejected:* predecessor-declaration
+registration (a trust statement dressed as metadata; assumes
+operator-ordered linear revisions, wrong-shaped per D64),
+grandfathered coverage (fails cheap and quiet — inherited green
+until someone remembers to migrate), newest-wins conflict
+resolution (no "newest" without lineage, and disagreement is worth
+seeing).

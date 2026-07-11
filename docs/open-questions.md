@@ -21,7 +21,10 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
 - ~~Analyzer identity / coverage semantics~~ ruled 2026-07-10 as
   **D55**: exact-hash identity, lineage declared at registration,
   grandfathered coverage, migration explicit; native analyzers keep
-  self-declared tags until they become components.
+  self-declared tags until they become components. Amended 2026-07-10
+  as **D65**: lineage + grandfathering dropped (never implemented);
+  replaced by a local active set + surfaced disagreement, per the
+  forward-compat principle ruled as **D64**.
 - ~~Chunking threshold + eligibility policy~~ ruled 2026-07-10 as
   **D59**: route-less literals ≥ 4 MiB only (threshold unchanged);
   work item to narrow the shipped analyzer.
@@ -60,7 +63,8 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
 
 - ~~Ingest-policy config vocabulary~~ shape ruled 2026-07-10 as
   **D60** (per-analyzer enable + opaque params in the config KV,
-  lineage at registration, global dat-aware ordering). Detector
+  lineage at registration — the lineage clause since dropped by
+  **D65**, global dat-aware ordering). Detector
   registry ordering + canonical-orientation preference remain
   deliberately undesigned within D60 until a consumer exists.
 
