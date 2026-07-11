@@ -149,12 +149,12 @@
             </div>
 
             <div class="stats">
-              {#if view.rows !== undefined}
+              {#if view.rows != null}
                 <span>{view.rows.toLocaleString()} files</span>
               {/if}
               {#if view.snapshot !== null}
                 <span>
-                  snap {snapShort(view.snapshot)}{#if view.created_at !== undefined}{' · '}{fmtAge(
+                  snap {snapShort(view.snapshot)}{#if view.created_at != null}{' · '}{fmtAge(
                       view.created_at,
                     )}{/if}
                 </span>
@@ -283,8 +283,11 @@
                   <div class="def-row">
                     <span class="k">minted</span>
                     <span class="v">
-                      {#if img.minted}
-                        {shortHash(img.hash)}{#if img.bytes !== null}{' · '}{fmtSize(img.bytes)}{/if}
+                      <!-- The contract omits hash/bytes when unminted (and
+                           bytes when the blob row records no size), so both
+                           are optional-and-nullable even beside minted:true. -->
+                      {#if img.minted && img.hash != null}
+                        {shortHash(img.hash)}{#if img.bytes != null}{' · '}{fmtSize(img.bytes)}{/if}
                       {:else}
                         not minted yet
                       {/if}

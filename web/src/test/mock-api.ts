@@ -14,7 +14,6 @@ import type {
   AdminUsersBody,
   EntryDetail,
   EntryRow,
-  Job,
   MintedInvite,
   StorageBody,
   System,
@@ -30,7 +29,9 @@ export interface MockUniverse {
   /** Entry detail by name; default derives a minimal one from the row. */
   detail?: (name: string) => EntryDetail | undefined;
   storage?: StorageBody;
-  jobs?: Job[];
+  /** The contract's Job is shapeless (no registry yet, D69), so fixtures
+   * carry whatever forward-written fields the tray narrows to. */
+  jobs?: Record<string, unknown>[];
   /** Full detail bodies; the list endpoint serves the same objects
    * (extra fields are harmless — the real list is a subset). */
   views?: ViewDetail[];

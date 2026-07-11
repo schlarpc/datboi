@@ -140,7 +140,13 @@ strict mode + retool clonelist consumption are M4 work items).
   staleness gate, and the web build generates TS from it. The M5
   stopgap (hand-written TS pinned by integration tests) is dead.
   Browser hardening (CSP + Fetch-Metadata CSRF) ruled alongside as
-  **D70**.
+  **D70**. Residual contract imprecision worth a later pass:
+  `WhoamiResponse` and `ImageStatus` describe invariants
+  (`authenticated ⇒ role`, `minted ⇒ hash`) as independent optional
+  fields rather than oneOf discriminated unions — the generated TS
+  lost precision the hand-written types had encoded, and screens
+  now guard defensively; `EntryRow.wanted_hash_algo` keeps its enum
+  in prose. utoipa supports oneOf; upgrade when it next itches.
 - **Scrub runs and verify methods aren't recorded**: the index keeps
   per-blob `verified_at` only — no method, no scrub-run ledger — so
   `/v1/storage` cannot report last-scrub and the entry drawer's

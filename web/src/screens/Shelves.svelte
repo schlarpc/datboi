@@ -69,12 +69,12 @@
               {/if}
             </div>
             <div class="stats">
-              {#if view.rows !== undefined && view.bytes !== undefined}
+              {#if view.rows != null && view.bytes != null}
                 <span>{view.rows.toLocaleString()} files · {fmtSize(view.bytes)}</span>
               {/if}
               {#if view.snapshot !== null}
                 <span>
-                  snap {snapShort(view.snapshot)}{#if view.created_at !== undefined}{' · '}{fmtAge(
+                  snap {snapShort(view.snapshot)}{#if view.created_at != null}{' · '}{fmtAge(
                       view.created_at,
                     )} ago{/if}
                 </span>

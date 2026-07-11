@@ -11,10 +11,9 @@
    * disabled: there is no activity feed to expand yet.
    */
   import { jobs as fetchJobs } from '../api/client';
-  import type { Job } from '../api/types';
-  import JobRow from './JobRow.svelte';
+  import JobRow, { isTrayJob, type TrayJob } from './JobRow.svelte';
 
-  let jobs = $state<Job[]>([]);
+  let jobs = $state<TrayJob[]>([]);
 
   // Lowercase title copy — forced into the catalog at statement level.
   // @wc-include
@@ -22,7 +21,9 @@
 
   $effect(() => {
     fetchJobs().then(
-      (body) => (jobs = body.jobs),
+      // The contract's Job is shapeless (no registry yet, D69) — narrow
+      // to the tray's rendering shape; unrenderable items are dropped.
+      (body) => (jobs = (body.jobs as unknown[]).filter(isTrayJob)),
       () => (jobs = []), // tray degrades to idle on any error
     );
   });

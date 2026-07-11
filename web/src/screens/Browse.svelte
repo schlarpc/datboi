@@ -128,9 +128,9 @@
              the whole manifest (the prototype's static info line); the
              filtered count lives on the load-more row. -->
         <span class="info">
-          snap {snapShort(detail.snapshot)}{#if detail.created_at !== undefined}{' · '}{fmtAge(
+          snap {snapShort(detail.snapshot)}{#if detail.created_at != null}{' · '}{fmtAge(
               detail.created_at,
-            )} ago{/if}{#if detail.rows !== undefined}{' · '}{detail.rows.toLocaleString()} files{/if}
+            )} ago{/if}{#if detail.rows != null}{' · '}{detail.rows.toLocaleString()} files{/if}
         </span>
       {/if}
     </div>
@@ -233,7 +233,7 @@
         <!-- Only when an image is actually minted (D62 tag) — the pill
              never advertises a download that would 404. -->
         <button class="image-pill" onclick={() => (modal = true)}>
-          ⬇ whole SD image{#if image.bytes !== null}{' · '}{fmtSize(image.bytes)}{/if}
+          ⬇ whole SD image{#if image.bytes != null}{' · '}{fmtSize(image.bytes)}{/if}
         </button>
       {/if}
     </footer>
@@ -257,7 +257,7 @@
           <div class="modal-title">SD image · {view}</div>
           {#if detail !== null && detail.snapshot !== null}
             <div class="modal-sub">
-              FAT32{#if image.bytes !== null}{' · '}{fmtSize(image.bytes)}{/if}{' · '}minted from
+              FAT32{#if image.bytes != null}{' · '}{fmtSize(image.bytes)}{/if}{' · '}minted from
               snap {snapShort(detail.snapshot)}
             </div>
           {/if}

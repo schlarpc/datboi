@@ -151,7 +151,7 @@
                 <div>verify pending replay</div>
               {/if}
             {/each}
-            {#if rom.pins !== undefined}
+            {#if rom.pins != null}
               {#if rom.pins.length > 0}
                 <div>pinned {rom.pins.join(', ')}</div>
               {:else}

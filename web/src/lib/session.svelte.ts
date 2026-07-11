@@ -53,16 +53,22 @@ export const session = {
     }
   },
 
-  /** Feed a whoami/login/invite-accept answer into the store. */
+  /**
+   * Feed a whoami/login/invite-accept answer into the store. The contract
+   * (WhoamiResponse) makes username/role/via optional even when
+   * authenticated — loopback callers have no user row (D68) — so absent
+   * fields read as null; a login answer (SessionResponse) carries no
+   * `via`, which is 'session' by construction.
+   */
   apply(who: Whoami | SessionInfo): void {
     if (!who.authenticated) {
       clear();
       return;
     }
     state.status = 'authenticated';
-    state.username = 'username' in who && who.username !== undefined ? who.username : null;
-    state.role = who.role;
-    state.via = 'via' in who ? who.via : 'session';
+    state.username = who.username ?? null;
+    state.role = who.role ?? null;
+    state.via = 'via' in who ? (who.via ?? null) : 'session';
   },
 
   async logout(): Promise<void> {

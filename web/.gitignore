@@ -12,3 +12,7 @@ dist/
 src/locales/.wuchale/
 src/locales/data.js
 src/locales/*.loader*.js
+
+# generated API types (D69): the checked-in OpenAPI spec is the source of
+# truth (crates/datboi-api/openapi.json); `npm run generate` rewrites this.
+src/lib/api/schema.d.ts

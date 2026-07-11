@@ -243,17 +243,23 @@
       #
       # web/ is a standalone npm project with its own package-lock.json —
       # the lockfile boundary again (D54/D66): its derivation source is a
-      # fileset over web/ ALONE, so a rust edit can never invalidate the
-      # web build and a web edit never touches cargoArtifacts. Excluding
-      # install/build output is belt-and-braces (untracked paths never
-      # reach a flake's source anyway, hence maybeMissing).
+      # fileset over web/ plus EXACTLY ONE file from the rust side, the
+      # checked-in OpenAPI spec (D69: `npm run generate` derives the TS
+      # API types from it). Rust edits still never invalidate the web
+      # build — only a change to the spec file itself does — and a web
+      # edit never touches cargoArtifacts. Excluding install/build output
+      # is belt-and-braces (untracked paths never reach a flake's source
+      # anyway, hence maybeMissing).
       webSrc = nixpkgs.lib.fileset.toSource {
-        root = ./web;
-        fileset = nixpkgs.lib.fileset.difference ./web (nixpkgs.lib.fileset.unions [
-          (nixpkgs.lib.fileset.maybeMissing ./web/node_modules)
-          (nixpkgs.lib.fileset.maybeMissing ./web/dist)
-          (nixpkgs.lib.fileset.maybeMissing ./web/.vite)
-        ]);
+        root = ./.;
+        fileset = nixpkgs.lib.fileset.unions [
+          (nixpkgs.lib.fileset.difference ./web (nixpkgs.lib.fileset.unions [
+            (nixpkgs.lib.fileset.maybeMissing ./web/node_modules)
+            (nixpkgs.lib.fileset.maybeMissing ./web/dist)
+            (nixpkgs.lib.fileset.maybeMissing ./web/.vite)
+          ]))
+          ./crates/datboi-api/openapi.json
+        ];
       };
 
       webPackageJson = builtins.fromJSON (builtins.readFile ./web/package.json);
@@ -261,7 +267,7 @@
       # node_modules built purely from package-lock.json (rof-gui pattern,
       # docs/50-infra.md) — no npmDepsHash to churn on every lockfile edit.
       webNodeModulesFor = system: (pkgsFor system).importNpmLock.buildNodeModules {
-        npmRoot = webSrc;
+        npmRoot = "${webSrc}/web";
         inherit (pkgsFor system) nodejs;
       };
 
@@ -277,10 +283,14 @@
           pname = "datboi-web";
           version = webPackageJson.version;
           src = webSrc;
+          # webSrc roots at the repo so ../crates/datboi-api/openapi.json
+          # resolves for `npm run generate`; the project itself is web/.
+          sourceRoot = "source/web";
           nativeBuildInputs = [ pkgs.nodejs ];
           buildPhase = ''
             runHook preBuild
             ln -s ${webNodeModulesFor system}/node_modules node_modules
+            npm run generate
             npm run build
             runHook postBuild
           '';
@@ -333,11 +343,13 @@
           transforms = self.packages.${system}.transforms;
           web = self.packages.${system}.web;
 
-          # svelte-check + vitest over the same fileset source. `npm run
-          # extract` first: the wuchale loader modules are generated files
-          # (gitignored), and svelte-check needs them on disk to resolve
+          # svelte-check + vitest over the same fileset source. Generated
+          # files first, mirroring the dev flow: `npm run generate` derives
+          # the TS API types from the checked-in OpenAPI spec (D69,
+          # gitignored like the loaders), and `npm run extract` writes the
+          # wuchale loader modules svelte-check needs on disk to resolve
           # App.svelte's loader import (vitest regenerates them itself via
-          # the vite plugin; extraction is deterministic and offline, D67).
+          # the vite plugin; both steps are deterministic and offline).
           web-test =
             let pkgs = pkgsFor system;
             in
@@ -345,10 +357,12 @@
               pname = "datboi-web-test";
               version = webPackageJson.version;
               src = webSrc;
+              sourceRoot = "source/web";
               nativeBuildInputs = [ pkgs.nodejs ];
               buildPhase = ''
                 runHook preBuild
                 ln -s ${webNodeModulesFor system}/node_modules node_modules
+                npm run generate
                 npm run extract
                 npm run check
                 npm test

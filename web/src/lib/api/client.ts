@@ -17,7 +17,10 @@ import type {
   EntriesBody,
   EntriesParams,
   EntryDetail,
+  GrantParams,
+  InviteAcceptParams,
   JobsBody,
+  LoginParams,
   MintedInvite,
   MintInviteParams,
   OkBody,
@@ -98,7 +101,10 @@ export const whoami = (): Promise<Whoami> =>
   request('GET', '/v1/auth/whoami', { sessionAuth: false });
 
 export const login = (username: string, password: string): Promise<SessionInfo> =>
-  request('POST', '/v1/auth/login', { body: { username, password }, sessionAuth: false });
+  request('POST', '/v1/auth/login', {
+    body: { username, password } satisfies LoginParams,
+    sessionAuth: false,
+  });
 
 export const logout = (): Promise<OkBody> =>
   request('POST', '/v1/auth/logout', { sessionAuth: false });
@@ -109,7 +115,7 @@ export const acceptInvite = (
   password: string,
 ): Promise<SessionInfo> =>
   request('POST', '/v1/auth/invite/accept', {
-    body: { token, username, password },
+    body: { token, username, password } satisfies InviteAcceptParams,
     sessionAuth: false,
   });
 
@@ -172,7 +178,7 @@ export const adminRevokeInvite = (tokenHashHex: string): Promise<OkBody> =>
   request('DELETE', `/v1/admin/invites/${encodeURIComponent(tokenHashHex)}`);
 
 export const adminGrant = (username: string, view: string): Promise<OkBody> =>
-  request('POST', '/v1/admin/grants', { body: { username, view } });
+  request('POST', '/v1/admin/grants', { body: { username, view } satisfies GrantParams });
 
 export const adminRevoke = (username: string, view: string): Promise<OkBody> =>
   request(
