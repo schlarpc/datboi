@@ -54,6 +54,14 @@ pub fn import_dat(
     bytes: &[u8],
     opts: &ImportOptions<'_>,
 ) -> Result<ImportReport, CatalogError> {
+    // Validate before storing anything: detect/parse read only `bytes`, so
+    // a malformed upload (observed live: a .zip where a dat belongs) errors
+    // here and leaves no trace — no orphan blob, no rows. D15's bytes-first
+    // rule orders blob vs rows, not validation vs storage; once we do
+    // store, the blob still lands before every row derived from it.
+    let format = detect(bytes).ok_or(datboi_formats::model::ParseError::UnknownFormat)?;
+    let dat = parse(bytes)?;
+
     // Dat files are opaque payloads, not datboi structured objects: data/.
     let (hash, aliases, _outcome) = store.put_new(datboi_store_fs::Namespace::Data, bytes)?;
     let blob_id = db.upsert_blob(
@@ -64,9 +72,6 @@ pub fn import_dat(
     )?;
     db.insert_aliases(blob_id, &aliases)?;
     db.set_verified(blob_id, opts.imported_at)?;
-
-    let format = detect(bytes).ok_or(datboi_formats::model::ParseError::UnknownFormat)?;
-    let dat = parse(bytes)?;
 
     let provider = opts
         .provider

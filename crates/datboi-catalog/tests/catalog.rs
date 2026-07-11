@@ -125,6 +125,44 @@ fn count(db: &Db, sql: &str) -> i64 {
         .expect("count query")
 }
 
+/// Every regular file under `root`, recursively — for asserting a store
+/// tree holds exactly what an import should have left behind.
+fn files_under(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read_dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+/// A malformed upload (observed live: a .zip where a dat belongs) must
+/// error without a trace — no CAS blob, no staged temp, no index rows.
+/// import_dat validates (detect + parse) before it stores, so the orphan
+/// a content-addressed store can't account for never comes to exist.
+#[test]
+fn garbage_import_leaves_no_orphan() {
+    let mut f = fixture();
+    let store_root = f._dir.path().join("store");
+
+    for garbage in [b"not a dat".to_vec(), stored_zip("game.bin", b"payload")] {
+        import_dat(&f.store, &mut f.db, &garbage, &opts("p", "s"))
+            .expect_err("unparseable bytes must not import");
+    }
+
+    assert_eq!(count(&f.db, "SELECT COUNT(*) FROM blob"), 0);
+    assert_eq!(count(&f.db, "SELECT COUNT(*) FROM dat_revision"), 0);
+    let leftovers = files_under(&store_root);
+    assert!(leftovers.is_empty(), "orphaned store files: {leftovers:?}");
+}
+
 /// The un-overridden provider chain (import.rs `provider_default`),
 /// pinned against the real header conventions surveyed 2026-07-11:
 /// No-Intro and TOSEC put the org in `<homepage>` and a maintainer
