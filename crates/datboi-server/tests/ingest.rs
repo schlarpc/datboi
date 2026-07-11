@@ -235,6 +235,10 @@ fn upload_ingest_and_report_end_to_end() {
     assert_eq!(report["members_claimed"], 1, "the zip member");
     assert_eq!(report["errors"], serde_json::json!([]));
     assert_eq!(report["member_skips"], serde_json::json!([]));
+    // No dat imported: nothing to satisfy, and the report says so
+    // rather than omitting the section.
+    assert_eq!(done["matched"], serde_json::json!([]));
+    assert_eq!(done["matched_total"], 0, "{done}");
 
     // The tray row: finished job, honest name, 100%.
     let (status, v) = get(f.addr, "/v1/jobs");
@@ -325,6 +329,11 @@ fn ingested_member_lights_up_the_shelf() {
     let done = wait_done(f.addr, v["job"].as_i64().expect("job id"));
     assert_eq!(done["state"], "done", "{done}");
     assert_eq!(done["report"]["members_claimed"], 1, "{done}");
+    // The user-vocabulary report: the job names the entry it newly
+    // satisfied, not just blob counts.
+    assert_eq!(done["matched_total"], 1, "{done}");
+    assert_eq!(done["matched"][0]["name"], "Mario Kart DS (USA)");
+    assert_eq!(done["matched"][0]["source"], "no-intro/nds");
 
     // The shelf lit up without any dat import/view eval in between:
     // the zip member's LocalIngest recipe counts as have(verified).

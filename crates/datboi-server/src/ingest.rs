@@ -16,6 +16,7 @@
 // error Response itself.
 #![allow(clippy::result_large_err)]
 
+use std::collections::HashSet;
 use std::io::Write as _;
 use std::sync::Arc;
 
@@ -24,7 +25,8 @@ use axum::body::{Body, Bytes};
 use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
-use datboi_api::{IngestRequest, IngestStartResponse, UploadResponse};
+use datboi_api::{IngestRequest, IngestStartResponse, MatchedEntry, UploadResponse};
+use datboi_index::Db;
 use datboi_ingest::Ingester;
 use futures_core::Stream as _;
 
@@ -235,6 +237,26 @@ pub(crate) async fn start(
 /// only, not the whole batch) and progress moves at file boundaries —
 /// the honest granularity, since the pipeline reports nothing finer.
 fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
+    // Baseline for the "matched" report: whatever was satisfied before
+    // this job ran isn't news, however the content arrived.
+    let before = {
+        let db = app
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match satisfied_entries(&db) {
+            Ok(set) => set,
+            Err(e) => {
+                // Dying before the loop still spends the staged copies.
+                for upload in &staged {
+                    let _ = std::fs::remove_file(&upload.path);
+                }
+                app.jobs
+                    .fail(id, &format!("matched baseline: {e}"), auth::now_unix());
+                return;
+            }
+        }
+    };
     for upload in staged {
         app.jobs.set_current(id, &upload.name);
         let report = {
@@ -258,13 +280,73 @@ fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
             .db
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The matched diff is part of the same thought: trivial reads
+        // against the rollups just refreshed, so a failure there is the
+        // same infrastructure failure as the refresh itself.
         let refreshed = datboi_catalog::relink_all(&db)
-            .and_then(|()| datboi_catalog::refresh_rollups(&mut db, auth::now_unix()));
-        if let Err(e) = refreshed {
-            app.jobs
-                .fail(id, &format!("catalog refresh: {e}"), auth::now_unix());
-            return;
+            .and_then(|()| datboi_catalog::refresh_rollups(&mut db, auth::now_unix()))
+            .and_then(|()| newly_matched(&db, &before).map_err(Into::into));
+        match refreshed {
+            Ok((matched, total)) => app.jobs.set_matched(id, matched, total),
+            Err(e) => {
+                app.jobs
+                    .fail(id, &format!("catalog refresh: {e}"), auth::now_unix());
+                return;
+            }
         }
     }
     app.jobs.finish(id, auth::now_unix());
+}
+
+/// The report caps the named matches here; `matched_total` carries the
+/// uncapped count so a bulk lightup is never silently truncated.
+const MATCHED_CAP: usize = 200;
+
+/// The satisfied-entry set: every required claim covered at verified or
+/// claimed grade — the D39 rollup states api.rs's `STATE_CASE` renders
+/// as `verified`|`claimed` (nodump rows, required = 0, don't count).
+fn satisfied_entries(db: &Db) -> rusqlite::Result<HashSet<i64>> {
+    db.cache()
+        .prepare(
+            "SELECT entry_id FROM entry_audit
+             WHERE required > 0 AND have_verified + have_claimed >= required",
+        )?
+        .query_map([], |row| row.get(0))?
+        .collect()
+}
+
+/// Diff the satisfied set against the job-start baseline and name the
+/// newly satisfied entries: `(capped rows, uncapped total)`.
+fn newly_matched(db: &Db, before: &HashSet<i64>) -> rusqlite::Result<(Vec<MatchedEntry>, u64)> {
+    let mut new_ids: Vec<i64> = satisfied_entries(db)?
+        .into_iter()
+        .filter(|id| !before.contains(id))
+        .collect();
+    let total = new_ids.len() as u64;
+    // Deterministic cap survivors: entry_id order (dat import order);
+    // display order comes from the query below.
+    new_ids.sort_unstable();
+    new_ids.truncate(MATCHED_CAP);
+    if new_ids.is_empty() {
+        return Ok((Vec::new(), total));
+    }
+    let placeholders = vec!["?"; new_ids.len()].join(",");
+    let matched = db
+        .cache()
+        .prepare(&format!(
+            "SELECT e.name, s.provider || '/' || s.system
+             FROM entry e
+             JOIN dat_revision r ON r.revision_id = e.revision_id
+             JOIN dat_source s ON s.source_id = r.source_id
+             WHERE e.entry_id IN ({placeholders})
+             ORDER BY s.provider, s.system, e.name"
+        ))?
+        .query_map(rusqlite::params_from_iter(new_ids), |row| {
+            Ok(MatchedEntry {
+                name: row.get(0)?,
+                source: row.get(1)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok((matched, total))
 }

@@ -992,3 +992,12 @@ msgstr "NAS-local ingest runs in the CLI:"
 #: src/lib/components/JobsTray.svelte
 msgid "recent activity log — needs a durable job table"
 msgstr "recent activity log — needs a durable job table"
+
+#. 0: (job.matched_total - job.matched.length).toLocaleString()
+#: src/screens/Ingest.svelte
+msgid "…and {0} more"
+msgstr "…and {0} more"
+
+#: src/screens/Ingest.svelte
+msgid "<0/> matched"
+msgstr "<0/> matched"

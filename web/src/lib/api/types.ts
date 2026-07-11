@@ -86,6 +86,7 @@ export type IngestReport = Schemas['IngestReportBody'];
 export type Job = Schemas['Job'];
 export type JobsBody = Schemas['JobsResponse'];
 export type JobDetailBody = Schemas['JobDetail'];
+export type MatchedEntry = Schemas['MatchedEntry'];
 
 // ---- /v1/admin/* ----
 

@@ -228,6 +228,23 @@
       {#if failure !== null}
         <p class="bad">something went wrong — {failure}</p>
       {/if}
+      {#if job !== null && job.matched_total > 0}
+        <!-- The user-vocabulary half: which GAMES this run newly
+             satisfied — the shelf lights, above the pipeline counts. -->
+        <p class="matched-head">
+          <b>{job.matched_total.toLocaleString()}</b> matched
+        </p>
+        <ul class="matched">
+          {#each job.matched as m, i (i)}
+            <li><span class="file">{m.name}</span> <span class="source">{m.source}</span></li>
+          {/each}
+          {#if job.matched_total > job.matched.length}
+            <li class="more">
+              …and {(job.matched_total - job.matched.length).toLocaleString()} more
+            </li>
+          {/if}
+        </ul>
+      {/if}
       {#if job !== null}
         <div class="counts">
           <span><b>{job.report.files_stored.toLocaleString()}</b> new blobs</span>
@@ -374,6 +391,7 @@
   }
 
   .queue ul,
+  .matched,
   .refusals,
   .notes {
     list-style: none;
@@ -385,6 +403,7 @@
   }
 
   .queue li,
+  .matched li,
   .refusals li {
     display: flex;
     align-items: center;
@@ -457,6 +476,26 @@
   }
 
   .why {
+    color: var(--faint);
+  }
+
+  .matched-head {
+    margin: 0 0 10px;
+    font: 400 12.5px var(--font-data);
+    color: var(--mut);
+  }
+
+  .matched-head b {
+    font: 800 15px var(--font-display);
+    color: var(--text);
+  }
+
+  .matched {
+    margin-bottom: 16px;
+  }
+
+  .source,
+  .more {
     color: var(--faint);
   }
 

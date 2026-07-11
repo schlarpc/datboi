@@ -13,6 +13,7 @@ use std::sync::Mutex;
 
 use datboi_api::{
     IngestErrorItem, IngestMemberSkipItem, IngestReportBody, Job, JobDetail, JobKind, JobRunState,
+    MatchedEntry,
 };
 use datboi_ingest::IngestReport;
 
@@ -41,6 +42,10 @@ struct JobState {
     current: Option<String>,
     state: JobRunState,
     report: IngestReportBody,
+    /// Newly satisfied entries (capped) + uncapped count; run_job sets
+    /// them after the closing relink/rollup pass.
+    matched: Vec<MatchedEntry>,
+    matched_total: u64,
     error: Option<String>,
     started_at: i64,
     finished_at: Option<i64>,
@@ -133,6 +138,8 @@ impl Registry {
             current: None,
             state: JobRunState::Running,
             report: IngestReportBody::default(),
+            matched: Vec::new(),
+            matched_total: 0,
             error: None,
             started_at: now,
             finished_at: None,
@@ -182,6 +189,15 @@ impl Registry {
         });
     }
 
+    /// The shelf lights: entries the job's content newly satisfied,
+    /// diffed across the run by run_job's matched computation.
+    pub(crate) fn set_matched(&self, id: i64, matched: Vec<MatchedEntry>, total: u64) {
+        self.with_job(id, |j| {
+            j.matched = matched;
+            j.matched_total = total;
+        });
+    }
+
     pub(crate) fn finish(&self, id: i64, now: i64) {
         let mut inner = lock(&self.jobs);
         if let Some(j) = inner.jobs.iter_mut().find(|j| j.id == id) {
@@ -228,6 +244,8 @@ impl Registry {
             started_at: j.started_at,
             finished_at: j.finished_at,
             report: j.report.clone(),
+            matched: j.matched.clone(),
+            matched_total: j.matched_total,
             error: j.error.clone(),
         })
     }
@@ -334,11 +352,22 @@ mod tests {
         // still running — 99, not a lying 100.
         reg.file_done(id, 100, IngestReportBody::default());
         assert_eq!(reg.list()[0].progress, 99);
+        reg.set_matched(
+            id,
+            vec![MatchedEntry {
+                name: "Mario Kart DS (USA)".into(),
+                source: "no-intro/nds".into(),
+            }],
+            201,
+        );
         reg.finish(id, 2_000);
         let row = &reg.list()[0];
         assert_eq!((row.progress, row.state), (100, JobRunState::Done));
         let detail = reg.detail(id).expect("detail");
         assert_eq!(detail.finished_at, Some(2_000));
+        // Matched rides the detail; the total may exceed the capped list.
+        assert_eq!(detail.matched[0].name, "Mario Kart DS (USA)");
+        assert_eq!(detail.matched_total, 201);
         // Zero-byte totals must not divide by zero.
         let id = reg.create(&[staged("empty.txt", 0)], 3_000);
         assert_eq!(reg.detail(id).expect("detail").job.progress, 0);

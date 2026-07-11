@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/svelte';
 import { loadLocale } from 'wuchale/load-utils';
 import { afterEach, expect, test, vi } from 'vitest';
 import '../locales/main.loader.svelte.js';
-import type { IngestReport, JobDetailBody } from '../lib/api/types';
+import type { IngestReport, JobDetailBody, MatchedEntry } from '../lib/api/types';
 import { installFetch, installUploadXhr } from '../test/mock-api';
 import Ingest from './Ingest.svelte';
 
@@ -25,7 +25,11 @@ const emptyReport: IngestReport = {
   notes: [],
 };
 
-function doneJob(report: Partial<IngestReport>): JobDetailBody {
+function doneJob(
+  report: Partial<IngestReport>,
+  matched: MatchedEntry[] = [],
+  matchedTotal = matched.length,
+): JobDetailBody {
   return {
     id: 1,
     name: 'ingest — 2 files',
@@ -39,6 +43,8 @@ function doneJob(report: Partial<IngestReport>): JobDetailBody {
     started_at: 1000,
     finished_at: 1002,
     report: { ...emptyReport, ...report },
+    matched,
+    matched_total: matchedTotal,
     error: null,
   };
 }
@@ -52,12 +58,19 @@ function pickFiles(files: File[]): Promise<void> {
 test('pick → upload → auto-ingest → report card', async () => {
   installFetch({
     jobTimeline: [
-      doneJob({
-        files_scanned: 2,
-        files_stored: 1,
-        files_already_present: 1,
-        members_claimed: 3,
-      }),
+      doneJob(
+        {
+          files_scanned: 2,
+          files_stored: 1,
+          files_already_present: 1,
+          members_claimed: 3,
+        },
+        [
+          { name: 'Mario Kart DS (USA, Australia)', source: 'no-intro/nds' },
+          { name: 'Advance Wars (USA)', source: 'no-intro/gba' },
+        ],
+        3, // one more lit up than the (test-sized) cap carried
+      ),
     ],
   });
   const sent = installUploadXhr();
@@ -76,6 +89,14 @@ test('pick → upload → auto-ingest → report card', async () => {
   expect(screen.getByText(/archive members/)).toBeTruthy();
   expect(screen.getByText('refused')).toBeTruthy();
   expect(screen.getByText(/3.*claimed in place/)).toBeTruthy();
+
+  // The matched section names the newly satisfied entries and owns up
+  // to the capped tail.
+  expect(screen.getByText('matched')).toBeTruthy();
+  expect(screen.getByText('Mario Kart DS (USA, Australia)')).toBeTruthy();
+  expect(screen.getByText('no-intro/nds')).toBeTruthy();
+  expect(screen.getByText('Advance Wars (USA)')).toBeTruthy();
+  expect(screen.getByText(/and 1 more/)).toBeTruthy();
 });
 
 test('refusals list per-file reasons from the report', async () => {

@@ -819,6 +819,18 @@
                   "null"
                 ]
               },
+              "matched": {
+                "description": "Entries this job's content NEWLY satisfied (the shelf lights).\nCapped at 200 rows; `matched_total` is the uncapped count.",
+                "items": {
+                  "$ref": "#/components/schemas/MatchedEntry"
+                },
+                "type": "array"
+              },
+              "matched_total": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
               "report": {
                 "$ref": "#/components/schemas/IngestReportBody",
                 "description": "Cumulative across completed files — grows while running, final\nwhen done."
@@ -837,6 +849,8 @@
               "started_at",
               "finished_at",
               "report",
+              "matched",
+              "matched_total",
               "error"
             ],
             "type": "object"
@@ -903,6 +917,23 @@
           "merged"
         ],
         "type": "string"
+      },
+      "MatchedEntry": {
+        "description": "One dat entry an ingest job newly satisfied — the user-vocabulary\nhalf of the report (games, not blob counts).",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "description": "`provider/system` display identity.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "source"
+        ],
+        "type": "object"
       },
       "OkResponse": {
         "description": "The `{\"ok\": true}` acknowledgement mutations answer with.",

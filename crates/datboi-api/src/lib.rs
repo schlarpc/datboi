@@ -619,10 +619,23 @@ pub struct JobDetail {
     /// Cumulative across completed files — grows while running, final
     /// when done.
     pub report: IngestReportBody,
+    /// Entries this job's content NEWLY satisfied (the shelf lights).
+    /// Capped at 200 rows; `matched_total` is the uncapped count.
+    pub matched: Vec<MatchedEntry>,
+    pub matched_total: u64,
     /// Infrastructure failure only; per-file refusals live in the
     /// report.
     #[schema(required = true)]
     pub error: Option<String>,
+}
+
+/// One dat entry an ingest job newly satisfied — the user-vocabulary
+/// half of the report (games, not blob counts).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MatchedEntry {
+    pub name: String,
+    /// `provider/system` display identity.
+    pub source: String,
 }
 
 /// The ingest pipeline's report (datboi-ingest `IngestReport`), as
@@ -907,6 +920,11 @@ mod tests {
             started_at: 1_000,
             finished_at: None,
             report: IngestReportBody::default(),
+            matched: vec![MatchedEntry {
+                name: "Mario Kart DS (USA, Australia)".into(),
+                source: "no-intro/nds".into(),
+            }],
+            matched_total: 1,
             error: None,
         };
         let v = serde_json::to_value(&detail).expect("json");
@@ -917,5 +935,7 @@ mod tests {
         assert_eq!(v["finished_at"], serde_json::Value::Null);
         assert_eq!(v["error"], serde_json::Value::Null);
         assert_eq!(v["report"]["files_stored"], 0);
+        assert_eq!(v["matched"][0]["source"], "no-intro/nds");
+        assert_eq!(v["matched_total"], 1);
     }
 }
