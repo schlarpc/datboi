@@ -1450,3 +1450,9 @@ codes (the UI context already knows what it asked for — categories
 carry the user-meaningful distinction, detail carries the rest);
 assertNever switch in the client (a Record is exhaustive at the type
 level AND total at runtime for unknown codes).
+
+*D76 amendment (same day):* the deferred theme-flash fix landed — one
+minified inline script in index.html applies the forced theme before
+first paint, admitted into script-src by sha256 hash-source; a server
+test recomputes the hash from the embedded dist so the pin and the
+script cannot drift.

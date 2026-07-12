@@ -16,18 +16,19 @@ use axum::http::{HeaderMap, Method, header};
 use axum::middleware::Next;
 use axum::response::Response;
 
-/// The exact D70 policy, tightened by D76. The vite index.html carries
-/// no inline `<script>` or `<style>` (verified against the built dist:
-/// one external module script, one external stylesheet), so
-/// `script-src 'self'` and `style-src 'self'` hold without
-/// hash-sources. The SPA's dynamic styles are Svelte `style:`
-/// directives, which compile to CSSOM writes (`el.style.setProperty`/
-/// `cssText`) — CSP governs parsed `style=` attributes and `<style>`
-/// blocks, not CSSOM, and the built bundle contains zero `style=`
-/// attributes and no `setAttribute("style")`, so `'unsafe-inline'` is
-/// not needed. `object-src 'none'` closes the legacy plugin surface
-/// that would otherwise inherit `'self'` from default-src.
-pub(crate) const CSP: &str = "default-src 'self'; script-src 'self'; \
+/// The exact D70 policy, tightened by D76. The one inline `<script>`
+/// is the theme-flash guard in index.html, admitted by hash-source —
+/// web.rs's tests recompute the hash from the embedded dist so the
+/// pin and the script cannot drift apart. Everything else is external:
+/// the SPA's dynamic styles are Svelte `style:` directives, which
+/// compile to CSSOM writes (`el.style.setProperty`/`cssText`) — CSP
+/// governs parsed `style=` attributes and `<style>` blocks, not CSSOM,
+/// and the built bundle contains zero `style=` attributes and no
+/// `setAttribute("style")`, so `'unsafe-inline'` is not needed.
+/// `object-src 'none'` closes the legacy plugin surface that would
+/// otherwise inherit `'self'` from default-src.
+pub(crate) const CSP: &str = "default-src 'self'; \
+     script-src 'self' 'sha256-pnaQEsw/4KBowEnxrUJ/BFlYdqDITsx3rR7Al/PEju4='; \
      style-src 'self'; img-src 'self' data:; font-src 'self'; \
      connect-src 'self'; object-src 'none'; frame-ancestors 'none'; \
      base-uri 'none'; form-action 'self'";
@@ -385,10 +386,11 @@ mod tests {
     fn csp_is_the_pinned_string() {
         assert_eq!(
             CSP,
-            "default-src 'self'; script-src 'self'; style-src 'self'; \
-             img-src 'self' data:; font-src 'self'; connect-src 'self'; \
-             object-src 'none'; frame-ancestors 'none'; base-uri 'none'; \
-             form-action 'self'"
+            "default-src 'self'; \
+             script-src 'self' 'sha256-pnaQEsw/4KBowEnxrUJ/BFlYdqDITsx3rR7Al/PEju4='; \
+             style-src 'self'; img-src 'self' data:; font-src 'self'; \
+             connect-src 'self'; object-src 'none'; frame-ancestors 'none'; \
+             base-uri 'none'; form-action 'self'"
         );
     }
 }

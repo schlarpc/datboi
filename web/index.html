@@ -3,6 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Forced-theme flash guard: apply data-theme before the stylesheet
+         paints, or a dark-forced user on a light OS sees a cream flash on
+         every cold load. Kept to ONE minified line — its sha256 is pinned
+         in the CSP (hardening.rs) and a server test recomputes the hash
+         from this exact byte sequence, so editing it means updating both. -->
+    <script>try{var t=localStorage.getItem('datboi-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <title>datboi</title>
   </head>

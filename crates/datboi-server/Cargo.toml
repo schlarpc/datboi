@@ -45,6 +45,8 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+# Recomputes the CSP script hash from the embedded dist (web.rs test).
+sha2.workspace = true
 # stored_zip fixture builder for the ingest integration test.
 crc32fast.workspace = true
 # deflate_zip fixture: the D71 refine e2e needs a member preflate can

@@ -45,7 +45,11 @@ function applyTheme(theme: Theme): void {
   }
 }
 
-// Apply the persisted choice at module load, before first paint.
+// Re-apply at module load. The inline guard in index.html already set
+// data-theme before the stylesheet painted (the flash fix — its hash
+// is pinned in the server CSP); this keeps the module authoritative
+// for everything after boot, including clearing a stale attribute if
+// the stored value failed validation above.
 applyTheme(state.theme);
 
 export const prefs = {

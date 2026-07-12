@@ -692,7 +692,8 @@ fn d78_compression_for_text_surfaces_only() {
 /// class, and the Fetch-Metadata CSRF gate on state-changing methods.
 #[test]
 fn d70_security_headers_and_csrf() {
-    const CSP: &str = "default-src 'self'; script-src 'self'; \
+    const CSP: &str = "default-src 'self'; \
+         script-src 'self' 'sha256-pnaQEsw/4KBowEnxrUJ/BFlYdqDITsx3rR7Al/PEju4='; \
          style-src 'self'; img-src 'self' data:; font-src 'self'; \
          connect-src 'self'; object-src 'none'; frame-ancestors 'none'; \
          base-uri 'none'; form-action 'self'";
