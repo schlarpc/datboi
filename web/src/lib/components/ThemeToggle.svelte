@@ -3,20 +3,39 @@
   import { prefs, type Theme } from '../prefs.svelte';
 
   // ☀/☾ are glyphs (untranslatable by content); "sys" is markup text and
-  // extracted below.
+  // extracted below. The glyph buttons carry catalog-routed names, and
+  // every segment exposes its selection as aria-pressed — the .active
+  // background is invisible to a screen reader.
   const glyphs: Record<Exclude<Theme, 'system'>, string> = { light: '☀', dark: '☾' };
+  // @wc-include
+  const groupLabel = 'theme';
+  // @wc-include
+  const lightLabel = 'light theme';
+  // @wc-include
+  const darkLabel = 'dark theme';
+  const labels: Record<Exclude<Theme, 'system'>, string> = {
+    light: lightLabel,
+    dark: darkLabel,
+  };
 </script>
 
-<div class="toggle" role="group" aria-label="theme">
+<div class="toggle" role="group" aria-label={groupLabel}>
   <button
     class="seg"
     class:active={prefs.theme === 'system'}
+    aria-pressed={prefs.theme === 'system'}
     onclick={() => prefs.setTheme('system')}
   >
     sys
   </button>
   {#each ['light', 'dark'] as const as theme (theme)}
-    <button class="seg" class:active={prefs.theme === theme} onclick={() => prefs.setTheme(theme)}>
+    <button
+      class="seg"
+      class:active={prefs.theme === theme}
+      aria-pressed={prefs.theme === theme}
+      aria-label={labels[theme]}
+      onclick={() => prefs.setTheme(theme)}
+    >
       {glyphs[theme]}
     </button>
   {/each}

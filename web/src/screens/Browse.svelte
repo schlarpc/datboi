@@ -127,6 +127,8 @@
   // @wc-include
   const searchPlaceholder = 'find a game…';
   // @wc-include
+  const searchLabel = 'search';
+  // @wc-include
   const playTitle = 'in-browser emulator — future';
   // @wc-include
   const closeLabel = 'close';
@@ -138,7 +140,7 @@
 
 <main>
     <div class="toolbar">
-      <input type="search" placeholder={searchPlaceholder} bind:value={q} />
+      <input type="search" aria-label={searchLabel} placeholder={searchPlaceholder} bind:value={q} />
       {#if detail.st === 'error'}
         <!-- Snapshot facts failed alone — the rows still serve. -->
         <span class="info">something went wrong — {detail.msg}</span>

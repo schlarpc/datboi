@@ -1295,3 +1295,24 @@ msgstr "not enough free space in the store"
 #: src/lib/api/errors.svelte.ts
 msgid "the daemon hit an internal error"
 msgstr "the daemon hit an internal error"
+
+#: src/screens/Admin.svelte
+msgid "toggle grant"
+msgstr "toggle grant"
+
+#: src/screens/Audit.svelte
+#: src/screens/Browse.svelte
+msgid "search"
+msgstr "search"
+
+#: src/lib/components/ThemeToggle.svelte
+msgid "theme"
+msgstr "theme"
+
+#: src/lib/components/ThemeToggle.svelte
+msgid "light theme"
+msgstr "light theme"
+
+#: src/lib/components/ThemeToggle.svelte
+msgid "dark theme"
+msgstr "dark theme"

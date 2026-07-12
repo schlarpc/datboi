@@ -141,6 +141,8 @@
   const diffTitle = 'dat revision diff — future';
   // @wc-include
   const searchPlaceholder = 'filter names…';
+  // @wc-include
+  const searchLabel = 'search';
 
   /**
    * §5.5: client-generated missing-list export. Fetches every missing
@@ -265,7 +267,7 @@
         {/each}
         <div class="rail-divider"></div>
         <div class="rail-search">
-          <input type="search" placeholder={searchPlaceholder} bind:value={q} />
+          <input type="search" aria-label={searchLabel} placeholder={searchPlaceholder} bind:value={q} />
         </div>
         <!-- Density pref (spec §1.3): specced as a user preference but
              never given a home in the comps — parked at the rail foot. -->
@@ -273,6 +275,7 @@
           <button
             class="density-seg"
             class:active={prefs.density === 'comfortable'}
+            aria-pressed={prefs.density === 'comfortable'}
             onclick={() => prefs.setDensity('comfortable')}
           >
             comfortable
@@ -280,6 +283,7 @@
           <button
             class="density-seg"
             class:active={prefs.density === 'compact'}
+            aria-pressed={prefs.density === 'compact'}
             onclick={() => prefs.setDensity('compact')}
           >
             compact
