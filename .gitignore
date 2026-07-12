@@ -8,3 +8,6 @@
 *.db-shm
 /prompt.txt
 /.claude/
+
+# Local test store (a runtime CAS, never source).
+/store
