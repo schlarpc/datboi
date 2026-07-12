@@ -8,17 +8,19 @@ stream goes in; member metadata and member byte streams come out, all
 through host-implemented WIT resources, with ZERO wasm imports (D5/D46
 empty-linker determinism contract).
 
-## Licensing (READ BEFORE TOUCHING `vendor/`)
+## Licensing (READ BEFORE TOUCHING the unrar source)
 
-`vendor/unrar/` is the official UnRAR source (RARVER 7.1.0, 2024-05-12),
-by Alexander Roshal. Its license (`vendor/unrar/license.txt`) permits
+ex-unrar compiles the official UnRAR source (RARVER 7.2.7, 2026-06-27),
+by Alexander Roshal. It is **no longer vendored in-tree** — the flake
+fetches a hash-pinned rarlab tarball and applies this crate's patch
+series (see `nix/unrar-src.nix` and `nix/patches/`). Its license permits
 using the source in any software to **decompress** RAR archives free of
 charge, but **forbids** using it to develop a RAR-compatible archiver or
 to re-create the RAR compression algorithm, which is proprietary. This
 crate only decompresses. Per the license, the full text of its clause 2
-is reproduced in `vendor/unrar/license.txt` and this notice, and the
-vendored code carries it in `license.txt` comments; keep that file
-intact when redistributing.
+is reproduced in `UnRAR-License.txt` and this notice, and the fetched
+source carries it in `license.txt`; keep `UnRAR-License.txt` intact when
+redistributing.
 
 This matches the ingest direction exactly: rar is extraction-only, and
 the "RAR rebuild is permanently infeasible" ruling stands (no

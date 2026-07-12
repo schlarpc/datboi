@@ -1,0 +1,273 @@
+diff -ru a/dll.cpp b/dll.cpp
+--- a/dll.cpp
++++ b/dll.cpp
+@@ -32,7 +32,7 @@
+ HANDLE PASCAL RAROpenArchiveEx(struct RAROpenArchiveDataEx *r)
+ {
+   DataSet *Data=nullptr;
+-  try
++  // DATBOI(D58): exceptions removed for the wasm build — throw sites trap (ErrHandler->trap), so catch blocks are dead.
+   {
+     ErrHandler.Clean();
+ 
+@@ -155,28 +155,7 @@
+     Data->Extract.ExtractArchiveInit(Data->Arc);
+     return (HANDLE)Data;
+   }
+-  catch (RAR_EXIT ErrCode)
+-  {
+-    if (Data!=NULL && Data->Cmd.DllError!=0)
+-      r->OpenResult=Data->Cmd.DllError;
+-    else
+-      r->OpenResult=RarErrorToDll(ErrCode);
+-    if (Data != NULL)
+-      delete Data;
+-    return NULL;
+-  }
+-  catch (std::bad_alloc&) // Catch 'new' exception.
+-  {
+-    r->OpenResult=ERAR_NO_MEMORY;
+-    if (Data != NULL)
+-      delete Data;
+-  }
+-  catch (std::length_error&)
+-  {
+-    r->OpenResult=ERAR_NO_MEMORY;
+-    if (Data != NULL)
+-      delete Data;
+-  }
++  // DATBOI(D58): exceptions removed for the wasm build — throw sites trap (ErrHandler->trap), so catch blocks are dead.
+   return NULL; // To make compilers happy.
+ }
+ 
+@@ -184,16 +163,12 @@
+ int PASCAL RARCloseArchive(HANDLE hArcData)
+ {
+   DataSet *Data=(DataSet *)hArcData;
+-  try
++  // DATBOI(D58): exceptions removed for the wasm build — throw sites trap (ErrHandler->trap), so catch blocks are dead.
+   {
+     bool Success=Data==NULL ? false:Data->Arc.Close();
+     delete Data;
+     return Success ? ERAR_SUCCESS : ERAR_ECLOSE;
+   }
+-  catch (RAR_EXIT ErrCode)
+-  {
+-    return Data->Cmd.DllError!=0 ? Data->Cmd.DllError : RarErrorToDll(ErrCode);
+-  }
+ }
+ 
+ 
+@@ -224,7 +199,7 @@
+ int PASCAL RARReadHeaderEx(HANDLE hArcData,struct RARHeaderDataEx *D)
+ {
+   DataSet *Data=(DataSet *)hArcData;
+-  try
++  // DATBOI(D58): exceptions removed for the wasm build — throw sites trap (ErrHandler->trap), so catch blocks are dead.
+   {
+     if ((Data->HeaderSize=(int)Data->Arc.SearchBlock(HEAD_FILE))<=0)
+     {
+@@ -333,10 +308,6 @@
+       wcsncpyz(D->RedirName,hd->RedirName.c_str(),D->RedirNameSize);
+     D->DirTarget=hd->DirTarget;
+   }
+-  catch (RAR_EXIT ErrCode)
+-  {
+-    return Data->Cmd.DllError!=0 ? Data->Cmd.DllError : RarErrorToDll(ErrCode);
+-  }
+   return Data->Cmd.DllError!=0 ? Data->Cmd.DllError : RarErrorToDll(ErrHandler.GetErrorCode());
+ }
+ 
+@@ -344,7 +315,7 @@
+ int PASCAL ProcessFile(HANDLE hArcData,int Operation,char *DestPath,char *DestName,wchar *DestPathW,wchar *DestNameW)
+ {
+   DataSet *Data=(DataSet *)hArcData;
+-  try
++  // DATBOI(D58): exceptions removed for the wasm build — throw sites trap (ErrHandler->trap), so catch blocks are dead.
+   {
+     Data->Cmd.DllError=0;
+     if (Data->OpenMode==RAR_OM_LIST || Data->OpenMode==RAR_OM_LIST_INCSPLIT ||
+@@ -426,18 +397,6 @@
+       Data->Arc.Seek(Data->Arc.CurBlockPos,SEEK_SET);
+     }
+   }
+-  catch (std::bad_alloc&)
+-  {
+-    return ERAR_NO_MEMORY;
+-  }
+-  catch (std::length_error&)
+-  {
+-    return ERAR_NO_MEMORY;
+-  }
+-  catch (RAR_EXIT ErrCode)
+-  {
+-    return Data->Cmd.DllError!=0 ? Data->Cmd.DllError : RarErrorToDll(ErrCode);
+-  }
+   return Data->Cmd.DllError!=0 ? Data->Cmd.DllError : RarErrorToDll(ErrHandler.GetErrorCode());
+ }
+ 
+diff -ru a/errhnd.cpp b/errhnd.cpp
+--- a/errhnd.cpp
++++ b/errhnd.cpp
+@@ -1,5 +1,7 @@
+ #include "rar.hpp"
+ 
++extern "C" [[noreturn]] void datboi_wasm_trap(void); // DATBOI(D58)
++
+ ErrorHandler::ErrorHandler()
+ {
+   Clean();
+@@ -343,7 +345,7 @@
+       mprintf(L"\n%s\n",St(MProgAborted));
+ #endif
+   SetErrorCode(Code);
+-  throw Code;
++  datboi_wasm_trap(); // DATBOI(D58): was `throw Code;` — ErrHandler refuses the whole archive via wasm trap.
+ }
+ 
+ 
+diff -ru a/extract.cpp b/extract.cpp
+--- a/extract.cpp
++++ b/extract.cpp
+@@ -902,16 +902,8 @@
+             UnstoreFile(DataIO,Arc.FileHead.UnpSize);
+           else
+           {
+-            try
+-            {
+-              Unp->Init(Arc.FileHead.WinSize,Arc.FileHead.Solid);
+-            }
+-            catch (std::bad_alloc)
+-            {
+-              if (Arc.FileHead.WinSize>=0x40000000)
+-                uiMsg(UIERROR_EXTRDICTOUTMEM,Arc.FileName,uint(Arc.FileHead.WinSize/0x40000000+(Arc.FileHead.WinSize%0x40000000!=0 ? 1 : 0)));
+-              throw;
+-            }
++            // DATBOI(D58): try/catch removed — allocation failure traps (refuses the archive).
++            Unp->Init(Arc.FileHead.WinSize,Arc.FileHead.Solid);
+ 
+             Unp->SetDestSize(Arc.FileHead.UnpSize);
+ #ifndef SFX_MODULE
+diff -ru a/largepage.hpp b/largepage.hpp
+--- a/largepage.hpp
++++ b/largepage.hpp
+@@ -39,7 +39,11 @@
+     {
+       T *Allocated=(T*)new_large(Size*sizeof(T));
+       if (Allocated==nullptr)
+-        Allocated=Clear ? new T[Size]{} : new T[Size];
++        // DATBOI(D58): nothrow — the wasm build is -fno-exceptions, and the one
++        // caller (Unpack::SetWindow) treats a null return as "fall back to the
++        // fragmented window", matching upstream's catch(bad_alloc) and 7.1.0's
++        // malloc/NULL. A throwing new[] would trap instead of degrading.
++        Allocated=Clear ? new (std::nothrow) T[Size]{} : new (std::nothrow) T[Size];
+       return Allocated;
+     }
+ 
+diff -ru a/model.cpp b/model.cpp
+--- a/model.cpp
++++ b/model.cpp
+@@ -1,3 +1,4 @@
++extern "C" [[noreturn]] void datboi_wasm_trap(void); // DATBOI(D58)
+ /****************************************************************************
+  *  This file is part of PPMd project                                       *
+  *  Written and distributed to public domain by Dmitry Shkarin 1997,        *
+@@ -43,13 +44,13 @@
+   InitRL=-(MaxOrder < 12 ? MaxOrder:12)-1;
+   MinContext = MaxContext = (RARPPM_CONTEXT*) SubAlloc.AllocContext();
+   if (MinContext == NULL)
+-    throw std::bad_alloc();
++    datboi_wasm_trap(); // DATBOI(D58): was throw std::bad_alloc();
+   MinContext->Suffix=NULL;
+   OrderFall=MaxOrder;
+   MinContext->U.SummFreq=(MinContext->NumStats=256)+1;
+   FoundState=MinContext->U.Stats=(RARPPM_STATE*)SubAlloc.AllocUnits(256/2);
+   if (FoundState == NULL)
+-    throw std::bad_alloc();
++    datboi_wasm_trap(); // DATBOI(D58): was throw std::bad_alloc();
+   for (RunLength=InitRL, PrevSuccess=i=0;i < 256;i++) 
+   {
+     MinContext->U.Stats[i].Symbol=i;      
+diff -ru a/unpack50frag.cpp b/unpack50frag.cpp
+--- a/unpack50frag.cpp
++++ b/unpack50frag.cpp
+@@ -1,3 +1,4 @@
++extern "C" [[noreturn]] void datboi_wasm_trap(void); // DATBOI(D58)
+ FragmentedWindow::FragmentedWindow()
+ {
+   memset(Mem,0,sizeof(Mem));
+@@ -49,7 +50,7 @@
+       Size-=Size/32;
+     }
+     if (NewMem==NULL)
+-      throw std::bad_alloc();
++      datboi_wasm_trap(); // DATBOI(D58): was throw std::bad_alloc();
+ 
+     // Clean the window to generate the same output when unpacking corrupt
+     // RAR files, which may access to unused areas of sliding dictionary.
+@@ -61,7 +62,7 @@
+     BlockNum++;
+   }
+   if (TotalSize<WinSize) // Not found enough free blocks.
+-    throw std::bad_alloc();
++    datboi_wasm_trap(); // DATBOI(D58): was throw std::bad_alloc();
+   LastAllocated=WinSize;
+ }
+ 
+diff -ru a/unpack.cpp b/unpack.cpp
+--- a/unpack.cpp
++++ b/unpack.cpp
+@@ -1,3 +1,4 @@
++extern "C" [[noreturn]] void datboi_wasm_trap(void); // DATBOI(D58)
+ #include "rar.hpp"
+ 
+ #include "coder.cpp"
+@@ -87,7 +88,7 @@
+     WinSize=MinAllocSize;
+ 
+   if (WinSize>Min(0x10000000000ULL,UNPACK_MAX_DICT)) // Window size must not exceed 1 TB.
+-    throw std::bad_alloc();
++    datboi_wasm_trap(); // DATBOI(D58): was throw std::bad_alloc();
+ 
+   // 32-bit build can't unpack dictionaries exceeding 32-bit even in theory.
+   // Also we've not verified if WrapUp and WrapDown work properly in 32-bit
+@@ -95,7 +96,7 @@
+   // distances. Since such version is unlikely to allocate >2GB anyway,
+   // we prohibit >2GB dictionaries for 32-bit build here.
+   if (WinSize>0x80000000 && sizeof(size_t)<=4)
+-    throw std::bad_alloc();
++    datboi_wasm_trap(); // DATBOI(D58): was throw std::bad_alloc();
+ 
+   // Solid block shall use the same window size for all files.
+   // But if Window isn't initialized when Solid is set, it means that
+@@ -120,23 +121,20 @@
+   // or increasing the size of non-solid window. So we could safely reject
+   // current window data without copying them to a new window.
+   if (Solid && (Window!=NULL || Fragmented && WinSize>FragWindow.GetWinSize()))
+-    throw std::bad_alloc();
++    datboi_wasm_trap(); // DATBOI(D58): was throw std::bad_alloc();
+ 
+   Alloc.delete_l<byte>(Window); // delete Window;
+   Window=nullptr;
+   
+-  try
+-  {
+-    if (!Fragmented)
+-      Window=Alloc.new_l<byte>((size_t)WinSize,false); // Window=new byte[(size_t)WinSize];
+-  }
+-  catch (std::bad_alloc) // Use the fragmented window in this case.
+-  {
+-  }
++  // DATBOI(D58): exceptions removed — new_l allocates nothrow, so a failed
++  // allocation leaves Window==nullptr and the fragmented-window fallback below
++  // takes over (was try/new_l/catch(bad_alloc); 7.1.0 used malloc/NULL here).
++  if (!Fragmented)
++    Window=Alloc.new_l<byte>((size_t)WinSize,false); // Window=new byte[(size_t)WinSize];
+ 
+   if (Window==nullptr)
+     if (WinSize<0x1000000 || sizeof(size_t)>4)
+-      throw std::bad_alloc(); // Exclude RAR4, small dictionaries and 64-bit.
++      datboi_wasm_trap(); // DATBOI(D58): was throw std::bad_alloc(); // Exclude RAR4, small dictionaries and 64-bit.
+     else
+     {
+       if (WinSize>FragWindow.GetWinSize())

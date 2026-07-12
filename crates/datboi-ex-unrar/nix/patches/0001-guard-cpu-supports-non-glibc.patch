@@ -1,0 +1,24 @@
+diff -ru a/rijndael.cpp b/rijndael.cpp
+--- a/rijndael.cpp
++++ b/rijndael.cpp
+@@ -118,7 +118,7 @@
+   }
+   else
+     AES_NI=false;
+-#elif defined(__GNUC__)
++#elif defined(__GNUC__) && defined(__GLIBC__) && !defined(_APPLE)
+   AES_NI=__builtin_cpu_supports("aes");
+ #endif
+ 
+diff -ru a/system.cpp b/system.cpp
+--- a/system.cpp
++++ b/system.cpp
+@@ -229,7 +229,7 @@
+     if ((CPUInfo[3] & 0x2000000)!=0)
+       return SSE_SSE;
+   }
+-#elif defined(__GNUC__)
++#elif defined(__GNUC__) && defined(__GLIBC__) && !defined(_APPLE)
+   if (__builtin_cpu_supports("avx2"))
+     return SSE_AVX2;
+   if (__builtin_cpu_supports("sse4.1"))

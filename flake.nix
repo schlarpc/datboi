@@ -142,6 +142,13 @@
       # transforms don't. Keyed by prefix.
       isExtractor = crate: nixpkgs.lib.hasPrefix "datboi-ex-" crate;
 
+      # ex-unrar's C++ source lives out-of-tree (D66): a hash-pinned rarlab
+      # tarball + this crate's patch series, fetched and patched here instead
+      # of vendoring ~800K of unrar into the repo. build.rs consumes it via
+      # DATBOI_UNRAR_SRC. The recipe is colocated with the crate that owns it.
+      unrarSrcFor = system:
+        (pkgsFor system).callPackage ./crates/datboi-ex-unrar/nix/unrar-src.nix { };
+
       # The shared frozen WIT, staged so the guests' `../../wit/v2` path
       # resolves exactly as it does in the repo (crates/<crate>/../../wit):
       # nest the unpacked crate one level deeper and put wit at the top.
@@ -178,10 +185,13 @@
           doCheck = false;
           postUnpack = witStageFor system;
         }
-        # Extractors (ex-*) cross-compile a vendored C++ staticlib in their
-        # build.rs; hand it the wasi toolchain via env (D58). Transforms get
-        # nothing extra.
-        // nixpkgs.lib.optionalAttrs (isExtractor crate) toolchain.env;
+        # Extractors (ex-*) cross-compile a C++ staticlib in their build.rs;
+        # hand it the wasi toolchain via env (D58). Transforms get nothing extra.
+        // nixpkgs.lib.optionalAttrs (isExtractor crate) toolchain.env
+        # ex-unrar additionally needs its out-of-tree unrar source (nix/unrar-src.nix).
+        // nixpkgs.lib.optionalAttrs (crate == "datboi-ex-unrar") {
+          DATBOI_UNRAR_SRC = "${unrarSrcFor system}";
+        };
 
       # One stamped component per crate (D54 attribution): identity
       # metadata rides IN the artifact as execution-inert custom sections,

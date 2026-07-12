@@ -1,5 +1,6 @@
-//! Cross-compile the vendored unrar C++ + glue + determinism shim to
-//! wasm32 objects and hand them to the final Rust link (D58).
+//! Cross-compile the unrar C++ (fetched + patched out-of-tree, see
+//! nix/unrar-src.nix) + glue + determinism shim to wasm32 objects and hand
+//! them to the final Rust link (D58).
 //!
 //! The C++ targets wasm32-wasi (the only sysroot with a wasm libc++), the
 //! Rust crate targets wasm32-unknown-unknown; both emit wasm32 relocatable
@@ -22,6 +23,7 @@
 //!   DATBOI_WASI_LIBCXX_DIR   — dir holding libc++.a / libc++abi.a
 //!   DATBOI_WASI_LIBC_DIR     — dir holding libc.a (wasi-libc)
 //!   DATBOI_WASI_BUILTINS_DIR — dir holding libclang_rt.builtins-wasm32.a
+//!   DATBOI_UNRAR_SRC         — the patched unrar C++ source tree (nix/unrar-src.nix)
 //! When they are absent (a host-native `cargo test` of the pure-Rust units)
 //! the build.rs is a no-op — the C++ only matters for the wasm component.
 
@@ -35,6 +37,11 @@ const UNRAR_TUS: &[&str] = &[
     "rdwrfn", "consio", "options", "errhnd", "rarvm", "secpassword", "rijndael", "getbits", "sha1",
     "sha256", "blake2s", "hash", "extinfo", "extract", "volume", "list", "find", "unpack",
     "headers", "threadpool", "rs16", "cmddata", "ui", "filestr", "scantree", "dll", "qopen",
+    // 7.2.7 split the window allocator into its own TU (defines new_large /
+    // delete_large, which unpack.cpp reaches through Alloc.new_l/delete_l). The
+    // large-page bodies are Windows-only (#ifdef ALLOW_LARGE_PAGES), so on wasm
+    // it compiles to near-inert null-returning stubs — but the symbols must link.
+    "largepage",
 ];
 
 fn main() {
@@ -56,7 +63,19 @@ fn main() {
 
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let vendor = manifest.join("vendor/unrar");
+    // The unrar C++ is no longer vendored in-tree; the flake fetches + patches
+    // it and points here (see nix/unrar-src.nix). Non-Nix builds set this to a
+    // prepared source tree themselves, exactly like the DATBOI_WASI_* toolchain.
+    let vendor = match env::var("DATBOI_UNRAR_SRC") {
+        Ok(dir) => PathBuf::from(dir),
+        Err(_) => {
+            println!(
+                "cargo:warning=ex-unrar: DATBOI_UNRAR_SRC not set; the unrar C++ \
+                 source is required to build the wasm component. See nix/unrar-src.nix."
+            );
+            return;
+        }
+    };
     let csrc = manifest.join("csrc");
     let compat = csrc.join("compat");
 
@@ -132,8 +151,9 @@ fn main() {
 
     // Rebuild triggers.
     println!("cargo:rerun-if-changed=csrc");
-    println!("cargo:rerun-if-changed=vendor/unrar");
+    println!("cargo:rerun-if-changed={}", vendor.display());
     for var in [
+        "DATBOI_UNRAR_SRC",
         "DATBOI_WASI_CXX",
         "DATBOI_WASI_WASMLD",
         "DATBOI_WASI_LIBCXX_DIR",
