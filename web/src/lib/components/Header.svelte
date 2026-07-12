@@ -13,15 +13,28 @@
   import ThemeToggle from './ThemeToggle.svelte';
   import logoUrl from '../assets/logo.svg';
 
-  const items: { href: string; screens: Route['screen'][] }[] = [
-    { href: '/', screens: ['library', 'audit'] },
-    { href: '/views', screens: ['views'] },
-    { href: '/ingest', screens: ['ingest'] },
-    { href: '/storage', screens: ['storage'] },
-    { href: '/admin', screens: ['admin'] },
-  ];
+  /**
+   * Every screen classifies into an owner-nav section — EXHAUSTIVE over
+   * Route['screen'], so adding a route variant fails check until it's
+   * placed. null = screens outside the owner nav: the open pages
+   * (login/invite render without this header), the friend shelf (owner
+   * chrome shows it as notfound), and notfound itself.
+   */
+  const NAV_SECTION: Record<Route['screen'], '/' | '/views' | '/ingest' | '/storage' | '/admin' | null> = {
+    library: '/',
+    audit: '/', // the Library drill-down (nav ruling, router.svelte.ts)
+    views: '/views',
+    ingest: '/ingest',
+    storage: '/storage',
+    blob: '/storage', // the Storage drill-down
+    admin: '/admin',
+    login: null,
+    invite: null,
+    browse: null, // friend chrome owns it
+    notfound: null,
+  };
 
-  const active = $derived(items.find((i) => i.screens.includes(router.route.screen))?.href);
+  const active = $derived(NAV_SECTION[router.route.screen]);
 
   // Health chip: quarantine count from /v1/storage (wireframe 2a: the
   // chip links to Storage). Owner-only endpoint; a friend (or an error)

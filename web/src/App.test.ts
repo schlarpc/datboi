@@ -49,6 +49,25 @@ test('a named session shows the avatar initial', async () => {
   expect(screen.getByTitle('sam').textContent).toBe('s');
 });
 
+// NB: runs before the friend tests — the module-level session store
+// carries the previous test's role until whoami answers, and a stale
+// friend role would bounce the deep link home before the probe lands.
+test('the blob inspector highlights Storage — its owning nav section', async () => {
+  const hash = 'ab'.repeat(32);
+  installFetch({
+    whoami: { authenticated: true, role: 'owner', via: 'loopback' },
+    blobDetails: {},
+  });
+  router.replace(`/storage/blob/${hash}`);
+  render(App);
+
+  await screen.findByText('← storage');
+  const pill = screen.getByText('Storage').closest('a');
+  expect(pill?.classList.contains('nav-active')).toBe(true);
+  // Its sibling drill-down keeps the same rule: audit highlights Library.
+  expect(screen.getByText('Library').closest('a')?.classList.contains('nav-active')).toBe(false);
+});
+
 test('a friend session gets friend chrome — no owner surfaces leak', async () => {
   installFetch({
     whoami: { authenticated: true, username: 'sam', role: 'friend', via: 'session' },
