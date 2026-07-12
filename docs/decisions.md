@@ -1135,7 +1135,10 @@ plus `X-Content-Type-Options: nosniff`,
 `Cross-Origin-Opener-Policy: same-origin`, and
 `Cross-Origin-Resource-Policy: same-origin`. No HSTS (plain-HTTP
 LAN is the deployment). No `__Host-` cookie prefix (requires
-Secure; same reason).
+Secure; same reason). *Amended by D76:* the `'unsafe-inline'`
+premise was wrong (Svelte `style:` directives are CSSOM writes,
+which style-src does not govern) — dropped, plus additional
+headers and API cache hygiene.
 
 CSRF: token-less, header-based — the Fetch-Metadata design Go
 ships as `http.CrossOriginProtection` (Valsorda). Middleware
@@ -1395,3 +1398,30 @@ churn deserves minutes-latency durability, not per-ingest snapshot
 objects), full-payload dirtiness (shard re-encoding per tick),
 dirty-flag tracking (a flag that can lie replaces a comparison that
 cannot).
+
+## D76 — Hardening tightened: no style unsafe-inline, plugin/feature denies, no-store JSON (2026-07-12)
+
+Three corrections to D70, prompted by an adversarially-verified
+review. **CSP loses `'unsafe-inline'` in style-src**: the D70
+justification was factually wrong — the SPA's dynamic styles are
+Svelte `style:` directives, which compile to CSSOM writes
+(`el.style.setProperty`/`cssText`), and CSP style-src governs parsed
+`style=` attributes and `<style>` blocks, not CSSOM. The built
+bundle carries zero `style=` attributes and no
+`setAttribute("style")`, so the relaxation bought nothing and stood
+as a standing CSS-injection grant if an HTML sink ever appeared.
+**`object-src 'none'`, `X-Frame-Options: DENY`, and a deny-all
+`Permissions-Policy`** (camera/geolocation/microphone/payment/usb)
+join the header set: the UI uses no plugin content and no powerful
+feature, so denying them is free insurance against future injection
+or legacy-UA embedding. **`json_response` stamps
+`Cache-Control: no-store`**: every /v1 JSON body is live
+per-identity state (whoami, admin listings, Set-Cookie-bearing
+session responses); a Set-Cookie response without no-store was a
+caching-hygiene defect. The byte surfaces keep their own explicit
+policies (immutable for content-addressed, no-cache+ETag for
+tag-resolved). *Rejected:* per-route cache directives (the
+serializer is the single seam every /v1 JSON passes through —
+correct by construction beats a per-handler courtesy); CSP
+hash-sources for a theme-flash inline script (deferred until that
+fix is taken up).

@@ -645,8 +645,8 @@ fn auth_flow_over_http() {
 #[test]
 fn d70_security_headers_and_csrf() {
     const CSP: &str = "default-src 'self'; script-src 'self'; \
-         style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
-         font-src 'self'; connect-src 'self'; frame-ancestors 'none'; \
+         style-src 'self'; img-src 'self' data:; font-src 'self'; \
+         connect-src 'self'; object-src 'none'; frame-ancestors 'none'; \
          base-uri 'none'; form-action 'self'";
 
     let f = fixture();
@@ -667,11 +667,20 @@ fn d70_security_headers_and_csrf() {
             resp.header("cross-origin-resource-policy"),
             Some("same-origin")
         );
+        assert_eq!(resp.header("x-frame-options"), Some("DENY"));
+        assert_eq!(
+            resp.header("permissions-policy"),
+            Some("camera=(), geolocation=(), microphone=(), payment=(), usb=()")
+        );
         assert!(
             resp.header("strict-transport-security").is_none(),
             "no HSTS (plain-HTTP LAN)"
         );
     }
+
+    // /v1 JSON is live per-identity state: it must never be cached
+    let (_, resp) = get(f.addr, "/v1/views", &[]);
+    assert_eq!(resp.header("cache-control"), Some("no-store"));
 
     // CSRF: a cross-site POST is rejected before the handler — even
     // over loopback (the DNS-rebinding case D70 exists for)

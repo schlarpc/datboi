@@ -16,15 +16,20 @@ use axum::http::{HeaderMap, Method, header};
 use axum::middleware::Next;
 use axum::response::Response;
 
-/// The exact D70 policy. The vite index.html carries no inline
-/// `<script>` (verified against the built dist: one external module
-/// script), so `script-src 'self'` holds without hash-sources. Inline
-/// style *attributes* drive bar widths/band colors in the SPA, hence
-/// `'unsafe-inline'` in style-src only; Svelte's compiled CSS is an
-/// external asset covered by `'self'`.
+/// The exact D70 policy, tightened by D76. The vite index.html carries
+/// no inline `<script>` or `<style>` (verified against the built dist:
+/// one external module script, one external stylesheet), so
+/// `script-src 'self'` and `style-src 'self'` hold without
+/// hash-sources. The SPA's dynamic styles are Svelte `style:`
+/// directives, which compile to CSSOM writes (`el.style.setProperty`/
+/// `cssText`) — CSP governs parsed `style=` attributes and `<style>`
+/// blocks, not CSSOM, and the built bundle contains zero `style=`
+/// attributes and no `setAttribute("style")`, so `'unsafe-inline'` is
+/// not needed. `object-src 'none'` closes the legacy plugin surface
+/// that would otherwise inherit `'self'` from default-src.
 pub(crate) const CSP: &str = "default-src 'self'; script-src 'self'; \
-     style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
-     font-src 'self'; connect-src 'self'; frame-ancestors 'none'; \
+     style-src 'self'; img-src 'self' data:; font-src 'self'; \
+     connect-src 'self'; object-src 'none'; frame-ancestors 'none'; \
      base-uri 'none'; form-action 'self'";
 
 /// Response-path middleware: stamp the D70 header set on EVERY response
@@ -58,6 +63,15 @@ pub(crate) async fn security_headers(req: Request, next: Next) -> Response {
     h.insert(
         HeaderName::from_static("cross-origin-resource-policy"),
         HeaderValue::from_static("same-origin"),
+    );
+    // Belt for user agents that predate CSP frame-ancestors (which
+    // supersedes XFO everywhere modern).
+    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    // The UI requests no powerful browser feature; deny the lot so a
+    // future injection or embedding can't quietly turn one on.
+    h.insert(
+        HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static("camera=(), geolocation=(), microphone=(), payment=(), usb=()"),
     );
     resp
 }
@@ -368,12 +382,13 @@ mod tests {
     }
 
     #[test]
-    fn csp_is_the_d70_string() {
+    fn csp_is_the_pinned_string() {
         assert_eq!(
             CSP,
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+            "default-src 'self'; script-src 'self'; style-src 'self'; \
              img-src 'self' data:; font-src 'self'; connect-src 'self'; \
-             frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+             object-src 'none'; frame-ancestors 'none'; base-uri 'none'; \
+             form-action 'self'"
         );
     }
 }

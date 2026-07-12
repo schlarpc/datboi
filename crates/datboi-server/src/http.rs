@@ -930,6 +930,11 @@ pub(crate) fn json_response<T: serde::Serialize>(status: StatusCode, value: &T) 
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "application/json")
+        // Every JSON body out of this serializer is live, per-identity
+        // state (whoami, admin listings, Set-Cookie-bearing session
+        // responses) — none of it may land in a disk or shared cache.
+        // The byte surfaces set their own explicit cache policies.
+        .header(header::CACHE_CONTROL, "no-store")
         .body(Body::from(
             serde_json::to_string(value).expect("contract types serialize"),
         ))
