@@ -117,6 +117,38 @@
 
   const basename = (path: string) => path.split('/').at(-1) ?? path;
 
+  // ---- SD-image modal focus contract (aria-modal must not lie) ----
+  let modalEl = $state<HTMLElement | null>(null);
+  let imagePillEl = $state<HTMLButtonElement | null>(null);
+
+  // Focus moves INTO the dialog when it opens and back to the opener
+  // when it closes — without this, aria-modal="true" claims a
+  // containment that Tab immediately disproves.
+  $effect(() => {
+    if (modal && modalEl !== null) {
+      modalEl.focus();
+      return () => imagePillEl?.focus();
+    }
+  });
+
+  /** Keep Tab cycling inside the dialog while it is open. */
+  function trapTab(event: KeyboardEvent) {
+    // @wc-ignore
+    if (event.key !== 'Tab' || modalEl === null) return;
+    const focusables = modalEl.querySelectorAll<HTMLElement>('button, a[href]');
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || active === modalEl)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
   const region = $derived(selected === null ? null : parseRegion(basename(selected.path)));
   const image = $derived(
     detail.st === 'ready' && detail.data.image?.minted === true ? detail.data.image : null,
@@ -181,8 +213,12 @@
               class:sel={isSel}
               onclick={() => select(row)}
               onkeydown={(e) => {
-                // @wc-ignore
-                if (e.key === 'Enter') select(row);
+                // @wc-ignore — role=button promises BOTH keys; without
+                // preventDefault, Space scrolls the list instead.
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  select(row);
+                }
               }}
               role="button"
               tabindex="0"
@@ -262,7 +298,7 @@
       {#if image !== null}
         <!-- Only when an image is actually minted (D62 tag) — the pill
              never advertises a download that would 404. -->
-        <button class="image-pill" onclick={() => (modal = true)}>
+        <button class="image-pill" bind:this={imagePillEl} onclick={() => (modal = true)}>
           ⬇ whole SD image{#if image.bytes != null}{' · '}{fmtSize(image.bytes)}{/if}
         </button>
       {/if}
@@ -278,8 +314,9 @@
       >
         <div
           class="modal"
+          bind:this={modalEl}
           onclick={(e) => e.stopPropagation()}
-          onkeydown={() => {}}
+          onkeydown={trapTab}
           role="dialog"
           aria-modal="true"
           tabindex="-1"

@@ -149,3 +149,13 @@ test('Escape closes the modal first, then the entry panel (§5.14)', async () =>
   await fireEvent.keyDown(window, { key: 'Escape' });
   expect(screen.queryByText('ENTRY')).toBeNull();
 });
+
+test('rows activate on Space as well as Enter — the role=button contract', async () => {
+  render(Browse, { view: 'gba-everdrive' });
+  const row = (await screen.findByText('Games/Alpha (USA).gba')).closest('[role="button"]');
+  if (row === null) throw new Error('row not found');
+  await fireEvent.keyDown(row, { key: ' ' });
+  expect(row.classList.contains('sel')).toBe(true);
+  await fireEvent.keyDown(row, { key: 'Enter' });
+  expect(row.classList.contains('sel')).toBe(false);
+});
