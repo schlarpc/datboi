@@ -784,6 +784,64 @@ fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
     );
 }
 
+/// An extractor guest that refuses (or traps) during replay is a CLAIM
+/// failure: the typed verdict must survive the pipe path and poison the
+/// recipe, instead of dissolving into retryable consumer I/O that
+/// maintenance re-runs forever.
+#[test]
+fn extractor_guest_failure_poisons_the_recipe() {
+    let mut w = world();
+    // Not a rar: ex-unrar refuses it deterministically.
+    let container = pattern(4096);
+    let (container_hash, container_id) = w.put_literal(&container);
+    let (component_hash, _) = w.put_literal(datboi_ingest::EX_UNRAR_WASM);
+    let (member_lie, member_id) = w.claim_absent(b"member that never decodes");
+    let recipe = Recipe {
+        op: Op::Wasm {
+            component: component_hash,
+            world: "datboi:extractor@1".into(),
+            export: "extract".into(),
+        },
+        inputs: vec![InputRef {
+            hash: container_hash,
+            role: None,
+        }],
+        outputs: vec![OutputRef {
+            hash: member_lie,
+            size: 25,
+            name: Some("VERSION".into()),
+        }],
+        params: cbor::encode(&Value::Map(vec![(1, Value::Uint(0))])).expect("params"),
+    };
+    let recipe_id = w.mint_recipe(
+        &recipe,
+        "ex-unrar/extract",
+        OpKind::Wasm,
+        SeekClass::Opaque,
+        &[(0, container_id)],
+        &[(0, member_id, 25)],
+    );
+
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+    let err = exec
+        .replay(&w.db, recipe_id)
+        .expect_err("garbage container cannot extract");
+    assert!(
+        matches!(err, ExecError::Runtime(_)),
+        "typed guest verdict surfaced: {err}"
+    );
+    assert!(err.is_claim_failure(), "guest refusal indicts the claim");
+    assert!(
+        !w.store.has(StoreNs::Data, &member_lie),
+        "nothing published"
+    );
+    assert_eq!(
+        w.db.recipe_by_id(recipe_id).expect("row").verify,
+        VerifyState::Failed,
+        "poisoned (D25)"
+    );
+}
+
 #[test]
 fn no_route_is_a_clean_error() {
     let w = world();

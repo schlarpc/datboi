@@ -227,11 +227,7 @@ impl<'s> Executor<'s> {
     /// Index/store failures abort the drain; per-route failures ride
     /// the report and the pool retries them next drain (poisoned
     /// claim-failures drop out of the pool by verify state).
-    pub fn license_covered(
-        &self,
-        db: &Db,
-        limit: usize,
-    ) -> Result<LicenseReport, ExecError> {
+    pub fn license_covered(&self, db: &Db, limit: usize) -> Result<LicenseReport, ExecError> {
         let mut report = LicenseReport::default();
         for (blob_id, hash) in verified_only_candidates(db)?.into_iter().take(limit) {
             let mut licensed = false;
@@ -257,9 +253,10 @@ impl<'s> Executor<'s> {
             if licensed {
                 report.replayed += 1;
             } else {
-                report
-                    .failed
-                    .push((hash, last_error.unwrap_or_else(|| "no Verified route".into())));
+                report.failed.push((
+                    hash,
+                    last_error.unwrap_or_else(|| "no Verified route".into()),
+                ));
             }
         }
         Ok(report)

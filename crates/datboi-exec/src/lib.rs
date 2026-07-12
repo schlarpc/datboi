@@ -1178,26 +1178,56 @@ impl<'s> Executor<'s> {
                         .put_with_obao(StoreNs::Data, outputs[0].0, outputs[0].1, reader)?;
                 Ok(vec![(outputs[0].0, outcome)])
             }
-            OpImpl::Extractor { .. } => {
-                // Single opaque output (one member); stream it through the
-                // pipe path and materialize with verification (D4).
+            OpImpl::Extractor {
+                component,
+                member_ix,
+            } => {
+                // Single opaque output (one member); the container (input
+                // 0) arrives random-access — the extractor seeks its
+                // headers. The guest's typed verdict is joined HERE (the
+                // Wasm2 scoped-thread pattern) so a trap or guest error
+                // classifies as a claim failure instead of dissolving
+                // into pipe I/O on the consumer side.
                 if outputs.len() != 1 {
                     return Err(ExecError::Malformed(
                         "extractor recipe must claim exactly one member output".into(),
                     ));
                 }
-                let plan = OpPlan {
-                    op,
-                    output_ix: 0,
-                    outputs: outputs.clone(),
-                    children,
-                    recipe_id: None,
-                };
-                let reader = self.open_sequential(&Plan::Op(Box::new(plan)))?;
-                let outcome =
-                    self.store
-                        .put_with_obao(StoreNs::Data, outputs[0].0, outputs[0].1, reader)?;
-                Ok(vec![(outputs[0].0, outcome)])
+                let container = self.open_random(&children[0])?;
+                let fuel = fuel_budget(&children, &outputs);
+                let host = Arc::clone(&self.extractor_host);
+                let component = Arc::clone(component);
+                let member_ix = *member_ix;
+                let (w, r, h) = pipe::pipe();
+                std::thread::scope(|scope| {
+                    let guest = scope.spawn(move || {
+                        host.extract_fueled(
+                            &component,
+                            container,
+                            member_ix,
+                            Box::new(w),
+                            Some(fuel),
+                        )
+                    });
+                    let consumer = scope.spawn(|| {
+                        self.store
+                            .put_with_obao(StoreNs::Data, outputs[0].0, outputs[0].1, r)
+                    });
+                    let guest_result = guest.join().expect("guest thread never panics");
+                    // Verdict first, then finish: a consumer blocked at
+                    // channel-disconnect waits for it (pipe race fix).
+                    if let Err(e) = &guest_result {
+                        h.fail(format!("extractor failed: {e}"));
+                    }
+                    h.finish();
+                    let stored = consumer.join().expect("consumer thread never panics");
+                    // The guest's own error explains a consumer failure
+                    // better than the downstream hash mismatch does.
+                    if let Err(e) = guest_result {
+                        return Err(e.into());
+                    }
+                    Ok(vec![(outputs[0].0, stored?)])
+                })
             }
             OpImpl::Wasm1 {
                 component,
@@ -1453,4 +1483,25 @@ fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The classification the replay path applies to a joined guest
+    /// verdict (extractor and Wasm2 alike): traps and guest errors
+    /// indict the claim; fuel exhaustion is a policy outcome and must
+    /// stay retryable.
+    #[test]
+    fn guest_verdicts_classify_against_the_claim() {
+        let trap = ExecError::Runtime(RuntimeError::Trap(
+            wasmtime::Trap::UnreachableCodeReached.into(),
+        ));
+        assert!(trap.is_claim_failure());
+        let guest_error = ExecError::Runtime(RuntimeError::Transform("bad member".into()));
+        assert!(guest_error.is_claim_failure());
+        let fuel = ExecError::Runtime(RuntimeError::Trap(wasmtime::Trap::OutOfFuel.into()));
+        assert!(!fuel.is_claim_failure());
+    }
 }

@@ -846,6 +846,7 @@ dependencies = [
  "proptest",
  "tempfile",
  "thiserror",
+ "wasmtime",
 ]
 
 [[package]]

@@ -26,6 +26,9 @@ datboi-ingest.workspace = true
 fatfs = "0.3"
 fscommon = "0.1"
 proptest.workspace = true
+# Trap construction (OutOfFuel vs genuine trap) for the claim-failure
+# classification tests; execution always goes through datboi-runtime.
+wasmtime.workspace = true
 
 [lints]
 workspace = true
