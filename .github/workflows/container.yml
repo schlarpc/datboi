@@ -3,6 +3,7 @@ name: container
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -11,11 +12,25 @@ permissions:
 
 # One publish at a time; a new push to main supersedes an in-flight run.
 concurrency:
-  group: container
+  group: container-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # The flake gate: nextest, clippy -D warnings, fmt, web check + tests,
+  # wasm lane. The publish job only runs once this passes.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Flake check
+        run: nix flake check -L
+
   publish:
+    needs: check
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
