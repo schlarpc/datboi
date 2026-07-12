@@ -398,12 +398,14 @@ fn process_upload(app: &App, upload: &StagedUpload) -> (IngestReportBody, Vec<i6
             // provenance (orphan review included) must never show the
             // throwaway staging path.
             let mut report = Ingester::new(app.store, &mut db, &app.detectors)
-                .with_source_name(&upload.name)
-                .ingest(&[&upload.path]);
+                .ingest_file(&upload.path, &upload.name);
             let fresh = std::mem::take(&mut report.fresh_blobs);
             (translate(report, upload), fresh)
         }
-        Err(e) => (error_body(&upload.name, &format!("classify: {e}")), Vec::new()),
+        Err(e) => (
+            error_body(&upload.name, &format!("classify: {e}")),
+            Vec::new(),
+        ),
     }
 }
 

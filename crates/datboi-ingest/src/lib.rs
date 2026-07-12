@@ -150,14 +150,6 @@ pub struct Ingester<'a> {
     /// Resident-blob ids accumulated across `record_resident_blob`
     /// calls; drained into `IngestReport::fresh_blobs` per run.
     fresh: Vec<i64>,
-    /// Source-identity override for staged single-file ingests (web
-    /// uploads): the `source_file` key becomes this name instead of
-    /// the throwaway staging path, so provenance reads
-    /// "roms/pack.zip", re-uploads update one row instead of minting
-    /// dead staging-path rows, and the mtime+size check still defeats
-    /// false rescan-cache hits. Single-file semantics only — a
-    /// directory walk under one name would collide keys.
-    source_name: Option<String>,
 }
 
 impl<'a> Ingester<'a> {
@@ -169,7 +161,6 @@ impl<'a> Ingester<'a> {
             config: IngestConfig::default(),
             extractor: None,
             fresh: Vec::new(),
-            source_name: None,
         }
     }
 
@@ -179,21 +170,42 @@ impl<'a> Ingester<'a> {
         self
     }
 
-    /// Name the source (see the field docs): callers staging one file
-    /// under a throwaway path give provenance the identity the USER
-    /// knows.
-    #[must_use]
-    pub fn with_source_name(mut self, name: impl Into<String>) -> Self {
-        self.source_name = Some(name.into());
-        self
-    }
-
     /// Ingest files and directory trees. Directories walk in sorted order
-    /// for deterministic reports; symlinks are skipped.
+    /// for deterministic reports; symlinks are skipped. Source identity is
+    /// each file's canonical path — the walk never sees a source name
+    /// ([`Ingester::ingest_file`] is the named-identity door).
     pub fn ingest(&mut self, paths: &[impl AsRef<Path>]) -> IngestReport {
         let mut report = IngestReport::default();
         for path in paths {
             self.walk(path.as_ref(), &mut report);
+        }
+        report.fresh_blobs = std::mem::take(&mut self.fresh);
+        report
+    }
+
+    /// Ingest ONE file under a caller-supplied source identity (staged
+    /// web uploads): the `source_file` key becomes `source_name`
+    /// instead of the throwaway staging path, so provenance reads
+    /// "roms/pack.zip", re-uploads update one row instead of minting
+    /// dead staging-path rows, and the mtime+size check still defeats
+    /// false rescan-cache hits. A distinct entry point BY CONSTRUCTION:
+    /// a directory walk under one name would collide keys, so anything
+    /// but a regular file is refused here and the walk path has no
+    /// source name to misuse.
+    pub fn ingest_file(&mut self, path: &Path, source_name: &str) -> IngestReport {
+        let mut report = IngestReport::default();
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_file() => {
+                report.files_scanned += 1;
+                if let Err(e) = self.process_file(path, &meta, Some(source_name), &mut report) {
+                    report.errors.push((path.to_owned(), e.to_string()));
+                }
+            }
+            Ok(_) => report.errors.push((
+                path.to_owned(),
+                "a named source must be a regular file".to_owned(),
+            )),
+            Err(e) => report.errors.push((path.to_owned(), e.to_string())),
         }
         report.fresh_blobs = std::mem::take(&mut self.fresh);
         report
@@ -228,22 +240,23 @@ impl<'a> Ingester<'a> {
             return;
         }
         report.files_scanned += 1;
-        if let Err(e) = self.process_file(path, &meta, report) {
+        if let Err(e) = self.process_file(path, &meta, None, report) {
             report.errors.push((path.to_owned(), e.to_string()));
         }
     }
 
+    /// `source_name` is [`Ingester::ingest_file`]'s named identity;
+    /// the walk always passes `None` (canonical-path identity).
     fn process_file(
         &mut self,
         path: &Path,
         meta: &fs::Metadata,
+        source_name: Option<&str>,
         report: &mut IngestReport,
     ) -> Result<(), IngestError> {
         let canonical = fs::canonicalize(path).map_err(|e| IngestError::io(path, e))?;
-        let key = self
-            .source_name
-            .clone()
-            .unwrap_or_else(|| canonical.to_string_lossy().into_owned());
+        let key =
+            source_name.map_or_else(|| canonical.to_string_lossy().into_owned(), str::to_owned);
         let mtime_ns = mtime_ns(meta);
         let size = meta.len();
 

@@ -562,3 +562,56 @@ fn zip_member_data_offsets_honor_local_headers() {
     let data = &bytes[m.data_start as usize..(m.data_start + m.comp_size) as usize];
     assert_eq!(data, b"payload");
 }
+
+/// `ingest_file` names the source: the rescan-cache row wears the
+/// caller's identity (never the on-disk path), a re-ingest under the
+/// same name is a cache hit even from a different staging path, and
+/// anything but a regular file is refused.
+#[test]
+fn ingest_file_names_the_source_identity() {
+    let mut world = setup();
+    let staged = world.src.parent().unwrap().join("upload-1.tmp");
+    fs::write(&staged, PLAIN).expect("staged");
+
+    let report = Ingester::new(&world.store, &mut world.db, &world.detectors)
+        .ingest_file(&staged, "roms/pack.bin");
+    assert_eq!((report.files_scanned, report.files_stored), (1, 1));
+    let keys: Vec<String> = world
+        .db
+        .cache()
+        .prepare("SELECT path FROM source_file ORDER BY path")
+        .expect("q")
+        .query_map([], |r| r.get(0))
+        .expect("q")
+        .collect::<Result<_, _>>()
+        .expect("q");
+    assert_eq!(keys, ["roms/pack.bin"], "the name, never the staging path");
+
+    // Same name + same mtime/size from a DIFFERENT staging path: one
+    // row, and the mtime+size check decides the rescan hit.
+    let staged2 = world.src.parent().unwrap().join("upload-2.tmp");
+    fs::copy(&staged, &staged2).expect("copy");
+    let mtime = fs::metadata(&staged)
+        .expect("meta")
+        .modified()
+        .expect("mtime");
+    fs::File::options()
+        .write(true)
+        .open(&staged2)
+        .expect("open")
+        .set_modified(mtime)
+        .expect("set mtime");
+    let report = Ingester::new(&world.store, &mut world.db, &world.detectors)
+        .ingest_file(&staged2, "roms/pack.bin");
+    assert_eq!(report.files_unchanged, 1, "{report:?}");
+
+    // A directory has no single-file identity: refused, not walked.
+    let report = Ingester::new(&world.store, &mut world.db, &world.detectors)
+        .ingest_file(&world.src.clone(), "roms/tree");
+    assert_eq!(report.files_scanned, 0);
+    assert!(
+        report.errors[0].1.contains("regular file"),
+        "{:?}",
+        report.errors
+    );
+}
