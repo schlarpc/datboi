@@ -11,7 +11,7 @@
   import { blobDetail } from '../lib/api/client';
   import type { BlobDetail, RouteEdge } from '../lib/api/types';
   import Link from '../lib/components/Link.svelte';
-  import { fmtDate, fmtSize, shortHash } from '../lib/format';
+  import { fmtDate, fmtSize, residencyLabel, shortHash } from '../lib/format';
   import { loading, settle, type Remote } from '../lib/remote';
 
   let { hash }: { hash: string } = $props();
@@ -40,11 +40,6 @@
     copied = true;
     setTimeout(() => (copied = false), 1400);
   }
-
-  /** `evicted_covered` → `evicted covered`: the underscore is a wire
-   * artifact, not display. Residency/namespace words are data (mono,
-   * spec §6 note). */
-  const residencyLabel = (residency: string) => residency.replace('_', ' ');
 
   /** Declared digest rows, in strength order (absent algos omitted —
    * the wire shape). */

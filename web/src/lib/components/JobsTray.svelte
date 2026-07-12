@@ -19,6 +19,7 @@
    */
   import { jobDetail, jobs as fetchJobs } from '../api/client';
   import type { Job, JobDetailBody } from '../api/types';
+  import { assertNever } from '../exhaustive';
   import { jobsSignal } from '../jobs.svelte';
   import JobRow from './JobRow.svelte';
 
@@ -114,12 +115,16 @@
                 {:else if job.state === 'done'}
                   <span class="name">{job.name}</span>
                   <span class="chip">done ✓</span>
-                {:else}
+                {:else if job.state === 'failed'}
                   <span class="name">{job.name}</span>
                   <span class="chip bad"><!-- @wc-context: job state -->failed</span>
                   {#if detail?.error}
                     <span class="chip bad">{detail.error}</span>
                   {/if}
+                {:else}
+                  <!-- A new JobRunState fails check here — never a
+                       confident red "failed" chip for an unknown state. -->
+                  {assertNever(job.state)}
                 {/if}
               </button>
               {#if detail !== undefined && (job.state === 'running' || selected === job.id)}

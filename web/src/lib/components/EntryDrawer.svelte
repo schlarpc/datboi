@@ -17,6 +17,7 @@
    *   so no fake released/publisher/genre rows.
    */
   import type { EntryDetail } from '../api/types';
+  import { assertNever } from '../exhaustive';
   import { fmtDate, fmtSize, parseRegion, shortHash } from '../format';
   import { STATE_GLYPHS } from '../state';
 
@@ -135,11 +136,10 @@
             {/if}
             {#if rom.blob}
               <div>
-                blob {shortHash(rom.blob.hash)} · {rom.blob.residency === 'resident'
-                  ? wordResident
-                  : rom.blob.residency === 'absent'
-                    ? wordAbsent
-                    : wordEvicted}
+                <!-- Exhaustive: a fourth ResidencyState fails check
+                     here instead of rendering as "evicted (covered)". -->
+                blob {shortHash(rom.blob.hash)} ·
+                {#if rom.blob.residency === 'resident'}{wordResident}{:else if rom.blob.residency === 'absent'}{wordAbsent}{:else if rom.blob.residency === 'evicted_covered'}{wordEvicted}{:else}{assertNever(rom.blob.residency)}{/if}
               </div>
               {#if rom.blob.verified_at !== null}
                 <div>verified {fmtDate(rom.blob.verified_at)}</div>

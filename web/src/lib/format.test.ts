@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { fmtAge, fmtDate, fmtSize, parseRegion, shortHash, snapShort } from './format';
+import { fmtAge, fmtDate, fmtSize, parseRegion, residencyLabel, shortHash, snapShort } from './format';
 
 describe('shortHash', () => {
   test('renders 5 hex + ellipsis + last 2 (spec §3.2)', () => {
@@ -56,5 +56,13 @@ describe('fmtAge', () => {
 describe('snapShort', () => {
   test('renders # + first 4 hex (spec `snap #a41f`)', () => {
     expect(snapShort(`a41f${'0'.repeat(60)}`)).toBe('#a41f');
+  });
+});
+
+describe('residencyLabel', () => {
+  test('wire words render with spaces, not underscores', () => {
+    expect(residencyLabel('resident')).toBe('resident');
+    expect(residencyLabel('evicted_covered')).toBe('evicted covered');
+    expect(residencyLabel('absent')).toBe('absent');
   });
 });

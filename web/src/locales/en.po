@@ -297,10 +297,8 @@ msgstr "excluded from completeness math"
 msgid "verified {0}"
 msgstr "verified {0}"
 
-#. 0: shortHash(rom.blob.hash); 1: rom.blob.residency === 'resident' ? wordResident \\: rom.blob.residency === 'absent' ? wordAbsent \\: wordEvicted
-#: src/lib/components/EntryDrawer.svelte
-msgid "blob {0} · {1}"
-msgstr "blob {0} · {1}"
+#~ msgid "blob {0} · {1}"
+#~ msgstr "blob {0} · {1}"
 
 #: src/lib/components/EntryDrawer.svelte
 msgid "verify pending replay"
@@ -650,7 +648,7 @@ msgstr "definition"
 msgid "access grants"
 msgstr "access grants"
 
-#. 0: ' · '; 1: def.one_g_one_r.mode === 'strict' ? modeStrict \\: modeHeldFirst; 2: def.one_g_one_r.regions.join('›')
+#. 0: ' · '; 1: modeWord(def.one_g_one_r.mode); 2: def.one_g_one_r.regions.join('›')
 #: src/screens/Views.svelte
 msgid "{0}1G1R {1} ({2})"
 msgstr "{0}1G1R {1} ({2})"
@@ -1225,3 +1223,8 @@ msgstr "delete failed — {0}"
 #: src/screens/Browse.svelte
 msgid "couldn't load more — {0}"
 msgstr "couldn't load more — {0}"
+
+#. 0: shortHash(rom.blob.hash)
+#: src/lib/components/EntryDrawer.svelte
+msgid "blob {0} · <0/>"
+msgstr "blob {0} · <0/>"

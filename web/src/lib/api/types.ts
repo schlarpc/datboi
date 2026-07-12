@@ -83,6 +83,7 @@ export type StorageBreakdownBody = Schemas['StorageBreakdown'];
 // ---- GET /v1/blobs (+ /{hash}) ----
 
 export type BlobsParams = NonNullable<operations['blobs']['parameters']['query']>;
+export type ResidencyState = Schemas['ResidencyState'];
 export type BlobRow = Schemas['BlobRow'];
 export type BlobsBody = Schemas['BlobsPage'];
 export type BlobDigests = Schemas['BlobDigests'];

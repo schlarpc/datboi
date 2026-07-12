@@ -23,7 +23,7 @@
    * docs/open-questions.md (M5 scope ruling, open-questions 2026-07-11).
    */
   import { viewDetail, viewImageUrl, views as fetchViews } from '../lib/api/client';
-  import type { ViewDetail } from '../lib/api/types';
+  import type { OneGOneR, ViewDetail } from '../lib/api/types';
   import { bandFor } from '../lib/bands';
   import CliHint from '../lib/components/CliHint.svelte';
   import { fmtAge, fmtSize, shortHash, snapShort } from '../lib/format';
@@ -71,6 +71,21 @@
   const modeStrict = 'strict';
   // @wc-include
   const menuLabel = 'view actions';
+
+  /** Exhaustive over OneGOneRMode: a third mode fails check instead of
+   * silently wearing the held-first label. */
+  function modeWord(mode: OneGOneR['mode']): string {
+    switch (mode) {
+      case 'strict':
+        return modeStrict;
+      case 'held_first':
+        return modeHeldFirst;
+      default: {
+        const unhandled: never = mode;
+        return unhandled;
+      }
+    }
+  }
 </script>
 
 <main>
@@ -139,7 +154,7 @@
             <div class="sub-line">
               {#if def !== null}
                 {def.system}{#if def.one_g_one_r !== null}{' · '}1G1R
-                  {def.one_g_one_r.mode === 'strict' ? modeStrict : modeHeldFirst}
+                  {modeWord(def.one_g_one_r.mode)}
                   ({def.one_g_one_r.regions.join('›')}){/if}{#if def.profile !== null}{' · '}{def.profile} profile{/if}
               {:else}
                 served by tag only — no stored definition
@@ -237,7 +252,7 @@
                     <div class="def-row">
                       <span class="k">1G1R</span>
                       <span class="v">
-                        {def.one_g_one_r.mode === 'strict' ? modeStrict : modeHeldFirst}
+                        {modeWord(def.one_g_one_r.mode)}
                         · {def.one_g_one_r.regions.join(' › ')}{#if def.one_g_one_r.langs.length > 0}{' · '}{def.one_g_one_r.langs.join(
                             ' › ',
                           )}{/if}

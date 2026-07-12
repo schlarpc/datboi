@@ -24,7 +24,7 @@
   import type { OrphansBody, StorageBody, StorageBreakdownBody } from '../lib/api/types';
   import CliHint from '../lib/components/CliHint.svelte';
   import Link from '../lib/components/Link.svelte';
-  import { fmtDate, fmtSize, shortHash } from '../lib/format';
+  import { fmtDate, fmtSize, residencyLabel, shortHash } from '../lib/format';
   import { errorText, loading, settle, type Remote } from '../lib/remote';
 
   // Three independent resources, three Remotes: a failed orphan refresh
@@ -97,10 +97,6 @@
       ? 1
       : Math.max(1, ...breakdown.data.by_class.map((cell) => cell.bytes)),
   );
-
-  /** `evicted_covered` → `evicted covered` — residency is data (mono),
-   * but the underscore is a wire artifact, not display. */
-  const residencyLabel = (residency: string) => residency.replace('_', ' ');
 </script>
 
 <main>
