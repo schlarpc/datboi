@@ -129,6 +129,7 @@
             <li>
               <button
                 class="row"
+                aria-expanded={job.state === 'running' || selected === job.id}
                 onclick={() => (selected = selected === job.id ? null : job.id)}
               >
                 {#if job.state === 'running'}

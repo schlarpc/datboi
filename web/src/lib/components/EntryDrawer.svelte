@@ -39,9 +39,23 @@
   const playTitle = 'in-browser emulator — future';
   // @wc-include
   const closeLabel = 'close';
+
+  // Focus contract: the drawer takes focus when it opens (it mounts on
+  // row selection) and hands it back to the opener when it closes —
+  // otherwise a keyboard user is still parked on the row while the
+  // drawer's controls sit unreachable behind a dozen Tab stops.
+  let drawerEl = $state<HTMLElement | null>(null);
+  $effect(() => {
+    if (drawerEl === null) return;
+    const opener = document.activeElement;
+    drawerEl.focus();
+    return () => {
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  });
 </script>
 
-<aside class="drawer">
+<aside class="drawer" bind:this={drawerEl} tabindex="-1">
   <div class="head">
     <span class="caps">ENTRY</span>
     <button class="close" onclick={onclose} aria-label={closeLabel}>✕</button>
@@ -99,7 +113,7 @@
   </div>
 
   <div class="section">
-    <button class="fold" onclick={() => (storOpen = !storOpen)}>
+    <button class="fold" aria-expanded={storOpen} onclick={() => (storOpen = !storOpen)}>
       {storOpen ? '▾' : '▸'} storage internals
     </button>
     {#if storOpen}

@@ -103,12 +103,25 @@
   }
 </script>
 
+<svelte:window
+  onkeydown={(e) => {
+    // @wc-ignore
+    if (e.key === 'Escape') menu = {};
+  }}
+  onpointerdown={(e) => {
+    // Menus dismiss on any press outside their own card corner.
+    if (!(e.target instanceof Element) || e.target.closest('.menu, .menu-btn') === null) {
+      menu = {};
+    }
+  }}
+/>
+
 <main>
   <div class="title-row">
     <!-- @wc-context: compiled shelf -->
     <h2>Views</h2>
     <span class="sub">compiled shelves, served read-only</span>
-    <button class="new-view" onclick={() => (newViewHint = !newViewHint)}>
+    <button class="new-view" aria-expanded={newViewHint} onclick={() => (newViewHint = !newViewHint)}>
       <!-- @wc-context: compiled shelf -->+ new view
     </button>
   </div>
@@ -161,6 +174,7 @@
               <button
                 class="menu-btn"
                 aria-label={menuLabel}
+                aria-expanded={menu[view.name] === true}
                 onclick={() => (menu[view.name] = !menu[view.name])}
               >
                 ⋯
@@ -175,9 +189,9 @@
                     {#if copied.ok}copied ✓{:else}couldn't copy{/if}
                   {:else}⎘ webdav url{/if}
                 </button>
-                <button onclick={() => toggle(view.name, 'sync')}>view-sync CLI</button>
-                <button onclick={() => toggle(view.name, 'definition')}>definition</button>
-                <button onclick={() => toggle(view.name, 'grants')}>access grants</button>
+                <button aria-expanded={panel === 'sync'} onclick={() => toggle(view.name, 'sync')}>view-sync CLI</button>
+                <button aria-expanded={panel === 'definition'} onclick={() => toggle(view.name, 'definition')}>definition</button>
+                <button aria-expanded={panel === 'grants'} onclick={() => toggle(view.name, 'grants')}>access grants</button>
                 <!-- "pin snapshot" (wireframe 2d) omitted: no CLI exists
                      to pin a snapshot, so there is nothing truthful to
                      hint (M5 scope ruling, open-questions 2026-07-11). -->
@@ -236,9 +250,9 @@
                 </button>
               {/if}
               <span class="links">
-                <button class="link" onclick={() => toggle(view.name, 'reeval')}>re-eval</button>
+                <button class="link" aria-expanded={panel === 'reeval'} onclick={() => toggle(view.name, 'reeval')}>re-eval</button>
                 <span class="sep">·</span>
-                <button class="link" onclick={() => toggle(view.name, 'diff')}>diff</button>
+                <button class="link" aria-expanded={panel === 'diff'} onclick={() => toggle(view.name, 'diff')}>diff</button>
                 <span class="sep">·</span>
                 <!-- Real link into the served HTML listing, new tab. -->
                 <a class="link" href={view.endpoints.http} target="_blank" rel="noopener">browse</a>

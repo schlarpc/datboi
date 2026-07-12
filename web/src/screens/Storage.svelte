@@ -144,7 +144,7 @@
         {:else}
           <p class="copy">no scrub recorded yet — runs land in the job ledger</p>
         {/if}
-        <button class="pill" onclick={() => (scrubHint = !scrubHint)}>run via CLI</button>
+        <button class="pill" aria-expanded={scrubHint} onclick={() => (scrubHint = !scrubHint)}>run via CLI</button>
         {#if scrubHint}
           <CliHint command={'datboi scrub [--sample <pct>]'}>
             re-hash stored blobs and report corruption:
@@ -181,7 +181,7 @@
              construction — every drop has a locally-replayed rebuild
              route. Tune or disarm via `datboi gc config`. -->
         <p class="copy">rebuildable literals evict automatically at the watermark — nothing unrecoverable is ever dropped</p>
-        <button class="pill" onclick={() => (evictHint = !evictHint)}>tune via CLI</button>
+        <button class="pill" aria-expanded={evictHint} onclick={() => (evictHint = !evictHint)}>tune via CLI</button>
         {#if evictHint}
           <CliHint command={'datboi gc config --high-water 90% --low-water 85%'}>
             watermarks ("off" disarms); manual pass: datboi evict --dry-run:
