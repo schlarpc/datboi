@@ -251,6 +251,70 @@ fn migrated_cache_equals_fresh_schema() {
     );
 }
 
+/// Truncation-list completeness: `CACHE_TABLES_CHILD_FIRST` plus the
+/// documented exclusions must equal sqlite_master exactly — a new
+/// FK-less table forgotten from the list would silently survive
+/// "truncation" into a rebuilt cache. The order is also checked
+/// against the real FK graph: every child precedes its parents.
+#[test]
+fn cache_truncation_list_covers_every_table_child_first() {
+    use std::collections::HashSet;
+
+    // gc_guard is the one deliberate exclusion (schema.rs): its single
+    // seeded row must exist for claims to UPDATE.
+    const EXCLUSIONS: &[&str] = &["gc_guard"];
+
+    let (_dir, db) = open_db();
+    let actual: HashSet<String> = db
+        .cache()
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+        .expect("q")
+        .query_map([], |r| r.get(0))
+        .expect("q")
+        .collect::<Result<_, _>>()
+        .expect("q");
+    let listed: HashSet<String> = datboi_index::schema::CACHE_TABLES_CHILD_FIRST
+        .iter()
+        .chain(EXCLUSIONS)
+        .map(|t| (*t).to_owned())
+        .collect();
+    assert_eq!(
+        listed, actual,
+        "CACHE_TABLES_CHILD_FIRST ∪ exclusions must equal sqlite_master"
+    );
+
+    // Child-first means every FK target sits AFTER its referencing
+    // table in the truncation order.
+    let position: std::collections::HashMap<&str, usize> =
+        datboi_index::schema::CACHE_TABLES_CHILD_FIRST
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (*t, i))
+            .collect();
+    for (table, &pos) in &position {
+        let parents: Vec<String> = db
+            .cache()
+            .prepare(&format!("PRAGMA foreign_key_list({table})"))
+            .expect("q")
+            .query_map([], |r| r.get::<_, String>(2))
+            .expect("q")
+            .collect::<Result<_, _>>()
+            .expect("q");
+        for parent in parents {
+            if parent == *table {
+                continue; // self-references truncate fine
+            }
+            let parent_pos = position
+                .get(parent.as_str())
+                .unwrap_or_else(|| panic!("{table} references unlisted table {parent}"));
+            assert!(
+                *parent_pos > pos,
+                "{table} (#{pos}) must truncate before its parent {parent} (#{parent_pos})"
+            );
+        }
+    }
+}
+
 /// The anti-drift guarantee for the STATE ladder. ALTER TABLE rewrites
 /// the stored CREATE text differently from a fresh CREATE, so this
 /// compares normalized shapes (table_info + index list) instead of raw
