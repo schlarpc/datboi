@@ -316,7 +316,6 @@ pub fn mint_image(
         let recipe_id = db.index_recipe(
             recipe_blob_id,
             &recipe,
-            "assemble@1",
             SeekClass::Affine,
             RecipeSource::LocalIngest,
         )?;

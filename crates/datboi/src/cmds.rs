@@ -1342,30 +1342,17 @@ fn index_recovered_recipe(
     recipe_blob_id: i64,
     recipe: &Recipe,
 ) -> anyhow::Result<()> {
-    let (op_name, seek_class) = match &recipe.op {
-        Op::Builtin { name, major } => {
-            // Conservative inference; docs/80-views.md classes. Unknown
-            // builtins default to Opaque (never lies toward seekability).
-            let class = if name == "assemble" || name == "swap" {
-                SeekClass::Affine
-            } else {
-                SeekClass::Opaque
-            };
-            (format!("{name}@{major}"), class)
-        }
-        Op::Wasm {
-            component, export, ..
-        } => (
-            format!("{}#{export}", component.to_hex()),
-            SeekClass::Opaque,
-        ),
+    // Conservative seek inference; docs/80-views.md classes. Unknown
+    // builtins default to Opaque (never lies toward seekability).
+    let seek_class = match &recipe.op {
+        Op::Builtin { name, .. } if name == "assemble" || name == "swap" => SeekClass::Affine,
+        Op::Builtin { .. } | Op::Wasm { .. } => SeekClass::Opaque,
     };
-    // Rows derive from the object; referenced-but-absent blobs get
-    // Absent rows (peer/member semantics).
+    // Rows (op_name included) derive from the object; referenced-but-
+    // absent blobs get Absent rows (peer/member semantics).
     db.index_recipe(
         recipe_blob_id,
         recipe,
-        &op_name,
         seek_class,
         RecipeSource::LocalIngest,
     )?;

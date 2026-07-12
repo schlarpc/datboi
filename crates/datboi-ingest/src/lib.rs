@@ -433,14 +433,8 @@ impl<'a> Ingester<'a> {
                     }],
                     params,
                 };
-                mint_recipe(
-                    self.store,
-                    self.db,
-                    &recipe,
-                    "ex-unrar/extract",
-                    SeekClass::Opaque,
-                )
-                .map_err(|e| e.to_string())?;
+                mint_recipe(self.store, self.db, &recipe, SeekClass::Opaque)
+                    .map_err(|e| e.to_string())?;
             }
             report.members_extracted += 1;
         }
@@ -569,9 +563,9 @@ impl<'a> Ingester<'a> {
                 continue;
             }
 
-            let (op_name, seek, params) = match member.method {
+            let (op, seek, params) = match member.method {
                 Method::Stored => (
-                    "assemble@1",
+                    builtin("assemble@1"),
                     SeekClass::Affine,
                     AssembleParams {
                         segments: vec![Segment::BlobRange {
@@ -584,7 +578,7 @@ impl<'a> Ingester<'a> {
                     .map_err(|e| IngestError::Recipe(e.to_string()))?,
                 ),
                 Method::Deflate => (
-                    "deflate-decompress@1",
+                    builtin("deflate-decompress@1"),
                     SeekClass::Opaque,
                     DeflateWindow {
                         offset: member.data_start,
@@ -594,7 +588,7 @@ impl<'a> Ingester<'a> {
                 ),
             };
             let recipe = Recipe {
-                op: builtin(op_name),
+                op,
                 inputs: vec![InputRef {
                     hash: *zip_hash,
                     role: None,
@@ -606,7 +600,7 @@ impl<'a> Ingester<'a> {
                 }],
                 params,
             };
-            self.record_recipe(&recipe, op_name, seek)?;
+            self.record_recipe(&recipe, seek)?;
             report.members_claimed += 1;
         }
         Ok(())
@@ -668,7 +662,7 @@ impl<'a> Ingester<'a> {
                 }],
                 params: derive_params,
             };
-            self.record_recipe(&derive, "assemble@1", SeekClass::Affine)?;
+            self.record_recipe(&derive, SeekClass::Affine)?;
 
             // Rebuild: file = header blob + variant. Only for the common
             // prefix-header shape (decision reaches EOF); the header is a
@@ -717,7 +711,7 @@ impl<'a> Ingester<'a> {
                     }],
                     params: rebuild_params,
                 };
-                self.record_recipe(&rebuild, "assemble@1", SeekClass::Affine)?;
+                self.record_recipe(&rebuild, SeekClass::Affine)?;
             }
             return Ok(());
         }
@@ -752,13 +746,8 @@ impl<'a> Ingester<'a> {
 
     /// Publish a recipe object (meta namespace) and index it as Verified —
     /// idempotent across re-ingest (the recipe row is keyed by its blob).
-    fn record_recipe(
-        &mut self,
-        recipe: &Recipe,
-        op_name: &str,
-        seek: SeekClass,
-    ) -> Result<(), IngestError> {
-        mint_recipe(self.store, self.db, recipe, op_name, seek)?;
+    fn record_recipe(&mut self, recipe: &Recipe, seek: SeekClass) -> Result<(), IngestError> {
+        mint_recipe(self.store, self.db, recipe, seek)?;
         Ok(())
     }
 }
@@ -773,7 +762,6 @@ pub(crate) fn mint_recipe(
     store: &Store,
     db: &mut Db,
     recipe: &Recipe,
-    op_name: &str,
     seek: SeekClass,
 ) -> Result<i64, IngestError> {
     let encoded = recipe
@@ -790,13 +778,7 @@ pub(crate) fn mint_recipe(
     if let Some(existing) = db.recipe_id_for_blob(recipe_blob_id)? {
         return Ok(existing); // re-mint of already-claimed content
     }
-    let recipe_id = db.index_recipe(
-        recipe_blob_id,
-        recipe,
-        op_name,
-        seek,
-        RecipeSource::LocalIngest,
-    )?;
+    let recipe_id = db.index_recipe(recipe_blob_id, recipe, seek, RecipeSource::LocalIngest)?;
     db.set_verify_state(recipe_id, datboi_index::VerifyAdvance::Verified, now_unix())?;
     Ok(recipe_id)
 }

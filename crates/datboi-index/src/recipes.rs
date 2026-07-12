@@ -130,17 +130,17 @@ impl Db {
             .optional()?)
     }
 
-    /// Index a recipe object: op kind and every input/output row are
-    /// DERIVED from the decoded [`Recipe`], so the queryable projection
-    /// can never drift from the CAS object that GC, eviction, and
-    /// grounding ultimately trust. Hashes the index has never seen get
-    /// Absent blob rows (referenced-but-missing semantics — recovery,
-    /// peer claims); already-indexed blobs are reused untouched.
+    /// Index a recipe object: op kind, op name, and every input/output
+    /// row are DERIVED from the decoded [`Recipe`], so the queryable
+    /// projection can never drift from the CAS object that GC,
+    /// eviction, and grounding ultimately trust. Hashes the index has
+    /// never seen get Absent blob rows (referenced-but-missing
+    /// semantics — recovery, peer claims); already-indexed blobs are
+    /// reused untouched.
     pub fn index_recipe(
         &mut self,
         recipe_blob_id: i64,
         recipe: &Recipe,
-        op_name: &str,
         seek_class: SeekClass,
         source: RecipeSource,
     ) -> Result<i64, IndexError> {
@@ -148,6 +148,7 @@ impl Db {
             Op::Builtin { .. } => OpKind::Builtin,
             Op::Wasm { .. } => OpKind::Wasm,
         };
+        let op_name = recipe.op.index_name();
         let mut inputs = Vec::with_capacity(recipe.inputs.len());
         for (position, input) in recipe.inputs.iter().enumerate() {
             let id = self.ensure_blob(&input.hash)?;
@@ -170,7 +171,7 @@ impl Db {
         self.insert_recipe(&NewRecipe {
             blob_id: recipe_blob_id,
             op_kind,
-            op_name,
+            op_name: &op_name,
             seek_class,
             source,
             inputs: &inputs,

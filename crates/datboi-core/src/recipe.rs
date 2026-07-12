@@ -108,6 +108,22 @@ pub enum Op {
     },
 }
 
+impl Op {
+    /// The ONE queryable spelling of an op — builtin `name@major`, wasm
+    /// `<component-hex>#<export>`. Every recipe index row derives its
+    /// op_name here, so display grammars (the RouteEdge.op vocabulary)
+    /// can never meet a second spelling of the same logical op.
+    #[must_use]
+    pub fn index_name(&self) -> String {
+        match self {
+            Self::Builtin { name, major } => format!("{name}@{major}"),
+            Self::Wasm {
+                component, export, ..
+            } => format!("{}#{export}", component.to_hex()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputRef {
     pub hash: Blake3,
@@ -469,6 +485,18 @@ mod tests {
         assert_eq!(World::Extractor1.required_export(), Some("extract"));
         assert_eq!(World::Transform1.required_export(), None);
         assert_eq!(World::Transform2.required_export(), None);
+    }
+
+    #[test]
+    fn index_name_spells_the_route_grammar() {
+        assert_eq!(golden_recipe().op.index_name(), "assemble@1");
+        let component = Blake3::compute(b"component");
+        let wasm = Op::Wasm {
+            component,
+            world: World::Extractor1,
+            export: "extract".into(),
+        };
+        assert_eq!(wasm.index_name(), format!("{}#extract", component.to_hex()));
     }
 
     #[test]

@@ -559,8 +559,7 @@ fn upload_and_start_reject_bad_requests() {
 fn deflate_zip(name: &[u8], payload: &[u8]) -> Vec<u8> {
     use std::io::Write as _;
     let compressed = {
-        let mut enc =
-            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(6));
+        let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(6));
         enc.write_all(payload).expect("deflate");
         enc.finish().expect("finish")
     };
@@ -666,13 +665,18 @@ fn ambient_refine_follows_ingest() {
     assert!(notes.contains("1 rebuildable"), "{detail}");
 
     // The claims are real: the container gained its preflate recreate
-    // route (read through a second connection; WAL permits it).
+    // route (read through a second connection; WAL permits it). op_name
+    // is the canonical `<component-hex>#<export>` spelling.
     let db = Db::open(&f.db_dir).expect("open alongside daemon");
+    let recreate_op = format!(
+        "{}#recreate",
+        datboi_ingest::analyzers::PreflateZipAnalyzer::component_hash().to_hex()
+    );
     let recreates: i64 = db
         .cache()
         .query_row(
-            "SELECT COUNT(*) FROM recipe WHERE op_name = 'xf-preflate/recreate'",
-            [],
+            "SELECT COUNT(*) FROM recipe WHERE op_name = ?1",
+            [&recreate_op],
             |r| r.get(0),
         )
         .expect("query");
@@ -721,7 +725,11 @@ fn job_history_survives_daemon_restart() {
     assert_eq!(v["report"]["files_stored"], 1, "frozen report served: {v}");
     let (_, v) = get(addr2, "/v1/jobs");
     assert!(
-        v["jobs"].as_array().expect("jobs").iter().any(|j| j["id"] == job),
+        v["jobs"]
+            .as_array()
+            .expect("jobs")
+            .iter()
+            .any(|j| j["id"] == job),
         "tray list misses the historical job: {v}"
     );
 }

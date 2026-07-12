@@ -554,7 +554,6 @@ fn index_recipe_rows_derive_from_the_object() {
         .index_recipe(
             recipe_blob,
             &recipe,
-            "assemble@1",
             SeekClass::Affine,
             RecipeSource::LocalIngest,
         )
@@ -564,7 +563,8 @@ fn index_recipe_rows_derive_from_the_object() {
     let row = db.recipe_by_id(recipe_id).unwrap();
     assert_eq!(
         (row.op_kind, row.op_name.as_str(), row.seek_class),
-        (OpKind::Builtin, "assemble@1", SeekClass::Affine)
+        (OpKind::Builtin, "assemble@1", SeekClass::Affine),
+        "op_name is the object's one spelling (Op::index_name)"
     );
     let inputs = db.recipe_inputs(recipe_id).unwrap();
     assert_eq!(inputs.len(), 2);

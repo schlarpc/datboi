@@ -483,14 +483,7 @@ impl Analyzer for PreflateZipAnalyzer {
                 }],
                 params: Vec::new(),
             };
-            crate::mint_recipe(
-                store,
-                db,
-                &recipe,
-                "xf-preflate/recreate",
-                SeekClass::Opaque,
-            )
-            .map_err(|e| e.to_string())?;
+            crate::mint_recipe(store, db, &recipe, SeekClass::Opaque).map_err(|e| e.to_string())?;
         }
 
         // ---- mint: the container assemble over skeleton + streams ----
@@ -546,8 +539,7 @@ impl Analyzer for PreflateZipAnalyzer {
                 .encode()
                 .map_err(|e| e.to_string())?,
         };
-        crate::mint_recipe(store, db, &recipe, "assemble@1", SeekClass::Affine)
-            .map_err(|e| e.to_string())?;
+        crate::mint_recipe(store, db, &recipe, SeekClass::Affine).map_err(|e| e.to_string())?;
 
         let corr_total: u64 = covered.iter().map(|(_, _, s)| s.corrections_len).sum();
         let pt_total: u64 = covered.iter().map(|(_, _, s)| s.plaintext_len).sum();
@@ -715,8 +707,7 @@ impl Analyzer for ChunkAnalyzer {
                 .encode()
                 .map_err(|e| e.to_string())?,
         };
-        crate::mint_recipe(store, db, &recipe, "assemble@1", SeekClass::Affine)
-            .map_err(|e| e.to_string())?;
+        crate::mint_recipe(store, db, &recipe, SeekClass::Affine).map_err(|e| e.to_string())?;
 
         Ok(AnalysisResult {
             outcome: AnalysisOutcome::Positive,
@@ -974,14 +965,8 @@ impl Analyzer for EcmAnalyzer {
             }],
             params: Vec::new(),
         };
-        crate::mint_recipe(
-            store,
-            db,
-            &recipe,
-            "xf-ecm/recreate",
-            SeekClass::ManifestSeekable,
-        )
-        .map_err(|e| e.to_string())?;
+        crate::mint_recipe(store, db, &recipe, SeekClass::ManifestSeekable)
+            .map_err(|e| e.to_string())?;
 
         Ok(AnalysisResult {
             outcome: AnalysisOutcome::Positive,

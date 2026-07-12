@@ -84,8 +84,9 @@ impl World {
     }
 
     /// Publish a recipe object + index rows (Pending), mirroring what
-    /// ingest/analyzers mint: rows derive from the object itself.
-    fn mint_recipe(&mut self, recipe: &Recipe, op_name: &str, seek: SeekClass) -> i64 {
+    /// ingest/analyzers mint: rows (op_name included) derive from the
+    /// object itself.
+    fn mint_recipe(&mut self, recipe: &Recipe, seek: SeekClass) -> i64 {
         let encoded = recipe.encode().expect("valid recipe");
         let recipe_hash = Blake3::compute(&encoded);
         self.store
@@ -101,13 +102,7 @@ impl World {
             )
             .expect("recipe blob row");
         self.db
-            .index_recipe(
-                recipe_blob_id,
-                recipe,
-                op_name,
-                seek,
-                RecipeSource::LocalIngest,
-            )
+            .index_recipe(recipe_blob_id, recipe, seek, RecipeSource::LocalIngest)
             .expect("recipe rows")
     }
 }
@@ -161,7 +156,7 @@ fn replays_deflate_window_recipe_and_licenses_drop() {
         }],
         params: deflate_window_params(offset, compressed.len() as u64),
     };
-    let recipe_id = w.mint_recipe(&recipe, "deflate-decompress@1", SeekClass::Opaque);
+    let recipe_id = w.mint_recipe(&recipe, SeekClass::Opaque);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     let report = exec.replay(&w.db, recipe_id).expect("replays");
@@ -230,7 +225,7 @@ fn lying_claim_poisons_the_recipe_and_publishes_nothing() {
         .encode()
         .expect("params"),
     };
-    let recipe_id = w.mint_recipe(&recipe, "assemble@1", SeekClass::Affine);
+    let recipe_id = w.mint_recipe(&recipe, SeekClass::Affine);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     let err = exec.replay(&w.db, recipe_id).expect_err("claim is false");
@@ -279,7 +274,7 @@ fn wasm2_recipe_replays_and_streams() {
         }],
         params: Vec::new(),
     };
-    let recipe_id = w.mint_recipe(&recipe, "wasm:byteswap", SeekClass::Affine);
+    let recipe_id = w.mint_recipe(&recipe, SeekClass::Affine);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     exec.replay(&w.db, recipe_id).expect("replays");
@@ -326,7 +321,7 @@ fn composed_route_streams_through_wasm_without_storing_intermediates() {
         }],
         params: Vec::new(),
     };
-    w.mint_recipe(&swap_recipe, "wasm:byteswap", SeekClass::Affine);
+    w.mint_recipe(&swap_recipe, SeekClass::Affine);
 
     let concat_recipe = Recipe {
         op: Op::Builtin {
@@ -365,7 +360,7 @@ fn composed_route_streams_through_wasm_without_storing_intermediates() {
         .encode()
         .expect("params"),
     };
-    let concat_id = w.mint_recipe(&concat_recipe, "assemble@1", SeekClass::Affine);
+    let concat_id = w.mint_recipe(&concat_recipe, SeekClass::Affine);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     exec.materialize(&w.db, &final_hash).expect("materializes");
@@ -445,7 +440,7 @@ fn served_ranges_verify_after_eviction() {
         }],
         params: Vec::new(),
     };
-    let recipe_id = w.mint_recipe(&recipe, "wasm:byteswap", SeekClass::Affine);
+    let recipe_id = w.mint_recipe(&recipe, SeekClass::Affine);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     exec.replay(&w.db, recipe_id).expect("replay licenses");
@@ -506,7 +501,7 @@ fn lying_seek_path_is_quarantined_and_falls_back() {
         }],
         params: Vec::new(),
     };
-    let recipe_id = w.mint_recipe(&recipe, "wasm:byteswap-lying-range", SeekClass::Affine);
+    let recipe_id = w.mint_recipe(&recipe, SeekClass::Affine);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     // Sequential run is honest: the claim replays and licenses (this is
@@ -568,7 +563,7 @@ fn corrupt_input_mismatch_does_not_quarantine_the_component() {
         }],
         params: Vec::new(),
     };
-    let recipe_id = w.mint_recipe(&recipe, "wasm:byteswap", SeekClass::Affine);
+    let recipe_id = w.mint_recipe(&recipe, SeekClass::Affine);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     exec.replay(&w.db, recipe_id).expect("replay licenses");
@@ -642,7 +637,7 @@ fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
         }],
         params: Vec::new(),
     };
-    let good_id = w.mint_recipe(&good, "wasm:byteswap", SeekClass::Affine);
+    let good_id = w.mint_recipe(&good, SeekClass::Affine);
     w.db.set_verify_state(
         good_id,
         VerifyAdvance::Failed {
@@ -673,7 +668,7 @@ fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
         }],
         params: Vec::new(),
     };
-    let bad_id = w.mint_recipe(&bad, "wasm:byteswap", SeekClass::Affine);
+    let bad_id = w.mint_recipe(&bad, SeekClass::Affine);
     w.db.set_verify_state(
         bad_id,
         VerifyAdvance::Failed {
@@ -737,7 +732,7 @@ fn unknown_worlds_refuse_instead_of_dispatching_or_poisoning() {
             }],
             params: Vec::new(),
         };
-        let recipe_id = w.mint_recipe(&recipe, "wasm:byteswap", SeekClass::Opaque);
+        let recipe_id = w.mint_recipe(&recipe, SeekClass::Opaque);
         minted.push((world_str, recipe_id));
     }
 
@@ -785,7 +780,7 @@ fn extractor_recipe_with_wrong_export_refuses() {
         }],
         params: cbor::encode(&Value::Map(vec![(1, Value::Uint(0))])).expect("params"),
     };
-    let recipe_id = w.mint_recipe(&recipe, "ex-unrar/garbage", SeekClass::Opaque);
+    let recipe_id = w.mint_recipe(&recipe, SeekClass::Opaque);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     let err = exec
@@ -832,7 +827,7 @@ fn extractor_guest_failure_poisons_the_recipe() {
         }],
         params: cbor::encode(&Value::Map(vec![(1, Value::Uint(0))])).expect("params"),
     };
-    let recipe_id = w.mint_recipe(&recipe, "ex-unrar/extract", SeekClass::Opaque);
+    let recipe_id = w.mint_recipe(&recipe, SeekClass::Opaque);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     let err = exec
@@ -893,7 +888,7 @@ fn child_length_lie_does_not_poison_the_parent() {
         .encode()
         .expect("params"),
     };
-    w.mint_recipe(&child, "assemble@1", SeekClass::Affine);
+    w.mint_recipe(&child, SeekClass::Affine);
 
     // Parent: byteswap over the child's claimed output.
     let out = Blake3::compute(b"parent output, never produced");
@@ -916,7 +911,7 @@ fn child_length_lie_does_not_poison_the_parent() {
         }],
         params: Vec::new(),
     };
-    let parent_id = w.mint_recipe(&parent, "wasm:byteswap", SeekClass::Affine);
+    let parent_id = w.mint_recipe(&parent, SeekClass::Affine);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     let err = exec
