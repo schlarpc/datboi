@@ -191,7 +191,8 @@ pub fn mint(
         if outcome == PutOutcome::Stored {
             new_batch_blobs += 1;
         }
-        let blob_id = db.upsert_blob(&hash, Some(aliases.size), NsRow::Meta, Residency::Resident)?;
+        let blob_id =
+            db.upsert_blob(&hash, Some(aliases.size), NsRow::Meta, Residency::Resident)?;
         db.insert_aliases(blob_id, &aliases)?;
         db.set_verified(blob_id, now)?;
         alias_batches.push(hash);

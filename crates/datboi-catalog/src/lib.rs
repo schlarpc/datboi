@@ -25,8 +25,8 @@ pub mod import;
 pub mod mame;
 pub mod profiles;
 pub mod rollup;
-pub mod statesnap;
 pub mod selection;
+pub mod statesnap;
 pub mod unify;
 pub mod views;
 

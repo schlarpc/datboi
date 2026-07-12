@@ -178,8 +178,11 @@ pub(crate) async fn apply(
 
         // The record in the tray: a finished gc job, like every other
         // byte-level event.
-        let job = app.jobs.create_gc("gc — orphan apply", response.deleted, now_unix());
-        app.jobs.refine_progress(job, response.deleted, response.deleted);
+        let job = app
+            .jobs
+            .create_gc("gc — orphan apply", response.deleted, now_unix());
+        app.jobs
+            .refine_progress(job, response.deleted, response.deleted);
         app.jobs.push_note(
             job,
             format!(

@@ -348,9 +348,10 @@ impl Db {
     /// fresh-ingest path for no reason. A CLI sweep racing this loses
     /// only dedup, never correctness.
     pub fn clear_sweep_leases(&self) -> Result<usize, IndexError> {
-        Ok(self
-            .cache()
-            .execute("UPDATE sweep_queue SET leased_until = 0 WHERE leased_until != 0", [])?)
+        Ok(self.cache().execute(
+            "UPDATE sweep_queue SET leased_until = 0 WHERE leased_until != 0",
+            [],
+        )?)
     }
 
     /// Finish one sweep item: provenance row written and queue row removed

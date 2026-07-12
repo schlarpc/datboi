@@ -28,7 +28,9 @@
 //! corruption.
 
 pub const SECTOR: usize = 2352;
-pub const SYNC: [u8; 12] = [0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0];
+pub const SYNC: [u8; 12] = [
+    0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0,
+];
 
 /// Stripped bytes consumed per sector, by record kind.
 #[must_use]
@@ -219,7 +221,10 @@ pub fn parse_record(bytes: &[u8]) -> Result<Option<LayoutRecord>, String> {
         return Ok(None);
     }
     let Ok(fixed): Result<&[u8; 5], _> = bytes.try_into() else {
-        return Err(format!("truncated layout record: {} of 5 bytes", bytes.len()));
+        return Err(format!(
+            "truncated layout record: {} of 5 bytes",
+            bytes.len()
+        ));
     };
     let kind = fixed[0];
     if kind > 3 {
@@ -317,7 +322,10 @@ mod tests {
 
     #[test]
     fn layout_records_roundtrip() {
-        let r = LayoutRecord { kind: 2, count: 333_000 };
+        let r = LayoutRecord {
+            kind: 2,
+            count: 333_000,
+        };
         assert_eq!(parse_record(&encode_record(r)), Ok(Some(r)));
         assert_eq!(parse_record(&[]), Ok(None));
         assert!(parse_record(&[1, 2]).is_err());
@@ -383,7 +391,10 @@ mod component {
     }
 
     fn read_exact_at(file: &File, offset: u64, n: usize, what: &str) -> Result<Vec<u8>, String> {
-        let bytes = file.read_at(offset, u32::try_from(n).map_err(|_| format!("{what}: huge"))?);
+        let bytes = file.read_at(
+            offset,
+            u32::try_from(n).map_err(|_| format!("{what}: huge"))?,
+        );
         if bytes.len() != n {
             return Err(format!("{what}: wanted {n} bytes at {offset}"));
         }

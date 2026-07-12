@@ -88,9 +88,8 @@ impl Db {
              DELETE FROM gc_extra_roots;",
         )?;
         {
-            let mut insert = tx.prepare_cached(
-                "INSERT OR IGNORE INTO gc_extra_roots (blob_id) VALUES (?1)",
-            )?;
+            let mut insert =
+                tx.prepare_cached("INSERT OR IGNORE INTO gc_extra_roots (blob_id) VALUES (?1)")?;
             for &blob_id in extra_roots {
                 insert.execute([blob_id])?;
             }

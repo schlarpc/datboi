@@ -40,7 +40,9 @@ use std::time::{Duration, Instant};
 
 use datboi_index::Db;
 use datboi_ingest::analyzers::{ChunkAnalyzer, EcmAnalyzer, PreflateZipAnalyzer};
-use datboi_ingest::refine::{Analyzer, SweepObserver, analyzer_enabled, process_round, refresh_queue};
+use datboi_ingest::refine::{
+    Analyzer, SweepObserver, analyzer_enabled, process_round, refresh_queue,
+};
 use datboi_store_fs::Store;
 
 use crate::auth::now_unix;
@@ -226,7 +228,10 @@ fn drain_family(
     analyzer: &mut dyn Analyzer,
 ) {
     let id = analyzer.id();
-    let queued = match (analyzer_enabled(db, analyzer.family()), db.sweep_queue_len(&id)) {
+    let queued = match (
+        analyzer_enabled(db, analyzer.family()),
+        db.sweep_queue_len(&id),
+    ) {
         (Ok(false), _) | (_, Ok(0)) => return,
         (Ok(true), Ok(n)) => n,
         (Err(e), _) | (_, Err(e)) => {
