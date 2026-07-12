@@ -39,7 +39,7 @@ use datboi_core::alias::{AliasHasher, AliasTuple};
 use datboi_core::assemble::{AssembleParams, Segment};
 use datboi_core::cbor::{self, Value};
 use datboi_core::hash::Blake3;
-use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe};
+use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe, World};
 use datboi_formats::skipper::{Detector, Operation};
 use datboi_index::recipes::NewRecipe;
 use datboi_index::{Db, Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass};
@@ -419,7 +419,7 @@ impl<'a> Ingester<'a> {
                 let recipe = Recipe {
                     op: Op::Wasm {
                         component: self.extractor_component_hash()?,
-                        world: "datboi:extractor@1".into(),
+                        world: World::Extractor1,
                         export: "extract".into(),
                     },
                     inputs: vec![InputRef {

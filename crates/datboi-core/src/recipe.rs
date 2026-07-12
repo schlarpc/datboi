@@ -33,6 +33,55 @@ const INKEY_ROLE: u64 = 2;
 const OUTKEY_SIZE: u64 = 2;
 const OUTKEY_NAME: u64 = 3;
 
+/// The wasm worlds recipes can name. The wire format stays a string
+/// (the canonical spellings below); parsing happens at decode so the
+/// executor dispatches on a closed enum, never on string prefixes —
+/// "datboi:transform@10" must not look like "@1" and get driven with
+/// the wrong ABI. Every other spelling decodes to [`World::Other`]
+/// verbatim: a recipe from the future must stay *refusable*
+/// (unsupported-op, retryable after an upgrade), never *poisonable*,
+/// so unknown worlds survive decode and re-encode byte-identically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum World {
+    /// `datboi:transform@1` — the frozen whole-buffer world.
+    Transform1,
+    /// `datboi:transform@2` — the frozen streaming world.
+    Transform2,
+    /// `datboi:extractor@1` — the container→member extractor world.
+    Extractor1,
+    /// Not a world this build executes; preserved verbatim.
+    Other(String),
+}
+
+impl World {
+    /// Parse a wire spelling. Total on purpose: only the exact
+    /// canonical spellings become known worlds ("datboi:transform@2.0.0"
+    /// is a different recipe identity and a refusable one, not an
+    /// alias), everything else is [`World::Other`].
+    #[must_use]
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "datboi:transform@1" => Self::Transform1,
+            "datboi:transform@2" => Self::Transform2,
+            "datboi:extractor@1" => Self::Extractor1,
+            _ => Self::Other(s.to_owned()),
+        }
+    }
+
+    /// The canonical wire spelling — the ONE string mint sites and the
+    /// encoder emit for a known world, so spelling variants can never
+    /// fragment recipe identity.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Transform1 => "datboi:transform@1",
+            Self::Transform2 => "datboi:transform@2",
+            Self::Extractor1 => "datboi:extractor@1",
+            Self::Other(s) => s,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     Builtin {
@@ -41,7 +90,7 @@ pub enum Op {
     },
     Wasm {
         component: Blake3,
-        world: String,
+        world: World,
         export: String,
     },
 }
@@ -168,7 +217,7 @@ impl Recipe {
             return Err(RecipeError::Invalid("empty builtin name"));
         }
         if let Op::Wasm { world, export, .. } = &self.op
-            && (world.is_empty() || export.is_empty())
+            && (world.as_str().is_empty() || export.is_empty())
         {
             return Err(RecipeError::Invalid("empty wasm world or export"));
         }
@@ -190,7 +239,7 @@ fn op_to_value(op: &Op) -> Value {
         } => Value::Map(vec![
             (OPKEY_KIND, Value::Text("w".into())),
             (OPKEY_NAME_OR_COMPONENT, Value::Bytes(component.0.to_vec())),
-            (OPKEY_MAJOR_OR_WORLD, Value::Text(world.clone())),
+            (OPKEY_MAJOR_OR_WORLD, Value::Text(world.as_str().to_owned())),
             (OPKEY_EXPORT, Value::Text(export.clone())),
         ]),
     }
@@ -249,7 +298,7 @@ fn op_from_value(value: &Value) -> Result<Op, RecipeError> {
                 match *key {
                     OPKEY_KIND => {}
                     OPKEY_NAME_OR_COMPONENT => component = Some(as_hash(val)?),
-                    OPKEY_MAJOR_OR_WORLD => world = Some(as_text(val)?.to_owned()),
+                    OPKEY_MAJOR_OR_WORLD => world = Some(World::parse(as_text(val)?)),
                     OPKEY_EXPORT => export = Some(as_text(val)?.to_owned()),
                     _ => return Err(RecipeError::Invalid("unknown wasm op key")),
                 }
@@ -387,6 +436,24 @@ mod tests {
     }
 
     #[test]
+    fn world_parses_exact_canonical_spellings_only() {
+        for w in [World::Transform1, World::Transform2, World::Extractor1] {
+            assert_eq!(World::parse(w.as_str()), w, "canonical round-trip");
+        }
+        // Prefix relatives and semver spellings are NOT the frozen
+        // worlds: they must decode (refusable), never alias an ABI.
+        for s in [
+            "datboi:transform@10",
+            "datboi:transform@2.0.0",
+            "datboi:extractor@11",
+            "datboi:transform@2 ",
+        ] {
+            assert_eq!(World::parse(s), World::Other(s.to_owned()));
+            assert_eq!(World::parse(s).as_str(), s, "verbatim survival");
+        }
+    }
+
+    #[test]
     fn round_trips() {
         let recipe = golden_recipe();
         let encoded = recipe.encode().expect("valid recipe");
@@ -435,7 +502,7 @@ mod tests {
             (hash_strategy(), "[a-z:@0-9.]{1,24}", "[a-z-]{1,16}").prop_map(
                 |(component, world, export)| Op::Wasm {
                     component,
-                    world,
+                    world: World::parse(&world),
                     export
                 }
             ),

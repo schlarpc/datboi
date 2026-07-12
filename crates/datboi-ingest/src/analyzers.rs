@@ -6,7 +6,7 @@ use std::io::BufReader;
 
 use datboi_core::assemble::{AssembleParams, Segment};
 use datboi_core::hash::Blake3;
-use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe};
+use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe, World};
 use datboi_index::{AnalysisOutcome, Db, Namespace as IndexNs, Residency, SeekClass, SweepItem};
 use datboi_store_fs::{Namespace as StoreNs, Store};
 
@@ -469,7 +469,7 @@ impl Analyzer for PreflateZipAnalyzer {
             let recipe = Recipe {
                 op: Op::Wasm {
                     component: component_hash,
-                    world: "datboi:transform@2".into(),
+                    world: World::Transform2,
                     export: "recreate".into(),
                 },
                 inputs: vec![
@@ -998,7 +998,7 @@ impl Analyzer for EcmAnalyzer {
         let recipe = Recipe {
             op: Op::Wasm {
                 component: component_hash,
-                world: "datboi:transform@2".into(),
+                world: World::Transform2,
                 export: "recreate".into(),
             },
             inputs: vec![

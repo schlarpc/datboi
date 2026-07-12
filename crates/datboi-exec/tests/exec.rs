@@ -7,7 +7,7 @@ use std::io::Write as _;
 use datboi_core::assemble::{AssembleParams, Segment};
 use datboi_core::cbor::{self, Value};
 use datboi_core::hash::Blake3;
-use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe};
+use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe, World as WasmWorld};
 use datboi_exec::{ExecConfig, ExecError, Executor};
 use datboi_index::recipes::NewRecipe;
 use datboi_index::{
@@ -295,7 +295,7 @@ fn wasm2_recipe_replays_and_streams() {
     let recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: "datboi:transform@2".into(),
+            world: WasmWorld::Transform2,
             export: "byteswap".into(),
         },
         inputs: vec![InputRef {
@@ -349,7 +349,7 @@ fn composed_route_streams_through_wasm_without_storing_intermediates() {
     let swap_recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: "datboi:transform@2".into(),
+            world: WasmWorld::Transform2,
             export: "byteswap".into(),
         },
         inputs: vec![InputRef {
@@ -482,7 +482,7 @@ fn served_ranges_verify_after_eviction() {
     let recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: "datboi:transform@2".into(),
+            world: WasmWorld::Transform2,
             export: "byteswap".into(),
         },
         inputs: vec![InputRef {
@@ -550,7 +550,7 @@ fn lying_seek_path_is_quarantined_and_falls_back() {
     let recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: "datboi:transform@2".into(),
+            world: WasmWorld::Transform2,
             export: "byteswap-lying-range".into(),
         },
         inputs: vec![InputRef {
@@ -619,7 +619,7 @@ fn corrupt_input_mismatch_does_not_quarantine_the_component() {
     let recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: "datboi:transform@2".into(),
+            world: WasmWorld::Transform2,
             export: "byteswap".into(),
         },
         inputs: vec![InputRef {
@@ -700,7 +700,7 @@ fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
     let good = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: "datboi:transform@2".into(),
+            world: WasmWorld::Transform2,
             export: "byteswap".into(),
         },
         inputs: vec![InputRef {
@@ -736,7 +736,7 @@ fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
     let bad = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: "datboi:transform@2".into(),
+            world: WasmWorld::Transform2,
             export: "byteswap".into(),
         },
         inputs: vec![InputRef {
@@ -784,6 +784,65 @@ fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
     );
 }
 
+/// A future or foreign world is REFUSABLE, never poisonable: it must not
+/// prefix-match onto a frozen ABI ("@10" driven as "@1", "@2.0.0" as
+/// "@2") and its refusal must not fail the claim.
+#[test]
+fn unknown_worlds_refuse_instead_of_dispatching_or_poisoning() {
+    let mut w = world();
+    let input = pattern(4096);
+    let (component_hash, _) = w.put_literal(COMPONENT);
+    let (input_hash, input_id) = w.put_literal(&input);
+    let (output_hash, output_id) = w.claim_absent(&byteswap(&input));
+
+    let mut minted = Vec::new();
+    for world_str in ["datboi:transform@10", "datboi:transform@2.0.0"] {
+        let recipe = Recipe {
+            op: Op::Wasm {
+                component: component_hash,
+                world: WasmWorld::parse(world_str),
+                export: "byteswap".into(),
+            },
+            inputs: vec![InputRef {
+                hash: input_hash,
+                role: None,
+            }],
+            outputs: vec![OutputRef {
+                hash: output_hash,
+                size: input.len() as u64,
+                name: None,
+            }],
+            params: Vec::new(),
+        };
+        let recipe_id = w.mint_recipe(
+            &recipe,
+            "wasm:byteswap",
+            OpKind::Wasm,
+            SeekClass::Opaque,
+            &[(0, input_id)],
+            &[(0, output_id, input.len() as u64)],
+        );
+        minted.push((world_str, recipe_id));
+    }
+
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+    for (world_str, recipe_id) in minted {
+        let err = exec
+            .replay(&w.db, recipe_id)
+            .expect_err("unknown world must refuse");
+        assert!(
+            matches!(&err, ExecError::UnsupportedOp(w) if w == world_str),
+            "{world_str}: {err}"
+        );
+        assert!(!err.is_claim_failure(), "{world_str} stays retryable");
+        assert_ne!(
+            w.db.recipe_by_id(recipe_id).expect("row").verify,
+            VerifyState::Failed,
+            "{world_str} must not poison"
+        );
+    }
+}
+
 /// An extractor guest that refuses (or traps) during replay is a CLAIM
 /// failure: the typed verdict must survive the pipe path and poison the
 /// recipe, instead of dissolving into retryable consumer I/O that
@@ -799,7 +858,7 @@ fn extractor_guest_failure_poisons_the_recipe() {
     let recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: "datboi:extractor@1".into(),
+            world: WasmWorld::Extractor1,
             export: "extract".into(),
         },
         inputs: vec![InputRef {

@@ -36,7 +36,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use datboi_core::assemble::AssembleParams;
 use datboi_core::cbor::{self, Value};
 use datboi_core::hash::Blake3;
-use datboi_core::recipe::{Op, Recipe};
+use datboi_core::recipe::{Op, Recipe, World};
 use datboi_index::{Db, IndexError, RecipeSource, Residency, SeekClass, VerifyState};
 use datboi_runtime::extractor::{ExtractorComponent, ExtractorHost};
 use datboi_runtime::stream::{
@@ -758,8 +758,8 @@ impl<'s> Executor<'s> {
                 component,
                 world,
                 export,
-            } => {
-                if world.starts_with("datboi:transform@2") {
+            } => match world {
+                World::Transform2 => {
                     let transform = self.load_component(component)?;
                     let descriptor = self.stream_host.describe(&transform, export)?;
                     Ok(OpImpl::Wasm2 {
@@ -770,7 +770,8 @@ impl<'s> Executor<'s> {
                         seek: descriptor.seek,
                         random_access_inputs: descriptor.random_access_inputs,
                     })
-                } else if world.starts_with("datboi:transform@1") {
+                }
+                World::Transform1 => {
                     let mut bytes = Vec::new();
                     self.store
                         .get(StoreNs::Data, component)?
@@ -781,7 +782,8 @@ impl<'s> Executor<'s> {
                         op: export.clone(),
                         params: recipe.params.clone(),
                     })
-                } else if world.starts_with("datboi:extractor@1") {
+                }
+                World::Extractor1 => {
                     // export is "extract"; params pin the member index.
                     let member_ix = decode_member_ix(&recipe.params)?;
                     let compiled = self.load_extractor_component(component)?;
@@ -789,10 +791,12 @@ impl<'s> Executor<'s> {
                         component: compiled,
                         member_ix,
                     })
-                } else {
-                    Err(ExecError::UnsupportedOp(world.clone()))
                 }
-            }
+                // Unknown world (a recipe from the future, a foreign
+                // family): refusable, never poisonable — UnsupportedOp
+                // is not a claim failure.
+                World::Other(w) => Err(ExecError::UnsupportedOp(w.clone())),
+            },
         }
     }
 
