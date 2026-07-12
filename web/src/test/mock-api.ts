@@ -59,6 +59,9 @@ export interface MockUniverse {
   /** GET /v1/jobs/{id} script: each poll SHIFTS one entry until the
    * last, which then repeats — tests script running→done timelines. */
   jobTimeline?: JobDetailBody[];
+  /** GET /v1/jobs/{id} answers 500 — exercises followJob's grace.
+   * Mutable mid-test: flip it to script a blip and recovery. */
+  jobDetailFail?: boolean;
   /** POST /v1/ingest answer; defaults to job 1. */
   ingestJob?: number;
   /** POST /v1/ingest rejects (unknown token shape). */
@@ -258,6 +261,9 @@ export function installFetch(universe: MockUniverse) {
       }
       const jobMatch = path.match(/^\/v1\/jobs\/(\d+)$/);
       if (jobMatch) {
+        if (universe.jobDetailFail === true) {
+          return json(500, { error: 'induced job-detail failure' });
+        }
         const timeline = universe.jobTimeline;
         if (timeline === undefined || timeline.length === 0) {
           return json(404, { error: 'no such job' });

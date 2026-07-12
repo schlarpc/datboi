@@ -13,10 +13,10 @@
    * can't move your originals, only send copies. NAS-local ingest
    * (and the eventual --move) stays with the CLI.
    */
-  import { jobDetail, startIngest, uploadRom } from '../lib/api/client';
+  import { startIngest, uploadRom } from '../lib/api/client';
   import type { JobDetailBody } from '../lib/api/types';
   import CliHint from '../lib/components/CliHint.svelte';
-  import { jobsSignal } from '../lib/jobs.svelte';
+  import { followJob, jobsSignal, LostContact } from '../lib/jobs.svelte';
   import { collectDrop, pickedFiles, type DropFile } from '../lib/upload';
 
   interface QueueItem {
@@ -37,6 +37,15 @@
   let job = $state<JobDetailBody | null>(null);
   /** Infrastructure failure (start/poll); per-file refusals live in the report. */
   let failure = $state<string | null>(null);
+  /** Polling gave up (LostContact) — the job may well still be running. */
+  let lostContact = $state(false);
+
+  // Unmount stops the follow loop — the tray owns job visibility; a
+  // destroyed screen must not keep a private poll running for hours.
+  let alive = true;
+  $effect(() => () => {
+    alive = false;
+  });
 
   const busy = $derived(phase === 'uploading' || phase === 'ingesting');
   const uploadedBytes = $derived(queue.reduce((sum, item) => sum + item.sent, 0));
@@ -56,6 +65,7 @@
       return;
     }
     failure = null;
+    lostContact = false;
     job = null;
     phase = 'uploading';
     queue = files.map(({ name, file }) => ({
@@ -96,17 +106,18 @@
   }
 
   async function follow(id: number): Promise<void> {
-    for (;;) {
-      try {
-        job = await jobDetail(id);
-      } catch (e) {
+    try {
+      const done = await followJob(id, {
+        alive: () => alive,
+        onUpdate: (detail) => (job = detail),
+      });
+      if (done === null) return; // unmounted mid-job: the tray takes over
+    } catch (e) {
+      if (e instanceof LostContact) {
+        lostContact = true; // NOT a job failure — the report card says so
+      } else {
         failure = e instanceof Error ? e.message : String(e);
-        break;
       }
-      if (job.state !== 'running') {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     phase = 'report';
     jobsSignal.bump(); // flip the tray row to done promptly
@@ -227,6 +238,9 @@
   {#if phase === 'report'}
     <div class="card">
       <div class="caps">REPORT</div>
+      {#if lostContact}
+        <p class="bad">lost contact with the job — it may still be running; check the jobs tray</p>
+      {/if}
       {#if failure !== null}
         <p class="bad">something went wrong — {failure}</p>
       {/if}

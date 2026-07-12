@@ -4,12 +4,12 @@
    * GET /v1/systems in the full cartridge register: band, 2px ink,
    * offset shadow, stacked bar with ink frame, views chips.
    */
-  import { jobDetail, startIngest, systems as fetchSystems, uploadRom } from '../lib/api/client';
+  import { startIngest, systems as fetchSystems, uploadRom } from '../lib/api/client';
   import type { System } from '../lib/api/types';
   import { bandFor } from '../lib/bands';
   import Link from '../lib/components/Link.svelte';
   import StackedBar from '../lib/components/StackedBar.svelte';
-  import { jobsSignal } from '../lib/jobs.svelte';
+  import { followJob, jobsSignal, LostContact } from '../lib/jobs.svelte';
   import { router } from '../lib/router.svelte';
   import { completenessPct } from '../lib/state';
 
@@ -26,6 +26,13 @@
   let dragOver = $state(false);
   let importing = $state<string | null>(null);
   let imports = $state<{ name: string; ok: boolean; detail: string }[]>([]);
+
+  // Unmount stops the follow loop — the tray owns job visibility; a
+  // destroyed screen must not keep a private poll running for hours.
+  let alive = true;
+  $effect(() => () => {
+    alive = false;
+  });
 
   $effect(() => {
     fetchSystems().then(
@@ -52,7 +59,12 @@
       try {
         const started = await startIngest(staged);
         jobsSignal.bump(); // wake the tray now, not on its own cadence
-        const job = await follow(started.job);
+        const job = await followJob(started.job, {
+          alive: () => alive,
+          onUpdate: (detail) => (importing = detail.current ?? importing),
+        });
+        if (job === null) return; // unmounted mid-job: the tray takes over
+        jobsSignal.bump(); // flip the tray row to done promptly
         for (const dat of job.report.dats_imported) {
           imports.push({
             name: dat.path,
@@ -73,24 +85,16 @@
         imports.push({
           name: 'ingest',
           ok: false,
-          detail: e instanceof Error ? e.message : String(e),
+          detail:
+            e instanceof LostContact
+              ? `lost contact with the job — it may still be running (${e.message})`
+              : e instanceof Error
+                ? e.message
+                : String(e),
         });
       }
     }
     importing = null;
-  }
-
-  /** Poll the job to a terminal state; the card label tracks `current`. */
-  async function follow(id: number): Promise<Awaited<ReturnType<typeof jobDetail>>> {
-    for (;;) {
-      const job = await jobDetail(id);
-      if (job.state !== 'running') {
-        jobsSignal.bump(); // flip the tray row to done promptly
-        return job;
-      }
-      importing = job.current ?? importing;
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
   }
 
   function onDrop(e: DragEvent): void {

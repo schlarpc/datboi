@@ -1243,3 +1243,7 @@ msgstr "couldn't copy — select it"
 #: src/lib/components/JobsTray.svelte
 msgid "can't reach the daemon"
 msgstr "can't reach the daemon"
+
+#: src/screens/Ingest.svelte
+msgid "lost contact with the job — it may still be running; check the jobs tray"
+msgstr "lost contact with the job — it may still be running; check the jobs tray"
