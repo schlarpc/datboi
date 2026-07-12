@@ -80,6 +80,8 @@ msgid "# datboi missing-list · {0} {1} {2}"
 msgstr "# datboi missing-list · {0} {1} {2}"
 
 #. 0: error
+#. 0: gridError
+#. 0: sessionsError
 #. 0: system.msg
 #. 0: entries.msg
 #. 0: detail.msg
@@ -94,6 +96,8 @@ msgstr "# datboi missing-list · {0} {1} {2}"
 #. 0: breakdown.msg
 #. 0: names.msg
 #. 0: card.msg
+#: src/screens/Admin.svelte
+#: src/screens/Admin.svelte
 #: src/screens/Admin.svelte
 #: src/screens/Audit.svelte
 #: src/screens/Audit.svelte
@@ -1406,3 +1410,11 @@ msgstr[1] "# errors"
 #: src/lib/components/JobsTray.svelte
 msgid "{0}/{1} <0/> · {2} matched · {3} refused"
 msgstr "{0}/{1} <0/> · {2} matched · {3} refused"
+
+#: src/screens/Admin.svelte
+msgid "dismiss"
+msgstr "dismiss"
+
+#: src/screens/Admin.svelte
+msgid "revoke invite"
+msgstr "revoke invite"
