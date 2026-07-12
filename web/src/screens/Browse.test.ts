@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/svelte';
+import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 import { loadLocale } from 'wuchale/load-utils';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import '../locales/main.loader.svelte.js';
@@ -54,8 +54,9 @@ test('rows render verified with sizes; search goes through the server q', async 
 
   const input = screen.getByPlaceholderText('find a game…');
   await fireEvent.input(input, { target: { value: 'beta' } });
-  expect(await screen.findByText('Games/Beta (Japan).gba')).toBeTruthy();
-  expect(screen.queryByText('Games/Alpha (USA).gba')).toBeNull();
+  // The recompose trails the keystroke (debounced): wait for it to land.
+  await waitFor(() => expect(screen.queryByText('Games/Alpha (USA).gba')).toBeNull());
+  expect(screen.getByText('Games/Beta (Japan).gba')).toBeTruthy();
 
   await fireEvent.input(input, { target: { value: 'zelda' } });
   expect(await screen.findByText('nothing matches “zelda”')).toBeTruthy();

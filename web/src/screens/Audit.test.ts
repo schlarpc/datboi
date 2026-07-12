@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import '../locales/main.loader.svelte.js';
 import type { EntryDetail, EntryRow, System } from '../lib/api/types';
 import { prefs } from '../lib/prefs.svelte';
-import { installFetch, type MockUniverse } from '../test/mock-api';
+import { calledPath, installFetch, type MockUniverse } from '../test/mock-api';
 import Audit from './Audit.svelte';
 
 await loadLocale('en');
@@ -102,6 +102,31 @@ test('filter and search compose (both applied together, spec §5.1)', async () =
   await fireEvent.click(screen.getByText('◐ Claimed'));
   expect(await screen.findByText('Alpha II (USA)')).toBeTruthy();
   expect(screen.queryByText('Alpha (USA)')).toBeNull();
+});
+
+test('a typing burst issues one query per pause — not one per keystroke', async () => {
+  vi.useFakeTimers();
+  const handler = installFetch(universe);
+  const entriesCalls = () =>
+    handler.mock.calls.filter(([input]) => calledPath(input).endsWith('/entries')).length;
+
+  render(Audit, { systemId: '3' });
+  await vi.advanceTimersByTimeAsync(0);
+  const before = entriesCalls();
+
+  // Five keystrokes, each inside the trailing window of the last.
+  const input = screen.getByPlaceholderText('filter names…');
+  for (const value of ['a', 'al', 'alp', 'alph', 'alpha']) {
+    await fireEvent.input(input, { target: { value } });
+    await vi.advanceTimersByTimeAsync(100);
+  }
+  expect(entriesCalls()).toBe(before); // nothing fired mid-burst
+
+  await vi.advanceTimersByTimeAsync(200); // the pause
+  expect(entriesCalls()).toBe(before + 1); // exactly one recompose
+  expect(screen.getByText('Alpha (USA)')).toBeTruthy();
+
+  vi.useRealTimers();
 });
 
 test('row click opens the drawer; Escape, ✕, and re-click close it', async () => {

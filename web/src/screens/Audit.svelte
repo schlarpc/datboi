@@ -21,6 +21,7 @@
   import StackedBar from '../lib/components/StackedBar.svelte';
   import { fmtSize } from '../lib/format';
   import { prefs } from '../lib/prefs.svelte';
+  import { debounced } from '../lib/debounced.svelte';
   import { errorText, failed, loading, ready, settle, type Remote } from '../lib/remote';
   import { completenessPct, ENTRY_STATES, type EntryState } from '../lib/state';
 
@@ -40,6 +41,9 @@
   let moreError = $state<string | null>(null);
   let filter = $state<'all' | EntryState>('all');
   let q = $state('');
+  /** The fetch effects read this trailing view of `q` — a typing burst
+   * issues one server query per pause, not one per keystroke. */
+  const dq = debounced(() => q);
   let selected = $state<string | null>(null);
   let detail = $state<EntryDetail | null>(null);
   let exporting = $state(false);
@@ -60,7 +64,7 @@
   let generation = 0;
   $effect(() => {
     const params = {
-      q: q || undefined,
+      q: dq() || undefined,
       state: filter === 'all' ? undefined : filter,
     };
     const gen = ++generation;
@@ -81,7 +85,7 @@
     const gen = generation;
     moreError = null;
     systemEntries(systemId, {
-      q: q || undefined,
+      q: dq() || undefined,
       state: filter === 'all' ? undefined : filter,
       offset: prior.rows.length,
       limit: PAGE,

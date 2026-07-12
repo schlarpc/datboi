@@ -20,6 +20,7 @@
   import { viewDetail, viewFiles, viewFileUrl, viewImageUrl } from '../lib/api/client';
   import type { ViewDetail, ViewFileRow } from '../lib/api/types';
   import { fmtAge, fmtSize, parseRegion, shortHash, snapShort } from '../lib/format';
+  import { debounced } from '../lib/debounced.svelte';
   import { errorText, loading, ready, settle, type Remote } from '../lib/remote';
 
   let { view }: { view: string } = $props();
@@ -37,6 +38,9 @@
   /** A failed "load more" keeps the rows it has; this line says why. */
   let moreError = $state<string | null>(null);
   let q = $state('');
+  /** The fetch effects read this trailing view of `q` — a typing burst
+   * issues one server query per pause, not one per keystroke. */
+  const dq = debounced(() => q);
   let selected = $state<ViewFileRow | null>(null);
   let modal = $state(false);
   /** Paths whose quick-download pill is flashing `✓` (§5.12, ~1.4s). */
@@ -51,7 +55,7 @@
   // overwrite a newer one.
   let generation = 0;
   $effect(() => {
-    const params = { q: q || undefined };
+    const params = { q: dq() || undefined };
     const gen = ++generation;
     moreError = null;
     settle(
@@ -70,7 +74,7 @@
     const gen = generation;
     moreError = null;
     viewFiles(view, {
-      q: q || undefined,
+      q: dq() || undefined,
       offset: prior.rows.length,
       limit: PAGE,
     }).then(
