@@ -225,6 +225,30 @@ body {
   }
 }
 
+/* ---- touch targets (WCAG 2.5.8): every control accepts a 24px press ---- */
+/* The visual design stays dense; the ::after overlay grows each
+ * control's CLICKABLE area to at least 24x24, centered. The overlay is
+ * part of the control (pseudo-elements hit-test to their owner), so no
+ * markup changes and no visual change — just a forgiving press. Only
+ * grows: controls already >=24px in a dimension are untouched there. */
+button,
+[role='button'],
+a[download] {
+  position: relative;
+}
+
+button::after,
+[role='button']::after,
+a[download]::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  width: max(100%, 24px);
+  height: max(100%, 24px);
+}
+
 /* ---- focus (WCAG 2.4.7): keyboard focus is always visible ---- */
 /* !important on purpose: components reset buttons with `all: unset`, which
  * eats the UA focus ring — and did, app-wide, until this rule. Making the
