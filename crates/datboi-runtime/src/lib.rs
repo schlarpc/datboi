@@ -115,6 +115,18 @@ pub enum RuntimeError {
     Trap(#[source] wasmtime::Error),
     #[error("transform returned an error: {0}")]
     Transform(String),
+    /// A sequential input's reader ended before its declared length —
+    /// the length CLAIM (an op-child's output claim, in the executor)
+    /// is disproven, not the recipe being run. Carries attribution so
+    /// the executor can refuse without poisoning the parent.
+    #[error(
+        "sequential input {input_ix} ended at {actual} bytes; its declared length is {claimed}"
+    )]
+    InputLengthMismatch {
+        input_ix: u32,
+        claimed: u64,
+        actual: u64,
+    },
 }
 
 impl RuntimeError {

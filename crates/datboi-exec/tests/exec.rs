@@ -952,6 +952,109 @@ fn extractor_guest_failure_poisons_the_recipe() {
     );
 }
 
+/// A child recipe lying about its output LENGTH must not poison the
+/// parent: the truncated sequential input surfaces as the typed
+/// mismatch naming the input, never as the parent's hash-mismatch
+/// poison.
+#[test]
+fn child_length_lie_does_not_poison_the_parent() {
+    let mut w = world();
+    let real = pattern(1000);
+    let (real_hash, real_id) = w.put_literal(&real);
+    let (component_hash, _) = w.put_literal(COMPONENT);
+
+    // Child: an assemble slicing the full 1000 bytes, CLAIMING 2000.
+    let fake = Blake3::compute(b"claims 2000, produces 1000");
+    let fake_id =
+        w.db.upsert_blob(&fake, Some(2000), IndexNs::Data, Residency::Absent)
+            .expect("row");
+    let child = Recipe {
+        op: Op::Builtin {
+            name: "assemble".into(),
+            major: 1,
+        },
+        inputs: vec![InputRef {
+            hash: real_hash,
+            role: None,
+        }],
+        outputs: vec![OutputRef {
+            hash: fake,
+            size: 2000,
+            name: None,
+        }],
+        params: AssembleParams {
+            segments: vec![Segment::BlobRange {
+                input_ix: 0,
+                offset: 0,
+                len: 1000,
+            }],
+        }
+        .encode()
+        .expect("params"),
+    };
+    w.mint_recipe(
+        &child,
+        "assemble@1",
+        OpKind::Builtin,
+        SeekClass::Affine,
+        &[(0, real_id)],
+        &[(0, fake_id, 2000)],
+    );
+
+    // Parent: byteswap over the child's claimed output.
+    let out = Blake3::compute(b"parent output, never produced");
+    let out_id =
+        w.db.upsert_blob(&out, Some(2000), IndexNs::Data, Residency::Absent)
+            .expect("row");
+    let parent = Recipe {
+        op: Op::Wasm {
+            component: component_hash,
+            world: WasmWorld::Transform2,
+            export: "byteswap".into(),
+        },
+        inputs: vec![InputRef {
+            hash: fake,
+            role: None,
+        }],
+        outputs: vec![OutputRef {
+            hash: out,
+            size: 2000,
+            name: None,
+        }],
+        params: Vec::new(),
+    };
+    let parent_id = w.mint_recipe(
+        &parent,
+        "wasm:byteswap",
+        OpKind::Wasm,
+        SeekClass::Affine,
+        &[(0, fake_id)],
+        &[(0, out_id, 2000)],
+    );
+
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+    let err = exec
+        .replay(&w.db, parent_id)
+        .expect_err("truncated input must surface");
+    match &err {
+        ExecError::Runtime(datboi_runtime::RuntimeError::InputLengthMismatch {
+            input_ix,
+            claimed,
+            actual,
+        }) => assert_eq!((*input_ix, *claimed, *actual), (0, 2000, 1000)),
+        other => panic!("expected InputLengthMismatch, got {other}"),
+    }
+    assert!(
+        !err.is_claim_failure(),
+        "the parent's claim was never tested"
+    );
+    assert_ne!(
+        w.db.recipe_by_id(parent_id).expect("row").verify,
+        VerifyState::Failed,
+        "the child's lie must not poison the parent"
+    );
+}
+
 #[test]
 fn no_route_is_a_clean_error() {
     let w = world();

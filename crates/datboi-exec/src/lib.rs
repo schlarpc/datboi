@@ -101,6 +101,10 @@ impl ExecError {
             // regression, a component/world mismatch), not disproof of
             // the data claim — retryable by construction.
             Self::Runtime(RuntimeError::Instantiate(_)) => false,
+            // A sequential input ending short of its declared length
+            // indicts the CHILD claim that fed it, never the recipe
+            // under replay.
+            Self::Runtime(RuntimeError::InputLengthMismatch { .. }) => false,
             _ => false,
         }
     }
@@ -1485,5 +1489,11 @@ mod tests {
             "linker regression",
         )));
         assert!(!wiring.is_claim_failure());
+        let child_lie = ExecError::Runtime(RuntimeError::InputLengthMismatch {
+            input_ix: 0,
+            claimed: 2000,
+            actual: 1000,
+        });
+        assert!(!child_lie.is_claim_failure());
     }
 }

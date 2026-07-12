@@ -14,6 +14,8 @@
 //!   allocations without breaking the exact-read contract with a clamp.
 
 use std::io::{Read, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use wasmtime::component::{Component, HasSelf, Linker, Resource, ResourceTable};
 use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
@@ -127,7 +129,18 @@ pub enum StreamInput {
 pub struct SourceEntry {
     reader: Box<dyn Read + Send>,
     len: u64,
-    consumed: u64,
+    progress: Arc<SourceProgress>,
+}
+
+/// Host-side ledger for one sequential input, shared with the run call:
+/// truncation evidence must survive the guest dropping its handle
+/// (which deletes the [`SourceEntry`] from the table).
+#[derive(Default)]
+struct SourceProgress {
+    consumed: AtomicU64,
+    /// The reader hit EOF before `len` — the declared length is
+    /// disproven, whatever the guest goes on to do with the short view.
+    ended_early: AtomicBool,
 }
 
 pub struct FileEntry {
@@ -153,20 +166,29 @@ impl types::HostSource for HostState {
         let entry = self.table.get_mut(&this)?;
         // EXACT contract: loop until n bytes or true end-of-stream; a
         // short read from the underlying reader is not guest-visible.
-        let want = usize::try_from(u64::from(n).min(entry.len - entry.consumed))
-            .expect("bounded by MAX_READ");
+        let consumed = entry.progress.consumed.load(Ordering::Relaxed);
+        let want =
+            usize::try_from(u64::from(n).min(entry.len - consumed)).expect("bounded by MAX_READ");
         let mut buf = vec![0u8; want];
         let mut filled = 0;
         while filled < want {
             match entry.reader.read(&mut buf[filled..]) {
-                Ok(0) => break, // reader ended before its declared len
+                // Reader ended before its declared len: record the
+                // disproof for the post-run length check.
+                Ok(0) => {
+                    entry.progress.ended_early.store(true, Ordering::Relaxed);
+                    break;
+                }
                 Ok(k) => filled += k,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(e) => return Err(e.into()),
             }
         }
         buf.truncate(filled);
-        entry.consumed += filled as u64;
+        entry
+            .progress
+            .consumed
+            .store(consumed + filled as u64, Ordering::Relaxed);
         Ok(buf)
     }
 
@@ -349,7 +371,10 @@ impl StreamHost {
     /// [`RuntimeError::Component`] for an invalid binary,
     /// [`RuntimeError::Instantiate`] for link/world wiring failures,
     /// [`RuntimeError::Trap`] for traps / exhausted budgets,
-    /// [`RuntimeError::Transform`] for guest-reported errors.
+    /// [`RuntimeError::Transform`] for guest-reported errors,
+    /// [`RuntimeError::InputLengthMismatch`] when a sequential input
+    /// ends short of its declared length (outranks the guest verdict —
+    /// the guest computed on a truncated view).
     pub fn run(
         &self,
         transform: &StreamTransform,
@@ -381,19 +406,28 @@ impl StreamHost {
         let transform = self.instantiate(&mut store, transform)?;
 
         let mut input_handles = Vec::with_capacity(inputs.len());
-        for input in inputs {
+        let mut ledgers: Vec<(u32, u64, Arc<SourceProgress>)> = Vec::new();
+        for (ix, input) in inputs.into_iter().enumerate() {
             let handle = match input {
-                StreamInput::Sequential(s) => types::Input::Sequential(
-                    store
-                        .data_mut()
-                        .table
-                        .push(SourceEntry {
-                            reader: s.reader,
-                            len: s.len,
-                            consumed: 0,
-                        })
-                        .map_err(|e| RuntimeError::Component(e.into()))?,
-                ),
+                StreamInput::Sequential(s) => {
+                    let progress = Arc::new(SourceProgress::default());
+                    ledgers.push((
+                        u32::try_from(ix).expect("input count fits u32"),
+                        s.len,
+                        Arc::clone(&progress),
+                    ));
+                    types::Input::Sequential(
+                        store
+                            .data_mut()
+                            .table
+                            .push(SourceEntry {
+                                reader: s.reader,
+                                len: s.len,
+                                progress,
+                            })
+                            .map_err(|e| RuntimeError::Component(e.into()))?,
+                    )
+                }
                 StreamInput::RandomAccess(inner) => types::Input::RandomAccess(
                     store
                         .data_mut()
@@ -415,8 +449,22 @@ impl StreamHost {
             );
         }
 
-        transform
-            .call_run(&mut store, op, params, &input_handles, &sink_handles)
+        let outcome = transform.call_run(&mut store, op, params, &input_handles, &sink_handles);
+        // A sequential input that ended before its declared length
+        // truncated the guest's view: whatever the guest then did —
+        // trap, error, or wrong output bytes — the disproven claim is
+        // the length's, so it outranks the guest verdict. The executor
+        // uses the attribution to refuse without poisoning the parent.
+        for (input_ix, claimed, progress) in &ledgers {
+            if progress.ended_early.load(Ordering::Relaxed) {
+                return Err(RuntimeError::InputLengthMismatch {
+                    input_ix: *input_ix,
+                    claimed: *claimed,
+                    actual: progress.consumed.load(Ordering::Relaxed),
+                });
+            }
+        }
+        outcome
             .map_err(RuntimeError::Trap)?
             .map_err(RuntimeError::Transform)
     }

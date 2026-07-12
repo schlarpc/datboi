@@ -394,3 +394,32 @@ fn world_mismatch_is_an_instantiate_error_not_a_trap() {
     let err = host.describe(&v1, "byteswap").expect_err("wrong world");
     assert!(matches!(err, RuntimeError::Instantiate(_)), "got {err:?}");
 }
+
+/// A sequential reader that ends short of its DECLARED length disproves
+/// the length claim, not the guest: the typed mismatch (with input
+/// attribution) must outrank whatever the guest made of the truncated
+/// view — never a clean short stream, never a bare guest verdict.
+#[test]
+fn short_sequential_input_reports_length_mismatch() {
+    let (host, transform) = shared();
+    let err = host
+        .run(
+            transform,
+            "byteswap",
+            &[],
+            vec![StreamInput::Sequential(SequentialInput {
+                reader: Box::new(Cursor::new(pattern(500))),
+                len: 1000,
+            })],
+            vec![Box::new(Collector::default())],
+        )
+        .expect_err("truncated input must surface");
+    match err {
+        RuntimeError::InputLengthMismatch {
+            input_ix,
+            claimed,
+            actual,
+        } => assert_eq!((input_ix, claimed, actual), (0, 1000, 500)),
+        other => panic!("expected InputLengthMismatch, got {other:?}"),
+    }
+}
