@@ -12,24 +12,31 @@
   import type { BlobDetail, RouteEdge } from '../lib/api/types';
   import Link from '../lib/components/Link.svelte';
   import { fmtDate, fmtSize, shortHash } from '../lib/format';
+  import { loading, settle, type Remote } from '../lib/remote';
 
   let { hash }: { hash: string } = $props();
 
-  let detail = $state<BlobDetail | null>(null);
-  let error = $state<string | null>(null);
+  let detail = $state<Remote<BlobDetail>>(loading());
   let copied = $state(false);
 
+  // The recipe DAG links land here with a NEW hash on the same mounted
+  // screen: reset to loading and generation-guard both arms so a slow
+  // answer for the old hash can't land on the new one.
+  let generation = 0;
   $effect(() => {
-    blobDetail(hash).then(
-      (body) => (detail = body),
-      (e: unknown) => (error = e instanceof Error ? e.message : String(e)),
+    const gen = ++generation;
+    detail = loading();
+    settle(
+      blobDetail(hash),
+      (value) => (detail = value),
+      () => gen === generation,
     );
   });
 
   /** The Views.svelte copy affordance, single target: the full hash. */
   async function copyHash() {
-    if (detail === null) return;
-    await navigator.clipboard.writeText(detail.hash);
+    if (detail.st !== 'ready') return;
+    await navigator.clipboard.writeText(detail.data.hash);
     copied = true;
     setTimeout(() => (copied = false), 1400);
   }
@@ -42,15 +49,15 @@
   /** Declared digest rows, in strength order (absent algos omitted —
    * the wire shape). */
   const digestRows = $derived(
-    detail === null
+    detail.st !== 'ready'
       ? []
       : (
           [
-            ['blake3', detail.digests.blake3],
-            ['sha256', detail.digests.sha256],
-            ['sha1', detail.digests.sha1],
-            ['md5', detail.digests.md5],
-            ['crc32', detail.digests.crc32],
+            ['blake3', detail.data.digests.blake3],
+            ['sha256', detail.data.digests.sha256],
+            ['sha1', detail.data.digests.sha1],
+            ['md5', detail.data.digests.md5],
+            ['crc32', detail.data.digests.crc32],
           ] as [string, string | null | undefined][]
         ).filter((row): row is [string, string] => typeof row[1] === 'string'),
   );
@@ -94,24 +101,25 @@
     <Link class="back" href="/storage">← storage</Link>
   </div>
 
-  {#if error !== null}
+  {#if detail.st === 'error'}
     <!-- Undesigned loading/error states: plain mono in --faint. -->
-    <p class="undesigned">something went wrong — {error}</p>
-  {:else if detail === null}
+    <p class="undesigned">something went wrong — {detail.msg}</p>
+  {:else if detail.st === 'loading'}
     <p class="undesigned">loading…</p>
   {:else}
+    {@const d = detail.data}
     <div class="head">
-      <h2 class="hash">{detail.hash}</h2>
+      <h2 class="hash">{d.hash}</h2>
       <button class="pill" onclick={copyHash}>
         {#if copied}copied ✓{:else}⎘ copy{/if}
       </button>
     </div>
     <div class="badges">
-      <span class="badge">{detail.namespace}</span>
-      <span class="badge">{residencyLabel(detail.residency)}</span>
-      <span class="badge">{detail.size === null ? '—' : fmtSize(detail.size)}</span>
-      {#if detail.verified_at !== null}
-        <span class="badge ok">verified {fmtDate(detail.verified_at)}</span>
+      <span class="badge">{d.namespace}</span>
+      <span class="badge">{residencyLabel(d.residency)}</span>
+      <span class="badge">{d.size === null ? '—' : fmtSize(d.size)}</span>
+      {#if d.verified_at !== null}
+        <span class="badge ok">verified {fmtDate(d.verified_at)}</span>
       {:else}
         <span class="badge dim">never verified</span>
       {/if}
@@ -130,10 +138,10 @@
 
       <section class="card">
         <div class="card-title">provenance</div>
-        {#if detail.provenance.length === 0}
+        {#if d.provenance.length === 0}
           <p class="none">no recorded source paths</p>
         {:else}
-          {#each detail.provenance as row (row.path)}
+          {#each d.provenance as row (row.path)}
             <div class="prov-row">
               <span class="prov-path">{row.path}</span>
               <span class="prov-when">
@@ -146,36 +154,36 @@
 
       <section class="card">
         <div class="card-title">routes in — ways to make it</div>
-        {#if detail.routes_in.length === 0}
+        {#if d.routes_in.length === 0}
           <p class="none">no recipe produces this blob — a literal</p>
         {:else}
-          {@render edgeList(detail.routes_in)}
+          {@render edgeList(d.routes_in)}
         {/if}
       </section>
 
       <section class="card">
         <div class="card-title">routes out — things made from it</div>
-        {#if detail.routes_out.length === 0}
+        {#if d.routes_out.length === 0}
           <p class="none">no recipe consumes this blob</p>
         {:else}
-          {@render edgeList(detail.routes_out)}
+          {@render edgeList(d.routes_out)}
         {/if}
       </section>
 
       <section class="card">
-        <div class="card-title">claims · {detail.claims_total.toLocaleString()}</div>
-        {#if detail.claims.length === 0}
+        <div class="card-title">claims · {d.claims_total.toLocaleString()}</div>
+        {#if d.claims.length === 0}
           <p class="none">satisfies no dat claims</p>
         {:else}
-          {#each detail.claims as claim (claim.source + claim.entry)}
+          {#each d.claims as claim (claim.source + claim.entry)}
             <div class="claim-row">
               <span class="claim-entry">{claim.entry}</span>
               <span class="claim-source">{claim.source}</span>
             </div>
           {/each}
-          {#if detail.claims_total > detail.claims.length}
+          {#if d.claims_total > d.claims.length}
             <p class="none">
-              …and {(detail.claims_total - detail.claims.length).toLocaleString()} more
+              …and {(d.claims_total - d.claims.length).toLocaleString()} more
             </p>
           {/if}
         {/if}
@@ -183,11 +191,11 @@
 
       <section class="card">
         <div class="card-title">pinned by</div>
-        {#if detail.pins.length === 0}
+        {#if d.pins.length === 0}
           <p class="none">no view pins this blob</p>
         {:else}
           <div class="chips">
-            {#each detail.pins as pin (pin)}
+            {#each d.pins as pin (pin)}
               <span class="chip">{pin}</span>
             {/each}
           </div>

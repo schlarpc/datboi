@@ -163,6 +163,37 @@ test('⬇ missing-list generates the plaintext export client-side (§5.5)', asyn
   expect(click).toHaveBeenCalledOnce();
 });
 
+test('a failed entries fetch errors only the rows — the filter rail stays usable', async () => {
+  installFetch({ ...universe, entriesFailFromOffset: 0 });
+  render(Audit, { systemId: '3' });
+
+  // The rows area carries the failure…
+  expect(await screen.findByText(/induced entries failure/)).toBeTruthy();
+  // …while the header and the recovery controls (rail + search) stand.
+  expect(screen.getByText('33%')).toBeTruthy();
+  expect(screen.getByText('● Verified')).toBeTruthy();
+  expect(screen.getByPlaceholderText('filter names…')).toBeTruthy();
+});
+
+test('a failed load-more keeps the rows it has and says why', async () => {
+  // 520 entries: the 500-row first page renders, the append page 500s.
+  const big: EntryRow[] = Array.from({ length: 520 }, (_, i) => ({
+    name: `Entry ${String(i).padStart(3, '0')}`,
+    state: 'verified',
+    size: MB,
+    wanted_hash: ALPHA_HASH,
+    wanted_hash_algo: 'sha1',
+  }));
+  installFetch({ systems: [system], entries: big, entriesFailFromOffset: 500 });
+  render(Audit, { systemId: '3' });
+
+  await fireEvent.click(await screen.findByText(/load more \(500/));
+  expect(await screen.findByText(/couldn't load more — induced entries failure/)).toBeTruthy();
+  // The first page survives the failed append; the button stays.
+  expect(screen.getByText('Entry 000')).toBeTruthy();
+  expect(screen.getByText(/load more \(500/)).toBeTruthy();
+});
+
 test('density toggle switches row padding and persists', async () => {
   render(Audit, { systemId: '3' });
   await screen.findByText('Alpha (USA)');

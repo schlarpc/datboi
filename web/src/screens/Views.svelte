@@ -27,19 +27,17 @@
   import { bandFor } from '../lib/bands';
   import CliHint from '../lib/components/CliHint.svelte';
   import { fmtAge, fmtSize, shortHash, snapShort } from '../lib/format';
+  import { loading, settle, type Remote } from '../lib/remote';
 
-  let views = $state<ViewDetail[] | null>(null);
-  let error = $state<string | null>(null);
+  let views = $state<Remote<ViewDetail[]>>(loading());
 
   $effect(() => {
     // The list body lacks endpoints + image (detail-only fields); view
     // counts are shelf-scale, so N detail fetches stay cheap.
-    fetchViews()
-      .then((body) => Promise.all(body.views.map((view) => viewDetail(view.name))))
-      .then(
-        (details) => (views = details),
-        (e: unknown) => (error = e instanceof Error ? e.message : String(e)),
-      );
+    settle(
+      fetchViews().then((body) => Promise.all(body.views.map((view) => viewDetail(view.name)))),
+      (value) => (views = value),
+    );
   });
 
   /** One fold open per card: which CLI-hint/definition panel shows. */
@@ -95,16 +93,16 @@
     </div>
   {/if}
 
-  {#if error !== null}
+  {#if views.st === 'error'}
     <!-- Undesigned loading/error states: plain mono in --faint. -->
-    <p class="undesigned">something went wrong — {error}</p>
-  {:else if views === null}
+    <p class="undesigned">something went wrong — {views.msg}</p>
+  {:else if views.st === 'loading'}
     <p class="undesigned">loading…</p>
-  {:else if views.length === 0}
+  {:else if views.data.length === 0}
     <p class="undesigned">no views yet — define one and it lands here</p>
   {:else}
     <div class="grid">
-      {#each views as view (view.name)}
+      {#each views.data as view (view.name)}
         {@const def = view.definition}
         {@const hasImage = def?.image != null}
         {@const httpUrl = location.origin + view.endpoints.http}

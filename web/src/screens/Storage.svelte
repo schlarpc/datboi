@@ -25,23 +25,24 @@
   import CliHint from '../lib/components/CliHint.svelte';
   import Link from '../lib/components/Link.svelte';
   import { fmtDate, fmtSize, shortHash } from '../lib/format';
+  import { errorText, loading, settle, type Remote } from '../lib/remote';
 
-  let stats = $state<StorageBody | null>(null);
-  let breakdown = $state<StorageBreakdownBody | null>(null);
-  let orphans = $state<OrphansBody | null>(null);
-  let error = $state<string | null>(null);
+  // Three independent resources, three Remotes: a failed orphan refresh
+  // (say, after a keep toggle) must never blank fully-rendered stats.
+  let stats = $state<Remote<StorageBody>>(loading());
+  let breakdown = $state<Remote<StorageBreakdownBody>>(loading());
+  let orphans = $state<Remote<OrphansBody>>(loading());
   let scrubHint = $state(false);
   let evictHint = $state(false);
   /** Two-click delete: first click arms, second applies (D73's human
    * gate deserves more than one tap, less than a modal). */
   let applyArmed = $state(false);
   let applying = $state(false);
+  /** A failed apply keeps the reviewed list; this line says why. */
+  let applyError = $state<string | null>(null);
 
   const refreshOrphans = () => {
-    gcOrphans().then(
-      (body) => (orphans = body),
-      (e: unknown) => (error = e instanceof Error ? e.message : String(e)),
-    );
+    settle(gcOrphans(), (value) => (orphans = value));
   };
 
   const toggleKeep = (hash: string, keep: boolean) => {
@@ -54,6 +55,7 @@
       return;
     }
     applying = true;
+    applyError = null;
     gcApply().then(
       () => {
         applying = false;
@@ -63,41 +65,37 @@
       (e: unknown) => {
         applying = false;
         applyArmed = false;
-        error = e instanceof Error ? e.message : String(e);
+        applyError = errorText(e);
       },
     );
   };
 
   $effect(() => {
-    fetchStorage().then(
-      (body) => (stats = body),
-      (e: unknown) => (error = e instanceof Error ? e.message : String(e)),
-    );
+    settle(fetchStorage(), (value) => (stats = value));
   });
 
   $effect(() => {
-    storageBreakdown().then(
-      (body) => (breakdown = body),
-      (e: unknown) => (error = e instanceof Error ? e.message : String(e)),
-    );
+    settle(storageBreakdown(), (value) => (breakdown = value));
   });
 
   $effect(refreshOrphans);
 
-  const reviewable = $derived(orphans === null ? [] : orphans.orphans);
+  const reviewable = $derived(orphans.st !== 'ready' ? [] : orphans.data.orphans);
 
   /** `−68% via recipes`: how much smaller disk is than what it represents. */
   const savingsPct = $derived(
-    stats === null || stats.represented_bytes === 0
+    stats.st !== 'ready' || stats.data.represented_bytes === 0
       ? null
-      : Math.round(100 * (1 - stats.on_disk_bytes / stats.represented_bytes)),
+      : Math.round(100 * (1 - stats.data.on_disk_bytes / stats.data.represented_bytes)),
   );
 
   /** Class bars are proportional to the LARGEST cell, not the sum —
    * meta/ is invisible next to data/ either way; against the max the
    * big cell reads full-scale. */
   const maxClassBytes = $derived(
-    breakdown === null ? 1 : Math.max(1, ...breakdown.by_class.map((cell) => cell.bytes)),
+    breakdown.st !== 'ready'
+      ? 1
+      : Math.max(1, ...breakdown.data.by_class.map((cell) => cell.bytes)),
   );
 
   /** `evicted_covered` → `evicted covered` — residency is data (mono),
@@ -111,31 +109,32 @@
     <span class="sub">what the store holds vs what it represents</span>
   </div>
 
-  {#if error !== null}
+  {#if stats.st === 'error'}
     <!-- Undesigned loading/error states: plain mono in --faint. -->
-    <p class="undesigned">something went wrong — {error}</p>
-  {:else if stats === null}
+    <p class="undesigned">something went wrong — {stats.msg}</p>
+  {:else if stats.st === 'loading'}
     <p class="undesigned">loading…</p>
   {:else}
+    {@const s = stats.data}
     <div class="tiles">
       <div class="tile">
         <span class="label">BLOBS</span>
-        <span class="num">{stats.blob_count.toLocaleString()}</span>
+        <span class="num">{s.blob_count.toLocaleString()}</span>
       </div>
       <div class="tile">
         <span class="label">ON DISK</span>
-        <span class="num">{fmtSize(stats.on_disk_bytes)}</span>
+        <span class="num">{fmtSize(s.on_disk_bytes)}</span>
       </div>
       <div class="tile brag">
         <span class="label">REPRESENTED</span>
-        <span class="num">{fmtSize(stats.represented_bytes)}</span>
+        <span class="num">{fmtSize(s.represented_bytes)}</span>
         {#if savingsPct !== null && savingsPct > 0}
           <span class="tile-sub ok">−{savingsPct}% via recipes</span>
         {/if}
       </div>
       <div class="tile dashed">
         <span class="label">LITERAL-ONLY</span>
-        <span class="num">{fmtSize(stats.literal_only_bytes)}</span>
+        <span class="num">{fmtSize(s.literal_only_bytes)}</span>
         <span class="tile-sub">shrinkable</span>
       </div>
     </div>
@@ -143,8 +142,8 @@
     <div class="cards">
       <div class="action-card">
         <div class="card-title">Scrub</div>
-        {#if stats.last_scrub !== null}
-          <p class="copy">last: {fmtDate(stats.last_scrub.finished_at)} · {stats.last_scrub.name}</p>
+        {#if s.last_scrub !== null}
+          <p class="copy">last: {fmtDate(s.last_scrub.finished_at)} · {s.last_scrub.name}</p>
         {:else}
           <p class="copy">no scrub recorded yet — runs land in the job ledger</p>
         {/if}
@@ -156,19 +155,19 @@
         {/if}
       </div>
 
-      <div class="action-card" class:danger={stats.quarantine.count > 0}>
+      <div class="action-card" class:danger={s.quarantine.count > 0}>
         <div class="card-title">
           <!-- @wc-context: bad components, not people -->
-          Quarantine · {stats.quarantine.count.toLocaleString()}
+          Quarantine · {s.quarantine.count.toLocaleString()}
         </div>
-        {#if stats.quarantine.count === 0}
+        {#if s.quarantine.count === 0}
           <p class="copy">nothing quarantined</p>
         {:else}
           <!-- The `review →` flow was never designed; this inline list
                IS the M5 review (open-questions § "Quarantine review
                screen"; M5 scope ruling, open-questions 2026-07-11). -->
           <div class="q-items">
-            {#each stats.quarantine.items as item (item.component)}
+            {#each s.quarantine.items as item (item.component)}
               <div class="q-item">
                 <span class="q-hash">{shortHash(item.component)}</span>
                 <span class="q-reason">{item.reason}</span>
@@ -198,8 +197,11 @@
           <!-- @wc-context: unreferenced blobs, not people -->
           Orphans · {reviewable.length.toLocaleString()}
         </div>
-        {#if orphans === null}
+        {#if orphans.st === 'loading'}
           <p class="copy">loading…</p>
+        {:else if orphans.st === 'error'}
+          <!-- Card-local failure: stats and breakdown stay rendered. -->
+          <p class="copy">something went wrong — {orphans.msg}</p>
         {:else if reviewable.length === 0}
           <p class="copy">nothing unreferenced — every blob is rooted or still under grace</p>
         {:else}
@@ -221,12 +223,15 @@
             {/each}
           </div>
           <p class="copy">
-            {fmtSize(orphans.reclaimable_bytes)} reclaimable · every delete re-verifies
+            {fmtSize(orphans.data.reclaimable_bytes)} reclaimable · every delete re-verifies
             unreferenced at delete time
           </p>
           <button class="pill" class:bad-pill={applyArmed} disabled={applying} onclick={applyAll}>
             {#if applying}deleting…{:else if applyArmed}confirm: delete non-kept{:else}delete non-kept…{/if}
           </button>
+          {#if applyError !== null}
+            <p class="copy apply-error">delete failed — {applyError}</p>
+          {/if}
         {/if}
       </div>
     </div>
@@ -234,12 +239,16 @@
     <!-- Debug-grade introspection (open-questions 2026-07-11): the
          /v1/storage/breakdown aggregates, with the largest blobs
          linking into the /storage/blob/{hash} inspector. -->
-    {#if breakdown !== null}
+    {#if breakdown.st === 'error'}
+      <!-- Breakdown-only failure: the tiles and cards above stand. -->
+      <p class="undesigned">something went wrong — {breakdown.msg}</p>
+    {:else if breakdown.st === 'ready'}
+      {@const b = breakdown.data}
       <div class="bytes-card">
         <div class="bytes-title">WHERE THE BYTES LIVE</div>
 
         <div class="classes">
-          {#each breakdown.by_class as cell (cell.namespace + cell.residency)}
+          {#each b.by_class as cell (cell.namespace + cell.residency)}
             <div class="class-row">
               <span class="class-label">{cell.namespace} · {residencyLabel(cell.residency)}</span>
               <span class="track">
@@ -264,7 +273,7 @@
               <span class="th">source</span>
               <span class="th num">blobs</span>
               <span class="th num">bytes</span>
-              {#each breakdown.by_source as row (row.source)}
+              {#each b.by_source as row (row.source)}
                 <span class="td data">{row.source}</span>
                 <span class="td num">{row.blobs.toLocaleString()}</span>
                 <span class="td num">{fmtSize(row.bytes)}</span>
@@ -277,7 +286,7 @@
               <span class="th">hash</span>
               <span class="th num">size</span>
               <span class="th">residency</span>
-              {#each breakdown.largest as blob (blob.hash)}
+              {#each b.largest as blob (blob.hash)}
                 <Link class="td data blob-link" href={`/storage/blob/${blob.hash}`}>
                   {shortHash(blob.hash)}
                 </Link>
@@ -425,6 +434,11 @@
   .pill:disabled {
     cursor: default;
     color: var(--faint);
+  }
+
+  .apply-error {
+    margin: 10px 0 0;
+    color: var(--bad);
   }
 
   .q-items {

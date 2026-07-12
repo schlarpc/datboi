@@ -198,6 +198,18 @@ test('orphan review card lists candidates with provenance and arms the delete', 
 });
 
 
+test('a failed orphans fetch errors ONLY its card — stats and breakdown stand', async () => {
+  installFetch({ storage: stats, breakdown, orphansFail: true });
+  render(Storage);
+
+  // The orphans card carries the failure…
+  expect(await screen.findByText(/induced orphans failure/)).toBeTruthy();
+  // …while the tiles and breakdown render untouched.
+  expect(screen.getByText('BLOBS')).toBeTruthy();
+  expect(screen.getByText('48,212')).toBeTruthy();
+  expect(screen.getByText('WHERE THE BYTES LIVE')).toBeTruthy();
+});
+
 test('scrub card reads the D74 run ledger when a row exists', async () => {
   installFetch({
     storage: {

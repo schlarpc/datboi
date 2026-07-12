@@ -74,29 +74,37 @@ msgstr "Admin"
 #~ msgid "not yet built — this screen lands in the next task"
 #~ msgstr "not yet built — this screen lands in the next task"
 
-#. 0: system.provider; 1: system.system; 2: system.revision?.version ?? ''
+#. 0: sys.provider; 1: sys.system; 2: sys.revision?.version ?? ''
 #: src/screens/Audit.svelte
 msgid "# datboi missing-list · {0} {1} {2}"
 msgstr "# datboi missing-list · {0} {1} {2}"
 
 #. 0: error
-#. 0: error
-#. 0: error
-#. 0: error
+#. 0: system.msg
+#. 0: entries.msg
+#. 0: detail.msg
+#. 0: detail.msg
+#. 0: files.msg
 #. 0: failure
 #. 0: error
 #. 0: otherError
 #. 0: error
-#. 0: error
-#. 0: error
+#. 0: stats.msg
+#. 0: orphans.msg
+#. 0: breakdown.msg
+#. 0: views.msg
 #: src/screens/Admin.svelte
 #: src/screens/Audit.svelte
+#: src/screens/Audit.svelte
 #: src/screens/Blob.svelte
+#: src/screens/Browse.svelte
 #: src/screens/Browse.svelte
 #: src/screens/Ingest.svelte
 #: src/screens/Library.svelte
 #: src/screens/Login.svelte
 #: src/screens/Shelves.svelte
+#: src/screens/Storage.svelte
+#: src/screens/Storage.svelte
 #: src/screens/Storage.svelte
 #: src/screens/Views.svelte
 msgid "something went wrong — {0}"
@@ -104,7 +112,9 @@ msgstr "something went wrong — {0}"
 
 #: src/screens/Admin.svelte
 #: src/screens/Audit.svelte
+#: src/screens/Audit.svelte
 #: src/screens/Blob.svelte
+#: src/screens/Browse.svelte
 #: src/screens/Library.svelte
 #: src/screens/Shelves.svelte
 #: src/screens/Storage.svelte
@@ -174,8 +184,8 @@ msgstr "compact"
 msgid "nothing matches — clear the filter or search"
 msgstr "nothing matches — clear the filter or search"
 
-#. 0: entries.length.toLocaleString(); 1: total.toLocaleString()
-#. 0: files.length.toLocaleString(); 1: total.toLocaleString()
+#. 0: entries.data.rows.length.toLocaleString(); 1: entries.data.total.toLocaleString()
+#. 0: files.data.rows.length.toLocaleString(); 1: files.data.total.toLocaleString()
 #: src/screens/Audit.svelte
 #: src/screens/Browse.svelte
 msgid "load more ({0} / {1})"
@@ -281,7 +291,7 @@ msgid "excluded from completeness math"
 msgstr "excluded from completeness math"
 
 #. 0: fmtDate(rom.blob.verified_at)
-#. 0: fmtDate(detail.verified_at)
+#. 0: fmtDate(d.verified_at)
 #: src/lib/components/EntryDrawer.svelte
 #: src/screens/Blob.svelte
 msgid "verified {0}"
@@ -778,7 +788,7 @@ msgstr "find a game…"
 msgid "download"
 msgstr "download"
 
-#. 0: ' · '; 1: fmtAge( detail.created_at, )
+#. 0: ' · '; 1: fmtAge( detail.data.created_at, )
 #. 0: ' · '; 1: fmtAge( view.created_at, )
 #: src/screens/Browse.svelte
 #: src/screens/Shelves.svelte
@@ -818,7 +828,7 @@ msgstr "⬇ whole SD image<0/>"
 msgid "● every download is hash-verified as it streams"
 msgstr "● every download is hash-verified as it streams"
 
-#. 0: ' · '; 1: snapShort(detail.snapshot)
+#. 0: ' · '; 1: snapShort(detail.data.snapshot)
 #: src/screens/Browse.svelte
 msgid "FAT32<0/>{0}minted from snap {1}"
 msgstr "FAT32<0/>{0}minted from snap {1}"
@@ -882,12 +892,12 @@ msgstr "no image minted yet — minting is CLI-only, run:"
 msgid "‹ your shelves"
 msgstr "‹ your shelves"
 
-#. 0: ' · '; 1: detail.rows.toLocaleString()
+#. 0: ' · '; 1: detail.data.rows.toLocaleString()
 #: src/screens/Browse.svelte
 msgid "{0}{1} files"
 msgstr "{0}{1} files"
 
-#. 0: snapShort(detail.snapshot)
+#. 0: snapShort(detail.data.snapshot)
 #: src/screens/Browse.svelte
 msgid "snap {0}<0/><1/>"
 msgstr "snap {0}<0/><1/>"
@@ -998,7 +1008,7 @@ msgstr "NAS-local ingest runs in the CLI:"
 #~ msgid "recent activity log — needs a durable job table"
 #~ msgstr "recent activity log — needs a durable job table"
 
-#. 0: (detail.claims_total - detail.claims.length).toLocaleString()
+#. 0: (d.claims_total - d.claims.length).toLocaleString()
 #. 0: (job.matched_total - job.matched.length).toLocaleString()
 #: src/screens/Blob.svelte
 #: src/screens/Ingest.svelte
@@ -1088,7 +1098,7 @@ msgstr "routes out — things made from it"
 msgid "satisfies no dat claims"
 msgstr "satisfies no dat claims"
 
-#. 0: detail.claims_total.toLocaleString()
+#. 0: d.claims_total.toLocaleString()
 #: src/screens/Blob.svelte
 msgid "claims · {0}"
 msgstr "claims · {0}"
@@ -1186,7 +1196,7 @@ msgstr "confirm: delete non-kept"
 msgid "delete non-kept…"
 msgstr "delete non-kept…"
 
-#. 0: fmtSize(orphans.reclaimable_bytes)
+#. 0: fmtSize(orphans.data.reclaimable_bytes)
 #: src/screens/Storage.svelte
 msgid "{0} reclaimable · every delete re-verifies unreferenced at delete time"
 msgstr "{0} reclaimable · every delete re-verifies unreferenced at delete time"
@@ -1195,7 +1205,7 @@ msgstr "{0} reclaimable · every delete re-verifies unreferenced at delete time"
 msgid "recent activity log — history is recorded (D74); the feed UI is not designed yet"
 msgstr "recent activity log — history is recorded (D74); the feed UI is not designed yet"
 
-#. 0: fmtDate(stats.last_scrub.finished_at); 1: stats.last_scrub.name
+#. 0: fmtDate(s.last_scrub.finished_at); 1: s.last_scrub.name
 #: src/screens/Storage.svelte
 msgid "last: {0} · {1}"
 msgstr "last: {0} · {1}"
@@ -1203,3 +1213,15 @@ msgstr "last: {0} · {1}"
 #: src/screens/Storage.svelte
 msgid "no scrub recorded yet — runs land in the job ledger"
 msgstr "no scrub recorded yet — runs land in the job ledger"
+
+#. 0: applyError
+#: src/screens/Storage.svelte
+msgid "delete failed — {0}"
+msgstr "delete failed — {0}"
+
+#. 0: moreError
+#. 0: moreError
+#: src/screens/Audit.svelte
+#: src/screens/Browse.svelte
+msgid "couldn't load more — {0}"
+msgstr "couldn't load more — {0}"

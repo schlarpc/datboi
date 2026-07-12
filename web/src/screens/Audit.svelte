@@ -21,16 +21,23 @@
   import StackedBar from '../lib/components/StackedBar.svelte';
   import { fmtSize } from '../lib/format';
   import { prefs } from '../lib/prefs.svelte';
+  import { errorText, failed, loading, ready, settle, type Remote } from '../lib/remote';
   import { completenessPct, ENTRY_STATES, type EntryState } from '../lib/state';
 
   let { systemId }: { systemId: string } = $props();
 
   const PAGE = 500;
 
-  let system = $state<System | null>(null);
-  let error = $state<string | null>(null);
-  let entries = $state<EntryRow[]>([]);
-  let total = $state(0);
+  /** The paged rows plus the server's unfiltered-match total. */
+  type EntryPage = { rows: EntryRow[]; total: number };
+
+  // Header and table are independent resources: each gets its own
+  // Remote, so a failed page never blanks a rendered header (or vice
+  // versa) and the filter rail stays usable through a fetch error.
+  let system = $state<Remote<System>>(loading());
+  let entries = $state<Remote<EntryPage>>(loading());
+  /** A failed "load more" keeps the rows it has; this line says why. */
+  let moreError = $state<string | null>(null);
   let filter = $state<'all' | EntryState>('all');
   let q = $state('');
   let selected = $state<string | null>(null);
@@ -40,17 +47,16 @@
   $effect(() => {
     fetchSystems().then(
       (body) => {
-        system = body.systems.find((sys) => String(sys.id) === systemId) ?? null;
-        if (system === null) {
-          error = 'no such system';
-        }
+        const found = body.systems.find((sys) => String(sys.id) === systemId);
+        system = found === undefined ? failed('no such system') : ready(found);
       },
-      (e: unknown) => (error = e instanceof Error ? e.message : String(e)),
+      (e: unknown) => (system = failed(errorText(e))),
     );
   });
 
-  // Filter/search recompose server-side; stale answers are dropped by
-  // generation counter so a slow page can't overwrite a newer one.
+  // Filter/search recompose server-side; stale answers — fulfilled OR
+  // rejected — are dropped by generation counter so a slow page can't
+  // overwrite a newer one.
   let generation = 0;
   $effect(() => {
     const params = {
@@ -58,29 +64,38 @@
       state: filter === 'all' ? undefined : filter,
     };
     const gen = ++generation;
-    systemEntries(systemId, { ...params, offset: 0, limit: PAGE }).then(
-      (body) => {
-        if (gen === generation) {
-          entries = body.entries;
-          total = body.total;
-        }
-      },
-      (e: unknown) => (error = e instanceof Error ? e.message : String(e)),
+    moreError = null;
+    settle(
+      systemEntries(systemId, { ...params, offset: 0, limit: PAGE }).then((body) => ({
+        rows: body.entries,
+        total: body.total,
+      })),
+      (value) => (entries = value),
+      () => gen === generation,
     );
   });
 
-  async function loadMore() {
+  function loadMore() {
+    if (entries.st !== 'ready') return;
+    const prior = entries.data;
     const gen = generation;
-    const body = await systemEntries(systemId, {
+    moreError = null;
+    systemEntries(systemId, {
       q: q || undefined,
       state: filter === 'all' ? undefined : filter,
-      offset: entries.length,
+      offset: prior.rows.length,
       limit: PAGE,
-    });
-    if (gen === generation) {
-      entries = [...entries, ...body.entries];
-      total = body.total;
-    }
+    }).then(
+      (body) => {
+        if (gen === generation) {
+          entries = ready({ rows: [...prior.rows, ...body.entries], total: body.total });
+        }
+      },
+      (e: unknown) => {
+        // Keep the rows we have — only the append failed.
+        if (gen === generation) moreError = errorText(e);
+      },
+    );
   }
 
   function select(name: string) {
@@ -128,7 +143,8 @@
    * entry (API pages cap at 1000) and downloads a plaintext file.
    */
   async function exportMissing() {
-    if (exporting || system === null) return;
+    if (exporting || system.st !== 'ready') return;
+    const sys = system.data;
     exporting = true;
     try {
       const names: string[] = [];
@@ -144,14 +160,14 @@
       // User-visible file content goes through the catalog too; the
       // directive forces extraction ('#' fails the script heuristic).
       // @wc-include
-      const header = `# datboi missing-list · ${system.provider} ${system.system} ${system.revision?.version ?? ''}`;
+      const header = `# datboi missing-list · ${sys.provider} ${sys.system} ${sys.revision?.version ?? ''}`;
       const blob = new Blob([`${header.trimEnd()}\n${names.join('\n')}\n`], {
         type: 'text/plain',
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${system.system}-missing.txt`;
+      a.download = `${sys.system}-missing.txt`;
       a.click();
       URL.revokeObjectURL(url);
     } finally {
@@ -160,9 +176,9 @@
   }
 
   const railCounts = $derived(
-    system === null
+    system.st !== 'ready'
       ? null
-      : { all: system.total, ...system.counts },
+      : { all: system.data.total, ...system.data.counts },
   );
 
   /** Selection tint colors per state (spec: ok/warn/bad/dim). */
@@ -177,20 +193,21 @@
 <svelte:window {onkeydown} />
 
 <main>
-  {#if error !== null}
+  {#if system.st === 'error'}
     <!-- Undesigned loading/error states: plain mono in --faint. -->
-    <p class="undesigned">something went wrong — {error}</p>
-  {:else if system === null || railCounts === null}
+    <p class="undesigned">something went wrong — {system.msg}</p>
+  {:else if system.st === 'loading' || railCounts === null}
     <p class="undesigned">loading…</p>
   {:else}
-    {@const pct = completenessPct(system.counts)}
+    {@const sys = system.data}
+    {@const pct = completenessPct(sys.counts)}
     <div class="sys-head">
       <div class="row1">
-        <span class="accent" style:background={bandFor(system.system)}></span>
-        <h2>{system.system}</h2>
+        <span class="accent" style:background={bandFor(sys.system)}></span>
+        <h2>{sys.system}</h2>
         <span class="sub">
-          {system.provider}{#if system.revision?.version}
-            · {system.revision.version}{/if}
+          {sys.provider}{#if sys.revision?.version}
+            · {sys.revision.version}{/if}
           <!-- Revision picker + history/diff: dat-history screens were
                never designed (spec §8 unresolved) — disabled, future. -->
           <span class="future" title={historyTitle}>▾</span>
@@ -205,12 +222,12 @@
       </div>
       <div class="row2">
         <span class="pct">{pct}%</span>
-        <div class="bar-wrap"><StackedBar counts={system.counts} register="bench" /></div>
+        <div class="bar-wrap"><StackedBar counts={sys.counts} register="bench" /></div>
         <span class="counts">
-          <span class="c-ok">{system.counts.verified.toLocaleString()}</span> ·
-          <span class="c-warn">{system.counts.claimed.toLocaleString()}</span> ·
-          <span class="c-bad">{system.counts.missing.toLocaleString()}</span> ·
-          <span class="c-faint">{system.counts.nodump.toLocaleString()}</span>
+          <span class="c-ok">{sys.counts.verified.toLocaleString()}</span> ·
+          <span class="c-warn">{sys.counts.claimed.toLocaleString()}</span> ·
+          <span class="c-bad">{sys.counts.missing.toLocaleString()}</span> ·
+          <span class="c-faint">{sys.counts.nodump.toLocaleString()}</span>
         </span>
       </div>
     </div>
@@ -267,10 +284,16 @@
       </div>
 
       <div class="rows" style:--rowpad={prefs.density === 'compact' ? '4px 20px' : '9px 20px'}>
-        {#if entries.length === 0}
+        {#if entries.st === 'error'}
+          <!-- Rows-only failure: the rail and search stay usable, so a
+               changed filter or query can recover the screen. -->
+          <p class="empty">something went wrong — {entries.msg}</p>
+        {:else if entries.st === 'loading'}
+          <p class="empty">loading…</p>
+        {:else if entries.data.rows.length === 0}
           <p class="empty">nothing matches — clear the filter or search</p>
         {:else}
-          {#each entries as entry (entry.name)}
+          {#each entries.data.rows as entry (entry.name)}
             {@const isSel = selected === entry.name}
             <button
               class="row"
@@ -294,10 +317,13 @@
               <span class="size">{entry.size === null ? '—' : fmtSize(entry.size)}</span>
             </button>
           {/each}
-          {#if entries.length < total}
+          {#if entries.data.rows.length < entries.data.total}
             <button class="load-more" onclick={loadMore}>
-              load more ({entries.length.toLocaleString()} / {total.toLocaleString()})
+              load more ({entries.data.rows.length.toLocaleString()} / {entries.data.total.toLocaleString()})
             </button>
+          {/if}
+          {#if moreError !== null}
+            <p class="empty">couldn't load more — {moreError}</p>
           {/if}
         {/if}
       </div>

@@ -46,6 +46,11 @@ export interface MockUniverse {
   blobDetails?: Record<string, BlobDetail>;
   /** GET /v1/gc/orphans body (D73 review surface); defaults empty. */
   orphans?: OrphansBody;
+  /** GET /v1/gc/orphans answers 500 — exercises the per-card error. */
+  orphansFail?: boolean;
+  /** Entries pages with offset ≥ this answer 500 (0 = every page) —
+   * exercises rows-only errors and the load-more rejection path. */
+  entriesFailFromOffset?: number;
   /** GET /v1/jobs rows (the in-memory registry's tray render). */
   jobs?: Job[];
   /** GET /v1/jobs/{id} script: each poll SHIFTS one entry until the
@@ -141,6 +146,12 @@ export function installFetch(universe: MockUniverse) {
         const q = url.searchParams.get('q')?.toLowerCase() ?? null;
         const state = url.searchParams.get('state');
         const offset = Number(url.searchParams.get('offset') ?? 0);
+        if (
+          universe.entriesFailFromOffset !== undefined &&
+          offset >= universe.entriesFailFromOffset
+        ) {
+          return json(500, { error: 'induced entries failure' });
+        }
         const limit = Math.min(Number(url.searchParams.get('limit') ?? 200), 1000);
         const filtered = entries.filter(
           (e) =>
@@ -216,6 +227,9 @@ export function installFetch(universe: MockUniverse) {
         return body ? json(200, body) : json(404, { error: 'no such blob' });
       }
       if (path === '/v1/gc/orphans' && method === 'GET') {
+        if (universe.orphansFail === true) {
+          return json(500, { error: 'induced orphans failure' });
+        }
         return json(
           200,
           universe.orphans ?? { orphans: [], reclaimable_bytes: 0, grace_secs: 86_400 },

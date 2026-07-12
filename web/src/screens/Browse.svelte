@@ -20,15 +20,22 @@
   import { viewDetail, viewFiles, viewFileUrl, viewImageUrl } from '../lib/api/client';
   import type { ViewDetail, ViewFileRow } from '../lib/api/types';
   import { fmtAge, fmtSize, parseRegion, shortHash, snapShort } from '../lib/format';
+  import { errorText, loading, ready, settle, type Remote } from '../lib/remote';
 
   let { view }: { view: string } = $props();
 
   const PAGE = 500;
 
-  let detail = $state<ViewDetail | null>(null);
-  let error = $state<string | null>(null);
-  let files = $state<ViewFileRow[]>([]);
-  let total = $state(0);
+  /** The paged rows plus the server's match total. */
+  type FilePage = { rows: ViewFileRow[]; total: number };
+
+  // Snapshot facts and the manifest rows are independent resources —
+  // each gets its own Remote, so a failed detail fetch never blanks the
+  // rows (or vice versa) and search stays usable through an error.
+  let detail = $state<Remote<ViewDetail>>(loading());
+  let files = $state<Remote<FilePage>>(loading());
+  /** A failed "load more" keeps the rows it has; this line says why. */
+  let moreError = $state<string | null>(null);
   let q = $state('');
   let selected = $state<ViewFileRow | null>(null);
   let modal = $state(false);
@@ -36,40 +43,47 @@
   let flashed = $state<Record<string, boolean>>({});
 
   $effect(() => {
-    viewDetail(view).then(
-      (body) => (detail = body),
-      (e: unknown) => (error = e instanceof Error ? e.message : String(e)),
-    );
+    settle(viewDetail(view), (value) => (detail = value));
   });
 
-  // Search recomposes server-side; stale answers are dropped by
-  // generation counter so a slow page can't overwrite a newer one.
+  // Search recomposes server-side; stale answers — fulfilled OR
+  // rejected — are dropped by generation counter so a slow page can't
+  // overwrite a newer one.
   let generation = 0;
   $effect(() => {
     const params = { q: q || undefined };
     const gen = ++generation;
-    viewFiles(view, { ...params, offset: 0, limit: PAGE }).then(
-      (body) => {
-        if (gen === generation) {
-          files = body.files;
-          total = body.total;
-        }
-      },
-      (e: unknown) => (error = e instanceof Error ? e.message : String(e)),
+    moreError = null;
+    settle(
+      viewFiles(view, { ...params, offset: 0, limit: PAGE }).then((body) => ({
+        rows: body.files,
+        total: body.total,
+      })),
+      (value) => (files = value),
+      () => gen === generation,
     );
   });
 
-  async function loadMore() {
+  function loadMore() {
+    if (files.st !== 'ready') return;
+    const prior = files.data;
     const gen = generation;
-    const body = await viewFiles(view, {
+    moreError = null;
+    viewFiles(view, {
       q: q || undefined,
-      offset: files.length,
+      offset: prior.rows.length,
       limit: PAGE,
-    });
-    if (gen === generation) {
-      files = [...files, ...body.files];
-      total = body.total;
-    }
+    }).then(
+      (body) => {
+        if (gen === generation) {
+          files = ready({ rows: [...prior.rows, ...body.files], total: body.total });
+        }
+      },
+      (e: unknown) => {
+        // Keep the rows we have — only the append failed.
+        if (gen === generation) moreError = errorText(e);
+      },
+    );
   }
 
   function select(row: ViewFileRow) {
@@ -100,7 +114,9 @@
   const basename = (path: string) => path.split('/').at(-1) ?? path;
 
   const region = $derived(selected === null ? null : parseRegion(basename(selected.path)));
-  const image = $derived(detail?.image?.minted === true ? detail.image : null);
+  const image = $derived(
+    detail.st === 'ready' && detail.data.image?.minted === true ? detail.data.image : null,
+  );
 
   // Lowercase attribute copy, forced at statement level (the codebase
   // pattern — an element directive would sweep class names too).
@@ -117,27 +133,32 @@
 <svelte:window {onkeydown} />
 
 <main>
-  {#if error !== null}
-    <!-- Undesigned loading/error states: plain mono in --faint. -->
-    <p class="undesigned">something went wrong — {error}</p>
-  {:else}
     <div class="toolbar">
       <input type="search" placeholder={searchPlaceholder} bind:value={q} />
-      {#if detail !== null && detail.snapshot !== null}
+      {#if detail.st === 'error'}
+        <!-- Snapshot facts failed alone — the rows still serve. -->
+        <span class="info">something went wrong — {detail.msg}</span>
+      {:else if detail.st === 'ready' && detail.data.snapshot !== null}
         <!-- Snapshot facts, not search results: the file count here is
              the whole manifest (the prototype's static info line); the
              filtered count lives on the load-more row. -->
         <span class="info">
-          snap {snapShort(detail.snapshot)}{#if detail.created_at != null}{' · '}{fmtAge(
-              detail.created_at,
-            )} ago{/if}{#if detail.rows != null}{' · '}{detail.rows.toLocaleString()} files{/if}
+          snap {snapShort(detail.data.snapshot)}{#if detail.data.created_at != null}{' · '}{fmtAge(
+              detail.data.created_at,
+            )} ago{/if}{#if detail.data.rows != null}{' · '}{detail.data.rows.toLocaleString()} files{/if}
         </span>
       {/if}
     </div>
 
     <div class="table">
       <div class="rows">
-        {#if files.length === 0}
+        {#if files.st === 'error'}
+          <!-- Rows-only failure: the search box stays usable, so a
+               changed query can recover the screen. -->
+          <p class="empty">something went wrong — {files.msg}</p>
+        {:else if files.st === 'loading'}
+          <p class="empty">loading…</p>
+        {:else if files.data.rows.length === 0}
           {#if q === ''}
             <!-- An evaluated-but-empty snapshot; not a search miss. -->
             <p class="empty">this shelf is empty</p>
@@ -145,7 +166,7 @@
             <p class="empty">nothing matches “{q}”</p>
           {/if}
         {:else}
-          {#each files as row (row.path)}
+          {#each files.data.rows as row (row.path)}
             {@const isSel = selected?.path === row.path}
             <!-- div, not button: the quick-download pill inside is a
                  real anchor and anchors can't nest in buttons. -->
@@ -176,10 +197,13 @@
               </a>
             </div>
           {/each}
-          {#if files.length < total}
+          {#if files.data.rows.length < files.data.total}
             <button class="load-more" onclick={loadMore}>
-              load more ({files.length.toLocaleString()} / {total.toLocaleString()})
+              load more ({files.data.rows.length.toLocaleString()} / {files.data.total.toLocaleString()})
             </button>
+          {/if}
+          {#if moreError !== null}
+            <p class="empty">couldn't load more — {moreError}</p>
           {/if}
         {/if}
       </div>
@@ -255,10 +279,10 @@
           tabindex="-1"
         >
           <div class="modal-title">SD image · {view}</div>
-          {#if detail !== null && detail.snapshot !== null}
+          {#if detail.st === 'ready' && detail.data.snapshot !== null}
             <div class="modal-sub">
               FAT32{#if image.bytes != null}{' · '}{fmtSize(image.bytes)}{/if}{' · '}minted from
-              snap {snapShort(detail.snapshot)}
+              snap {snapShort(detail.data.snapshot)}
             </div>
           {/if}
           <div class="warning">
@@ -278,7 +302,6 @@
         </div>
       </div>
     {/if}
-  {/if}
 </main>
 
 <style>
@@ -287,12 +310,6 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-  }
-
-  .undesigned {
-    font: 400 12.5px var(--font-data);
-    color: var(--faint);
-    padding: 26px var(--pad-x);
   }
 
   .toolbar {
