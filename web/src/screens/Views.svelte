@@ -30,15 +30,28 @@
   import { fmtAge, fmtSize, shortHash, snapShort } from '../lib/format';
   import { loading, settle, type Remote } from '../lib/remote';
 
-  let views = $state<Remote<ViewDetail[]>>(loading());
+  // The list (names) and each card's detail are INDEPENDENT resources
+  // (the remote.ts principle): one failed or slow detail renders its
+  // own card-local line instead of blanking N-1 healthy neighbors.
+  let names = $state<Remote<string[]>>(loading());
+  let cards = $state<Record<string, Remote<ViewDetail>>>({});
 
   $effect(() => {
     // The list body lacks endpoints + image (detail-only fields); view
     // counts are shelf-scale, so N detail fetches stay cheap.
     settle(
-      fetchViews().then((body) => Promise.all(body.views.map((view) => viewDetail(view.name)))),
-      (value) => (views = value),
+      fetchViews().then((body) => body.views.map((view) => view.name)),
+      (value) => (names = value),
     );
+  });
+  $effect(() => {
+    if (names.st !== 'ready') return;
+    for (const name of names.data) {
+      cards[name] = loading();
+      settle(viewDetail(name), (value) => {
+        cards[name] = value;
+      });
+    }
   });
 
   /** One fold open per card: which CLI-hint/definition panel shows. */
@@ -109,16 +122,32 @@
     </div>
   {/if}
 
-  {#if views.st === 'error'}
+  {#if names.st === 'error'}
     <!-- Undesigned loading/error states: plain mono in --faint. -->
-    <p class="undesigned">something went wrong — {views.msg}</p>
-  {:else if views.st === 'loading'}
+    <p class="undesigned">something went wrong — {names.msg}</p>
+  {:else if names.st === 'loading'}
     <p class="undesigned">loading…</p>
-  {:else if views.data.length === 0}
+  {:else if names.data.length === 0}
     <p class="undesigned">no views yet — define one and it lands here</p>
   {:else}
     <div class="grid">
-      {#each views.data as view (view.name)}
+      {#each names.data as name (name)}
+        {@const card = cards[name] ?? loading()}
+        {#if card.st !== 'ready'}
+          <!-- Card-local states: the grid keeps its healthy neighbors. -->
+          <div class="card">
+            <div class="band" style:background={bandFor(name)}></div>
+            <div class="body">
+              <div class="head"><span class="name">{name}</span></div>
+              {#if card.st === 'error'}
+                <p class="undesigned">something went wrong — {card.msg}</p>
+              {:else}
+                <p class="undesigned">loading…</p>
+              {/if}
+            </div>
+          </div>
+        {:else}
+        {@const view = card.data}
         {@const def = view.definition}
         {@const hasImage = def?.image != null}
         {@const httpUrl = location.origin + view.endpoints.http}
@@ -327,6 +356,7 @@
             {/if}
           </div>
         </div>
+        {/if}
       {/each}
     </div>
   {/if}

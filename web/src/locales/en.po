@@ -92,7 +92,8 @@ msgstr "# datboi missing-list · {0} {1} {2}"
 #. 0: stats.msg
 #. 0: orphans.msg
 #. 0: breakdown.msg
-#. 0: views.msg
+#. 0: names.msg
+#. 0: card.msg
 #: src/screens/Admin.svelte
 #: src/screens/Audit.svelte
 #: src/screens/Audit.svelte
@@ -107,6 +108,7 @@ msgstr "# datboi missing-list · {0} {1} {2}"
 #: src/screens/Storage.svelte
 #: src/screens/Storage.svelte
 #: src/screens/Views.svelte
+#: src/screens/Views.svelte
 msgid "something went wrong — {0}"
 msgstr "something went wrong — {0}"
 
@@ -119,6 +121,7 @@ msgstr "something went wrong — {0}"
 #: src/screens/Shelves.svelte
 #: src/screens/Storage.svelte
 #: src/screens/Storage.svelte
+#: src/screens/Views.svelte
 #: src/screens/Views.svelte
 msgid "loading…"
 msgstr "loading…"

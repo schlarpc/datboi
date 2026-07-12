@@ -56,7 +56,8 @@ test('cards compose sub-line, stats, and per-profile verb from the detail', asyn
   installFetch({ views: [gbaView, snesView] });
   render(Views);
 
-  expect(await screen.findByText('gba-everdrive')).toBeTruthy();
+  expect(await screen.findByText('1,412 files')).toBeTruthy();
+  expect(screen.getByText('gba-everdrive')).toBeTruthy();
   expect(screen.getByText('snes-mister')).toBeTruthy();
 
   // Sub-line: system · 1G1R mode (regions) · profile.
@@ -90,7 +91,7 @@ test('SD export: unminted reveals the mint CLI hint; minted is a real download',
   // Unminted image profile: minting is CLI-only, so the verb reveals it.
   installFetch({ views: [gbaView] });
   const { unmount } = render(Views);
-  await screen.findByText('gba-everdrive');
+  await screen.findByText('⬇ Export SD image');
 
   expect(screen.queryByText(/datboi view image/)).toBeNull();
   await fireEvent.click(screen.getByText('⬇ Export SD image'));
@@ -102,7 +103,7 @@ test('SD export: unminted reveals the mint CLI hint; minted is a real download',
     views: [{ ...gbaView, image: { minted: true, hash: 'ab'.repeat(32), bytes: 1024 } }],
   });
   render(Views);
-  await screen.findByText('gba-everdrive');
+  await screen.findByText('⬇ Export SD image');
   const anchor = screen.getByText('⬇ Export SD image') as HTMLAnchorElement;
   expect(anchor.getAttribute('href')).toBe('/v1/views/gba-everdrive/image');
   expect(anchor.getAttribute('download')).toBe('gba-everdrive.img');
@@ -112,7 +113,7 @@ test('copy link puts the absolute HTTP endpoint on the clipboard', async () => {
   const writeText = installClipboard();
   installFetch({ views: [snesView] });
   render(Views);
-  await screen.findByText('snes-mister');
+  await screen.findByText('⎘ copy link');
 
   await fireEvent.click(screen.getByText('⎘ copy link'));
   expect(writeText).toHaveBeenCalledWith(`${location.origin}/view/snes-mister/`);
@@ -123,7 +124,7 @@ test('⋯ menu: webdav copy is real; definition fold shows read-only fields', as
   const writeText = installClipboard();
   installFetch({ views: [gbaView] });
   render(Views);
-  await screen.findByText('gba-everdrive');
+  await screen.findByText('⬇ Export SD image');
 
   await fireEvent.click(screen.getByLabelText('view actions'));
   await fireEvent.click(screen.getByText('⎘ webdav url'));
@@ -139,7 +140,7 @@ test('⋯ menu: webdav copy is real; definition fold shows read-only fields', as
 test('re-eval and + new view are CLI hints; browse links into the served tree', async () => {
   installFetch({ views: [gbaView] });
   render(Views);
-  await screen.findByText('gba-everdrive');
+  await screen.findByText('⬇ Export SD image');
 
   await fireEvent.click(screen.getByText('re-eval'));
   expect(screen.getByText('datboi view eval gba-everdrive')).toBeTruthy();
