@@ -212,7 +212,7 @@
 
   .crumbs {
     margin-bottom: 14px;
-    font: 500 12.5px var(--font-data);
+    font: 500 0.78125rem var(--font-data);
   }
 
   .crumbs :global(a.back) {
@@ -225,7 +225,7 @@
   }
 
   .undesigned {
-    font: 400 12.5px var(--font-data);
+    font: 400 0.78125rem var(--font-data);
     color: var(--faint);
   }
 
@@ -238,7 +238,7 @@
 
   .hash {
     margin: 0;
-    font: 600 15px var(--font-data);
+    font: 600 0.9375rem var(--font-data);
     letter-spacing: 0.01em;
     overflow-wrap: anywhere;
     min-width: 0;
@@ -251,7 +251,7 @@
     border-radius: var(--r-pill);
     padding: 3px 12px;
     background: var(--panel);
-    font: 600 12px var(--font-data);
+    font: 600 0.75rem var(--font-data);
     cursor: pointer;
   }
 
@@ -263,7 +263,7 @@
   }
 
   .badge {
-    font: 500 11.5px var(--font-data);
+    font: 500 0.71875rem var(--font-data);
     border: 1.5px solid var(--hair);
     border-radius: var(--r-pill);
     padding: 2px 10px;
@@ -295,14 +295,14 @@
   }
 
   .card-title {
-    font: 800 13px var(--font-display);
+    font: 800 0.8125rem var(--font-display);
     letter-spacing: 0.02em;
     margin-bottom: 8px;
   }
 
   .none {
     margin: 0;
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
     color: var(--faint);
   }
 
@@ -311,7 +311,7 @@
     grid-template-columns: auto 1fr;
     column-gap: 14px;
     row-gap: 3px;
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
   }
 
   .k {
@@ -327,7 +327,7 @@
     display: flex;
     gap: 12px;
     align-items: baseline;
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
     line-height: 1.8;
   }
 
@@ -357,11 +357,11 @@
   }
 
   .op {
-    font: 600 12.5px var(--font-data);
+    font: 600 0.78125rem var(--font-data);
   }
 
   .verify {
-    font: 400 11px var(--font-data);
+    font: 400 0.6875rem var(--font-data);
     color: var(--faint);
   }
 
@@ -379,7 +379,7 @@
   }
 
   .refs-label {
-    font: 600 10.5px var(--font-data);
+    font: 600 0.65625rem var(--font-data);
     color: var(--faint);
     letter-spacing: 0.04em;
   }
@@ -388,7 +388,7 @@
     display: flex;
     gap: 8px;
     align-items: baseline;
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
     min-width: 0;
   }
 
@@ -418,7 +418,7 @@
     display: flex;
     gap: 12px;
     align-items: baseline;
-    font: 400 12.5px var(--font-data);
+    font: 400 0.78125rem var(--font-data);
     line-height: 1.8;
   }
 
@@ -439,7 +439,7 @@
   }
 
   .chip {
-    font: 500 12px var(--font-data);
+    font: 500 0.75rem var(--font-data);
     background: color-mix(in srgb, var(--ok) 10%, var(--panel));
     border: 1.5px solid var(--ink);
     border-radius: var(--r-pill);

@@ -22,7 +22,7 @@
   .cli-hint {
     display: block;
     margin-top: 8px;
-    font: 400 11.5px var(--font-data);
+    font: 400 0.71875rem var(--font-data);
     color: var(--mut);
     line-height: 1.6;
   }

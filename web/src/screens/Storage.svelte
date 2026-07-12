@@ -314,17 +314,17 @@
 
   h2 {
     margin: 0;
-    font: 800 24px var(--font-display);
+    font: 800 1.5rem var(--font-display);
     letter-spacing: -0.03em;
   }
 
   .sub {
-    font: 400 13px var(--font-data);
+    font: 400 0.8125rem var(--font-data);
     color: var(--faint);
   }
 
   .undesigned {
-    font: 400 12.5px var(--font-data);
+    font: 400 0.78125rem var(--font-data);
     color: var(--faint);
   }
 
@@ -352,13 +352,13 @@
   }
 
   .label {
-    font: 800 13px var(--font-display);
+    font: 800 0.8125rem var(--font-display);
     letter-spacing: 0.02em;
     color: var(--mut);
   }
 
   .num {
-    font: 800 20px var(--font-display);
+    font: 800 1.25rem var(--font-display);
     letter-spacing: -0.02em;
   }
 
@@ -367,7 +367,7 @@
   }
 
   .tile-sub {
-    font: 400 11.5px var(--font-data);
+    font: 400 0.71875rem var(--font-data);
     color: var(--faint);
   }
 
@@ -396,7 +396,7 @@
   }
 
   .card-title {
-    font: 800 14px var(--font-display);
+    font: 800 0.875rem var(--font-display);
     letter-spacing: 0.02em;
     margin-bottom: 8px;
   }
@@ -407,7 +407,7 @@
 
   .copy {
     margin: 0 0 12px;
-    font: 400 12.5px var(--font-data);
+    font: 400 0.78125rem var(--font-data);
     color: var(--mut);
     line-height: 1.6;
   }
@@ -418,7 +418,7 @@
     border-radius: var(--r-pill);
     padding: 4px 14px;
     background: var(--panel);
-    font: 600 12px var(--font-data);
+    font: 600 0.75rem var(--font-data);
     cursor: pointer;
   }
 
@@ -439,7 +439,7 @@
   }
 
   .q-items {
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
     color: var(--mut);
     line-height: 1.9;
   }
@@ -474,7 +474,7 @@
   }
 
   .bytes-title {
-    font: 800 14px var(--font-display);
+    font: 800 0.875rem var(--font-display);
     letter-spacing: 0.02em;
     margin-bottom: 12px;
   }
@@ -490,7 +490,7 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
   }
 
   .class-label {
@@ -539,7 +539,7 @@
   }
 
   .col-title {
-    font: 800 12.5px var(--font-display);
+    font: 800 0.78125rem var(--font-display);
     letter-spacing: 0.02em;
     color: var(--mut);
     margin-bottom: 6px;
@@ -547,7 +547,7 @@
 
   .grid-table {
     display: grid;
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
     column-gap: 14px;
     row-gap: 2px;
   }
@@ -561,7 +561,7 @@
   }
 
   .th {
-    font: 600 11px var(--font-data);
+    font: 600 0.6875rem var(--font-data);
     color: var(--faint);
     border-bottom: 1px solid var(--rule);
     padding-bottom: 3px;

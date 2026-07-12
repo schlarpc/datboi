@@ -181,7 +181,7 @@
   }
 
   .boot {
-    font: 400 12.5px var(--font-data);
+    font: 400 0.78125rem var(--font-data);
     color: var(--faint);
     padding: 26px var(--pad-x);
   }
@@ -200,7 +200,7 @@
   .notfound {
     flex: 1;
     padding: 26px var(--pad-x);
-    font: 400 12.5px var(--font-data);
+    font: 400 0.78125rem var(--font-data);
     color: var(--faint);
   }
 </style>

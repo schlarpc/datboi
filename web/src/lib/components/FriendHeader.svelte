@@ -74,7 +74,7 @@
   }
 
   .wordmark {
-    font: 800 15px var(--font-display);
+    font: 800 0.9375rem var(--font-display);
     letter-spacing: -0.02em;
   }
 
@@ -85,7 +85,7 @@
   }
 
   .crumb :global(a.crumb-back) {
-    font: 500 12.5px var(--font-data);
+    font: 500 0.78125rem var(--font-data);
     color: var(--faint);
     text-decoration: none;
   }
@@ -95,7 +95,7 @@
   }
 
   .crumb-view {
-    font: 600 13px var(--font-data);
+    font: 600 0.8125rem var(--font-data);
   }
 
   .right {
@@ -120,11 +120,11 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font: 600 12px var(--font-display);
+    font: 600 0.75rem var(--font-display);
   }
 
   .user {
-    font: 500 12.5px var(--font-data);
+    font: 500 0.78125rem var(--font-data);
     color: var(--mut);
   }
 </style>

@@ -352,7 +352,7 @@
   }
 
   .undesigned {
-    font: 400 12.5px var(--font-data);
+    font: 400 0.78125rem var(--font-data);
     color: var(--faint);
     padding: 26px var(--pad-x);
   }
@@ -376,12 +376,12 @@
 
   h2 {
     margin: 0;
-    font: 800 22px var(--font-display);
+    font: 800 1.375rem var(--font-display);
     letter-spacing: -0.03em;
   }
 
   .sub {
-    font: 400 12.5px var(--font-data);
+    font: 400 0.78125rem var(--font-data);
     color: var(--faint);
   }
 
@@ -397,7 +397,7 @@
     border-radius: var(--r-pill);
     padding: 4px 14px;
     background: var(--panel);
-    font: 600 12px var(--font-data);
+    font: 600 0.75rem var(--font-data);
     cursor: pointer;
   }
 
@@ -414,7 +414,7 @@
   }
 
   .pct {
-    font: 800 20px var(--font-display);
+    font: 800 1.25rem var(--font-display);
     color: var(--okT);
   }
 
@@ -423,7 +423,7 @@
   }
 
   .counts {
-    font: 500 12.5px var(--font-data);
+    font: 500 0.78125rem var(--font-data);
     color: var(--mut);
     white-space: nowrap;
   }
@@ -457,7 +457,7 @@
     flex: none;
     border-right: 1px solid var(--rule);
     padding: 14px 0 20px;
-    font: 500 12.5px var(--font-data);
+    font: 500 0.78125rem var(--font-data);
     color: var(--mut);
     display: flex;
     flex-direction: column;
@@ -495,7 +495,7 @@
   .rail-search input {
     width: 100%;
     box-sizing: border-box;
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
     padding: 5px 8px;
     border: 1.5px solid var(--edge);
     border-radius: var(--r-input);
@@ -517,7 +517,7 @@
   .density-seg {
     all: unset;
     padding: 2px 8px;
-    font: 500 10.5px var(--font-data);
+    font: 500 0.65625rem var(--font-data);
     color: var(--faint);
     cursor: pointer;
   }
@@ -561,7 +561,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 13.5px;
+    font-size: 0.84375rem;
   }
 
   .row-name.bold {
@@ -577,11 +577,11 @@
   }
 
   .state-word {
-    font: 400 11.5px var(--font-data);
+    font: 400 0.71875rem var(--font-data);
   }
 
   .size {
-    font: 400 11.5px var(--font-data);
+    font: 400 0.71875rem var(--font-data);
     color: var(--dim);
     width: 46px;
     text-align: right;
@@ -589,7 +589,7 @@
   }
 
   .empty {
-    font: 400 12.5px var(--font-data);
+    font: 400 0.78125rem var(--font-data);
     color: var(--faint);
     padding: 28px 20px;
     margin: 0;
@@ -602,7 +602,7 @@
     box-sizing: border-box;
     padding: 10px 20px;
     text-align: center;
-    font: 500 12px var(--font-data);
+    font: 500 0.75rem var(--font-data);
     color: var(--faint);
     cursor: pointer;
   }

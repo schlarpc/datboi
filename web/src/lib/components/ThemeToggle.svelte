@@ -43,7 +43,7 @@
     border: 1.5px solid var(--hair);
     border-radius: var(--r-pill);
     overflow: hidden;
-    font: 500 11px var(--font-data);
+    font: 500 0.6875rem var(--font-data);
   }
 
   .seg {

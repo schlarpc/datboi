@@ -190,7 +190,7 @@
     position: relative;
     border-top: 2px solid var(--ink);
     background: var(--tray);
-    font: 500 12px var(--font-data);
+    font: 500 0.75rem var(--font-data);
     color: var(--mut);
   }
 
@@ -247,7 +247,7 @@
     gap: 10px;
     width: 100%;
     cursor: pointer;
-    font: 500 12px var(--font-data);
+    font: 500 0.75rem var(--font-data);
     color: var(--mut);
   }
 
@@ -268,7 +268,7 @@
 
   .detail {
     margin: 2px 0 0;
-    font: 400 11.5px var(--font-data);
+    font: 400 0.71875rem var(--font-data);
     color: var(--faint);
   }
 

@@ -115,17 +115,17 @@
 
   h2 {
     margin: 0;
-    font: 800 24px var(--font-display);
+    font: 800 1.5rem var(--font-display);
     letter-spacing: -0.03em;
   }
 
   .sub {
-    font: 400 13px var(--font-data);
+    font: 400 0.8125rem var(--font-data);
     color: var(--faint);
   }
 
   .undesigned {
-    font: 400 12.5px var(--font-data);
+    font: 400 0.78125rem var(--font-data);
     color: var(--faint);
   }
 
@@ -165,7 +165,7 @@
   }
 
   .name {
-    font: 800 17px var(--font-display);
+    font: 800 1.0625rem var(--font-display);
     letter-spacing: -0.02em;
     flex: 1;
     min-width: 0;
@@ -175,13 +175,13 @@
   }
 
   .browse {
-    font: 600 13px var(--font-data);
+    font: 600 0.8125rem var(--font-data);
     color: var(--faint);
   }
 
   .sub-line {
     margin-top: 4px;
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
     color: var(--faint);
   }
 
@@ -189,13 +189,13 @@
     display: flex;
     gap: 14px;
     margin-top: 10px;
-    font: 500 12.5px var(--font-data);
+    font: 500 0.78125rem var(--font-data);
     color: var(--mut);
   }
 
   .trust {
     margin-top: 12px;
-    font: 400 11.5px var(--font-data);
+    font: 400 0.71875rem var(--font-data);
     color: var(--okT);
   }
 

@@ -277,12 +277,12 @@
 
   h2 {
     margin: 0;
-    font: 800 24px var(--font-display);
+    font: 800 1.5rem var(--font-display);
     letter-spacing: -0.03em;
   }
 
   .sub {
-    font: 400 13px var(--font-data);
+    font: 400 0.8125rem var(--font-data);
     color: var(--faint);
   }
 
@@ -297,7 +297,7 @@
     padding: 26px 16px;
     text-align: center;
     color: var(--faint);
-    font: 600 13px var(--font-display);
+    font: 600 0.8125rem var(--font-display);
     cursor: pointer;
   }
 
@@ -319,7 +319,7 @@
 
   .linkish {
     all: unset;
-    font: 500 12px var(--font-data);
+    font: 500 0.75rem var(--font-data);
     color: var(--faint);
     text-decoration: underline;
     cursor: pointer;
@@ -340,7 +340,7 @@
   }
 
   .caps {
-    font: 800 13px var(--font-display);
+    font: 800 0.8125rem var(--font-display);
     letter-spacing: 0.02em;
     margin-bottom: 12px;
   }
@@ -363,7 +363,7 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
     color: var(--mut);
   }
 
@@ -397,7 +397,7 @@
 
   .pct-label {
     flex: none;
-    font: 500 11px var(--font-data);
+    font: 500 0.6875rem var(--font-data);
     color: var(--faint);
     min-width: 56px;
     text-align: right;
@@ -405,7 +405,7 @@
 
   .progress-line {
     margin: 0;
-    font: 400 12.5px var(--font-data);
+    font: 400 0.78125rem var(--font-data);
     color: var(--mut);
   }
 
@@ -413,12 +413,12 @@
     display: flex;
     flex-wrap: wrap;
     gap: 16px;
-    font: 400 12.5px var(--font-data);
+    font: 400 0.78125rem var(--font-data);
     color: var(--mut);
   }
 
   .counts b {
-    font: 800 15px var(--font-display);
+    font: 800 0.9375rem var(--font-display);
     color: var(--text);
   }
 
@@ -436,12 +436,12 @@
 
   .matched-head {
     margin: 0 0 10px;
-    font: 400 12.5px var(--font-data);
+    font: 400 0.78125rem var(--font-data);
     color: var(--mut);
   }
 
   .matched-head b {
-    font: 800 15px var(--font-display);
+    font: 800 0.9375rem var(--font-display);
     color: var(--text);
   }
 
@@ -460,14 +460,14 @@
 
   .notes {
     margin-top: 12px;
-    font: 400 11.5px var(--font-data);
+    font: 400 0.71875rem var(--font-data);
     color: var(--faint);
   }
 
   .note {
     margin-top: 18px;
     max-width: 560px;
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
     color: var(--faint);
     line-height: 1.7;
   }

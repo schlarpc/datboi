@@ -393,12 +393,12 @@
 
   h2 {
     margin: 0;
-    font: 800 24px var(--font-display);
+    font: 800 1.5rem var(--font-display);
     letter-spacing: -0.03em;
   }
 
   .sub {
-    font: 400 13px var(--font-data);
+    font: 400 0.8125rem var(--font-data);
     color: var(--faint);
   }
 
@@ -409,7 +409,7 @@
     color: var(--bg);
     border-radius: var(--r-pill);
     padding: 7px 16px;
-    font: 600 13px var(--font-display);
+    font: 600 0.8125rem var(--font-display);
     cursor: pointer;
   }
 
@@ -418,7 +418,7 @@
   }
 
   .undesigned {
-    font: 400 12.5px var(--font-data);
+    font: 400 0.78125rem var(--font-data);
     color: var(--faint);
   }
 
@@ -453,7 +453,7 @@
   }
 
   .name {
-    font: 800 17px var(--font-display);
+    font: 800 1.0625rem var(--font-display);
     letter-spacing: -0.02em;
     flex: 1;
     min-width: 0;
@@ -467,7 +467,7 @@
     color: var(--faint);
     cursor: pointer;
     padding: 0 4px;
-    font-size: 15px;
+    font-size: 0.9375rem;
   }
 
   .menu {
@@ -487,7 +487,7 @@
   .menu button {
     all: unset;
     padding: 6px 14px;
-    font: 500 12px var(--font-data);
+    font: 500 0.75rem var(--font-data);
     color: var(--mut);
     cursor: pointer;
     text-align: left;
@@ -500,7 +500,7 @@
 
   .sub-line {
     margin-top: 4px;
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
     color: var(--faint);
   }
 
@@ -508,7 +508,7 @@
     display: flex;
     gap: 14px;
     margin-top: 10px;
-    font: 500 12.5px var(--font-data);
+    font: 500 0.78125rem var(--font-data);
     color: var(--mut);
   }
 
@@ -529,12 +529,12 @@
     color: var(--bg);
     border-radius: var(--r-pill);
     padding: 8px 18px;
-    font: 600 13px var(--font-display);
+    font: 600 0.8125rem var(--font-display);
     cursor: pointer;
   }
 
   .links {
-    font: 500 12px var(--font-data);
+    font: 500 0.75rem var(--font-data);
     color: var(--faint);
     display: inline-flex;
     gap: 6px;
@@ -543,7 +543,7 @@
 
   .link {
     all: unset;
-    font: 500 12px var(--font-data);
+    font: 500 0.75rem var(--font-data);
     color: var(--faint);
     cursor: pointer;
     text-decoration: none;
@@ -566,7 +566,7 @@
   .def-row {
     display: flex;
     gap: 8px;
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
     line-height: 2;
   }
 
@@ -583,7 +583,7 @@
 
   .foot {
     margin-top: 14px;
-    font: 400 11.5px var(--font-data);
+    font: 400 0.71875rem var(--font-data);
   }
 
   .foot-bad {

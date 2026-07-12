@@ -98,7 +98,7 @@
     padding: 10px var(--pad-x);
     border-bottom: 2px solid var(--ink);
     background: var(--bg);
-    font-size: 13px;
+    font-size: 0.8125rem;
     font-weight: 600;
   }
 
@@ -119,7 +119,7 @@
   }
 
   .wordmark {
-    font: 800 15px var(--font-display);
+    font: 800 0.9375rem var(--font-display);
     letter-spacing: -0.02em;
   }
 
@@ -154,7 +154,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font: 600 11.5px var(--font-data);
+    font: 600 0.71875rem var(--font-data);
     color: var(--mut);
     text-decoration: none;
   }
@@ -179,7 +179,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font: 600 13px var(--font-display);
+    font: 600 0.8125rem var(--font-display);
     flex: none;
   }
 

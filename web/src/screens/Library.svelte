@@ -270,17 +270,17 @@
 
   h2 {
     margin: 0;
-    font: 800 24px var(--font-display);
+    font: 800 1.5rem var(--font-display);
     letter-spacing: -0.03em;
   }
 
   .sub {
-    font: 400 13px var(--font-data);
+    font: 400 0.8125rem var(--font-data);
     color: var(--faint);
   }
 
   .undesigned {
-    font: 400 12.5px var(--font-data);
+    font: 400 0.78125rem var(--font-data);
     color: var(--faint);
   }
 
@@ -315,12 +315,12 @@
   }
 
   .name {
-    font: 800 17px var(--font-display);
+    font: 800 1.0625rem var(--font-display);
     letter-spacing: -0.02em;
   }
 
   .rev {
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
     color: var(--faint);
     /* One line, ellipsized — the pct must stay on the card no matter
        how long the header-derived provider string is. */
@@ -332,7 +332,7 @@
 
   .pct {
     margin-left: auto;
-    font: 800 18px var(--font-display);
+    font: 800 1.125rem var(--font-display);
   }
 
   .pct-ok {
@@ -347,7 +347,7 @@
     display: flex;
     gap: 14px;
     margin-top: 10px;
-    font: 500 12px var(--font-data);
+    font: 500 0.75rem var(--font-data);
     color: var(--mut);
   }
 
@@ -365,7 +365,7 @@
   }
 
   .chips :global(a.chip) {
-    font: 500 12px var(--font-data);
+    font: 500 0.75rem var(--font-data);
     background: color-mix(in srgb, var(--ok) 10%, var(--panel));
     border: 1.5px solid var(--ink);
     border-radius: var(--r-pill);
@@ -385,7 +385,7 @@
     padding: 16px;
     text-align: center;
     color: var(--faint);
-    font: 600 13px var(--font-display);
+    font: 600 0.8125rem var(--font-display);
     cursor: pointer;
   }
 
@@ -411,7 +411,7 @@
   .import-log li {
     display: flex;
     gap: 10px;
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
     color: var(--mut);
   }
 

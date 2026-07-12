@@ -98,7 +98,7 @@
   }
 
   .wordmark {
-    font: 800 15px var(--font-display);
+    font: 800 0.9375rem var(--font-display);
     letter-spacing: -0.02em;
   }
 
@@ -106,12 +106,12 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-    font: 500 11.5px var(--font-data);
+    font: 500 0.71875rem var(--font-data);
     color: var(--mut);
   }
 
   input {
-    font: 400 13px var(--font-data);
+    font: 400 0.8125rem var(--font-data);
     padding: 6px 10px;
     border: 1.5px solid var(--edge);
     border-radius: var(--r-input);
@@ -121,7 +121,7 @@
 
   .error {
     margin: 0;
-    font: 500 12px var(--font-data);
+    font: 500 0.75rem var(--font-data);
     color: var(--bad);
   }
 
@@ -132,7 +132,7 @@
     color: var(--bg);
     border-radius: var(--r-pill);
     padding: 8px 18px;
-    font: 600 13px var(--font-display);
+    font: 600 0.8125rem var(--font-display);
     cursor: pointer;
   }
 

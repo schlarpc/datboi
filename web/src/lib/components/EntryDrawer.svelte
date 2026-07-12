@@ -188,7 +188,7 @@
   }
 
   .caps {
-    font: 800 13px var(--font-display);
+    font: 800 0.8125rem var(--font-display);
     letter-spacing: 0.02em;
   }
 
@@ -196,7 +196,7 @@
     all: unset;
     cursor: pointer;
     color: var(--faint);
-    font-size: 13px;
+    font-size: 0.8125rem;
     padding: 2px 4px;
   }
 
@@ -209,29 +209,29 @@
     align-items: center;
     justify-content: center;
     text-align: center;
-    font: 400 10.5px var(--font-data);
+    font: 400 0.65625rem var(--font-data);
     color: var(--dim);
     margin: 12px 0 14px;
   }
 
   .name {
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 600;
     line-height: 1.35;
   }
 
   .sub {
-    font: 400 11.5px var(--font-data);
+    font: 400 0.71875rem var(--font-data);
     color: var(--faint);
     margin: 4px 0 12px;
   }
 
   .state-line {
-    font: 600 12px var(--font-data);
+    font: 600 0.75rem var(--font-data);
   }
 
   .meaning {
-    font: 400 11px var(--font-data);
+    font: 400 0.6875rem var(--font-data);
     color: var(--faint);
     margin: 4px 0 14px;
     line-height: 1.5;
@@ -247,12 +247,12 @@
     color: var(--faint);
     border-radius: var(--r-pill);
     padding: 5px 14px;
-    font: 600 12px var(--font-data);
+    font: 600 0.75rem var(--font-data);
     cursor: not-allowed;
   }
 
   .hint {
-    font: 400 10.5px var(--font-data);
+    font: 400 0.65625rem var(--font-data);
     color: var(--dim);
     line-height: 1.5;
   }
@@ -266,13 +266,13 @@
   .fold {
     all: unset;
     cursor: pointer;
-    font: 600 11.5px var(--font-data);
+    font: 600 0.71875rem var(--font-data);
     color: var(--mut);
   }
 
   .stor {
     margin-top: 8px;
-    font: 400 12px var(--font-data);
+    font: 400 0.75rem var(--font-data);
     color: var(--mut);
     line-height: 1.8;
     overflow-wrap: anywhere;
