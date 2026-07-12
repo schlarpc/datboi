@@ -1366,6 +1366,5 @@ msgstr "not found"
 msgid "{0} · datboi"
 msgstr "{0} · datboi"
 
-#: src/screens/Browse.svelte
-msgid "Enter"
-msgstr "Enter"
+#~ msgid "Enter"
+#~ msgstr "Enter"

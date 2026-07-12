@@ -3,6 +3,18 @@ import { loginReturn, matchPath, router } from './router.svelte';
 
 describe('matchPath', () => {
   test.each([
+    ['/views/', 'views'],
+    ['/storage/', 'storage'],
+    ['/library/3/', 'audit'],
+  ])('a trailing slash names the same screen: %s → %s', (path, screen) => {
+    expect(matchPath(path).screen).toBe(screen);
+  });
+
+  test('the root stays the library, slash and all', () => {
+    expect(matchPath('/').screen).toBe('library');
+  });
+
+  test.each([
     ['/', 'library'],
     ['/views', 'views'],
     ['/ingest', 'ingest'],

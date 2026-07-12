@@ -213,8 +213,9 @@
               class:sel={isSel}
               onclick={() => select(row)}
               onkeydown={(e) => {
-                // @wc-ignore — role=button promises BOTH keys; without
+                // role=button promises BOTH keys; without the
                 // preventDefault, Space scrolls the list instead.
+                // @wc-ignore
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
                   select(row);

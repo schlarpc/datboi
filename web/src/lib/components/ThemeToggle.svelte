@@ -13,10 +13,6 @@
   const lightLabel = 'light theme';
   // @wc-include
   const darkLabel = 'dark theme';
-  const labels: Record<Exclude<Theme, 'system'>, string> = {
-    light: lightLabel,
-    dark: darkLabel,
-  };
 </script>
 
 <div class="toggle" role="group" aria-label={groupLabel}>
@@ -33,7 +29,7 @@
       class="seg"
       class:active={prefs.theme === theme}
       aria-pressed={prefs.theme === theme}
-      aria-label={labels[theme]}
+      aria-label={theme === 'light' ? lightLabel : darkLabel}
       onclick={() => prefs.setTheme(theme)}
     >
       {glyphs[theme]}

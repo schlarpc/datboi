@@ -39,6 +39,11 @@ function safeDecode(segment: string): string | null {
 
 /** Pure path → route match, unit-testable without a window. Total: never throws. */
 export function matchPath(pathname: string): Route {
+  // A hand-typed or proxy-appended trailing slash names the same
+  // resource: /views/ must not 404 one character away from /views.
+  if (pathname.length > 1 && pathname.endsWith('/')) {
+    pathname = pathname.slice(0, -1);
+  }
   switch (pathname) {
     case '/':
       return { screen: 'library' };
@@ -85,6 +90,11 @@ export const router = {
   },
   /** Link clicks: push a history entry and swap the screen. */
   navigate(path: string): void {
+    // Re-clicking the active nav item must not stack duplicate
+    // entries Back then has to pop through one by one.
+    if (path === window.location.pathname + window.location.search) {
+      return;
+    }
     window.history.pushState({}, '', path);
     this.sync();
   },
