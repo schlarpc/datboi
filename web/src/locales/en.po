@@ -1418,3 +1418,8 @@ msgstr "dismiss"
 #: src/screens/Admin.svelte
 msgid "revoke invite"
 msgstr "revoke invite"
+
+#. 0: keepError
+#: src/screens/Storage.svelte
+msgid "keep toggle failed — {0}"
+msgstr "keep toggle failed — {0}"

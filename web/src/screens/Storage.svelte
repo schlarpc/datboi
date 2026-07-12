@@ -45,14 +45,41 @@
   const refreshOrphans = () => {
     settle(gcOrphans(), (value) => (orphans = value));
   };
+  const refreshStats = () => {
+    settle(fetchStorage(), (value) => (stats = value));
+    settle(storageBreakdown(), (value) => (breakdown = value));
+  };
+
+  /** Keep pills in flight — no double-toggle races per row. */
+  let keepBusy = $state<Record<string, boolean>>({});
+  let keepError = $state<string | null>(null);
 
   const toggleKeep = (hash: string, keep: boolean) => {
-    gcKeep(hash, keep).then(refreshOrphans, refreshOrphans);
+    if (keepBusy[hash] === true) return;
+    keepBusy[hash] = true;
+    keepError = null;
+    gcKeep(hash, keep).then(
+      () => {
+        keepBusy[hash] = false;
+        refreshOrphans();
+      },
+      (e: unknown) => {
+        // The pill snaps back on refresh — say why, or it reads as a
+        // misclick.
+        keepBusy[hash] = false;
+        keepError = errorText(e);
+        refreshOrphans();
+      },
+    );
   };
 
   const applyAll = () => {
     if (!applyArmed) {
       applyArmed = true;
+      // An armed destructive control decays: walking away and clicking
+      // in this corner minutes later must not delete on what is
+      // effectively one click.
+      setTimeout(() => (applyArmed = false), 8000);
       return;
     }
     applying = true;
@@ -62,6 +89,9 @@
         applying = false;
         applyArmed = false;
         refreshOrphans();
+        // Blobs just left the disk: the stat tiles and breakdown are
+        // stale until they refetch too.
+        refreshStats();
       },
       (e: unknown) => {
         applying = false;
@@ -71,13 +101,7 @@
     );
   };
 
-  $effect(() => {
-    settle(fetchStorage(), (value) => (stats = value));
-  });
-
-  $effect(() => {
-    settle(storageBreakdown(), (value) => (breakdown = value));
-  });
+  $effect(refreshStats);
 
   $effect(refreshOrphans);
 
@@ -213,7 +237,12 @@
                     ? ` · ${orphan.sources.join(', ')}`
                     : ''}
                 </span>
-                <button class="pill" onclick={() => toggleKeep(orphan.hash, !orphan.kept)}>
+                <button
+                  class="pill"
+                  aria-pressed={orphan.kept}
+                  disabled={keepBusy[orphan.hash] === true}
+                  onclick={() => toggleKeep(orphan.hash, !orphan.kept)}
+                >
                   {orphan.kept ? 'kept ✓' : 'keep'}
                 </button>
               </div>
@@ -228,6 +257,9 @@
           </button>
           {#if applyError !== null}
             <p class="copy apply-error">delete failed — {applyError}</p>
+          {/if}
+          {#if keepError !== null}
+            <p class="copy apply-error">keep toggle failed — {keepError}</p>
           {/if}
         {/if}
       </div>
