@@ -24,6 +24,8 @@
   import JobRow from './JobRow.svelte';
 
   let jobs = $state<Job[]>([]);
+  /** The last poll failed: the list below is last-known, not live. */
+  let unreachable = $state(false);
   let open = $state(false);
   /** Finished job whose detail line was toggled open by a row click. */
   let selected = $state<number | null>(null);
@@ -49,6 +51,7 @@
       fetchJobs().then(
         async (body) => {
           if (cancelled) return;
+          unreachable = false;
           jobs = body.jobs;
           if (detailsWanted) {
             // Lazy, on the same cadence: running jobs refresh every
@@ -74,9 +77,17 @@
           }
         },
         () => {
-          // Degrade to idle on any error (a friend's 403 included)
-          // and stop polling.
-          if (!cancelled) jobs = [];
+          // A failed poll means "can't reach the daemon", not "the
+          // daemon is idle" — keep the last-known jobs, say so, and
+          // re-poll on the running cadence iff the last snapshot had a
+          // job running (mirror of the success arm), so a blip mid-job
+          // heals itself when the daemon comes back. An idle tray
+          // still costs exactly one request.
+          if (cancelled) return;
+          unreachable = true;
+          if (jobs.some((job) => job.state === 'running')) {
+            timer = setTimeout(poll, POLL_MS);
+          }
         },
       );
     };
@@ -89,18 +100,27 @@
 </script>
 
 <footer class="tray">
-  <button class="expander" aria-expanded={open} onclick={() => (open = !open)}>
-    {#if open}▾ jobs ({jobs.length}){:else}▸ jobs ({jobs.length}){/if}
-  </button>
-  {#each jobs as job (job.id)}
-    <JobRow {job} />
-  {/each}
-  <span class="activity" title={activityTitle}>activity ▾</span>
+  <div class="strip">
+    <button class="expander" aria-expanded={open} onclick={() => (open = !open)}>
+      {#if open}▾ jobs ({jobs.length}){:else}▸ jobs ({jobs.length}){/if}
+    </button>
+    {#if unreachable}
+      <span class="chip bad">can't reach the daemon</span>
+    {/if}
+    {#each jobs as job (job.id)}
+      <JobRow {job} />
+    {/each}
+    <span class="activity" title={activityTitle}>activity ▾</span>
+  </div>
 
   {#if open}
     <div class="panel">
       {#if jobs.length === 0}
-        <p class="empty">no jobs yet — ingest something</p>
+        {#if unreachable}
+          <p class="empty">can't reach the daemon</p>
+        {:else}
+          <p class="empty">no jobs yet — ingest something</p>
+        {/if}
       {:else}
         <ul>
           {#each jobs as job (job.id)}
@@ -162,15 +182,21 @@
 
 <style>
   .tray {
-    position: relative; /* the expand-up panel anchors to the strip */
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 8px var(--pad-x);
+    /* The expand-up panel anchors here — a SIBLING of the inline
+       strip, never a child, so the strip's sideways scroll (mobile)
+       can never clip the panel out of reach. */
+    position: relative;
     border-top: 2px solid var(--ink);
     background: var(--tray);
     font: 500 12px var(--font-data);
     color: var(--mut);
+  }
+
+  .strip {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px var(--pad-x);
   }
 
   .expander {
@@ -248,13 +274,13 @@
      activity stub inline; on a narrow screen it scrolls sideways rather
      than clipping a job mid-bar. The expander stays put as the anchor. */
   @media (max-width: 720px) {
-    .tray {
+    .strip {
       gap: 12px;
       overflow-x: auto;
       scrollbar-width: none;
     }
 
-    .tray::-webkit-scrollbar {
+    .strip::-webkit-scrollbar {
       display: none;
     }
 

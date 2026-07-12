@@ -1238,3 +1238,8 @@ msgstr "couldn't copy"
 #: src/screens/Admin.svelte
 msgid "couldn't copy — select it"
 msgstr "couldn't copy — select it"
+
+#: src/lib/components/JobsTray.svelte
+#: src/lib/components/JobsTray.svelte
+msgid "can't reach the daemon"
+msgstr "can't reach the daemon"

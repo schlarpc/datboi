@@ -103,6 +103,39 @@ test('tray polls while a job runs and stops when it finishes', async () => {
   expect(jobsCalls(handler)).toBe(3);
 });
 
+test('a failed poll mid-job keeps the last-known jobs and heals on recovery', async () => {
+  vi.useFakeTimers();
+  const universe: MockUniverse = { jobs: [running] };
+  installFetch(universe);
+  render(JobsTray);
+
+  await vi.advanceTimersByTimeAsync(0);
+  expect(screen.getByText('▸ jobs (1)')).toBeTruthy();
+
+  // The daemon blips: the tray keeps the last-known row, says so, and
+  // keeps polling — a fetch failure is "can't reach the daemon", not
+  // "the registry is empty".
+  universe.jobsFail = true;
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(screen.getByText('▸ jobs (1)')).toBeTruthy();
+  expect(screen.getByText("can't reach the daemon")).toBeTruthy();
+
+  // ...and heals on the next successful poll.
+  universe.jobsFail = false;
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(screen.queryByText("can't reach the daemon")).toBeNull();
+  expect(screen.getByText('▸ jobs (1)')).toBeTruthy();
+});
+
+test('a dead daemon at mount is one request and an honest chip', async () => {
+  vi.useFakeTimers();
+  const handler = installFetch({ jobs: [], jobsFail: true });
+  render(JobsTray);
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(jobsCalls(handler)).toBe(1); // nothing was running: no retry loop
+  expect(screen.getByText("can't reach the daemon")).toBeTruthy();
+});
+
 test('an idle tray costs exactly one request — no polling theater', async () => {
   vi.useFakeTimers();
   const handler = installFetch({ jobs: [] });

@@ -53,6 +53,9 @@ export interface MockUniverse {
   entriesFailFromOffset?: number;
   /** GET /v1/jobs rows (the in-memory registry's tray render). */
   jobs?: Job[];
+  /** GET /v1/jobs answers 500 — exercises the tray's unreachable arm.
+   * Mutable mid-test: flip it to script a daemon blip and recovery. */
+  jobsFail?: boolean;
   /** GET /v1/jobs/{id} script: each poll SHIFTS one entry until the
    * last, which then repeats — tests script running→done timelines. */
   jobTimeline?: JobDetailBody[];
@@ -248,6 +251,9 @@ export function installFetch(universe: MockUniverse) {
         return json(200, { deleted: 0, bytes_reclaimed: 0, skipped: 0 });
       }
       if (path === '/v1/jobs') {
+        if (universe.jobsFail === true) {
+          return json(500, { error: 'induced jobs failure' });
+        }
         return json(200, { jobs: universe.jobs ?? [] });
       }
       const jobMatch = path.match(/^\/v1\/jobs\/(\d+)$/);
