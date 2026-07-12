@@ -24,6 +24,7 @@
   import { debounced } from '../lib/debounced.svelte';
   import { errorText, failed, loading, ready, settle, type Remote } from '../lib/remote';
   import { completenessPct, ENTRY_STATES, type EntryState } from '../lib/state';
+  import LoadError from '../lib/components/LoadError.svelte';
 
   let { systemId }: { systemId: string } = $props();
 
@@ -51,7 +52,10 @@
    * reads as "maybe it worked". */
   let exportError = $state<string | null>(null);
 
+  /** Bumped by the error lines' retry — both load effects re-run. */
+  let attempt = $state(0);
   $effect(() => {
+    void attempt;
     fetchSystems().then(
       (body) => {
         const found = body.systems.find((sys) => String(sys.id) === systemId);
@@ -66,6 +70,7 @@
   // overwrite a newer one.
   let generation = 0;
   $effect(() => {
+    void attempt;
     const params = {
       q: dq() || undefined,
       state: filter === 'all' ? undefined : filter,
@@ -207,7 +212,7 @@
 <main>
   {#if system.st === 'error'}
     <!-- Undesigned loading/error states: plain mono in --faint. -->
-    <p class="undesigned">something went wrong — {system.msg}</p>
+    <LoadError msg={system.msg} onretry={() => (attempt += 1)} />
   {:else if system.st === 'loading' || railCounts === null}
     <p class="undesigned">loading…</p>
   {:else}
@@ -304,7 +309,7 @@
         {#if entries.st === 'error'}
           <!-- Rows-only failure: the rail and search stay usable, so a
                changed filter or query can recover the screen. -->
-          <p class="empty">something went wrong — {entries.msg}</p>
+          <div class="empty"><LoadError msg={entries.msg} onretry={() => (attempt += 1)} /></div>
         {:else if entries.st === 'loading'}
           <p class="empty">loading…</p>
         {:else if entries.data.rows.length === 0}

@@ -14,6 +14,7 @@
   import { completenessPct } from '../lib/state';
   import { errorText } from '../lib/remote';
   import { plural } from '../lib/plural';
+  import LoadError from '../lib/components/LoadError.svelte';
 
   let systems = $state<System[] | null>(null);
   let error = $state<string | null>(null);
@@ -36,7 +37,11 @@
     alive = false;
   });
 
+  /** Bumped by the error line's retry — the load effect re-runs. */
+  let attempt = $state(0);
   $effect(() => {
+    void attempt;
+    error = null;
     fetchSystems().then(
       (body) => (systems = body.systems),
       (e: unknown) => (error = errorText(e)),
@@ -141,7 +146,7 @@
   {#if error !== null}
     <!-- Loading/error states have no design (spec has none) — plain
          mono text in --faint until they get one. -->
-    <p class="undesigned">something went wrong — {error}</p>
+    <LoadError msg={error} onretry={() => (attempt += 1)} />
   {:else if systems === null}
     <p class="undesigned">loading…</p>
   {:else}

@@ -39,6 +39,7 @@
   import { copyText } from '../lib/clipboard';
   import { errorText } from '../lib/remote';
   import { shortHash } from '../lib/format';
+  import LoadError from '../lib/components/LoadError.svelte';
 
   let data = $state<AdminUsersBody | null>(null);
   let viewNames = $state<string[] | null>(null);
@@ -207,7 +208,7 @@
     <!-- Undesigned empty state: plain mono in --faint. -->
     <p class="undesigned">owner-only — invites, grants, and sessions live here</p>
   {:else if error !== null}
-    <p class="undesigned">something went wrong — {error}</p>
+    <LoadError msg={error} onretry={load} />
   {:else if data === null || viewNames === null}
     <p class="undesigned">loading…</p>
   {:else}

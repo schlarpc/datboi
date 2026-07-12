@@ -15,6 +15,7 @@
   import { fmtDate, fmtSize, shortHash } from '../lib/format';
   import { residencyLabel } from '../lib/residency.svelte';
   import { loading, settle, type Remote } from '../lib/remote';
+  import LoadError from '../lib/components/LoadError.svelte';
 
   let { hash }: { hash: string } = $props();
 
@@ -25,7 +26,10 @@
   // screen: reset to loading and generation-guard both arms so a slow
   // answer for the old hash can't land on the new one.
   let generation = 0;
+  /** Bumped by the error line's retry — the load effect re-runs. */
+  let attempt = $state(0);
   $effect(() => {
+    void attempt;
     const gen = ++generation;
     detail = loading();
     settle(
@@ -101,7 +105,7 @@
 
   {#if detail.st === 'error'}
     <!-- Undesigned loading/error states: plain mono in --faint. -->
-    <p class="undesigned">something went wrong — {detail.msg}</p>
+    <LoadError msg={detail.msg} onretry={() => (attempt += 1)} />
   {:else if detail.st === 'loading'}
     <p class="undesigned">loading…</p>
   {:else}

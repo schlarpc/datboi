@@ -27,6 +27,7 @@
   import { fmtDate, fmtSize, shortHash } from '../lib/format';
   import { residencyLabel } from '../lib/residency.svelte';
   import { errorText, loading, settle, type Remote } from '../lib/remote';
+  import LoadError from '../lib/components/LoadError.svelte';
 
   // Three independent resources, three Remotes: a failed orphan refresh
   // (say, after a keep toggle) must never blank fully-rendered stats.
@@ -132,7 +133,7 @@
 
   {#if stats.st === 'error'}
     <!-- Undesigned loading/error states: plain mono in --faint. -->
-    <p class="undesigned">something went wrong — {stats.msg}</p>
+    <LoadError msg={stats.msg} onretry={refreshStats} />
   {:else if stats.st === 'loading'}
     <p class="undesigned">loading…</p>
   {:else}
@@ -222,7 +223,7 @@
           <p class="copy">loading…</p>
         {:else if orphans.st === 'error'}
           <!-- Card-local failure: stats and breakdown stay rendered. -->
-          <p class="copy">something went wrong — {orphans.msg}</p>
+          <LoadError msg={orphans.msg} onretry={refreshOrphans} />
         {:else if reviewable.length === 0}
           <p class="copy">nothing unreferenced — every blob is rooted or still under grace</p>
         {:else}
@@ -270,7 +271,7 @@
          linking into the /storage/blob/{hash} inspector. -->
     {#if breakdown.st === 'error'}
       <!-- Breakdown-only failure: the tiles and cards above stand. -->
-      <p class="undesigned">something went wrong — {breakdown.msg}</p>
+      <LoadError msg={breakdown.msg} onretry={refreshStats} />
     {:else if breakdown.st === 'ready'}
       {@const b = breakdown.data}
       <div class="bytes-card">

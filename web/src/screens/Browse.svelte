@@ -22,6 +22,7 @@
   import { fmtAge, fmtSize, parseRegion, shortHash, snapShort } from '../lib/format';
   import { debounced } from '../lib/debounced.svelte';
   import { errorText, loading, ready, settle, type Remote } from '../lib/remote';
+  import LoadError from '../lib/components/LoadError.svelte';
 
   let { view }: { view: string } = $props();
 
@@ -46,7 +47,10 @@
   /** Paths whose quick-download pill is flashing `✓` (§5.12, ~1.4s). */
   let flashed = $state<Record<string, boolean>>({});
 
+  /** Bumped by the error lines' retry — both load effects re-run. */
+  let attempt = $state(0);
   $effect(() => {
+    void attempt;
     settle(viewDetail(view), (value) => (detail = value));
   });
 
@@ -55,6 +59,7 @@
   // overwrite a newer one.
   let generation = 0;
   $effect(() => {
+    void attempt;
     const params = { q: dq() || undefined };
     const gen = ++generation;
     moreError = null;
@@ -175,7 +180,7 @@
       <input type="search" aria-label={searchLabel} placeholder={searchPlaceholder} bind:value={q} />
       {#if detail.st === 'error'}
         <!-- Snapshot facts failed alone — the rows still serve. -->
-        <span class="info">something went wrong — {detail.msg}</span>
+        <span class="info"><LoadError msg={detail.msg} onretry={() => (attempt += 1)} /></span>
       {:else if detail.st === 'ready' && detail.data.snapshot !== null}
         <!-- Snapshot facts, not search results: the file count here is
              the whole manifest (the prototype's static info line); the
@@ -193,7 +198,7 @@
         {#if files.st === 'error'}
           <!-- Rows-only failure: the search box stays usable, so a
                changed query can recover the screen. -->
-          <p class="empty">something went wrong — {files.msg}</p>
+          <div class="empty"><LoadError msg={files.msg} onretry={() => (attempt += 1)} /></div>
         {:else if files.st === 'loading'}
           <p class="empty">loading…</p>
         {:else if files.data.rows.length === 0}

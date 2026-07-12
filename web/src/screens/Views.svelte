@@ -30,6 +30,7 @@
   import { fmtAge, fmtSize, shortHash, snapShort } from '../lib/format';
   import { loading, settle, type Remote } from '../lib/remote';
   import { plural } from '../lib/plural';
+  import LoadError from '../lib/components/LoadError.svelte';
 
   // The list (names) and each card's detail are INDEPENDENT resources
   // (the remote.ts principle): one failed or slow detail renders its
@@ -37,7 +38,10 @@
   let names = $state<Remote<string[]>>(loading());
   let cards = $state<Record<string, Remote<ViewDetail>>>({});
 
+  /** Bumped by the error line's retry — the load effect re-runs. */
+  let attempt = $state(0);
   $effect(() => {
+    void attempt;
     // The list body lacks endpoints + image (detail-only fields); view
     // counts are shelf-scale, so N detail fetches stay cheap.
     settle(
@@ -138,7 +142,7 @@
 
   {#if names.st === 'error'}
     <!-- Undesigned loading/error states: plain mono in --faint. -->
-    <p class="undesigned">something went wrong — {names.msg}</p>
+    <LoadError msg={names.msg} onretry={() => (attempt += 1)} />
   {:else if names.st === 'loading'}
     <p class="undesigned">loading…</p>
   {:else if names.data.length === 0}

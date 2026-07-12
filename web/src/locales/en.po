@@ -79,41 +79,17 @@ msgstr "Admin"
 msgid "# datboi missing-list · {0} {1} {2}"
 msgstr "# datboi missing-list · {0} {1} {2}"
 
-#. 0: error
 #. 0: gridError
 #. 0: sessionsError
-#. 0: system.msg
-#. 0: entries.msg
 #. 0: detail.msg
-#. 0: detail.msg
-#. 0: detail.msg
-#. 0: files.msg
 #. 0: failure
-#. 0: error
 #. 0: otherError
-#. 0: error
-#. 0: stats.msg
-#. 0: orphans.msg
-#. 0: breakdown.msg
-#. 0: names.msg
 #. 0: card.msg
 #: src/screens/Admin.svelte
 #: src/screens/Admin.svelte
-#: src/screens/Admin.svelte
 #: src/screens/Audit.svelte
-#: src/screens/Audit.svelte
-#: src/screens/Audit.svelte
-#: src/screens/Blob.svelte
-#: src/screens/Browse.svelte
-#: src/screens/Browse.svelte
 #: src/screens/Ingest.svelte
-#: src/screens/Library.svelte
 #: src/screens/Login.svelte
-#: src/screens/Shelves.svelte
-#: src/screens/Storage.svelte
-#: src/screens/Storage.svelte
-#: src/screens/Storage.svelte
-#: src/screens/Views.svelte
 #: src/screens/Views.svelte
 msgid "something went wrong — {0}"
 msgstr "something went wrong — {0}"
@@ -1431,3 +1407,8 @@ msgstr "keep toggle failed — {0}"
 #: src/screens/Audit.svelte
 msgid "export failed — {0}"
 msgstr "export failed — {0}"
+
+#. 0: msg
+#: src/lib/components/LoadError.svelte
+msgid "something went wrong — {0} <0>retry</0>"
+msgstr "something went wrong — {0} <0>retry</0>"

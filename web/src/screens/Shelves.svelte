@@ -13,11 +13,16 @@
   import { router } from '../lib/router.svelte';
   import { errorText } from '../lib/remote';
   import { plural } from '../lib/plural';
+  import LoadError from '../lib/components/LoadError.svelte';
 
   let views = $state<View[] | null>(null);
   let error = $state<string | null>(null);
 
+  /** Bumped by the error line's retry — the load effect re-runs. */
+  let attempt = $state(0);
   $effect(() => {
+    void attempt;
+    error = null;
     fetchViews().then(
       (body) => (views = body.views),
       (e: unknown) => (error = errorText(e)),
@@ -37,7 +42,7 @@
 
   {#if error !== null}
     <!-- Undesigned loading/error states: plain mono in --faint. -->
-    <p class="undesigned">something went wrong — {error}</p>
+    <LoadError msg={error} onretry={() => (attempt += 1)} />
   {:else if views === null}
     <p class="undesigned">loading…</p>
   {:else if views.length === 0}
