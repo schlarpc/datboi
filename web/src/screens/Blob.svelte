@@ -10,6 +10,7 @@
    */
   import { blobDetail } from '../lib/api/client';
   import type { BlobDetail, RouteEdge } from '../lib/api/types';
+  import { copyText } from '../lib/clipboard';
   import Link from '../lib/components/Link.svelte';
   import { fmtDate, fmtSize, residencyLabel, shortHash } from '../lib/format';
   import { loading, settle, type Remote } from '../lib/remote';
@@ -17,7 +18,7 @@
   let { hash }: { hash: string } = $props();
 
   let detail = $state<Remote<BlobDetail>>(loading());
-  let copied = $state(false);
+  let copied = $state<'idle' | 'done' | 'failed'>('idle');
 
   // The recipe DAG links land here with a NEW hash on the same mounted
   // screen: reset to loading and generation-guard both arms so a slow
@@ -33,12 +34,13 @@
     );
   });
 
-  /** The Views.svelte copy affordance, single target: the full hash. */
+  /** The Views.svelte copy affordance, single target: the full hash.
+   * On a clipboard-less origin (LAN http) the button says so — the
+   * full hash is the heading right beside it for a manual copy. */
   async function copyHash() {
     if (detail.st !== 'ready') return;
-    await navigator.clipboard.writeText(detail.data.hash);
-    copied = true;
-    setTimeout(() => (copied = false), 1400);
+    copied = (await copyText(detail.data.hash)) ? 'done' : 'failed';
+    setTimeout(() => (copied = 'idle'), 1400);
   }
 
   /** Declared digest rows, in strength order (absent algos omitted —
@@ -106,7 +108,7 @@
     <div class="head">
       <h2 class="hash">{d.hash}</h2>
       <button class="pill" onclick={copyHash}>
-        {#if copied}copied ✓{:else}⎘ copy{/if}
+        {#if copied === 'done'}copied ✓{:else if copied === 'failed'}couldn't copy{:else}⎘ copy{/if}
       </button>
     </div>
     <div class="badges">

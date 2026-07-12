@@ -25,6 +25,7 @@
   import { viewDetail, viewImageUrl, views as fetchViews } from '../lib/api/client';
   import type { OneGOneR, ViewDetail } from '../lib/api/types';
   import { bandFor } from '../lib/bands';
+  import { copyText } from '../lib/clipboard';
   import CliHint from '../lib/components/CliHint.svelte';
   import { fmtAge, fmtSize, shortHash, snapShort } from '../lib/format';
   import { loading, settle, type Remote } from '../lib/remote';
@@ -45,8 +46,9 @@
   let open = $state<Record<string, Panel | undefined>>({});
   let menu = $state<Record<string, boolean>>({});
   let newViewHint = $state(false);
-  /** `${name}:link` / `${name}:dav` — flips that label to `copied ✓`. */
-  let copied = $state<string | null>(null);
+  /** `${name}:link` / `${name}:dav` — flips that label to `copied ✓`,
+   * or to `couldn't copy` when the clipboard isn't there (LAN http). */
+  let copied = $state<{ key: string; ok: boolean } | null>(null);
 
   function toggle(name: string, panel: Panel) {
     open[name] = open[name] === panel ? undefined : panel;
@@ -54,10 +56,9 @@
 
   /** The real action: absolute endpoint URL onto the clipboard. */
   async function copy(key: string, text: string) {
-    await navigator.clipboard.writeText(text);
-    copied = key;
+    copied = { key, ok: await copyText(text) };
     setTimeout(() => {
-      if (copied === key) {
+      if (copied?.key === key) {
         copied = null;
       }
     }, 1400);
@@ -140,7 +141,9 @@
                 <button
                   onclick={() => copy(`${view.name}:dav`, location.origin + view.endpoints.dav)}
                 >
-                  {#if copied === `${view.name}:dav`}copied ✓{:else}⎘ webdav url{/if}
+                  {#if copied?.key === `${view.name}:dav`}
+                    {#if copied.ok}copied ✓{:else}couldn't copy{/if}
+                  {:else}⎘ webdav url{/if}
                 </button>
                 <button onclick={() => toggle(view.name, 'sync')}>view-sync CLI</button>
                 <button onclick={() => toggle(view.name, 'definition')}>definition</button>
@@ -194,8 +197,12 @@
                   ⬇ Export SD image
                 </button>
               {:else}
+                <!-- On failure the card foot already shows the URL —
+                     honest label here, manual copy there. -->
                 <button class="primary" onclick={() => copy(`${view.name}:link`, httpUrl)}>
-                  {#if copied === `${view.name}:link`}copied ✓{:else}⎘ copy link{/if}
+                  {#if copied?.key === `${view.name}:link`}
+                    {#if copied.ok}copied ✓{:else}couldn't copy{/if}
+                  {:else}⎘ copy link{/if}
                 </button>
               {/if}
               <span class="links">

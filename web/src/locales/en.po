@@ -1228,3 +1228,13 @@ msgstr "couldn't load more — {0}"
 #: src/lib/components/EntryDrawer.svelte
 msgid "blob {0} · <0/>"
 msgstr "blob {0} · <0/>"
+
+#: src/screens/Blob.svelte
+#: src/screens/Views.svelte
+#: src/screens/Views.svelte
+msgid "couldn't copy"
+msgstr "couldn't copy"
+
+#: src/screens/Admin.svelte
+msgid "couldn't copy — select it"
+msgstr "couldn't copy — select it"
