@@ -320,11 +320,11 @@
   .undesigned {
     font: 400 12.5px var(--font-data);
     color: var(--faint);
-    padding: 26px 28px;
+    padding: 26px var(--pad-x);
   }
 
   .sys-head {
-    padding: 20px 28px 0;
+    padding: 20px var(--pad-x) 0;
   }
 
   .row1 {
@@ -575,5 +575,72 @@
 
   .load-more:hover {
     color: var(--text);
+  }
+
+  /* Mobile: the side rail can't be a 180px column next to the list on a
+     phone, so the whole table stacks. The rail becomes a wrapping filter
+     bar across the top — search first (full width), state filters as
+     chips below — and the list takes the rest of the height. The entry
+     drawer detaches into a bottom sheet (see EntryDrawer.svelte). */
+  @media (max-width: 720px) {
+    .row1,
+    .row2 {
+      flex-wrap: wrap;
+    }
+
+    .missing-list {
+      margin-left: 0;
+    }
+
+    .table {
+      flex-direction: column;
+    }
+
+    .rail {
+      width: auto;
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      padding: 10px var(--pad-x);
+      border-right: none;
+      border-bottom: 1px solid var(--rule);
+    }
+
+    .rail-item {
+      flex: 0 0 auto;
+      gap: 6px;
+      padding: 4px 11px;
+      border: 1.5px solid var(--hair);
+      border-radius: var(--r-pill);
+    }
+
+    /* The inset left-bar selection reads as a filled chip here. */
+    .rail-item.sel {
+      background: var(--ink);
+      color: var(--bg);
+      box-shadow: none;
+      border-color: var(--ink);
+    }
+
+    .rail-item.sel .count {
+      color: var(--bg);
+    }
+
+    .rail-divider {
+      display: none;
+    }
+
+    /* Search leads the bar, full width, above the filter chips. */
+    .rail-search {
+      order: -1;
+      flex-basis: 100%;
+      padding: 0;
+    }
+
+    .rail-density {
+      flex-basis: 100%;
+      margin: 4px 0 0;
+    }
   }
 </style>

@@ -117,6 +117,9 @@
 <style>
   .shell {
     height: 100vh;
+    /* dvh tracks the *visible* viewport as mobile browser chrome slides
+       in/out, so the footer tray isn't stranded under the URL bar. */
+    height: 100dvh;
     display: flex;
     flex-direction: column;
   }
@@ -124,12 +127,12 @@
   .boot {
     font: 400 12.5px var(--font-data);
     color: var(--faint);
-    padding: 26px 28px;
+    padding: 26px var(--pad-x);
   }
 
   .notfound {
     flex: 1;
-    padding: 26px 28px;
+    padding: 26px var(--pad-x);
     font: 400 12.5px var(--font-data);
     color: var(--faint);
   }

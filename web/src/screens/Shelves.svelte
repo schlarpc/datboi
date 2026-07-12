@@ -99,7 +99,7 @@
   .undesigned {
     max-width: 960px;
     margin: 0 auto;
-    padding: 0 28px;
+    padding: 0 var(--pad-x);
     box-sizing: border-box;
   }
 
@@ -195,5 +195,16 @@
     margin-top: 12px;
     font: 400 11.5px var(--font-data);
     color: var(--okT);
+  }
+
+  @media (max-width: 640px) {
+    .grid {
+      grid-template-columns: 1fr;
+      gap: 14px;
+    }
+
+    .body {
+      padding: 16px 18px 18px;
+    }
   }
 </style>

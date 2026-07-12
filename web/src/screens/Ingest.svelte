@@ -328,7 +328,7 @@
   main {
     flex: 1;
     overflow-y: auto;
-    padding: 24px 28px 30px;
+    padding: 24px var(--pad-x) 30px;
   }
 
   .title-row {
@@ -533,5 +533,12 @@
     font: 400 12px var(--font-data);
     color: var(--faint);
     line-height: 1.7;
+  }
+
+  @media (max-width: 720px) {
+    .title-row {
+      flex-wrap: wrap;
+      gap: 4px 14px;
+    }
   }
 </style>

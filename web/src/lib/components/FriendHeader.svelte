@@ -50,8 +50,9 @@
   header {
     display: flex;
     align-items: center;
-    gap: 20px;
-    padding: 10px 28px;
+    gap: 12px 20px;
+    flex-wrap: wrap;
+    padding: 10px var(--pad-x);
     border-bottom: 2px solid var(--ink);
     background: var(--bg);
   }

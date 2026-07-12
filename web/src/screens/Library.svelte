@@ -246,7 +246,7 @@
   main {
     flex: 1;
     overflow-y: auto;
-    padding: 26px 28px 30px;
+    padding: 26px var(--pad-x) 30px;
   }
 
   .title-row {
@@ -413,5 +413,18 @@
 
   .import-log .detail {
     color: var(--faint);
+  }
+
+  /* One card per row once two won't fit comfortably; the card body also
+     loosens its side padding to match the tighter shell gutter. */
+  @media (max-width: 640px) {
+    .grid {
+      grid-template-columns: 1fr;
+      gap: 14px;
+    }
+
+    .body {
+      padding: 16px 18px 18px;
+    }
   }
 </style>

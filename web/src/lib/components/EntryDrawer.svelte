@@ -277,4 +277,27 @@
   .rom-name {
     color: var(--faint);
   }
+
+  /* On a phone there's no room for a 300px side rail, so the drawer
+     detaches into a bottom sheet: full width, pinned to the bottom of
+     the viewport, scrollable, and lifted above the list. The ✕ and the
+     Escape handler already dismiss it. */
+  @media (max-width: 720px) {
+    .drawer {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      top: auto;
+      width: auto;
+      max-height: 78dvh;
+      border-left: none;
+      border-top: 2px solid var(--ink);
+      border-radius: var(--r-card) var(--r-card) 0 0;
+      box-shadow: 0 -6px 24px color-mix(in srgb, var(--ink) 22%, transparent);
+      z-index: 20;
+      /* Clear the iOS home indicator. */
+      padding-bottom: max(20px, env(safe-area-inset-bottom));
+    }
+  }
 </style>

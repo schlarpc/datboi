@@ -82,7 +82,7 @@
     display: flex;
     align-items: center;
     gap: 20px;
-    padding: 10px 28px;
+    padding: 10px var(--pad-x);
     border-bottom: 2px solid var(--ink);
     background: var(--bg);
     font-size: 13px;
@@ -167,5 +167,41 @@
     align-items: center;
     justify-content: center;
     font: 600 13px var(--font-display);
+    flex: none;
+  }
+
+  /* Mobile chrome: the five nav pills won't share a row with the brand
+     and the toggle/health/avatar cluster, so the nav drops to its own
+     full-width second row and scrolls sideways — every tab still
+     reachable, nothing clipped. */
+  @media (max-width: 720px) {
+    header {
+      flex-wrap: wrap;
+      gap: 10px 12px;
+      padding: 8px var(--pad-x);
+    }
+
+    header :global(a.brand) {
+      gap: 10px;
+    }
+
+    nav {
+      order: 3;
+      flex-basis: 100%;
+      overflow-x: auto;
+      gap: 4px;
+      /* Hide the scrollbar — it's a swipe strip, not a scroll region. */
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    nav::-webkit-scrollbar {
+      display: none;
+    }
+
+    nav :global(a.nav-item) {
+      flex: none;
+      white-space: nowrap;
+    }
   }
 </style>

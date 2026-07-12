@@ -292,14 +292,14 @@
   .undesigned {
     font: 400 12.5px var(--font-data);
     color: var(--faint);
-    padding: 26px 28px;
+    padding: 26px var(--pad-x);
   }
 
   .toolbar {
     display: flex;
     align-items: center;
     gap: 16px;
-    padding: 14px 28px;
+    padding: 14px var(--pad-x);
   }
 
   .toolbar input {
@@ -524,7 +524,7 @@
     display: flex;
     align-items: center;
     gap: 16px;
-    padding: 9px 28px;
+    padding: 9px var(--pad-x);
     border-top: 2px solid var(--ink);
     background: var(--tray);
     font: 500 12px var(--font-data);
@@ -559,7 +559,7 @@
   }
 
   .modal {
-    width: 420px;
+    width: min(420px, calc(100vw - 32px));
     box-sizing: border-box;
     background: var(--panel);
     border: 2px solid var(--ink);
@@ -614,5 +614,50 @@
     padding: 7px 18px;
     font: 600 13px var(--font-display);
     text-decoration: none;
+  }
+
+  /* Mobile: the entry panel becomes a bottom sheet (matching the owner
+     drawer), the toolbar's snapshot info drops under the search box, and
+     the row gutter follows the shell. */
+  @media (max-width: 720px) {
+    .toolbar {
+      flex-wrap: wrap;
+      gap: 8px 16px;
+    }
+
+    .toolbar input {
+      max-width: none;
+    }
+
+    .info {
+      margin-left: 0;
+      white-space: normal;
+    }
+
+    .row {
+      padding: 9px var(--pad-x);
+    }
+
+    .empty,
+    .load-more {
+      padding-left: var(--pad-x);
+      padding-right: var(--pad-x);
+    }
+
+    .panel {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      top: auto;
+      width: auto;
+      max-height: 78dvh;
+      border-left: none;
+      border-top: 2px solid var(--ink);
+      border-radius: var(--r-card) var(--r-card) 0 0;
+      box-shadow: 0 -6px 24px color-mix(in srgb, var(--ink) 22%, transparent);
+      z-index: 20;
+      padding-bottom: max(20px, env(safe-area-inset-bottom));
+    }
   }
 </style>

@@ -63,13 +63,17 @@
 <style>
   .page {
     min-height: 100vh;
+    min-height: 100dvh;
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 24px;
+    box-sizing: border-box;
   }
 
   .card {
     width: 300px;
+    max-width: 100%;
     background: var(--panel);
     border: 2px solid var(--ink);
     border-radius: var(--r-card);

@@ -21,7 +21,11 @@ export default defineConfig({
     // owner (D68), so local dev needs no auth setup.
     proxy: {
       '/v1': 'http://127.0.0.1:2352',
-      '/view': 'http://127.0.0.1:2352',
+      // Trailing slash on purpose: content lives at `/view/{name}/{path}`,
+      // so match `/view/` — a bare `/view` prefix also swallows the
+      // `/views` SPA route, blanking it on hard-refresh (the app never
+      // boots because the daemon answers with its own index stub).
+      '/view/': 'http://127.0.0.1:2352',
       '/snap': 'http://127.0.0.1:2352',
     },
   },

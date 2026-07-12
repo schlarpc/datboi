@@ -201,7 +201,7 @@
   main {
     flex: 1;
     overflow-y: auto;
-    padding: 20px 28px 30px;
+    padding: 20px var(--pad-x) 30px;
   }
 
   .crumbs {
@@ -438,5 +438,17 @@
     border: 1.5px solid var(--ink);
     border-radius: var(--r-pill);
     padding: 2px 10px;
+  }
+
+  @media (max-width: 640px) {
+    /* Provenance/recipe/claims cards go single-file, and each recipe
+       edge stacks its inputs over its outputs rather than side by side. */
+    .cards {
+      grid-template-columns: 1fr;
+    }
+
+    .edge-cols {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

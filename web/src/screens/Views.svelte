@@ -316,7 +316,7 @@
   main {
     flex: 1;
     overflow-y: auto;
-    padding: 24px 28px 30px;
+    padding: 24px var(--pad-x) 30px;
   }
 
   .title-row {
@@ -528,5 +528,27 @@
   .foot-faint {
     color: var(--faint);
     overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 640px) {
+    .title-row {
+      flex-wrap: wrap;
+    }
+
+    .grid {
+      grid-template-columns: 1fr;
+      gap: 14px;
+    }
+
+    .body {
+      padding: 16px 18px 18px;
+    }
+
+    /* The actions row (primary verb + re-eval · diff · browse) is wide;
+       let it wrap so the link cluster drops below the button if needed. */
+    .actions {
+      flex-wrap: wrap;
+      gap: 10px 14px;
+    }
   }
 </style>
