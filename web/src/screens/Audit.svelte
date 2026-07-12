@@ -489,7 +489,7 @@
     box-sizing: border-box;
     font: 400 12px var(--font-data);
     padding: 5px 8px;
-    border: 1.5px solid var(--hair);
+    border: 1.5px solid var(--edge);
     border-radius: var(--r-input);
     background: var(--bg);
     color: var(--text);

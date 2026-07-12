@@ -176,7 +176,6 @@
   .expander {
     all: unset;
     cursor: pointer;
-    outline: revert; /* keep the focus ring `all: unset` would eat */
   }
 
   .activity {

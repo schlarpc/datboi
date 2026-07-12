@@ -112,7 +112,7 @@
   input {
     font: 400 13px var(--font-data);
     padding: 6px 10px;
-    border: 1.5px solid var(--hair);
+    border: 1.5px solid var(--edge);
     border-radius: var(--r-input);
     background: var(--bg);
     color: var(--text);

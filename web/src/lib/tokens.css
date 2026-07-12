@@ -16,10 +16,11 @@
   --ink: #26231c; /* structural borders, filled pills/buttons, inverted text bg */
   --text: #26231c; /* primary text */
   --mut: #54503f; /* secondary text (stats, tray, drawer body) */
-  --faint: #8f886f; /* tertiary text (subtitles, inactive nav, hints) */
-  --dim: #b7ae93; /* quaternary (sizes column, placeholders, disabled) */
+  --faint: #665f47; /* tertiary text (subtitles, inactive nav, hints) — ≥4.5:1 on every surface */
+  --dim: #706b4d; /* quaternary (sizes column, placeholders, disabled) — ≥4.5:1 on bg/panel */
   --rule: #f0ead9; /* row separators (1px) */
-  --hair: #d9d2bd; /* hairline borders (inputs, secondary pills, section rules) */
+  --hair: #d9d2bd; /* hairline borders (decorative rules, secondary pills) — text inputs use --edge */
+  --edge: #8f886f; /* control borders (text inputs) — ≥3:1 non-text contrast (WCAG 1.4.11) */
   --ok: #4c8a3f; /* verified green (fills: dots, bars, logo disc) */
   --okT: #3c6d32; /* verified green for text / links */
   --warn: #d9a13f; /* claimed amber (fills, hatch stripes) */
@@ -51,10 +52,11 @@
     --ink: #e4e7e0;
     --text: #e4e7e0;
     --mut: #a9aea3;
-    --faint: #8f948a;
-    --dim: #737870;
+    --faint: #999e93;
+    --dim: #8b9086;
     --rule: #2a2d29;
     --hair: #3c403a;
+    --edge: #767b74;
     --ok: #5ea34f;
     --okT: #7cc16c;
     --warn: #d9a13f;
@@ -81,10 +83,11 @@ html[data-theme='light'] {
   --ink: #26231c;
   --text: #26231c;
   --mut: #54503f;
-  --faint: #8f886f;
-  --dim: #b7ae93;
+  --faint: #665f47;
+  --dim: #706b4d;
   --rule: #f0ead9;
   --hair: #d9d2bd;
+  --edge: #8f886f;
   --ok: #4c8a3f;
   --okT: #3c6d32;
   --warn: #d9a13f;
@@ -110,10 +113,11 @@ html[data-theme='dark'] {
   --ink: #e4e7e0;
   --text: #e4e7e0;
   --mut: #a9aea3;
-  --faint: #8f948a;
-  --dim: #737870;
+  --faint: #999e93;
+  --dim: #8b9086;
   --rule: #2a2d29;
   --hair: #3c403a;
+  --edge: #767b74;
   --ok: #5ea34f;
   --okT: #7cc16c;
   --warn: #d9a13f;
@@ -219,6 +223,16 @@ body {
        scoped styles, which out-specifies a bare element selector. */
     font-size: 16px !important;
   }
+}
+
+/* ---- focus (WCAG 2.4.7): keyboard focus is always visible ---- */
+/* !important on purpose: components reset buttons with `all: unset`, which
+ * eats the UA focus ring — and did, app-wide, until this rule. Making the
+ * ring unoverridable turns "focus is visible" into a property of the system
+ * instead of a per-component courtesy someone has to remember. */
+:focus-visible {
+  outline: 2px solid var(--ink) !important;
+  outline-offset: 2px !important;
 }
 
 /* ---- state language (§1.4): dots + text colors, identical everywhere ---- */
