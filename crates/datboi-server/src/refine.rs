@@ -140,7 +140,7 @@ fn worker(db_dir: &std::path::Path, store: &'static Store, jobs: &Registry, shar
     let mut analyzers = families();
     // The D72/D73 maintenance phases ride this same thread (one
     // background writer). Losing them degrades to refine-only, loudly.
-    let maintainer = match crate::maintain::Maintainer::new(store) {
+    let maintainer = match crate::maintain::Maintainer::new(store, db_dir) {
         Ok(m) => Some(m),
         Err(e) => {
             eprintln!("refine worker: maintenance disabled (executor: {e})");

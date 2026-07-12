@@ -113,6 +113,21 @@ impl Db {
     }
 
     /// Append a snapshot emission record; returns its sequence number.
+    /// Newest snapshot the log knows: `(hash, seq)` — the D75 cadence
+    /// check reads this to fetch the last payload for comparison.
+    pub fn latest_snapshot(&self) -> Result<Option<(Blake3, i64)>, IndexError> {
+        use rusqlite::OptionalExtension as _;
+        Ok(self
+            .state()
+            .query_row(
+                "SELECT hash, seq FROM snapshot_log ORDER BY seq DESC LIMIT 1",
+                [],
+                |row| Ok((row.get::<_, [u8; 32]>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?
+            .map(|(hash, seq)| (Blake3(hash), seq)))
+    }
+
     pub fn snapshot_log_append(&self, hash: &Blake3, created_at: i64) -> Result<i64, IndexError> {
         let seq = self.state().query_row(
             "INSERT INTO snapshot_log (hash, created_at) VALUES (?1, ?2) RETURNING seq",

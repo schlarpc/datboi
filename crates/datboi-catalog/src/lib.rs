@@ -25,6 +25,7 @@ pub mod import;
 pub mod mame;
 pub mod profiles;
 pub mod rollup;
+pub mod statesnap;
 pub mod selection;
 pub mod unify;
 pub mod views;
@@ -64,6 +65,10 @@ pub enum CatalogError {
     Image(String),
     #[error("clonelist: {0}")]
     Clonelist(String),
+    #[error(transparent)]
+    Snapshot(#[from] datboi_core::snapshot::SnapshotError),
+    #[error("snapshot: {0}")]
+    Statesnap(String),
     #[error("mame mode: {0}")]
     Mame(String),
     #[error("export: {0}")]

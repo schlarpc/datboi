@@ -13,7 +13,7 @@ use datboi_core::alias::AliasHasher;
 use datboi_core::object::{self, ObjectKind};
 use datboi_core::recipe::{Op, Recipe};
 use datboi_core::snapshot::{
-    AliasBatch, AnalysisBatch, SnapshotPayload, SourceRef, StateSnapshot, alias_shard,
+    AliasBatch, AnalysisBatch, StateSnapshot,
 };
 use datboi_index::recipes::NewRecipe;
 use datboi_index::types::{Namespace as NsRow, OpKind, RecipeSource, Residency, SeekClass};
@@ -511,131 +511,32 @@ pub fn dat_diff(env: &Env, source: &str, json: bool) -> anyhow::Result<ExitCode>
 /// Shard count for the alias batches. 256 keeps per-shard churn small at
 /// MAME scale; at demo scale the 256 identical empty-batch blobs dedupe to
 /// ONE tiny CAS object, so small collections pay almost nothing.
-const ALIAS_FANOUT: usize = 256;
-
-/// Mint a signed state snapshot (D15): dat-source typing + sharded alias
-/// batches into meta/, logged in state.db. `recover` consumes the newest
-/// one that verifies under this instance's identity.
 pub fn snapshot(env: Env, json: bool) -> anyhow::Result<ExitCode> {
     let identity = crate::config::load_or_create_identity(&env.db_dir)?;
-    let now = now_unix();
-
-    let sources: Vec<SourceRef> = env
-        .db
-        .list_current_sources()?
-        .into_iter()
-        .map(|(provider, system, dat_blob, imported_at)| SourceRef {
-            provider,
-            system,
-            dat_blob,
-            imported_at: u64::try_from(imported_at).unwrap_or(0),
-        })
-        .collect();
-
-    let mut shards: Vec<Vec<datboi_core::alias::AliasTuple>> = vec![Vec::new(); ALIAS_FANOUT];
-    let mut alias_rows: u64 = 0;
-    for tuple in env.db.list_alias_tuples()? {
-        shards[alias_shard(&tuple.blake3, ALIAS_FANOUT)].push(tuple);
-        alias_rows += 1;
-    }
-
-    let mut alias_batches = Vec::with_capacity(ALIAS_FANOUT);
-    let mut new_batch_blobs: u64 = 0;
-    for rows in shards {
-        let bytes = AliasBatch { rows }.encode()?;
-        let (hash, aliases, outcome) = env.store.put_new(Namespace::Meta, bytes.as_slice())?;
-        if outcome == datboi_store_fs::PutOutcome::Stored {
-            new_batch_blobs += 1;
-        }
-        let blob_id =
-            env.db
-                .upsert_blob(&hash, Some(aliases.size), NsRow::Meta, Residency::Resident)?;
-        env.db.insert_aliases(blob_id, &aliases)?;
-        env.db.set_verified(blob_id, now)?;
-        alias_batches.push(hash);
-    }
-
-    // Analysis provenance batches (D48), sharded by the row's blob hash
-    // with the same fanout/dedup behavior as aliases. Omitted entirely
-    // while no analyzer has ever run (fields absent from the payload).
-    let analysis_rows_all = env.db.list_analysis_rows()?;
-    let analysis_row_count = analysis_rows_all.len() as u64;
-    let mut analysis_batches = Vec::new();
-    if !analysis_rows_all.is_empty() {
-        let mut shards: Vec<Vec<datboi_core::snapshot::AnalysisRow>> =
-            vec![Vec::new(); ALIAS_FANOUT];
-        for row in analysis_rows_all {
-            shards[alias_shard(&row.blob, ALIAS_FANOUT)].push(row);
-        }
-        for rows in shards {
-            let bytes = AnalysisBatch { rows }.encode()?;
-            let (hash, aliases, outcome) = env.store.put_new(Namespace::Meta, bytes.as_slice())?;
-            if outcome == datboi_store_fs::PutOutcome::Stored {
-                new_batch_blobs += 1;
-            }
-            let blob_id =
-                env.db
-                    .upsert_blob(&hash, Some(aliases.size), NsRow::Meta, Residency::Resident)?;
-            env.db.insert_aliases(blob_id, &aliases)?;
-            env.db.set_verified(blob_id, now)?;
-            analysis_batches.push(hash);
-        }
-    }
-
-    let sequence = env.db.next_snapshot_seq()?;
-    let analysis_fanout = if analysis_batches.is_empty() {
-        0
-    } else {
-        ALIAS_FANOUT
-    };
-    // Tags + authoritative config ride inline (dozens of tiny rows):
-    // recovery keeps view definitions and their D33 flips.
-    let mut tags = env.db.list_tags()?;
-    tags.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut config = env.db.config_list_prefix("")?;
-    config.sort_by(|a, b| a.0.cmp(&b.0));
-    let payload = SnapshotPayload {
-        sequence: u64::try_from(sequence).unwrap_or(0),
-        created_at: u64::try_from(now).unwrap_or(0),
-        sources,
-        alias_fanout: ALIAS_FANOUT,
-        alias_batches,
-        analysis_fanout,
-        analysis_batches,
-        tags,
-        config,
-    };
-    let bytes = payload.encode_signed(&identity)?;
-    let (hash, aliases, _outcome) = env.store.put_new(Namespace::Meta, bytes.as_slice())?;
-    let blob_id =
-        env.db
-            .upsert_blob(&hash, Some(aliases.size), NsRow::Meta, Residency::Resident)?;
-    env.db.insert_aliases(blob_id, &aliases)?;
-    env.db.set_verified(blob_id, now)?;
-    let logged = env.db.snapshot_log_append(&hash, now)?;
-    anyhow::ensure!(
-        logged == sequence,
-        "snapshot_log assigned seq {logged}, object was minted with {sequence} (concurrent snapshot?)"
-    );
-
+    // One definition (D75): the daemon's auto-cadence rider runs the
+    // same mint; this command is the manual trigger + printer.
+    let report = datboi_catalog::statesnap::mint(&env.store, &env.db, &identity, now_unix())?;
     if json {
         println!(
             "{}",
             json!({
-                "snapshot": hash.to_hex(),
-                "sequence": sequence,
-                "sources": payload.sources.len(),
-                "alias_rows": alias_rows,
-                "alias_batches": ALIAS_FANOUT,
-                "analysis_rows": analysis_row_count,
-                "new_batch_blobs": new_batch_blobs,
+                "snapshot": report.hash.to_hex(),
+                "sequence": report.sequence,
+                "sources": report.sources,
+                "alias_rows": report.alias_rows,
+                "alias_batches": datboi_catalog::statesnap::ALIAS_FANOUT,
+                "analysis_rows": report.analysis_rows,
+                "new_batch_blobs": report.new_batch_blobs,
             })
         );
     } else {
-        println!("snapshot {hash} (seq {sequence})");
+        println!("snapshot {} (seq {})", report.hash, report.sequence);
         println!(
-            "{} source(s), {alias_rows} alias row(s) in {ALIAS_FANOUT} batch(es) ({new_batch_blobs} new)",
-            payload.sources.len()
+            "{} source(s), {} alias row(s) in {} batch(es) ({} new)",
+            report.sources,
+            report.alias_rows,
+            datboi_catalog::statesnap::ALIAS_FANOUT,
+            report.new_batch_blobs
         );
     }
     Ok(ExitCode::SUCCESS)

@@ -79,14 +79,12 @@ Design passes R1–R8 complete; decisions ratified through D73. Docs
 
 - Shard fanout + inline-outboard threshold: frozen by the M1 NFS
   benchmark (spec in 90-roadmap.md), not by discussion.
-- State snapshot CADENCE: the encoding half settled long ago (the
-  statesnap codec shipped with golden-hash tests; `datboi snapshot`
-  is the manual trigger). Still open: WHEN snapshots happen — today
-  it is operator-remembered, and the D73 session raised the stakes:
-  keep-marks and GC watermark config are state.db rows now, so
-  "crashed before I ever ran snapshot" loses operator intent from
-  the recovery root. An auto-cadence (post-mutation debounce, or a
-  maintenance-cycle rider) is probably a small D-ruling.
+- ~~State snapshot cadence~~ ruled and shipped 2026-07-11 as
+  **D75**: the maintenance cycle's ambient tick auto-mints when the
+  authoritative triple (sources, tags, config) moved —
+  content-derived dirtiness, no flags; mint extracted to
+  datboi-catalog::statesnap, `datboi snapshot` stays as the manual
+  trigger.
 - Browser-side wasm lane in the web UI: deferred until a concrete need
   (M5 at the earliest, post-D50).
 - Auto-fill-gaps-from-peers policy (beyond the manual fetch action):
@@ -245,12 +243,12 @@ strict mode + retool clonelist consumption are M4 work items).
 - **Scrub runs and verify methods aren't recorded**: the index keeps
   per-blob `verified_at` only — no method, no scrub-run ledger — so
   `/v1/storage` cannot report last-scrub and the entry drawer's
-  verify line shows a date without a "how". Half closed 2026-07-11
-  (D74 amendment): `datboi scrub` now stamps a terminal ledger row
-  (kind scrub) via the CLI's exhaustive ledger_stamp match, and the
-  tray shows it live through the poll-time merge. Remaining: teach
-  /v1/storage (and the Scrub action card) to read last-scrub from the
-  ledger, and record the verify METHOD per blob.
+  verify line shows a date without a "how". Closed except one
+  residual, 2026-07-11: `datboi scrub` stamps a terminal ledger row
+  (D74 amendment), and `/v1/storage.last_scrub` + the Scrub card now
+  read it. Still unrecorded: the verify METHOD per blob (the entry
+  drawer's "how" — wants a column when scrub grows methods worth
+  distinguishing).
 - **System ids are cache surrogates**: `/v1/systems` keys on
   `dat_source.source_id`, which `datboi recover` re-mints from
   scratch. UI deep-links survive a browsing session, not a cache

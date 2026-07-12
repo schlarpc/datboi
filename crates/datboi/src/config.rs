@@ -49,55 +49,16 @@ pub struct Env {
 /// The one non-CAS secret (D15) — recovery needs it to authenticate the
 /// snapshot it trusts, so it must survive DB nukes and be backed up
 /// out-of-band.
-fn identity_path(db_dir: &std::path::Path) -> PathBuf {
-    db_dir.join("identity.key")
-}
-
-/// Load the identity if its key file exists; `None` means "never created".
+/// Identity helpers moved to datboi-catalog::statesnap (D75: the
+/// daemon's auto-cadence needs them too); these delegates keep the
+/// CLI's call sites and anyhow error shape.
 pub fn load_identity(db_dir: &std::path::Path) -> anyhow::Result<Option<Identity>> {
-    let path = identity_path(db_dir);
-    match std::fs::read(&path) {
-        Ok(bytes) => {
-            let seed: [u8; 32] = bytes
-                .as_slice()
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("{} must be exactly 32 bytes", path.display()))?;
-            Ok(Some(Identity::from_seed(seed)))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
-    }
+    Ok(datboi_catalog::statesnap::load_identity(db_dir)?)
 }
 
 /// Load the identity, generating and persisting one on first use (0600).
 pub fn load_or_create_identity(db_dir: &std::path::Path) -> anyhow::Result<Identity> {
-    if let Some(identity) = load_identity(db_dir)? {
-        return Ok(identity);
-    }
-    let identity = Identity::generate().context("generating instance identity")?;
-    let path = identity_path(db_dir);
-    // Owner-only: this seed IS the instance identity.
-    #[cfg(unix)]
-    {
-        use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt as _;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .with_context(|| format!("creating {}", path.display()))?;
-        file.write_all(&identity.to_seed())?;
-        file.sync_all()?;
-    }
-    #[cfg(not(unix))]
-    std::fs::write(&path, identity.to_seed())
-        .with_context(|| format!("creating {}", path.display()))?;
-    eprintln!(
-        "note: generated instance identity at {} — back this file up out-of-band (D15)",
-        path.display()
-    );
-    Ok(identity)
+    Ok(datboi_catalog::statesnap::load_or_create_identity(db_dir)?)
 }
 
 /// The default DB dir per the XDG Base Directory spec: `$XDG_STATE_HOME`

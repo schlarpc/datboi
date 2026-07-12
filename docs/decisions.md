@@ -1363,3 +1363,35 @@ reaches the tray live, not after a restart. View eval/image and
 recover/snapshot are deliberately UNstamped: real byte-level work
 that deserves its own kinds when its history surfaces exist, not a
 shoehorn into Gc.
+
+## D75 — Snapshot auto-cadence: content-derived dirtiness, authoritative-only trigger (2026-07-11)
+
+Snapshots stop being operator-remembered: the D71 worker's ambient
+tick runs `maybe_mint` — mint iff the AUTHORITATIVE TRIPLE (sources,
+tags, config) differs from the newest logged snapshot's payload.
+D72/D73 raised the stakes that forced this: keep-marks and watermark
+policy are config rows now, and "crashed before I ever ran
+`datboi snapshot`" would erase operator intent from the recovery
+root. A fresh install auto-mints its first snapshot on the first
+ambient tick.
+
+Two deliberate scope cuts. **Dirtiness is content-derived, never
+tracked**: no dirty flags or counters to desync — the check decodes
+the last snapshot (a missing, undecodable, or foreign-keyed object
+answers dirty; re-minting under our key is the fix for all three)
+and compares the triple the next mint would record. **The trigger is
+authoritative-only**: alias/analysis batches are derivable rows
+whose loss costs recovery TIME, not truth, and detecting their drift
+would mean re-encoding every shard per tick — the expensive way to
+learn what `datboi snapshot` already offers. When intent DOES move,
+the fired mint refreshes the batches anyway.
+
+Mechanically: the mint moved verbatim from the CLI into
+datboi-catalog::statesnap (one definition; `datboi snapshot` is now
+the manual trigger + printer), identity-file helpers moved with it,
+and the rider runs LAST in the maintenance cycle so the cycle's own
+keep-marks ride the same tick. *Rejected:* per-wake checks (config
+churn deserves minutes-latency durability, not per-ingest snapshot
+objects), full-payload dirtiness (shard re-encoding per tick),
+dirty-flag tracking (a flag that can lie replaces a comparison that
+cannot).

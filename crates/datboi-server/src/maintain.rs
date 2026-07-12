@@ -38,15 +38,19 @@ const GUARD_TTL_SECS: i64 = 15 * 60;
 pub(crate) struct Maintainer {
     exec: Executor<'static>,
     holder: GuardHolder,
+    /// The instance identity (D75): the auto-cadence rider signs
+    /// snapshots with the same key `datboi snapshot` uses.
+    identity: datboi_core::identity::Identity,
 }
 
 impl Maintainer {
-    pub(crate) fn new(store: &'static Store) -> anyhow::Result<Self> {
+    pub(crate) fn new(store: &'static Store, db_dir: &std::path::Path) -> anyhow::Result<Self> {
         let mut holder = [0u8; 16];
         getrandom::getrandom(&mut holder)?;
         Ok(Self {
             exec: Executor::new(store, datboi_exec::ExecConfig::default())?,
             holder: GuardHolder(holder),
+            identity: datboi_catalog::statesnap::load_or_create_identity(db_dir)?,
         })
     }
 
@@ -59,6 +63,26 @@ impl Maintainer {
             self.mark_orphans(db);
         }
         self.watermark_evict(db, store, jobs);
+        if ambient {
+            self.snapshot_if_dirty(db, store);
+        }
+    }
+
+    /// Phase 4 — the D75 auto-cadence rider (ambient ticks, AFTER the
+    /// byte-moving phases so a cycle's own keep-marks/config writes
+    /// ride the same tick's snapshot). Content-derived dirtiness: mint
+    /// only when the authoritative triple (sources, tags, config)
+    /// differs from the newest logged snapshot — operator intent never
+    /// waits on an operator remembering `datboi snapshot`.
+    fn snapshot_if_dirty(&self, db: &mut Db, store: &Store) {
+        match datboi_catalog::statesnap::maybe_mint(store, db, &self.identity, now_unix()) {
+            Ok(Some(report)) => eprintln!(
+                "maintenance: state snapshot {} (seq {}) — authoritative state moved",
+                report.hash, report.sequence
+            ),
+            Ok(None) => {}
+            Err(e) => eprintln!("maintenance: auto-snapshot: {e}"),
+        }
     }
 
     /// Phase 1 — eager licensing (D72). Tray job only when something
