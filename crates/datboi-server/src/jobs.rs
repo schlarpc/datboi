@@ -19,36 +19,33 @@ use datboi_api::{
     IngestErrorItem, IngestMemberSkipItem, IngestReportBody, Job, JobDetail, JobKind, JobRunState,
     MatchedEntry,
 };
-use datboi_index::Db;
-use datboi_index::jobs::{
-    JOB_DONE, JOB_FAILED, JOB_INTERRUPTED, JobRow, KIND_GC, KIND_INGEST, KIND_REFINE, KIND_SCRUB,
-    LEDGER_KEEP,
-};
+use datboi_index::jobs::{JobRow, LEDGER_KEEP};
+use datboi_index::{Db, JobKind as LedgerKind, JobState as LedgerState};
 use datboi_ingest::IngestReport;
 
 /// Finished jobs kept IN MEMORY for the tray after they complete;
 /// running jobs are never pruned.
 const KEEP_FINISHED: usize = 20;
 
-/// Ledger kind codes ↔ the wire enum. The codes are defined ONCE in
-/// datboi-index (the CLI's ledger_stamp writes them too); this pair
-/// only translates, and the exhaustive match means a new wire kind
-/// fails to compile until it gets a code.
-fn kind_code(kind: JobKind) -> i64 {
+/// Ledger kinds ↔ the wire enum. The vocabulary is defined ONCE in
+/// datboi-index (the CLI's ledger_stamp writes it too); this pair only
+/// translates, and the exhaustive matches mean a new kind on either
+/// side fails to compile until it gets a partner.
+fn to_ledger(kind: JobKind) -> LedgerKind {
     match kind {
-        JobKind::Ingest => KIND_INGEST,
-        JobKind::Refine => KIND_REFINE,
-        JobKind::Gc => KIND_GC,
-        JobKind::Scrub => KIND_SCRUB,
+        JobKind::Ingest => LedgerKind::Ingest,
+        JobKind::Refine => LedgerKind::Refine,
+        JobKind::Gc => LedgerKind::Gc,
+        JobKind::Scrub => LedgerKind::Scrub,
     }
 }
 
-fn kind_from_code(code: i64) -> JobKind {
-    match code {
-        KIND_REFINE => JobKind::Refine,
-        KIND_GC => JobKind::Gc,
-        KIND_SCRUB => JobKind::Scrub,
-        _ => JobKind::Ingest,
+fn from_ledger(kind: LedgerKind) -> JobKind {
+    match kind {
+        LedgerKind::Ingest => JobKind::Ingest,
+        LedgerKind::Refine => JobKind::Refine,
+        LedgerKind::Gc => JobKind::Gc,
+        LedgerKind::Scrub => JobKind::Scrub,
     }
 }
 
@@ -184,13 +181,20 @@ impl Registry {
             .collect())
     }
 
-    fn push_job(&self, kind: JobKind, name: String, files_total: u64, bytes_total: u64, now: i64) -> i64 {
+    fn push_job(
+        &self,
+        kind: JobKind,
+        name: String,
+        files_total: u64,
+        bytes_total: u64,
+        now: i64,
+    ) -> i64 {
         // The ledger assigns ids (unique across restarts); the counter
         // is the ephemeral fallback — and the escape hatch if the
         // ledger write fails (a job must run even when history can't).
         let ledger_id = self.ledger.as_ref().and_then(|db| {
             lock(db)
-                .insert_job(kind_code(kind), &name, now)
+                .insert_job(to_ledger(kind), &name, now)
                 .map_err(|e| eprintln!("jobs: ledger insert failed ({e}); job runs unrecorded"))
                 .ok()
         });
@@ -343,7 +347,7 @@ impl Registry {
             }
             Self::prune(&mut inner);
         }
-        self.persist(id, JOB_DONE, now);
+        self.persist(id, LedgerState::Done, now);
     }
 
     /// Infrastructure failure (not a per-file refusal): the job's
@@ -359,17 +363,15 @@ impl Registry {
             }
             Self::prune(&mut inner);
         }
-        self.persist(id, JOB_FAILED, now);
+        self.persist(id, LedgerState::Failed, now);
     }
 
     /// Finalize the ledger row with the frozen wire detail (D74).
     /// Best-effort by design: history failing to write must never fail
     /// the job it describes.
-    fn persist(&self, id: i64, state: i64, now: i64) {
+    fn persist(&self, id: i64, state: LedgerState, now: i64) {
         let Some(db) = &self.ledger else { return };
-        let detail = self
-            .detail(id)
-            .and_then(|d| serde_json::to_vec(&d).ok());
+        let detail = self.detail(id).and_then(|d| serde_json::to_vec(&d).ok());
         let db = lock(db);
         if let Err(e) = db.finalize_job(id, state, now, detail.as_deref()) {
             eprintln!("jobs: ledger finalize failed for job {id}: {e}");
@@ -412,7 +414,6 @@ impl Registry {
         let row = lock(db).job_by_id(id).ok()??;
         Some(detail_of(&hydrate(row)))
     }
-
 }
 
 /// The wire detail of one registry entry (memory-held or hydrated).
@@ -444,16 +445,20 @@ fn hydrate(row: JobRow) -> JobState {
         .as_deref()
         .and_then(|bytes| serde_json::from_slice(bytes).ok());
     let (state, error) = match row.state {
-        JOB_DONE => (JobRunState::Done, None),
-        JOB_INTERRUPTED => (
+        LedgerState::Done => (JobRunState::Done, None),
+        LedgerState::Interrupted => (
             JobRunState::Failed,
             Some("interrupted: the daemon restarted while this job was running".to_owned()),
         ),
-        _ => (JobRunState::Failed, None),
+        LedgerState::Failed => (JobRunState::Failed, None),
+        // The insert→push window in push_job: a list() poll can read
+        // the ledger row before memory has the live entry. Momentary;
+        // the memory row wins on the next poll.
+        LedgerState::Running => (JobRunState::Failed, None),
     };
     let mut job = JobState {
         id: row.job_id,
-        kind: kind_from_code(row.kind),
+        kind: from_ledger(row.kind),
         name: row.name,
         files_total: 0,
         files_done: 0,
@@ -568,10 +573,14 @@ mod tests {
 
         let first = Registry::durable(open_db(), 1_000).expect("open");
         let done_id = first.create(&[staged("kept.gba", 7)], 1_000);
-        first.file_done(done_id, 7, IngestReportBody {
-            files_stored: 1,
-            ..IngestReportBody::default()
-        });
+        first.file_done(
+            done_id,
+            7,
+            IngestReportBody {
+                files_stored: 1,
+                ..IngestReportBody::default()
+            },
+        );
         first.finish(done_id, 1_500);
         let crashed_id = first.create_gc("evict — watermark", 3, 1_600);
         assert_ne!(done_id, crashed_id);
@@ -585,7 +594,11 @@ mod tests {
         let crashed = second.detail(crashed_id).expect("tombstone exists");
         assert_eq!(crashed.job.state, JobRunState::Failed);
         assert!(
-            crashed.error.as_deref().unwrap_or("").contains("interrupted"),
+            crashed
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("interrupted"),
             "{crashed:?}"
         );
         // Fresh ids continue past history — never collide with it.
@@ -598,20 +611,28 @@ mod tests {
     /// detail() WITHOUT a daemon restart; memory wins on id collision.
     #[test]
     fn ledger_merge_surfaces_cli_rows_live() {
-        use datboi_index::jobs::{JOB_DONE, KIND_SCRUB};
         let dir = tempfile::tempdir().expect("tempdir");
-        let reg =
-            Registry::durable(datboi_index::Db::open(dir.path()).expect("db"), 1_000).expect("open");
+        let reg = Registry::durable(datboi_index::Db::open(dir.path()).expect("db"), 1_000)
+            .expect("open");
         let mem_id = reg.create(&[staged("live.gba", 1)], 1_100);
 
         // "The CLI": a second connection writes a finished scrub row.
         let cli_db = datboi_index::Db::open(dir.path()).expect("second conn");
         let cli_id = cli_db
-            .insert_finished_job(KIND_SCRUB, "cli: scrub — 100% sample", JOB_DONE, 1_200, 1_300)
+            .insert_finished_job(
+                LedgerKind::Scrub,
+                "cli: scrub — 100% sample",
+                LedgerState::Done,
+                1_200,
+                1_300,
+            )
             .expect("cli row");
 
         let rows = reg.list();
-        let cli_row = rows.iter().find(|j| j.id == cli_id).expect("cli row surfaced");
+        let cli_row = rows
+            .iter()
+            .find(|j| j.id == cli_id)
+            .expect("cli row surfaced");
         assert_eq!(cli_row.kind, JobKind::Scrub);
         assert_eq!(cli_row.state, JobRunState::Done);
         assert!(rows.iter().any(|j| j.id == mem_id), "live job still listed");

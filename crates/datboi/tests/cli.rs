@@ -1620,11 +1620,11 @@ fn auth_cli_surface() {
 }
 
 /// D74 CLI wiring: mutating commands stamp terminal ledger rows (the
-/// ledger_stamp exhaustive match in main.rs); reads don't. Kind and
-/// state codes are the datboi-index constants.
+/// ledger_stamp exhaustive match in main.rs); reads don't. Kinds and
+/// states are the datboi-index enums.
 #[test]
 fn cli_commands_stamp_the_job_ledger() {
-    use datboi_index::jobs::{JOB_DONE, KIND_INGEST, KIND_REFINE, KIND_SCRUB};
+    use datboi_index::{JobKind, JobState};
 
     let world = Universe::new();
     let rom = world.src().join("thing.gba");
@@ -1643,13 +1643,13 @@ fn cli_commands_stamp_the_job_ledger() {
 
     let db = datboi_index::Db::open(&world.db()).expect("db");
     let rows = db.recent_jobs(100).expect("rows");
-    let kinds: Vec<i64> = rows.iter().map(|r| r.kind).collect();
+    let kinds: Vec<JobKind> = rows.iter().map(|r| r.kind).collect();
     assert_eq!(
         kinds,
-        [KIND_INGEST, KIND_REFINE, KIND_SCRUB],
+        [JobKind::Ingest, JobKind::Refine, JobKind::Scrub],
         "exactly the three mutating commands stamped: {rows:?}"
     );
-    assert!(rows.iter().all(|r| r.state == JOB_DONE), "{rows:?}");
+    assert!(rows.iter().all(|r| r.state == JobState::Done), "{rows:?}");
     assert!(
         rows[0].name.starts_with("cli: ingest"),
         "names carry the cli: prefix: {rows:?}"

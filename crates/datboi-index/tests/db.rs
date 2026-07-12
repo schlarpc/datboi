@@ -713,6 +713,45 @@ fn state_db_tags_config_snapshot() {
     assert_eq!(blobs, 0);
 }
 
+/// Job ledger rows decode fallibly like every other coded column: a
+/// kind or state code this build doesn't know is an
+/// [`IndexError::Decode`], never a silently misfiled row.
+#[test]
+fn job_ledger_round_trips_and_refuses_unknown_codes() {
+    use datboi_index::{JobKind, JobState};
+
+    let (_dir, db) = open_db();
+    let id = db
+        .insert_finished_job(JobKind::Scrub, "cli: scrub", JobState::Done, 10, 20)
+        .unwrap();
+    let row = db.job_by_id(id).unwrap().expect("row");
+    assert_eq!((row.kind, row.state), (JobKind::Scrub, JobState::Done));
+
+    // A future writer's row: unknown kind code.
+    db.state()
+        .execute(
+            "INSERT INTO job (kind, name, state, started_at) VALUES (99, 'future', 0, 30)",
+            [],
+        )
+        .unwrap();
+    let future_id = db.state().last_insert_rowid();
+    assert!(matches!(
+        db.job_by_id(future_id).unwrap_err(),
+        IndexError::Decode {
+            what: "JobKind",
+            code: 99
+        }
+    ));
+    assert!(matches!(
+        db.recent_jobs(10).unwrap_err(),
+        IndexError::Decode { .. }
+    ));
+    assert!(matches!(
+        JobState::from_code(99).unwrap_err(),
+        IndexError::Decode { .. }
+    ));
+}
+
 #[test]
 fn auth_users_invites_sessions_grants() {
     use datboi_index::{InviteOutcome, Role};

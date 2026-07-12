@@ -1,6 +1,6 @@
-//! Column-value vocabularies. Numeric codes are part of the on-disk cache
-//! schema; they may be extended but never renumbered within a
-//! `SCHEMA_VERSION`.
+//! Column-value vocabularies. Numeric codes are part of the on-disk
+//! schemas (cache.db and state.db alike); they may be extended but never
+//! renumbered within a `SCHEMA_VERSION`.
 
 use crate::IndexError;
 
@@ -128,6 +128,31 @@ db_enum! {
         BadDump = 1,
         NoDump = 2,
         Verified = 3,
+    }
+}
+
+db_enum! {
+    /// Job ledger kind (D74, state.db `job.kind`). ONE definition for
+    /// both writers: the daemon maps the wire enum here, the CLI's
+    /// ledger_stamp names these directly.
+    JobKind {
+        Ingest = 0,
+        Refine = 1,
+        Gc = 2,
+        Scrub = 3,
+    }
+}
+
+db_enum! {
+    /// Job ledger state (D74, state.db `job.state`): the wire
+    /// vocabulary plus crash evidence.
+    JobState {
+        Running = 0,
+        Done = 1,
+        Failed = 2,
+        /// Still `running` when a daemon started: the process died
+        /// under it.
+        Interrupted = 3,
     }
 }
 

@@ -512,8 +512,8 @@ CREATE TABLE config (
 -- truncatable, EXCLUDED from CAS snapshots (history is not recovery
 -- truth). Rows are terminal snapshots — inserted running, finalized
 -- once; a row still `running` at daemon startup is crash evidence and
--- gets marked interrupted. state codes: 0 running, 1 done, 2 failed,
--- 3 interrupted. kind codes mirror the wire JobKind (jobs.rs).
+-- gets marked interrupted. kind/state codes: JobKind/JobState
+-- (types.rs).
 CREATE TABLE job (
   job_id      INTEGER PRIMARY KEY,
   kind        INTEGER NOT NULL,

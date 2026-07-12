@@ -492,31 +492,31 @@ enum ViewCommand {
 /// `running` row from a CLI process would be falsely tombstoned by
 /// the daemon's interruption sweep, whose one-daemon-per-db-dir
 /// assumption a live CLI legitimately violates.
-fn ledger_stamp(command: &Command) -> Option<(i64, String)> {
-    use datboi_index::jobs::{KIND_GC, KIND_INGEST, KIND_REFINE, KIND_SCRUB};
+fn ledger_stamp(command: &Command) -> Option<(datboi_index::JobKind, String)> {
+    use datboi_index::JobKind;
     match command {
         // ---- byte-level jobs: recorded ----
         Command::Ingest { paths, .. } => Some((
-            KIND_INGEST,
+            JobKind::Ingest,
             format!(
                 "cli: ingest — {} path{}",
                 paths.len(),
                 if paths.len() == 1 { "" } else { "s" }
             ),
         )),
-        Command::Evict { dry_run: false, .. } => Some((KIND_GC, "cli: evict".into())),
+        Command::Evict { dry_run: false, .. } => Some((JobKind::Gc, "cli: evict".into())),
         Command::Materialize { hash, .. } => Some((
-            KIND_GC,
+            JobKind::Gc,
             format!("cli: materialize {}", &hash[..hash.len().min(10)]),
         )),
         Command::Sweep { analyzer, .. } => {
-            Some((KIND_REFINE, format!("cli: sweep — {analyzer}")))
+            Some((JobKind::Refine, format!("cli: sweep — {analyzer}")))
         }
         Command::Gc {
             cmd: GcCommand::Apply { .. },
-        } => Some((KIND_GC, "cli: gc apply".into())),
+        } => Some((JobKind::Gc, "cli: gc apply".into())),
         Command::Scrub { sample, .. } => {
-            Some((KIND_SCRUB, format!("cli: scrub — {sample}% sample")))
+            Some((JobKind::Scrub, format!("cli: scrub — {sample}% sample")))
         }
 
         // ---- not jobs: reads, config, auth, serving ----
@@ -546,14 +546,25 @@ fn ledger_stamp(command: &Command) -> Option<(i64, String)> {
 
 /// Best-effort terminal ledger row for a stamped CLI command (D74):
 /// history failing to write must never fail the work it describes.
-fn record_cli_job(db_dir: &std::path::Path, kind: i64, name: &str, started: i64, failed: bool) {
-    use datboi_index::jobs::{JOB_DONE, JOB_FAILED, LEDGER_KEEP};
+fn record_cli_job(
+    db_dir: &std::path::Path,
+    kind: datboi_index::JobKind,
+    name: &str,
+    started: i64,
+    failed: bool,
+) {
+    use datboi_index::JobState;
+    use datboi_index::jobs::LEDGER_KEEP;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
     match datboi_index::Db::open(db_dir) {
         Ok(db) => {
-            let state = if failed { JOB_FAILED } else { JOB_DONE };
+            let state = if failed {
+                JobState::Failed
+            } else {
+                JobState::Done
+            };
             if let Err(e) = db.insert_finished_job(kind, name, state, started, now) {
                 eprintln!("warning: job ledger write failed: {e}");
             }

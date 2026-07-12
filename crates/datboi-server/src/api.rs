@@ -1029,7 +1029,7 @@ fn storage_body(app: &App) -> Result<StorageResponse, Response> {
     // The scrub-run readout (D74): newest finished scrub row, whichever
     // side ran it (CLI stamps terminal rows; a daemon scrub would too).
     let last_scrub = db
-        .latest_finished_job_of_kind(datboi_index::jobs::KIND_SCRUB)
+        .latest_finished_job_of_kind(datboi_index::JobKind::Scrub)
         .map_err(internal)?
         .and_then(|row| {
             Some(datboi_api::LastScrub {
