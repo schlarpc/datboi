@@ -93,6 +93,11 @@
 <style>
   header {
     display: flex;
+    /* Wrap-capable at EVERY width: between the desktop layout fitting
+       and the ≤720px swipe strip there is a band (wider in longer
+       locales) where min-content beats the viewport — wrapping there
+       beats forcing the whole page to scroll sideways. */
+    flex-wrap: wrap;
     align-items: center;
     gap: 20px;
     padding: 10px var(--pad-x);
