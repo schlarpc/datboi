@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::{Body, Bytes};
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{DefaultBodyLimit, Path as UrlPath, RawQuery, State};
 use axum::handler::Handler;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
@@ -863,6 +864,36 @@ fn listing_response(idx: &ViewIndex, prefix: &str, want_json: bool, immutable: b
 }
 
 // ---- small helpers ----
+
+/// `axum::Json` with rejections in the typed /v1 error shape (D69):
+/// serde data errors — missing fields, wrong types, unknown enum
+/// variants — answer 400 (a malformed request, per the contract's
+/// documented 400s), and every other reject (bad syntax, wrong
+/// content type) keeps axum's status with an [`ApiError`] body
+/// instead of text/plain. This is what lets contractually-required
+/// request fields be plain `T` in datboi-api.
+pub(crate) struct ApiJson<T>(pub(crate) T);
+
+impl<S, T> axum::extract::FromRequest<S> for ApiJson<T>
+where
+    axum::Json<T>: axum::extract::FromRequest<S, Rejection = JsonRejection>,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Response> {
+        match axum::Json::<T>::from_request(req, state).await {
+            Ok(axum::Json(value)) => Ok(Self(value)),
+            Err(rejection) => {
+                let status = match &rejection {
+                    JsonRejection::JsonDataError(_) => StatusCode::BAD_REQUEST,
+                    other => other.status(),
+                };
+                Err(crate::api::err(status, &rejection.body_text()))
+            }
+        }
+    }
+}
 
 pub(crate) async fn run_blocking(
     f: impl FnOnce() -> Result<Response, Response> + Send + 'static,

@@ -19,14 +19,18 @@
 //! and deliberately stay out of the spec.
 //!
 //! Field-level fidelity rule: these structs describe what actually
-//! goes over the wire TODAY. Always-present-but-nullable fields are
-//! `Option<T>`; omitted-when-absent fields carry
+//! goes over the wire TODAY, and the wire mode rides the field's TYPE
+//! (see [`wire`]): always-present-but-nullable is [`Nullable<T>`];
+//! omitted-when-absent is `Option<T>` with
 //! `#[serde(skip_serializing_if = "Option::is_none")]`.
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 mod paths;
+pub mod wire;
+
+pub use wire::Nullable;
 
 // ---- the uniform error shape ----
 
@@ -148,15 +152,13 @@ pub struct WhoamiResponse {
 
 // ---- POST /v1/auth/login + /v1/auth/invite/accept ----
 
-/// Login credentials. Fields are `Option` so the handler owns the
-/// "missing field" 400 (the D69 refactor preserves the wire behavior
-/// exactly); the contract still marks them required.
+/// Login credentials. Missing fields are the extractor's typed 400
+/// (datboi-server's `ApiJson` keeps every body-parse failure in the
+/// D69 error shape), so plain `String` IS the required-field contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct LoginRequest {
-    #[schema(required = true)]
-    pub username: Option<String>,
-    #[schema(required = true)]
-    pub password: Option<String>,
+    pub username: String,
+    pub password: String,
 }
 
 /// Invite acceptance: consumes the invite atomically, creates the user
@@ -164,14 +166,11 @@ pub struct LoginRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct InviteAcceptRequest {
     /// The invite token exactly as minted (the URL fragment).
-    #[schema(required = true)]
-    pub token: Option<String>,
+    pub token: String,
     /// 1-32 characters of `[a-z0-9_-]`.
-    #[schema(required = true)]
-    pub username: Option<String>,
+    pub username: String,
     /// At least 8 characters.
-    #[schema(required = true)]
-    pub password: Option<String>,
+    pub password: String,
 }
 
 /// A fresh login/acceptance answer: whoami-shaped plus the session
@@ -205,8 +204,7 @@ pub struct System {
     /// `provider/system`, the durable display identity.
     pub source: String,
     /// Null when the source exists but nothing was imported yet.
-    #[schema(required = true)]
-    pub revision: Option<Revision>,
+    pub revision: Nullable<Revision>,
     pub counts: Counts,
     /// Total entries in the current revision (counts sum to this).
     pub total: i64,
@@ -218,13 +216,10 @@ pub struct System {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Revision {
     pub id: i64,
-    #[schema(required = true)]
-    pub version: Option<String>,
-    #[schema(required = true)]
-    pub date: Option<String>,
+    pub version: Nullable<String>,
+    pub date: Nullable<String>,
     /// Unix seconds.
-    #[schema(required = true)]
-    pub imported_at: Option<i64>,
+    pub imported_at: Nullable<i64>,
 }
 
 /// The D39 entry-audit rollup, bucketed into the 4-state vocabulary.
@@ -253,16 +248,13 @@ pub struct EntryRow {
     pub state: EntryState,
     /// Total required bytes — null unless every required claim
     /// declares a size.
-    #[schema(required = true)]
-    pub size: Option<i64>,
+    pub size: Nullable<i64>,
     /// Best hash of the single required claim, full hex — null when
     /// the entry wants zero or several ROMs (the detail endpoint has
     /// them all).
-    #[schema(required = true)]
-    pub wanted_hash: Option<String>,
+    pub wanted_hash: Nullable<String>,
     /// `sha256` | `sha1` | `md5` | `crc32`, strongest available.
-    #[schema(required = true)]
-    pub wanted_hash_algo: Option<String>,
+    pub wanted_hash_algo: Nullable<String>,
 }
 
 // ---- GET /v1/systems/{id}/entries/{name} ----
@@ -273,12 +265,9 @@ pub struct EntryRow {
 pub struct EntryDetail {
     pub name: String,
     pub state: EntryState,
-    #[schema(required = true)]
-    pub size: Option<i64>,
-    #[schema(required = true)]
-    pub wanted_hash: Option<String>,
-    #[schema(required = true)]
-    pub wanted_hash_algo: Option<String>,
+    pub size: Nullable<i64>,
+    pub wanted_hash: Nullable<String>,
+    pub wanted_hash_algo: Nullable<String>,
     pub revision: Revision,
     pub roms: Vec<RomClaim>,
 }
@@ -288,8 +277,7 @@ pub struct EntryDetail {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct RomClaim {
     pub name: String,
-    #[schema(required = true)]
-    pub size: Option<i64>,
+    pub size: Nullable<i64>,
     pub state: ClaimState,
     pub optional: bool,
     /// Declared digests, lowercase hex; only the algorithms the dat
@@ -329,8 +317,7 @@ pub struct BlobInfo {
     pub residency: ResidencyState,
     /// Last full-hash store verification (ingest or scrub), unix
     /// seconds; the index records no method, so none is claimed.
-    #[schema(required = true)]
-    pub verified_at: Option<i64>,
+    pub verified_at: Nullable<i64>,
 }
 
 /// One human-readable rebuild route: `verb ← sources` plus the
@@ -383,11 +370,9 @@ pub struct ViewSummary {
     pub name: String,
     /// Current snapshot hash (blake3 hex); null when defined but never
     /// evaluated.
-    #[schema(required = true)]
-    pub snapshot: Option<String>,
+    pub snapshot: Nullable<String>,
     /// Null for tagged views whose definition was deleted.
-    #[schema(required = true)]
-    pub definition: Option<Definition>,
+    pub definition: Nullable<Definition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -403,14 +388,10 @@ pub struct Definition {
     pub provider: String,
     pub system: String,
     pub template: String,
-    #[schema(required = true)]
-    pub one_g_one_r: Option<OneGOneR>,
-    #[schema(required = true)]
-    pub profile: Option<String>,
-    #[schema(required = true)]
-    pub image: Option<ImageParams>,
-    #[schema(required = true)]
-    pub mame_mode: Option<MameMode>,
+    pub one_g_one_r: Nullable<OneGOneR>,
+    pub profile: Nullable<String>,
+    pub image: Nullable<ImageParams>,
+    pub mame_mode: Nullable<MameMode>,
 }
 
 /// 1G1R selection policy (D57).
@@ -427,8 +408,7 @@ pub struct ImageParams {
     pub cluster_size: u32,
     /// MBR partition table vs superfloppy.
     pub partition: bool,
-    #[schema(required = true)]
-    pub label: Option<String>,
+    pub label: Nullable<String>,
 }
 
 /// GET /v1/views/{name}: the summary plus serve endpoints and mint
@@ -440,8 +420,7 @@ pub struct ViewDetail {
     pub endpoints: Endpoints,
     /// Mint status when the definition carries image params; null when
     /// it does not.
-    #[schema(required = true)]
-    pub image: Option<ImageStatus>,
+    pub image: Nullable<ImageStatus>,
 }
 
 /// Relative serve endpoints; DAV is loopback-only in M5 (D68).
@@ -460,10 +439,9 @@ pub struct ImageStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hash: Option<String>,
     /// Image size; omitted when unminted, null when the blob row has
-    /// no recorded size (outer/inner Option = absent/null).
+    /// no recorded size (outer Option/inner Nullable = absent/null).
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<u64>)]
-    pub bytes: Option<Option<u64>>,
+    pub bytes: Option<Nullable<u64>>,
 }
 
 // ---- GET /v1/views/{name}/files ----
@@ -509,8 +487,7 @@ pub struct StorageResponse {
     pub quarantine: Quarantine,
     /// Newest finished scrub from the D74 ledger; null before the
     /// first recorded run.
-    #[schema(required = true)]
-    pub last_scrub: Option<LastScrub>,
+    pub last_scrub: Nullable<LastScrub>,
 }
 
 /// The scrub-run ledger readout (D74 rows, kind scrub).
@@ -595,14 +572,12 @@ pub struct BlobsPage {
 pub struct BlobRow {
     /// blake3, lowercase hex.
     pub hash: String,
-    #[schema(required = true)]
-    pub size: Option<i64>,
+    pub size: Nullable<i64>,
     /// `data` | `meta` (D20).
     pub namespace: String,
     pub residency: ResidencyState,
     /// Last full-hash store verification, unix seconds.
-    #[schema(required = true)]
-    pub verified_at: Option<i64>,
+    pub verified_at: Nullable<i64>,
     /// source_file provenance rows naming this blob.
     pub sources: u64,
     /// Non-poisoned recipes producing it (D25: `failed` never counts).
@@ -621,13 +596,11 @@ pub struct BlobRow {
 pub struct BlobDetail {
     /// blake3, lowercase hex.
     pub hash: String,
-    #[schema(required = true)]
-    pub size: Option<i64>,
+    pub size: Nullable<i64>,
     /// `data` | `meta` (D20).
     pub namespace: String,
     pub residency: ResidencyState,
-    #[schema(required = true)]
-    pub verified_at: Option<i64>,
+    pub verified_at: Nullable<i64>,
     pub digests: BlobDigests,
     pub provenance: Vec<ProvenanceRow>,
     /// Recipes whose OUTPUT is this blob — ways to make it.
@@ -658,8 +631,7 @@ pub struct BlobDigests {
 pub struct ProvenanceRow {
     pub path: String,
     /// When the path was last scanned/ingested, unix seconds.
-    #[schema(required = true)]
-    pub ingested_at: Option<i64>,
+    pub ingested_at: Nullable<i64>,
 }
 
 /// One recipe edge of the DAG neighborhood, navigable — every
@@ -679,12 +651,10 @@ pub struct RouteEdge {
 pub struct HashRef {
     /// blake3, lowercase hex.
     pub hash: String,
-    #[schema(required = true)]
-    pub size: Option<i64>,
+    pub size: Nullable<i64>,
     /// The recipe_output member name (or recipe_input role), when
     /// recorded.
-    #[schema(required = true)]
-    pub name: Option<String>,
+    pub name: Nullable<String>,
 }
 
 /// One dat claim this blob satisfies, via identity links of any
@@ -712,15 +682,12 @@ pub struct UploadResponse {
 
 // ---- POST /v1/ingest ----
 
-/// Start an ingest job over staged uploads. Same Option-for-400
-/// convention as the auth requests; the field is contractually
-/// required.
+/// Start an ingest job over staged uploads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct IngestRequest {
     /// Staging tokens from `POST /v1/ingest/uploads`, spent
     /// all-or-nothing.
-    #[schema(required = true)]
-    pub uploads: Option<Vec<String>>,
+    pub uploads: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -796,8 +763,7 @@ pub struct JobDetail {
     /// Unix seconds.
     pub started_at: i64,
     /// Unix seconds; null while running.
-    #[schema(required = true)]
-    pub finished_at: Option<i64>,
+    pub finished_at: Nullable<i64>,
     /// Cumulative across completed files — grows while running, final
     /// when done.
     pub report: IngestReportBody,
@@ -807,8 +773,7 @@ pub struct JobDetail {
     pub matched_total: u64,
     /// Infrastructure failure only; per-file refusals live in the
     /// report.
-    #[schema(required = true)]
-    pub error: Option<String>,
+    pub error: Nullable<String>,
 }
 
 // ---- GET /v1/gc/orphans (+ keep / apply) ----
@@ -840,16 +805,15 @@ pub struct OrphansResponse {
 /// Set or clear a keep-mark ("this is not junk").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct GcKeepRequest {
-    #[schema(required = true)]
-    pub hash: Option<String>,
-    #[schema(required = true)]
-    pub keep: Option<bool>,
+    pub hash: String,
+    pub keep: bool,
 }
 
 /// Apply the reviewed set (D73: the ONE human-triggered destructive
 /// action). Absent `hashes` = every reviewable, non-kept candidate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct GcApplyRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub hashes: Option<Vec<String>>,
 }
 
@@ -966,22 +930,18 @@ pub struct InviteRow {
     /// Unix seconds.
     pub expires_at: i64,
     /// Minting username; null for loopback/CLI mints (no user row).
-    #[schema(required = true)]
-    pub created_by: Option<String>,
+    pub created_by: Nullable<String>,
 }
 
 // ---- POST /v1/admin/invites ----
 
-/// Invite mint parameters. `role` is a string on the Rust side so the
-/// handler owns the "role must be owner or friend" 400 (unknown
-/// variants must not become extractor 422s); the contract documents
-/// the enum.
+/// Invite mint parameters. An unknown `role` variant is the
+/// extractor's typed 400 (`ApiJson`), so the field is a real [`Role`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct InviteMintRequest {
     /// Defaults to `friend`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<Role>)]
-    pub role: Option<String>,
+    pub role: Option<Role>,
     /// 1-365; defaults to 7 (D68) — an effectively-eternal invite is a
     /// standing credential, which is what invites exist to avoid.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -999,14 +959,11 @@ pub struct InviteMintResponse {
 
 // ---- POST /v1/admin/grants ----
 
-/// Grant a friend a view (D68). Same Option-for-400 convention as the
-/// auth requests; both fields are contractually required.
+/// Grant a friend a view (D68).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct GrantAddRequest {
-    #[schema(required = true)]
-    pub username: Option<String>,
-    #[schema(required = true)]
-    pub view: Option<String>,
+    pub username: String,
+    pub view: String,
 }
 
 // ---- DELETE /v1/admin/sessions/{username} ----
@@ -1072,7 +1029,9 @@ mod tests {
         assert!(schemes.contains_key("bearer_token"));
     }
 
-    /// The omitted-vs-null distinctions the handlers rely on.
+    /// The omitted-vs-null distinctions the handlers rely on — each
+    /// wire mode exercised once through a real contract struct, which
+    /// covers every field wearing that mode's type.
     #[test]
     fn wire_shapes_match_the_handlers() {
         let whoami = WhoamiResponse {
@@ -1098,7 +1057,7 @@ mod tests {
         let sizeless = ImageStatus {
             minted: true,
             hash: Some("ab".into()),
-            bytes: Some(None),
+            bytes: Some(Nullable(None)),
         };
         assert_eq!(
             serde_json::to_string(&sizeless).expect("json"),
@@ -1106,12 +1065,13 @@ mod tests {
             "minted-but-sizeless renders bytes as null, not absent"
         );
         // Detail flattening: ViewDetail serializes summary fields at
-        // the top level (the wire shape view_json always had).
+        // the top level (the wire shape view_json always had); the
+        // Nullable fields stay present as explicit nulls.
         let detail = ViewDetail {
             summary: ViewSummary {
                 name: "gba".into(),
-                snapshot: None,
-                definition: None,
+                snapshot: None.into(),
+                definition: None.into(),
                 rows: None,
                 bytes: None,
                 created_at: None,
@@ -1120,12 +1080,45 @@ mod tests {
                 http: "/view/gba/".into(),
                 dav: "/dav/gba/".into(),
             },
-            image: None,
+            image: None.into(),
         };
         let v = serde_json::to_value(&detail).expect("json");
         assert_eq!(v["name"], "gba");
+        assert_eq!(v["snapshot"], serde_json::Value::Null);
         assert_eq!(v["image"], serde_json::Value::Null);
         assert!(v.get("summary").is_none(), "flattened, not nested");
+    }
+
+    /// The old half-declared pattern (`#[schema(required = true)]` on
+    /// a bare `Option` field) rendered required-but-inline-nullable
+    /// properties; required nullability now rides [`Nullable`], which
+    /// renders as a `$ref` to a `Nullable_*` component. Any inline
+    /// null in a required property is that pattern creeping back.
+    #[test]
+    fn required_nullability_rides_the_wrapper() {
+        let spec: serde_json::Value = serde_json::from_str(&openapi_json()).expect("parse");
+        let is_inline_nullable = |prop: &serde_json::Value| {
+            let type_has_null = prop["type"]
+                .as_array()
+                .is_some_and(|types| types.iter().any(|t| t == "null"));
+            let one_of_has_null = prop["oneOf"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|item| item["type"] == "null"));
+            type_has_null || one_of_has_null
+        };
+        for (name, schema) in spec["components"]["schemas"].as_object().expect("schemas") {
+            let Some(required) = schema["required"].as_array() else {
+                continue;
+            };
+            for field in required {
+                let field = field.as_str().expect("field name");
+                let prop = &schema["properties"][field];
+                assert!(
+                    !is_inline_nullable(prop),
+                    "{name}.{field} is required AND inline-nullable — use wire::Nullable"
+                );
+            }
+        }
     }
 
     /// JobDetail flattens the tray row to the top level; `current` is
@@ -1147,7 +1140,7 @@ mod tests {
             bytes_done: 40,
             current: None,
             started_at: 1_000,
-            finished_at: None,
+            finished_at: None.into(),
             report: IngestReportBody {
                 dats_imported: vec![DatImportedItem {
                     path: "dats/nds.zip".into(),
@@ -1162,7 +1155,7 @@ mod tests {
                 source: "no-intro/nds".into(),
             }],
             matched_total: 1,
-            error: None,
+            error: None.into(),
         };
         let v = serde_json::to_value(&detail).expect("json");
         assert_eq!(v["id"], 3, "flattened, not nested under job");

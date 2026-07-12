@@ -20,7 +20,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher as _, PasswordVerifier as _, SaltString};
-use axum::Json;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
@@ -31,7 +30,7 @@ use datboi_index::{Db, InviteOutcome, Role};
 
 use crate::App;
 use crate::api::err;
-use crate::http::{json_response, run_blocking, text};
+use crate::http::{ApiJson, json_response, run_blocking, text};
 
 /// The browser session cookie (D68).
 pub(crate) const SESSION_COOKIE: &str = "datboi_session";
@@ -364,16 +363,6 @@ pub(crate) fn role_of(role: Role) -> datboi_api::Role {
     }
 }
 
-/// Handler-owned required-field check: the request structs keep
-/// `Option` fields so a missing key stays a 400 with this message
-/// instead of becoming an extractor 422 (D69 refactor preserves the
-/// wire behavior; the spec still marks the fields required).
-fn str_field<'a>(field: &'a Option<String>, key: &str) -> Result<&'a str, Response> {
-    field
-        .as_deref()
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST, &format!("missing field {key:?}")))
-}
-
 /// Lowercase alnum plus `-`/`_`, 1–32 chars.
 fn valid_username(name: &str) -> bool {
     !name.is_empty()
@@ -388,12 +377,14 @@ fn valid_username(name: &str) -> bool {
 /// the user with the invite's role, and starts a session.
 pub(crate) async fn invite_accept(
     State(app): State<Arc<App>>,
-    Json(body): Json<InviteAcceptRequest>,
+    ApiJson(body): ApiJson<InviteAcceptRequest>,
 ) -> Response {
     run_blocking(move || {
-        let token = str_field(&body.token, "token")?;
-        let username = str_field(&body.username, "username")?;
-        let password = str_field(&body.password, "password")?;
+        let InviteAcceptRequest {
+            token,
+            username,
+            password,
+        } = &body;
         if !valid_username(username) {
             return Err(err(
                 StatusCode::BAD_REQUEST,
@@ -434,10 +425,12 @@ pub(crate) async fn invite_accept(
 
 /// POST /v1/auth/login {username, password}. One uniform failure
 /// answer; unknown users still pay for an argon2 verify (timing).
-pub(crate) async fn login(State(app): State<Arc<App>>, Json(body): Json<LoginRequest>) -> Response {
+pub(crate) async fn login(
+    State(app): State<Arc<App>>,
+    ApiJson(body): ApiJson<LoginRequest>,
+) -> Response {
     run_blocking(move || {
-        let username = str_field(&body.username, "username")?;
-        let password = str_field(&body.password, "password")?;
+        let LoginRequest { username, password } = &body;
         let user = {
             let db = app
                 .db

@@ -215,13 +215,11 @@ fn upload_name(query: Option<&str>) -> Result<String, Response> {
 pub(crate) async fn start(
     State(app): State<Arc<App>>,
     Extension(caller): Extension<Caller>,
-    axum::Json(req): axum::Json<IngestRequest>,
+    crate::http::ApiJson(req): crate::http::ApiJson<IngestRequest>,
 ) -> Response {
     run_blocking(move || {
         require_owner(&caller)?;
-        let tokens = req
-            .uploads
-            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "missing field \"uploads\""))?;
+        let tokens = req.uploads;
         if tokens.is_empty() {
             return Err(err(StatusCode::BAD_REQUEST, "uploads must not be empty"));
         }

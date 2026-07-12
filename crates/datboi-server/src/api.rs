@@ -26,8 +26,8 @@ use axum::response::Response;
 use datboi_api::{
     BlobDetail, BlobDigests, BlobInfo, BlobRow, BlobsPage, ClaimRef, ClaimState, ClassBytes,
     Counts, Definition, Endpoints, EntriesPage, EntryDetail, EntryRow, EntryState, FileRow,
-    HashRef, ImageStatus, JobsResponse, ProvenanceRow, Quarantine, QuarantineItem, ResidencyState,
-    Revision, RomClaim, RomHashes, RouteEdge, RouteInfo, RouteVerify, SourceBytes,
+    HashRef, ImageStatus, JobsResponse, Nullable, ProvenanceRow, Quarantine, QuarantineItem,
+    ResidencyState, Revision, RomClaim, RomHashes, RouteEdge, RouteInfo, RouteVerify, SourceBytes,
     StorageBreakdown, StorageResponse, System, SystemsResponse, ViewDetail, ViewFilesPage,
     ViewSummary, ViewsResponse,
 };
@@ -290,12 +290,14 @@ fn systems_body(app: &App) -> Result<SystemsResponse, Response> {
             source: format!("{provider}/{system}"),
             provider,
             system,
-            revision: revision_id.map(|id| Revision {
-                id,
-                version,
-                date: dat_date,
-                imported_at,
-            }),
+            revision: revision_id
+                .map(|id| Revision {
+                    id,
+                    version: version.into(),
+                    date: dat_date.into(),
+                    imported_at: imported_at.into(),
+                })
+                .into(),
             counts: Counts {
                 verified,
                 claimed,
@@ -425,9 +427,9 @@ fn entries_body(app: &App, source_id: i64, page: &Page) -> Result<EntriesPage, R
             EntryRow {
                 name,
                 state: entry_state(state),
-                size,
-                wanted_hash: hash,
-                wanted_hash_algo: algo,
+                size: size.into(),
+                wanted_hash: hash.into(),
+                wanted_hash_algo: algo.into(),
             }
         })
         .collect::<Vec<_>>();
@@ -586,7 +588,7 @@ fn entry_body(app: &App, source_id: i64, name: &str) -> Result<EntryDetail, Resp
             };
             let mut rom = RomClaim {
                 name: claim_name,
-                size: claim_size,
+                size: claim_size.into(),
                 state: claim_state,
                 optional,
                 hashes: RomHashes {
@@ -636,7 +638,7 @@ fn entry_body(app: &App, source_id: i64, name: &str) -> Result<EntryDetail, Resp
                         Residency::EvictedCovered => ResidencyState::EvictedCovered,
                         Residency::Absent => ResidencyState::Absent,
                     },
-                    verified_at,
+                    verified_at: verified_at.into(),
                 });
                 rom.routes = Some(routes_info(&db, blob_id).map_err(internal)?);
                 pin_targets.push((roms.len(), hash));
@@ -647,14 +649,14 @@ fn entry_body(app: &App, source_id: i64, name: &str) -> Result<EntryDetail, Resp
         EntryDetail {
             name: name.to_owned(),
             state: entry_state(state),
-            size,
-            wanted_hash: hash,
-            wanted_hash_algo: algo,
+            size: size.into(),
+            wanted_hash: hash.into(),
+            wanted_hash_algo: algo.into(),
             revision: Revision {
                 id: revision_id,
-                version: rev_version,
-                date: rev_date,
-                imported_at: Some(rev_imported_at),
+                version: rev_version.into(),
+                date: rev_date.into(),
+                imported_at: rev_imported_at.into(),
             },
             roms: Vec::new(), // filled below, after the pin scan
         }
@@ -784,8 +786,8 @@ fn view_summary(
 ) -> ViewSummary {
     let mut v = ViewSummary {
         name: name.to_owned(),
-        snapshot: snapshot.map(|h| h.to_hex()),
-        definition: def.map(definition),
+        snapshot: snapshot.map(|h| h.to_hex()).into(),
+        definition: def.map(definition).into(),
         rows: None,
         bytes: None,
         created_at: None,
@@ -807,26 +809,37 @@ fn definition(def: &ViewDef) -> Definition {
         provider: def.provider.clone(),
         system: def.system.clone(),
         template: def.template.clone(),
-        one_g_one_r: def.selection.as_ref().map(|policy| datboi_api::OneGOneR {
-            mode: if policy.strict {
-                datboi_api::OneGOneRMode::Strict
-            } else {
-                datboi_api::OneGOneRMode::HeldFirst
-            },
-            regions: policy.regions.clone(),
-            langs: policy.langs.clone(),
-        }),
-        profile: def.profile.clone(),
-        image: def.image.as_ref().map(|image| datboi_api::ImageParams {
-            cluster_size: image.cluster_size,
-            partition: image.partition,
-            label: image.label.clone(),
-        }),
-        mame_mode: def.mame.map(|mode| match mode {
-            datboi_catalog::MameMode::NonMerged => datboi_api::MameMode::NonMerged,
-            datboi_catalog::MameMode::Split => datboi_api::MameMode::Split,
-            datboi_catalog::MameMode::Merged => datboi_api::MameMode::Merged,
-        }),
+        one_g_one_r: def
+            .selection
+            .as_ref()
+            .map(|policy| datboi_api::OneGOneR {
+                mode: if policy.strict {
+                    datboi_api::OneGOneRMode::Strict
+                } else {
+                    datboi_api::OneGOneRMode::HeldFirst
+                },
+                regions: policy.regions.clone(),
+                langs: policy.langs.clone(),
+            })
+            .into(),
+        profile: def.profile.clone().into(),
+        image: def
+            .image
+            .as_ref()
+            .map(|image| datboi_api::ImageParams {
+                cluster_size: image.cluster_size,
+                partition: image.partition,
+                label: image.label.clone().into(),
+            })
+            .into(),
+        mame_mode: def
+            .mame
+            .map(|mode| match mode {
+                datboi_catalog::MameMode::NonMerged => datboi_api::MameMode::NonMerged,
+                datboi_catalog::MameMode::Split => datboi_api::MameMode::Split,
+                datboi_catalog::MameMode::Merged => datboi_api::MameMode::Merged,
+            })
+            .into(),
     }
 }
 
@@ -872,9 +885,9 @@ fn view_detail_body(app: &App, caller: &Caller, name: &str) -> Result<ViewDetail
                         Some(ImageStatus {
                             minted: true,
                             hash: Some(hash.to_hex()),
-                            // Some(None) = minted but sizeless: the key
-                            // renders as null, not absent.
-                            bytes: Some(size),
+                            // Some(null) = minted but sizeless: the
+                            // key renders as null, not absent.
+                            bytes: Some(size.into()),
                         })
                     }
                     None => Some(ImageStatus {
@@ -896,7 +909,7 @@ fn view_detail_body(app: &App, caller: &Caller, name: &str) -> Result<ViewDetail
             http: format!("/view/{}/", enc_seg(name)),
             dav: format!("/dav/{}/", enc_seg(name)),
         },
-        image: image_minted,
+        image: image_minted.into(),
     })
 }
 
@@ -1042,7 +1055,7 @@ fn storage_body(app: &App) -> Result<StorageResponse, Response> {
         on_disk_bytes: on_disk,
         represented_bytes: represented,
         literal_only_bytes: literal_only,
-        last_scrub,
+        last_scrub: last_scrub.into(),
         quarantine: Quarantine {
             count: quarantined.len() as u64,
             items: quarantined
@@ -1234,10 +1247,10 @@ fn blob_rows(
             |(hash, size, ns, residency, verified_at, sources, routes_in, routes_out)| {
                 Ok(BlobRow {
                     hash: Blake3(hash).to_hex(),
-                    size,
+                    size: size.into(),
                     namespace: ns_label(ns)?.to_owned(),
                     residency: residency_state(residency)?,
-                    verified_at,
+                    verified_at: verified_at.into(),
                     sources: count(sources),
                     routes_in: count(routes_in),
                     routes_out: count(routes_out),
@@ -1444,7 +1457,7 @@ fn blob_detail_body(app: &App, hash: &Blake3) -> Result<BlobDetail, Response> {
             .query_map([blob_id], |row| {
                 Ok(ProvenanceRow {
                     path: row.get(0)?,
-                    ingested_at: row.get(1)?,
+                    ingested_at: Nullable(row.get(1)?),
                 })
             })
             .map_err(internal)?
@@ -1496,10 +1509,10 @@ fn blob_detail_body(app: &App, hash: &Blake3) -> Result<BlobDetail, Response> {
 
         BlobDetail {
             hash: hash.to_hex(),
-            size,
+            size: size.into(),
             namespace: ns_label(ns)?.to_owned(),
             residency: residency_state(residency)?,
-            verified_at,
+            verified_at: verified_at.into(),
             digests: BlobDigests {
                 blake3: hash.to_hex(),
                 aliases,
@@ -1579,8 +1592,8 @@ fn hash_refs(stmt: &mut rusqlite::Statement<'_>, recipe_id: i64) -> Result<Vec<H
         .into_iter()
         .map(|(hash, size, name)| HashRef {
             hash: Blake3(hash).to_hex(),
-            size,
-            name,
+            size: Nullable(size),
+            name: Nullable(name),
         })
         .collect())
 }

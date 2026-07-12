@@ -93,18 +93,10 @@
             "type": "array"
           },
           "size": {
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_i64"
           },
           "verified_at": {
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_i64"
           }
         },
         "required": [
@@ -153,12 +145,8 @@
             "$ref": "#/components/schemas/ResidencyState"
           },
           "verified_at": {
-            "description": "Last full-hash store verification (ingest or scrub), unix\nseconds; the index records no method, so none is claimed.",
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_i64",
+            "description": "Last full-hash store verification (ingest or scrub), unix\nseconds; the index records no method, so none is claimed."
           }
         },
         "required": [
@@ -195,11 +183,7 @@
             "type": "integer"
           },
           "size": {
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_i64"
           },
           "sources": {
             "description": "source_file provenance rows naming this blob.",
@@ -208,12 +192,8 @@
             "type": "integer"
           },
           "verified_at": {
-            "description": "Last full-hash store verification, unix seconds.",
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_i64",
+            "description": "Last full-hash store verification, unix seconds."
           }
         },
         "required": [
@@ -444,40 +424,16 @@
         "description": "ViewDef summary: dat ref, 1G1R mode, profile, image params (D62).",
         "properties": {
           "image": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/ImageParams"
-              }
-            ]
+            "$ref": "#/components/schemas/Nullable_ImageParams"
           },
           "mame_mode": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/MameMode"
-              }
-            ]
+            "$ref": "#/components/schemas/Nullable_MameMode"
           },
           "one_g_one_r": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/OneGOneR"
-              }
-            ]
+            "$ref": "#/components/schemas/Nullable_OneGOneR"
           },
           "profile": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_String"
           },
           "provider": {
             "type": "string"
@@ -564,26 +520,16 @@
             "type": "array"
           },
           "size": {
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_i64"
           },
           "state": {
             "$ref": "#/components/schemas/EntryState"
           },
           "wanted_hash": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_String"
           },
           "wanted_hash_algo": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_String"
           }
         },
         "required": [
@@ -603,29 +549,19 @@
             "type": "string"
           },
           "size": {
-            "description": "Total required bytes — null unless every required claim\ndeclares a size.",
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_i64",
+            "description": "Total required bytes — null unless every required claim\ndeclares a size."
           },
           "state": {
             "$ref": "#/components/schemas/EntryState"
           },
           "wanted_hash": {
-            "description": "Best hash of the single required claim, full hex — null when\nthe entry wants zero or several ROMs (the detail endpoint has\nthem all).",
-            "type": [
-              "string",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_String",
+            "description": "Best hash of the single required claim, full hex — null when\nthe entry wants zero or several ROMs (the detail endpoint has\nthem all)."
           },
           "wanted_hash_algo": {
-            "description": "`sha256` | `sha1` | `md5` | `crc32`, strongest available.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_String",
+            "description": "`sha256` | `sha1` | `md5` | `crc32`, strongest available."
           }
         },
         "required": [
@@ -715,16 +651,10 @@
         "description": "Set or clear a keep-mark (\"this is not junk\").",
         "properties": {
           "hash": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "keep": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": "boolean"
           }
         },
         "required": [
@@ -734,19 +664,13 @@
         "type": "object"
       },
       "GrantAddRequest": {
-        "description": "Grant a friend a view (D68). Same Option-for-400 convention as the\nauth requests; both fields are contractually required.",
+        "description": "Grant a friend a view (D68).",
         "properties": {
           "username": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "view": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         },
         "required": [
@@ -763,18 +687,11 @@
             "type": "string"
           },
           "name": {
-            "description": "The recipe_output member name (or recipe_input role), when\nrecorded.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_String",
+            "description": "The recipe_output member name (or recipe_input role), when\nrecorded."
           },
           "size": {
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_i64"
           }
         },
         "required": [
@@ -798,10 +715,7 @@
             "type": "integer"
           },
           "label": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_String"
           },
           "partition": {
             "description": "MBR partition table vs superfloppy.",
@@ -819,12 +733,14 @@
         "description": "D62 mint status: the `image/<name>` tag, when present, is a minted\nFAT32 image for this view.",
         "properties": {
           "bytes": {
-            "description": "Image size; omitted when unminted, null when the blob row has\nno recorded size (outer/inner Option = absent/null).",
-            "format": "int64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Nullable_u64",
+                "description": "Image size; omitted when unminted, null when the blob row has\nno recorded size (outer Option/inner Nullable = absent/null)."
+              }
             ]
           },
           "hash": {
@@ -979,17 +895,14 @@
         "type": "object"
       },
       "IngestRequest": {
-        "description": "Start an ingest job over staged uploads. Same Option-for-400\nconvention as the auth requests; the field is contractually\nrequired.",
+        "description": "Start an ingest job over staged uploads.",
         "properties": {
           "uploads": {
             "description": "Staging tokens from `POST /v1/ingest/uploads`, spent\nall-or-nothing.",
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [
@@ -1015,24 +928,15 @@
         "properties": {
           "password": {
             "description": "At least 8 characters.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "token": {
             "description": "The invite token exactly as minted (the URL fragment).",
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "username": {
             "description": "1-32 characters of `[a-z0-9_-]`.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         },
         "required": [
@@ -1043,7 +947,7 @@
         "type": "object"
       },
       "InviteMintRequest": {
-        "description": "Invite mint parameters. `role` is a string on the Rust side so the\nhandler owns the \"role must be owner or friend\" 400 (unknown\nvariants must not become extractor 422s); the contract documents\nthe enum.",
+        "description": "Invite mint parameters. An unknown `role` variant is the\nextractor's typed 400 (`ApiJson`), so the field is a real [`Role`].",
         "properties": {
           "expires_days": {
             "description": "1-365; defaults to 7 (D68) — an effectively-eternal invite is a\nstanding credential, which is what invites exist to avoid.",
@@ -1089,11 +993,8 @@
         "description": "A pending invite. Only `blake3(token)` is stored — the token itself\nappeared exactly once, in the mint response's fragment URL.",
         "properties": {
           "created_by": {
-            "description": "Minting username; null for loopback/CLI mints (no user row).",
-            "type": [
-              "string",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_String",
+            "description": "Minting username; null for loopback/CLI mints (no user row)."
           },
           "expires_at": {
             "description": "Unix seconds.",
@@ -1174,11 +1075,8 @@
                 ]
               },
               "error": {
-                "description": "Infrastructure failure only; per-file refusals live in the\nreport.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "$ref": "#/components/schemas/Nullable_String",
+                "description": "Infrastructure failure only; per-file refusals live in the\nreport."
               },
               "files_done": {
                 "format": "int64",
@@ -1191,12 +1089,8 @@
                 "type": "integer"
               },
               "finished_at": {
-                "description": "Unix seconds; null while running.",
-                "format": "int64",
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "$ref": "#/components/schemas/Nullable_i64",
+                "description": "Unix seconds; null while running."
               },
               "matched": {
                 "description": "Entries this job's content NEWLY satisfied (the shelf lights).\nCapped at 200 rows; `matched_total` is the uncapped count.",
@@ -1289,19 +1183,13 @@
         "type": "object"
       },
       "LoginRequest": {
-        "description": "Login credentials. Fields are `Option` so the handler owns the\n\"missing field\" 400 (the D69 refactor preserves the wire behavior\nexactly); the contract still marks them required.",
+        "description": "Login credentials. Missing fields are the extractor's typed 400\n(datboi-server's `ApiJson` keeps every body-parse failure in the\nD69 error shape), so plain `String` IS the required-field contract.",
         "properties": {
           "password": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "username": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         },
         "required": [
@@ -1335,6 +1223,109 @@
           "source"
         ],
         "type": "object"
+      },
+      "Nullable_Definition": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "$ref": "#/components/schemas/Definition"
+          }
+        ]
+      },
+      "Nullable_ImageParams": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "$ref": "#/components/schemas/ImageParams"
+          }
+        ]
+      },
+      "Nullable_ImageStatus": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "$ref": "#/components/schemas/ImageStatus"
+          }
+        ]
+      },
+      "Nullable_LastScrub": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "$ref": "#/components/schemas/LastScrub"
+          }
+        ]
+      },
+      "Nullable_MameMode": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "$ref": "#/components/schemas/MameMode"
+          }
+        ]
+      },
+      "Nullable_OneGOneR": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "$ref": "#/components/schemas/OneGOneR"
+          }
+        ]
+      },
+      "Nullable_Revision": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "$ref": "#/components/schemas/Revision"
+          }
+        ]
+      },
+      "Nullable_String": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "Nullable_i64": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "format": "int64",
+            "type": "integer"
+          }
+        ]
+      },
+      "Nullable_u64": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        ]
       },
       "OkResponse": {
         "description": "The `{\"ok\": true}` acknowledgement mutations answer with.",
@@ -1449,12 +1440,8 @@
         "description": "One rescan-cache row: a filesystem path that hashed to this blob.",
         "properties": {
           "ingested_at": {
-            "description": "When the path was last scanned/ingested, unix seconds.",
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_i64",
+            "description": "When the path was last scanned/ingested, unix seconds."
           },
           "path": {
             "type": "string"
@@ -1522,28 +1509,18 @@
         "description": "One imported dat revision.",
         "properties": {
           "date": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_String"
           },
           "id": {
             "format": "int64",
             "type": "integer"
           },
           "imported_at": {
-            "description": "Unix seconds.",
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_i64",
+            "description": "Unix seconds."
           },
           "version": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_String"
           }
         },
         "required": [
@@ -1612,11 +1589,7 @@
             ]
           },
           "size": {
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_i64"
           },
           "state": {
             "$ref": "#/components/schemas/ClaimState"
@@ -1824,15 +1797,8 @@
             "type": "integer"
           },
           "last_scrub": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/LastScrub",
-                "description": "Newest finished scrub from the D74 ledger; null before the\nfirst recorded run."
-              }
-            ]
+            "$ref": "#/components/schemas/Nullable_LastScrub",
+            "description": "Newest finished scrub from the D74 ledger; null before the\nfirst recorded run."
           },
           "literal_only_bytes": {
             "description": "Resident bytes with no non-failed rebuild route — the \"can't\nshrink yet\" tax.",
@@ -1877,15 +1843,8 @@
             "type": "string"
           },
           "revision": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/Revision",
-                "description": "Null when the source exists but nothing was imported yet."
-              }
-            ]
+            "$ref": "#/components/schemas/Nullable_Revision",
+            "description": "Null when the source exists but nothing was imported yet."
           },
           "source": {
             "description": "`provider/system`, the durable display identity.",
@@ -2009,15 +1968,8 @@
                 "$ref": "#/components/schemas/Endpoints"
               },
               "image": {
-                "oneOf": [
-                  {
-                    "type": "null"
-                  },
-                  {
-                    "$ref": "#/components/schemas/ImageStatus",
-                    "description": "Mint status when the definition carries image params; null when\nit does not."
-                  }
-                ]
+                "$ref": "#/components/schemas/Nullable_ImageStatus",
+                "description": "Mint status when the definition carries image params; null when\nit does not."
               }
             },
             "required": [
@@ -2089,15 +2041,8 @@
             ]
           },
           "definition": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/Definition",
-                "description": "Null for tagged views whose definition was deleted."
-              }
-            ]
+            "$ref": "#/components/schemas/Nullable_Definition",
+            "description": "Null for tagged views whose definition was deleted."
           },
           "name": {
             "type": "string"
@@ -2111,11 +2056,8 @@
             ]
           },
           "snapshot": {
-            "description": "Current snapshot hash (blake3 hex); null when defined but never\nevaluated.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "$ref": "#/components/schemas/Nullable_String",
+            "description": "Current snapshot hash (blake3 hex); null when defined but never\nevaluated."
           }
         },
         "required": [

@@ -80,19 +80,15 @@ pub(crate) async fn orphans(
 pub(crate) async fn keep(
     State(app): State<Arc<App>>,
     Extension(caller): Extension<Caller>,
-    axum::Json(req): axum::Json<GcKeepRequest>,
+    crate::http::ApiJson(req): crate::http::ApiJson<GcKeepRequest>,
 ) -> Response {
     run_blocking(move || {
         require_owner(&caller)?;
         let hash: Blake3 = req
             .hash
-            .as_deref()
-            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "missing field \"hash\""))?
             .parse()
             .map_err(|_| err(StatusCode::BAD_REQUEST, "not a blake3 hex hash"))?;
-        let keep = req
-            .keep
-            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "missing field \"keep\""))?;
+        let keep = req.keep;
         let db = app
             .db
             .lock()
@@ -108,7 +104,7 @@ pub(crate) async fn keep(
 pub(crate) async fn apply(
     State(app): State<Arc<App>>,
     Extension(caller): Extension<Caller>,
-    axum::Json(req): axum::Json<GcApplyRequest>,
+    crate::http::ApiJson(req): crate::http::ApiJson<GcApplyRequest>,
 ) -> Response {
     run_blocking(move || {
         require_owner(&caller)?;

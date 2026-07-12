@@ -12,7 +12,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Extension;
-use axum::Json;
 use axum::extract::{Path as UrlPath, State};
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -26,7 +25,7 @@ use datboi_index::Role;
 use crate::App;
 use crate::api::{err, hex, require_owner};
 use crate::auth::{self, Caller};
-use crate::http::{json_response, run_blocking};
+use crate::http::{ApiJson, json_response, run_blocking};
 
 fn internal(e: impl std::fmt::Display) -> Response {
     err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
@@ -76,7 +75,8 @@ pub(crate) async fn users(
                 expires_at: invite.expires_at,
                 created_by: invite
                     .created_by
-                    .and_then(|id| by_id.get(&id).map(|name| (*name).to_owned())),
+                    .and_then(|id| by_id.get(&id).map(|name| (*name).to_owned()))
+                    .into(),
             })
             .collect();
         let users: Vec<UserRow> = users
@@ -104,17 +104,15 @@ const DAY_SECS: i64 = 24 * 60 * 60;
 pub(crate) async fn invite_create(
     State(app): State<Arc<App>>,
     Extension(caller): Extension<Caller>,
-    Json(body): Json<InviteMintRequest>,
+    ApiJson(body): ApiJson<InviteMintRequest>,
 ) -> Response {
     run_blocking(move || {
         require_owner(&caller)?;
-        // Validated here, not by the extractor: an unknown role must
-        // stay a 400 with this message, not a 422 (D69 refactor keeps
-        // the wire behavior).
-        let role = match body.role.as_deref() {
-            None | Some("friend") => Role::Friend,
-            Some("owner") => Role::Owner,
-            Some(_) => return Err(err(StatusCode::BAD_REQUEST, "role must be owner or friend")),
+        // An unknown role is ApiJson's typed 400; only the D68 default
+        // is decided here.
+        let role = match body.role.unwrap_or(datboi_api::Role::Friend) {
+            datboi_api::Role::Owner => Role::Owner,
+            datboi_api::Role::Friend => Role::Friend,
         };
         // D68 default: 7 days. Bounded — an effectively-eternal invite
         // is a standing credential, which is what invites exist to avoid.
@@ -185,20 +183,11 @@ fn user_id_by_name(db: &datboi_index::Db, username: &str) -> Result<i64, Respons
 pub(crate) async fn grant_create(
     State(app): State<Arc<App>>,
     Extension(caller): Extension<Caller>,
-    Json(body): Json<GrantAddRequest>,
+    ApiJson(body): ApiJson<GrantAddRequest>,
 ) -> Response {
     run_blocking(move || {
         require_owner(&caller)?;
-        // Handler-owned "missing field" 400s (same convention as the
-        // auth requests — D69 keeps the extractor out of validation).
-        let field = |value: &Option<String>, key: &str| {
-            value
-                .clone()
-                .ok_or_else(|| err(StatusCode::BAD_REQUEST, &format!("missing field {key:?}")))
-        };
-        let username = field(&body.username, "username")?;
-        let view = field(&body.view, "view")?;
-        let (username, view) = (username.as_str(), view.as_str());
+        let (username, view) = (body.username.as_str(), body.view.as_str());
         let db = lock_db(&app);
         let user_id = user_id_by_name(&db, username)?;
         // A grant on a view that exists nowhere (no tag, no definition)

@@ -426,11 +426,11 @@ fn detail_of(j: &JobState) -> JobDetail {
         bytes_done: j.bytes_done,
         current: j.current.clone(),
         started_at: j.started_at,
-        finished_at: j.finished_at,
+        finished_at: j.finished_at.into(),
         report: j.report.clone(),
         matched: j.matched.clone(),
         matched_total: j.matched_total,
-        error: j.error.clone(),
+        error: j.error.clone().into(),
     }
 }
 
@@ -481,7 +481,7 @@ fn hydrate(row: JobRow) -> JobState {
         job.report = d.report;
         job.matched = d.matched;
         job.matched_total = d.matched_total;
-        job.error = job.error.or(d.error);
+        job.error = job.error.or(d.error.into_inner());
     }
     job
 }
@@ -590,7 +590,7 @@ mod tests {
         let detail = second.detail(done_id).expect("history survived");
         assert_eq!(detail.job.state, JobRunState::Done);
         assert_eq!(detail.report.files_stored, 1, "frozen report hydrated");
-        assert_eq!(detail.finished_at, Some(1_500));
+        assert_eq!(*detail.finished_at, Some(1_500));
         let crashed = second.detail(crashed_id).expect("tombstone exists");
         assert_eq!(crashed.job.state, JobRunState::Failed);
         assert!(
@@ -639,7 +639,7 @@ mod tests {
         assert!(rows[0].id > rows[1].id, "newest first");
         let detail = reg.detail(cli_id).expect("detail from ledger fallback");
         assert_eq!(detail.job.name, "cli: scrub — 100% sample");
-        assert_eq!(detail.finished_at, Some(1_300));
+        assert_eq!(*detail.finished_at, Some(1_300));
     }
 
     #[test]
@@ -683,7 +683,7 @@ mod tests {
         let row = &reg.list()[0];
         assert_eq!((row.progress, row.state), (100, JobRunState::Done));
         let detail = reg.detail(id).expect("detail");
-        assert_eq!(detail.finished_at, Some(2_000));
+        assert_eq!(*detail.finished_at, Some(2_000));
         // Matched rides the detail; the total may exceed the capped list.
         assert_eq!(detail.matched[0].name, "Mario Kart DS (USA)");
         assert_eq!(detail.matched_total, 201);
