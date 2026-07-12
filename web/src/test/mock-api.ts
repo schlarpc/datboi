@@ -96,6 +96,12 @@ export const emptyBreakdown: StorageBreakdownBody = {
   largest: [],
 };
 
+/** The path of a recorded fetch call — fetch may get a string, URL, or
+ * Request (the openapi-fetch client sends Requests). */
+export function calledPath(input: RequestInfo | URL): string {
+  return new URL(String(input instanceof Request ? input.url : input), 'http://mock').pathname;
+}
+
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,

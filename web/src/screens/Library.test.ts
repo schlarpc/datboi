@@ -3,7 +3,7 @@ import { loadLocale } from 'wuchale/load-utils';
 import { afterEach, expect, test, vi } from 'vitest';
 import '../locales/main.loader.svelte.js';
 import type { IngestReport, JobDetailBody, System } from '../lib/api/types';
-import { installFetch, installUploadXhr } from '../test/mock-api';
+import { calledPath, installFetch, installUploadXhr } from '../test/mock-api';
 import Library from './Library.svelte';
 
 await loadLocale('en');
@@ -147,10 +147,10 @@ test('picking a dat stages it through the ingest job, logs the receipt, and refr
   expect(screen.getByText('redump/psx — 1,300 entries')).toBeTruthy();
   // The file rode the unified flow: staged upload, then one job.
   expect(sent.map((s) => s.name)).toEqual(['psx.dat']);
-  const starts = handler.mock.calls.filter(([input_]) => String(input_) === '/v1/ingest');
+  const starts = handler.mock.calls.filter(([input_]) => calledPath(input_) === '/v1/ingest');
   expect(starts.length).toBe(1);
   // The import mutated the shelf, so the screen re-fetched it.
-  const systemFetches = handler.mock.calls.filter(([input_]) => String(input_) === '/v1/systems');
+  const systemFetches = handler.mock.calls.filter(([input_]) => calledPath(input_) === '/v1/systems');
   expect(systemFetches.length).toBe(2);
 });
 

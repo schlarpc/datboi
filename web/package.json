@@ -18,6 +18,7 @@
     "@fontsource-variable/bricolage-grotesque": "^5.2.10",
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "@wuchale/svelte": "^0.20.4",
+    "openapi-fetch": "^0.17.0",
     "svelte": "^5.56.4",
     "wuchale": "^0.25.6"
   },

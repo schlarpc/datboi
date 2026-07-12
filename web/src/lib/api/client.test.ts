@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { router } from '../router.svelte';
-import { ApiError, login, onUnauthorized, systemEntries, systems } from './client';
+import { ApiError, entryDetail, login, onUnauthorized, systemEntries, systems } from './client';
 
 function stub(status: number, body: unknown, contentType = 'application/json') {
   const fn = vi.fn(
@@ -53,23 +53,44 @@ describe('error bodies', () => {
   });
 });
 
+/** The client sends whole Requests (openapi-fetch); pull the wire URL. */
+function sentUrl(fn: ReturnType<typeof stub>): URL {
+  const input = fn.mock.calls[0][0];
+  return new URL(String(input instanceof Request ? input.url : input), 'http://mock');
+}
+
 describe('request shapes', () => {
   test('systemEntries composes q/state/offset/limit into the query', async () => {
     const fn = stub(200, { entries: [], total: 0, offset: 10, limit: 50 });
     await systemEntries(3, { q: 'zelda (usa)', state: 'missing', offset: 10, limit: 50 });
-    const url = String(fn.mock.calls[0][0]);
-    expect(url).toBe('/v1/systems/3/entries?q=zelda+%28usa%29&state=missing&offset=10&limit=50');
+    const url = sentUrl(fn);
+    expect(url.pathname).toBe('/v1/systems/3/entries');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      q: 'zelda (usa)',
+      state: 'missing',
+      offset: '10',
+      limit: '50',
+    });
   });
 
   test('bare systemEntries sends no query string', async () => {
     const fn = stub(200, { entries: [], total: 0, offset: 0, limit: 200 });
     await systemEntries(3);
-    expect(String(fn.mock.calls[0][0])).toBe('/v1/systems/3/entries');
+    const url = sentUrl(fn);
+    expect(url.pathname).toBe('/v1/systems/3/entries');
+    expect(url.search).toBe('');
+  });
+
+  test('entryDetail percent-encodes the name path param', async () => {
+    const fn = stub(200, {});
+    await entryDetail(3, 'Zelda / Link (USA)');
+    expect(sentUrl(fn).pathname).toBe('/v1/systems/3/entries/Zelda%20%2F%20Link%20(USA)');
   });
 
   test('requests carry same-origin credentials (cookie sessions, D68)', async () => {
     const fn = stub(200, { systems: [] });
     await systems();
-    expect(fn.mock.calls[0][1]).toMatchObject({ credentials: 'same-origin' });
+    const request = fn.mock.calls[0][0] as Request;
+    expect(request.credentials).toBe('same-origin');
   });
 });

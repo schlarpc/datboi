@@ -1,7 +1,10 @@
 /**
- * Thin typed fetch wrapper over the /v1 API. Sessions ride the
- * `datboi_session` cookie (D68), so every call is `credentials:
- * same-origin` and carries no auth header of its own.
+ * Typed /v1 client over openapi-fetch, bound to the GENERATED `paths`
+ * types (schema.d.ts): every path string, method, and path/query param
+ * is compile-checked against the contract, so a server-side rename or
+ * an added param is a type error here, not a silent runtime 404.
+ * Sessions ride the `datboi_session` cookie (D68), so every call is
+ * `credentials: same-origin` and carries no auth header of its own.
  *
  * 401 handling: a 401 from a session-authenticated endpoint means the
  * session died under us — the client tells the session store (via the
@@ -10,8 +13,10 @@
  * `login` is "invalid credentials", not an expired session.
  */
 
+import createClient from 'openapi-fetch';
 import { router } from '../router.svelte';
 import type { EntryState } from '../state';
+import type { operations, paths } from './schema';
 import type {
   AdminUsersBody,
   BlobDetail,
@@ -23,8 +28,6 @@ import type {
   EntriesParams,
   EntryDetail,
   GcApplyReport,
-  GrantParams,
-  IngestParams,
   IngestStarted,
   InviteAcceptParams,
   JobDetailBody,
@@ -39,6 +42,7 @@ import type {
   StorageBody,
   StorageBreakdownBody,
   SystemsBody,
+  UploadParams,
   UploadReceipt,
   ViewDetail,
   ViewFilesBody,
@@ -65,39 +69,12 @@ export function onUnauthorized(handler: () => void): void {
   unauthorizedHandler = handler;
 }
 
-interface RequestOpts {
-  body?: unknown;
-  /** Raw upload body (dat import); mutually exclusive with `body`. */
-  rawBody?: Blob;
-  /** false = open auth endpoint: 401 is a typed error, not session death. */
-  sessionAuth?: boolean;
-}
-
-async function request<T>(method: string, path: string, opts: RequestOpts = {}): Promise<T> {
-  let headers: Record<string, string> | undefined;
-  let body: BodyInit | undefined;
-  if (opts.rawBody !== undefined) {
-    headers = { 'content-type': 'application/octet-stream' };
-    body = opts.rawBody;
-  } else if (opts.body !== undefined) {
-    headers = { 'content-type': 'application/json' };
-    body = JSON.stringify(opts.body);
-  }
-  const resp = await fetch(path, { method, credentials: 'same-origin', headers, body });
-  if (resp.ok) {
-    return (await resp.json()) as T;
-  }
-  const message = await errorMessage(resp);
-  if (resp.status === 401 && opts.sessionAuth !== false) {
-    unauthorizedHandler?.();
-    router.replace('/login');
-  }
-  throw new ApiError(resp.status, message);
-}
-
-/** api.rs answers `{"error": msg}`; auth.rs validation answers plain text. */
-async function errorMessage(resp: Response): Promise<string> {
-  const text = await resp.text().catch(() => '');
+/**
+ * api.rs answers `{"error": msg}`; auth.rs validation and the session
+ * middleware's 401 answer plain text. ONE decoder for both transports
+ * (the fetch client below and uploadRom's XHR).
+ */
+function envelopeMessage(text: string, fallback: string): string {
   try {
     const parsed: unknown = JSON.parse(text);
     if (
@@ -110,52 +87,106 @@ async function errorMessage(resp: Response): Promise<string> {
   } catch {
     // not JSON — fall through to the raw text
   }
-  return text || resp.statusText;
+  return text || fallback;
 }
+
+/** Open auth endpoints: a 401 here is a typed answer (bad credentials,
+ * no session to log out), never session death. */
+const OPEN_AUTH: ReadonlySet<string> = new Set<keyof paths>([
+  '/v1/auth/whoami',
+  '/v1/auth/login',
+  '/v1/auth/logout',
+  '/v1/auth/invite/accept',
+]);
+
+/** Session death on a session-authenticated endpoint: tell the session
+ * store and bounce — shared by the fetch client and uploadRom's XHR. */
+function handleUnauthorized(status: number, sessionAuth: boolean): void {
+  if (status === 401 && sessionAuth) {
+    unauthorizedHandler?.();
+    router.replace('/login');
+  }
+}
+
+const client = createClient<paths>({
+  credentials: 'same-origin',
+  // Late-bound: createClient would otherwise capture globalThis.fetch at
+  // import time, dodging the test suite's stubbed fetch.
+  fetch: (request) => globalThis.fetch(request),
+});
+
+// Every non-2xx becomes a thrown ApiError (with the error-envelope
+// message) before openapi-fetch's data/error split, so per-operation
+// functions keep their promise-rejection contract.
+client.use({
+  async onResponse({ request, response }) {
+    if (response.ok) {
+      return undefined;
+    }
+    const text = await response.text().catch(() => '');
+    const message = envelopeMessage(text, response.statusText);
+    const pathname = new URL(request.url, window.location.origin).pathname;
+    handleUnauthorized(response.status, !OPEN_AUTH.has(pathname));
+    throw new ApiError(response.status, message);
+  },
+});
+
+/** onResponse throws on every non-2xx, so `data` is always present. */
+const unwrap = <T>(result: { data?: T }): T => result.data as T;
 
 // ---- auth ----
 
-export const whoami = (): Promise<Whoami> =>
-  request('GET', '/v1/auth/whoami', { sessionAuth: false });
+export const whoami = async (): Promise<Whoami> => unwrap(await client.GET('/v1/auth/whoami'));
 
-export const login = (username: string, password: string): Promise<SessionInfo> =>
-  request('POST', '/v1/auth/login', {
-    body: { username, password } satisfies LoginParams,
-    sessionAuth: false,
-  });
+export const login = async (username: string, password: string): Promise<SessionInfo> =>
+  unwrap(
+    await client.POST('/v1/auth/login', {
+      body: { username, password } satisfies LoginParams,
+    }),
+  );
 
-export const logout = (): Promise<OkBody> =>
-  request('POST', '/v1/auth/logout', { sessionAuth: false });
+export const logout = async (): Promise<OkBody> => unwrap(await client.POST('/v1/auth/logout'));
 
-export const acceptInvite = (
+export const acceptInvite = async (
   token: string,
   username: string,
   password: string,
 ): Promise<SessionInfo> =>
-  request('POST', '/v1/auth/invite/accept', {
-    body: { token, username, password } satisfies InviteAcceptParams,
-    sessionAuth: false,
-  });
+  unwrap(
+    await client.POST('/v1/auth/invite/accept', {
+      body: { token, username, password } satisfies InviteAcceptParams,
+    }),
+  );
 
 // ---- read models ----
 
-export const systems = (): Promise<SystemsBody> => request('GET', '/v1/systems');
+export const systems = async (): Promise<SystemsBody> => unwrap(await client.GET('/v1/systems'));
 
-export function systemEntries(
+export const systemEntries = async (
   systemId: number | string,
   params: EntriesParams = {},
-): Promise<EntriesBody> {
-  const query = new URLSearchParams();
-  if (params.q) query.set('q', params.q);
-  if (params.state) query.set('state', params.state);
-  if (params.offset !== undefined) query.set('offset', String(params.offset));
-  if (params.limit !== undefined) query.set('limit', String(params.limit));
-  const qs = query.toString();
-  return request('GET', `/v1/systems/${systemId}/entries${qs ? `?${qs}` : ''}`);
-}
+): Promise<EntriesBody> =>
+  unwrap(
+    await client.GET('/v1/systems/{id}/entries', {
+      params: { path: { id: Number(systemId) }, query: params },
+    }),
+  );
 
-export const entryDetail = (systemId: number | string, name: string): Promise<EntryDetail> =>
-  request('GET', `/v1/systems/${systemId}/entries/${encodeURIComponent(name)}`);
+export const entryDetail = async (
+  systemId: number | string,
+  name: string,
+): Promise<EntryDetail> =>
+  unwrap(
+    await client.GET('/v1/systems/{id}/entries/{name}', {
+      params: { path: { id: Number(systemId), name } },
+    }),
+  );
+
+/** Raw upload bodies: the contract spells the bytes `string` (binary),
+ * the transport wants the Blob untouched — one cast, one serializer. */
+const rawBody = (blob: Blob): string => blob as unknown as string;
+const passthrough = (body: string): BodyInit => body as unknown as Blob;
+const OCTET_STREAM = { 'content-type': 'application/octet-stream' } as const;
 
 /**
  * POST /v1/dats/import — the raw dat file bytes ARE the body (no
@@ -166,84 +197,88 @@ export const entryDetail = (systemId: number | string, name: string): Promise<En
  * startIngest; the job classifies dats by content) — but the endpoint
  * is versioned contract for direct API users, so the fn stays.
  */
-export function importDat(file: Blob, params: DatImportParams = {}): Promise<DatImportBody> {
-  const query = new URLSearchParams();
-  if (params.provider) query.set('provider', params.provider);
-  if (params.system) query.set('system', params.system);
-  const qs = query.toString();
-  return request('POST', `/v1/dats/import${qs ? `?${qs}` : ''}`, { rawBody: file });
-}
+export const importDat = async (
+  file: Blob,
+  params: DatImportParams = {},
+): Promise<DatImportBody> =>
+  unwrap(
+    await client.POST('/v1/dats/import', {
+      params: { query: params },
+      body: rawBody(file),
+      bodySerializer: passthrough,
+      headers: OCTET_STREAM,
+    }),
+  );
 
-export const views = (): Promise<ViewsBody> => request('GET', '/v1/views');
+export const views = async (): Promise<ViewsBody> => unwrap(await client.GET('/v1/views'));
 
-export const viewDetail = (name: string): Promise<ViewDetail> =>
-  request('GET', `/v1/views/${encodeURIComponent(name)}`);
+export const viewDetail = async (name: string): Promise<ViewDetail> =>
+  unwrap(await client.GET('/v1/views/{name}', { params: { path: { name } } }));
 
-export function viewFiles(name: string, params: ViewFilesParams = {}): Promise<ViewFilesBody> {
-  const query = new URLSearchParams();
-  if (params.q) query.set('q', params.q);
-  if (params.offset !== undefined) query.set('offset', String(params.offset));
-  if (params.limit !== undefined) query.set('limit', String(params.limit));
-  const qs = query.toString();
-  return request('GET', `/v1/views/${encodeURIComponent(name)}/files${qs ? `?${qs}` : ''}`);
-}
+export const viewFiles = async (
+  name: string,
+  params: ViewFilesParams = {},
+): Promise<ViewFilesBody> =>
+  unwrap(
+    await client.GET('/v1/views/{name}/files', {
+      params: { path: { name }, query: params },
+    }),
+  );
 
 // ---- content URLs (real anchors, not fetches — the browser downloads) ----
 
-/** `/view/{name}/{path}` — the verified byte-serving tree (http.rs). */
+/** `/view/{name}/{path}` — the verified byte-serving tree (http.rs;
+ * deliberately outside the /v1 spec, so hand-built). */
 export const viewFileUrl = (name: string, path: string): string =>
   `/view/${encodeURIComponent(name)}/${path.split('/').map(encodeURIComponent).join('/')}`;
 
-/** `/v1/views/{name}/image` — the minted SD image download. */
+/** `/v1/views/{name}/image` — the minted SD image download. The
+ * template is pinned to the contract even though anchors skip fetch. */
+const VIEW_IMAGE_PATH = '/v1/views/{name}/image' satisfies keyof paths;
 export const viewImageUrl = (name: string): string =>
-  `/v1/views/${encodeURIComponent(name)}/image`;
+  VIEW_IMAGE_PATH.replace('{name}', encodeURIComponent(name));
 
-export const storage = (): Promise<StorageBody> => request('GET', '/v1/storage');
+export const storage = async (): Promise<StorageBody> => unwrap(await client.GET('/v1/storage'));
 
-export const storageBreakdown = (): Promise<StorageBreakdownBody> =>
-  request('GET', '/v1/storage/breakdown');
+export const storageBreakdown = async (): Promise<StorageBreakdownBody> =>
+  unwrap(await client.GET('/v1/storage/breakdown'));
 
-export function blobs(params: BlobsParams = {}): Promise<BlobsBody> {
-  const query = new URLSearchParams();
-  if (params.q) query.set('q', params.q);
-  if (params.ns) query.set('ns', params.ns);
-  if (params.residency) query.set('residency', params.residency);
-  if (params.offset !== undefined) query.set('offset', String(params.offset));
-  if (params.limit !== undefined) query.set('limit', String(params.limit));
-  const qs = query.toString();
-  return request('GET', `/v1/blobs${qs ? `?${qs}` : ''}`);
-}
+export const blobs = async (params: BlobsParams = {}): Promise<BlobsBody> =>
+  unwrap(await client.GET('/v1/blobs', { params: { query: params } }));
 
-export const blobDetail = (hash: string): Promise<BlobDetail> =>
-  request('GET', `/v1/blobs/${encodeURIComponent(hash)}`);
+export const blobDetail = async (hash: string): Promise<BlobDetail> =>
+  unwrap(await client.GET('/v1/blobs/{hash}', { params: { path: { hash } } }));
 
 // ---- gc (D73 review/apply) ----
 
-export const gcOrphans = (): Promise<OrphansBody> => request('GET', '/v1/gc/orphans');
+export const gcOrphans = async (): Promise<OrphansBody> =>
+  unwrap(await client.GET('/v1/gc/orphans'));
 
-export const gcKeep = (hash: string, keep: boolean): Promise<OkBody> =>
-  request('POST', '/v1/gc/keep', { body: { hash, keep } });
+export const gcKeep = async (hash: string, keep: boolean): Promise<OkBody> =>
+  unwrap(await client.POST('/v1/gc/keep', { body: { hash, keep } }));
 
 /** Absent hashes = every reviewable, non-kept candidate. */
-export const gcApply = (hashes?: string[]): Promise<GcApplyReport> =>
-  request('POST', '/v1/gc/orphans/apply', { body: hashes ? { hashes } : {} });
+export const gcApply = async (hashes?: string[]): Promise<GcApplyReport> =>
+  unwrap(await client.POST('/v1/gc/orphans/apply', { body: hashes ? { hashes } : {} }));
 
 // ---- ingest ----
+
+const UPLOAD_PATH = '/v1/ingest/uploads' satisfies keyof paths;
 
 /**
  * POST /v1/ingest/uploads — stage one file. XHR, not fetch: upload
  * progress events don't exist on fetch, and multi-GB uploads without
- * a progress bar are a hostile UI. Error/401 handling mirrors
- * request().
+ * a progress bar are a hostile UI. Error decoding and 401 session
+ * death share envelopeMessage/handleUnauthorized with the fetch path.
  */
 export function uploadRom(
-  name: string,
+  name: UploadParams['name'],
   file: Blob,
   onProgress?: (sent: number, total: number) => void,
 ): Promise<UploadReceipt> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', `/v1/ingest/uploads?name=${encodeURIComponent(name)}`);
+    xhr.open('POST', `${UPLOAD_PATH}?name=${encodeURIComponent(name)}`);
     xhr.setRequestHeader('content-type', 'application/octet-stream');
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onProgress?.(e.loaded, e.total);
@@ -253,23 +288,8 @@ export function uploadRom(
         resolve(JSON.parse(xhr.responseText) as UploadReceipt);
         return;
       }
-      let message = xhr.statusText;
-      try {
-        const parsed: unknown = JSON.parse(xhr.responseText);
-        if (
-          typeof parsed === 'object' &&
-          parsed !== null &&
-          typeof (parsed as { error?: unknown }).error === 'string'
-        ) {
-          message = (parsed as { error: string }).error;
-        }
-      } catch {
-        // not JSON — keep the status text
-      }
-      if (xhr.status === 401) {
-        unauthorizedHandler?.();
-        router.replace('/login');
-      }
+      const message = envelopeMessage(xhr.responseText, xhr.statusText);
+      handleUnauthorized(xhr.status, true);
       reject(new ApiError(xhr.status, message));
     };
     xhr.onerror = () => reject(new ApiError(0, 'network error during upload'));
@@ -278,35 +298,45 @@ export function uploadRom(
 }
 
 /** POST /v1/ingest — spend staged tokens, start the background job. */
-export const startIngest = (uploads: string[]): Promise<IngestStarted> =>
-  request('POST', '/v1/ingest', { body: { uploads } satisfies IngestParams });
+export const startIngest = async (uploads: string[]): Promise<IngestStarted> =>
+  unwrap(await client.POST('/v1/ingest', { body: { uploads } }));
 
-export const jobs = (): Promise<JobsBody> => request('GET', '/v1/jobs');
+export const jobs = async (): Promise<JobsBody> => unwrap(await client.GET('/v1/jobs'));
 
-export const jobDetail = (id: number): Promise<JobDetailBody> =>
-  request('GET', `/v1/jobs/${id}`);
+export const jobDetail = async (id: number): Promise<JobDetailBody> =>
+  unwrap(await client.GET('/v1/jobs/{id}', { params: { path: { id } } }));
 
 // ---- admin ----
 
-export const adminUsers = (): Promise<AdminUsersBody> => request('GET', '/v1/admin/users');
+export const adminUsers = async (): Promise<AdminUsersBody> =>
+  unwrap(await client.GET('/v1/admin/users'));
 
-export const adminMintInvite = (params: MintInviteParams = {}): Promise<MintedInvite> =>
-  request('POST', '/v1/admin/invites', { body: params });
+export const adminMintInvite = async (params: MintInviteParams = {}): Promise<MintedInvite> =>
+  unwrap(await client.POST('/v1/admin/invites', { body: params }));
 
-export const adminRevokeInvite = (tokenHashHex: string): Promise<OkBody> =>
-  request('DELETE', `/v1/admin/invites/${encodeURIComponent(tokenHashHex)}`);
-
-export const adminGrant = (username: string, view: string): Promise<OkBody> =>
-  request('POST', '/v1/admin/grants', { body: { username, view } satisfies GrantParams });
-
-export const adminRevoke = (username: string, view: string): Promise<OkBody> =>
-  request(
-    'DELETE',
-    `/v1/admin/grants/${encodeURIComponent(username)}/${encodeURIComponent(view)}`,
+export const adminRevokeInvite = async (tokenHashHex: string): Promise<OkBody> =>
+  unwrap(
+    await client.DELETE('/v1/admin/invites/{token_hash}', {
+      params: { path: { token_hash: tokenHashHex } },
+    }),
   );
 
-export const adminRevokeSessions = (username: string): Promise<RevokedSessions> =>
-  request('DELETE', `/v1/admin/sessions/${encodeURIComponent(username)}`);
+export const adminGrant = async (username: string, view: string): Promise<OkBody> =>
+  unwrap(await client.POST('/v1/admin/grants', { body: { username, view } }));
+
+export const adminRevoke = async (username: string, view: string): Promise<OkBody> =>
+  unwrap(
+    await client.DELETE('/v1/admin/grants/{username}/{view}', {
+      params: { path: { username, view } },
+    }),
+  );
+
+export const adminRevokeSessions = async (username: string): Promise<RevokedSessions> =>
+  unwrap(
+    await client.DELETE('/v1/admin/sessions/{username}', {
+      params: { path: { username } },
+    }),
+  );
 
 // Re-exported so screens can filter with the canonical list.
 export type { EntryState };

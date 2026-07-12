@@ -59,6 +59,12 @@ describe('request shapes trace to the generated contract', () => {
       Schemas['InviteMintRequest'] | undefined
     >();
   });
+
+  test("uploadRom's `name` is the ingest_upload query param (XHR transport included)", () => {
+    expectTypeOf<Parameters<typeof api.uploadRom>[0]>().toEqualTypeOf<
+      operations['ingest_upload']['parameters']['query']['name']
+    >();
+  });
 });
 
 describe('shared vocabularies stay in lockstep', () => {

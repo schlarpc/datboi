@@ -100,6 +100,9 @@ export type GcApplyReport = Schemas['GcApplyResponse'];
 
 // ---- POST /v1/ingest/uploads + /v1/ingest ----
 
+/** The upload's query params: `name` is required and typed here even
+ * though the XHR transport builds its own URL. */
+export type UploadParams = operations['ingest_upload']['parameters']['query'];
 export type UploadReceipt = Schemas['UploadResponse'];
 export type IngestParams = Schemas['IngestRequest'];
 export type IngestStarted = Schemas['IngestStartResponse'];

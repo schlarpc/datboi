@@ -3,7 +3,7 @@ import { loadLocale } from 'wuchale/load-utils';
 import { afterEach, expect, test, vi } from 'vitest';
 import '../locales/main.loader.svelte.js';
 import type { IngestReport, JobDetailBody, MatchedEntry } from '../lib/api/types';
-import { installFetch, installUploadXhr } from '../test/mock-api';
+import { calledPath, installFetch, installUploadXhr } from '../test/mock-api';
 import Ingest from './Ingest.svelte';
 
 await loadLocale('en');
@@ -150,7 +150,7 @@ test('a failed upload is reported without starting a job', async () => {
   await pickFiles([new File(['aaaa'], 'alpha.gba')]);
 
   expect(await screen.findByText('induced upload failure')).toBeTruthy();
-  const starts = handler.mock.calls.filter(([input]) => String(input) === '/v1/ingest');
+  const starts = handler.mock.calls.filter(([input]) => calledPath(input) === '/v1/ingest');
   expect(starts.length).toBe(0);
 });
 

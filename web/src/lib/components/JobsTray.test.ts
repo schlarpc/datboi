@@ -4,7 +4,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import '../../locales/main.loader.svelte.js';
 import type { Job, JobDetailBody } from '../api/types';
 import { jobsSignal } from '../jobs.svelte';
-import { installFetch, type MockUniverse } from '../../test/mock-api';
+import { calledPath, installFetch, type MockUniverse } from '../../test/mock-api';
 import JobRow from './JobRow.svelte';
 import JobsTray from './JobsTray.svelte';
 
@@ -56,7 +56,7 @@ function detailOf(job: Job, over: Partial<JobDetailBody> = {}): JobDetailBody {
 }
 
 function jobsCalls(handler: ReturnType<typeof installFetch>): number {
-  return handler.mock.calls.filter(([input]) => String(input) === '/v1/jobs').length;
+  return handler.mock.calls.filter(([input]) => calledPath(input) === '/v1/jobs').length;
 }
 
 test('idle tray renders the truthful collapsed state', async () => {
