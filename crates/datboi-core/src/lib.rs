@@ -8,6 +8,7 @@ pub mod cbor;
 pub mod hash;
 pub mod identity;
 pub mod object;
+pub mod params;
 pub mod recipe;
 pub mod snapshot;
 pub mod viewsnap;

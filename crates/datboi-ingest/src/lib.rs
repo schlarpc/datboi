@@ -37,8 +37,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use datboi_core::alias::{AliasHasher, AliasTuple};
 use datboi_core::assemble::{AssembleParams, Segment};
-use datboi_core::cbor::{self, Value};
 use datboi_core::hash::Blake3;
+use datboi_core::params::{DeflateWindow, ExtractorParams};
 use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe, World};
 use datboi_formats::skipper::{Detector, Operation};
 use datboi_index::recipes::NewRecipe;
@@ -58,20 +58,8 @@ pub const EX_UNRAR_WASM: &[u8] = include_bytes!(concat!(
     "/datboi_ex_unrar.wasm"
 ));
 
-/// CBOR key for the extractor member index in an `ex-unrar/extract`
-/// recipe's params (D58); mirrors exec's `EXTRACTOR_PARAM_MEMBER_IX`.
-const EXTRACTOR_PARAM_MEMBER_IX: u64 = 1;
-
 /// Streaming buffer size for member hashing.
 const CHUNK: usize = 64 * 1024;
-
-/// deflate-decompress@1 params: a window into input 0 (`{1: offset,
-/// 2: len}`, strict canonical CBOR). One recipe per member instead of a
-/// slice-recipe + intermediate blob per member — at MAME scale the row
-/// economy matters, and the op owns its params schema
-/// (docs/70-recipes.md).
-const DEFLATE_PARAM_OFFSET: u64 = 1;
-const DEFLATE_PARAM_LEN: u64 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IngestError {
@@ -411,11 +399,10 @@ impl<'a> Ingester<'a> {
             // Mint the container→member derive recipe (makes the member
             // evictable). Empty members need no recipe (nothing to rebuild).
             if member.size > 0 {
-                let params = cbor::encode(&Value::Map(vec![(
-                    EXTRACTOR_PARAM_MEMBER_IX,
-                    Value::Uint(u64::from(member.ix)),
-                )]))
-                .map_err(|e| e.to_string())?;
+                let params = ExtractorParams {
+                    member_ix: member.ix,
+                }
+                .encode();
                 let recipe = Recipe {
                     op: Op::Wasm {
                         component: self.extractor_component_hash()?,
@@ -592,11 +579,11 @@ impl<'a> Ingester<'a> {
                 Method::Deflate => (
                     "deflate-decompress@1",
                     SeekClass::Opaque,
-                    cbor::encode(&Value::Map(vec![
-                        (DEFLATE_PARAM_OFFSET, Value::Uint(member.data_start)),
-                        (DEFLATE_PARAM_LEN, Value::Uint(member.comp_size)),
-                    ]))
-                    .map_err(|e| IngestError::Recipe(e.to_string()))?,
+                    DeflateWindow {
+                        offset: member.data_start,
+                        len: member.comp_size,
+                    }
+                    .encode(),
                 ),
             };
             let recipe = Recipe {

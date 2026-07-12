@@ -34,8 +34,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use datboi_core::assemble::AssembleParams;
-use datboi_core::cbor::{self, Value};
 use datboi_core::hash::Blake3;
+use datboi_core::params::{DeflateWindow, ExtractorParams};
 use datboi_core::recipe::{Op, Recipe, World};
 use datboi_index::{Db, IndexError, RecipeSource, Residency, SeekClass, VerifyState};
 use datboi_runtime::extractor::{ExtractorComponent, ExtractorHost};
@@ -46,11 +46,6 @@ use datboi_runtime::{Limits, RuntimeError, TransformHost};
 use datboi_store_fs::{Namespace as StoreNs, PutOutcome, Store, StoreError};
 
 use crate::random::{AssembleRandom, FileRandom, SeqOverRandom, VerifiedRandom, WindowSeq};
-
-/// deflate-decompress@1 window params (shared vocabulary with ingest —
-/// the op owns this schema, docs/70-recipes.md).
-const DEFLATE_PARAM_OFFSET: u64 = 1;
-const DEFLATE_PARAM_LEN: u64 = 2;
 
 /// D56 headroom guard: fixed safety margin on top of the claimed size
 /// (+ obao overhead) before materialize-on-demand may write.
@@ -749,8 +744,12 @@ impl<'s> Executor<'s> {
                         .map_err(|e| ExecError::Malformed(e.to_string()))?,
                 )),
                 ("deflate-decompress", 1) => {
-                    let (offset, len) = decode_window(&recipe.params)?;
-                    Ok(OpImpl::Deflate { offset, len })
+                    let window = DeflateWindow::decode(&recipe.params)
+                        .map_err(|e| ExecError::Malformed(e.to_string()))?;
+                    Ok(OpImpl::Deflate {
+                        offset: window.offset,
+                        len: window.len,
+                    })
                 }
                 (name, major) => Err(ExecError::UnsupportedOp(format!("{name}@{major}"))),
             },
@@ -798,7 +797,9 @@ impl<'s> Executor<'s> {
                         )));
                     }
                     // Params pin the member index.
-                    let member_ix = decode_member_ix(&recipe.params)?;
+                    let member_ix = ExtractorParams::decode(&recipe.params)
+                        .map_err(|e| ExecError::Malformed(e.to_string()))?
+                        .member_ix;
                     let compiled = self.load_extractor_component(component)?;
                     Ok(OpImpl::Extractor {
                         component: compiled,
@@ -1454,50 +1455,6 @@ fn collect_literal_leaves(plan: &Plan, out: &mut Vec<(Blake3, u64)>) {
             }
         }
     }
-}
-
-/// CBOR key for the extractor member index (D58); mirrors ingest's
-/// `EXTRACTOR_PARAM_MEMBER_IX`.
-const EXTRACTOR_PARAM_MEMBER_IX: u64 = 1;
-
-fn decode_member_ix(params: &[u8]) -> Result<u32, ExecError> {
-    let Ok(Value::Map(entries)) = cbor::decode(params) else {
-        return Err(ExecError::Malformed(
-            "extractor params must be a map".into(),
-        ));
-    };
-    if entries.len() != 1 {
-        return Err(ExecError::Malformed(
-            "extractor params: exactly one field (member index)".into(),
-        ));
-    }
-    match entries
-        .iter()
-        .find(|(k, _)| *k == EXTRACTOR_PARAM_MEMBER_IX)
-    {
-        Some((_, Value::Uint(n))) => {
-            u32::try_from(*n).map_err(|_| ExecError::Malformed("member index out of range".into()))
-        }
-        _ => Err(ExecError::Malformed(
-            "extractor member index missing".into(),
-        )),
-    }
-}
-
-fn decode_window(params: &[u8]) -> Result<(u64, u64), ExecError> {
-    let Ok(Value::Map(entries)) = cbor::decode(params) else {
-        return Err(ExecError::Malformed("deflate params must be a map".into()));
-    };
-    let field = |key: u64| -> Result<u64, ExecError> {
-        match entries.iter().find(|(k, _)| *k == key) {
-            Some((_, Value::Uint(n))) => Ok(*n),
-            _ => Err(ExecError::Malformed("deflate window field missing".into())),
-        }
-    };
-    if entries.len() != 2 {
-        return Err(ExecError::Malformed("deflate params: extra fields".into()));
-    }
-    Ok((field(DEFLATE_PARAM_OFFSET)?, field(DEFLATE_PARAM_LEN)?))
 }
 
 fn now_unix() -> i64 {
