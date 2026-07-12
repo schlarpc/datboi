@@ -12,6 +12,10 @@ import type { components, operations } from './schema';
 
 type Schemas = components['schemas'];
 
+/** Machine-readable failure category (D77) — the closed union
+ * errors.svelte.ts maps to translated copy, exhaustively. */
+export type ErrorCode = Schemas['ErrorCode'];
+
 // ---- /v1/auth/* ----
 
 /** GET /v1/auth/whoami — open; answers `authenticated: false`, never 401. */

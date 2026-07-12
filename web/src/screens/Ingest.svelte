@@ -18,6 +18,7 @@
   import CliHint from '../lib/components/CliHint.svelte';
   import { followJob, jobsSignal, LostContact } from '../lib/jobs.svelte';
   import { collectDrop, pickedFiles, type DropFile } from '../lib/upload';
+  import { errorText } from '../lib/remote';
 
   interface QueueItem {
     name: string;
@@ -86,7 +87,7 @@
         item.state = 'staged';
       } catch (e) {
         item.state = 'failed';
-        item.error = e instanceof Error ? e.message : String(e);
+        item.error = errorText(e);
       }
     }
     const tokens = queue.flatMap((item) => (item.token === undefined ? [] : [item.token]));
@@ -100,7 +101,7 @@
       phase = 'ingesting';
       await follow(started.job);
     } catch (e) {
-      failure = e instanceof Error ? e.message : String(e);
+      failure = errorText(e);
       phase = 'report';
     }
   }
@@ -116,7 +117,7 @@
       if (e instanceof LostContact) {
         lostContact = true; // NOT a job failure — the report card says so
       } else {
-        failure = e instanceof Error ? e.message : String(e);
+        failure = errorText(e);
       }
     }
     phase = 'report';

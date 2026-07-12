@@ -34,11 +34,73 @@ pub use wire::Nullable;
 
 // ---- the uniform error shape ----
 
-/// Every /v1 error body: `{"error": "<message>"}`.
+/// Every /v1 error body: `{"error": "<message>", "code": "<code>"}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ApiError {
-    /// Human-readable failure description.
+    /// Human-readable failure description — diagnostic detail for CLI
+    /// and log consumers. The web UI presents `code`, not this.
     pub error: String,
+    /// Machine-readable failure category (D77).
+    pub code: ErrorCode,
+}
+
+/// Machine-readable failure category (D77). A CLOSED union: the web UI
+/// maps every variant to a translated message through an exhaustive
+/// switch, so adding a variant here fails the web typecheck until that
+/// message exists — errors are translatable by construction, never by
+/// passing English prose through.
+///
+/// The HTTP status derives FROM the code ([`ErrorCode::http_status`]),
+/// so a handler cannot pair a code with a contradicting status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    /// Malformed request shape or parameter values. The UI validates
+    /// before sending, so reaching this implies a bug or a hand-built
+    /// request — the `error` detail matters more than usual.
+    BadRequest,
+    /// The staged-upload token is unknown or expired: the fix is to
+    /// upload again, and the UI should say so.
+    UploadExpired,
+    /// Authentication required (no/dead session, or a loopback-only
+    /// surface reached from elsewhere).
+    Unauthorized,
+    /// Login refused: bad username or password — a typed answer, never
+    /// session death.
+    InvalidCredentials,
+    /// Authenticated, but this resource is owner-only.
+    OwnerOnly,
+    /// The invite token is invalid, already spent, or expired.
+    InvalidInvite,
+    /// The Fetch-Metadata CSRF gate rejected a cross-origin request.
+    CsrfRejected,
+    /// The requested resource does not exist.
+    NotFound,
+    /// Invite acceptance raced a name: that username is taken.
+    UsernameTaken,
+    /// A conflicting maintenance task holds the guard; retry shortly.
+    Busy,
+    /// The store lacks headroom for the declared upload size.
+    StoreFull,
+    /// The daemon failed internally; the `error` detail is diagnostic.
+    Internal,
+}
+
+impl ErrorCode {
+    /// The one HTTP status this code rides — the pairing lives here so
+    /// call sites cannot disagree about it.
+    pub fn http_status(self) -> u16 {
+        match self {
+            Self::BadRequest | Self::UploadExpired => 400,
+            Self::Unauthorized | Self::InvalidCredentials => 401,
+            Self::OwnerOnly | Self::InvalidInvite | Self::CsrfRejected => 403,
+            Self::NotFound => 404,
+            Self::UsernameTaken => 409,
+            Self::Busy => 503,
+            Self::StoreFull => 507,
+            Self::Internal => 500,
+        }
+    }
 }
 
 /// The `{"ok": true}` acknowledgement mutations answer with.
@@ -1027,6 +1089,34 @@ mod tests {
             .expect("securitySchemes");
         assert!(schemes.contains_key("session_cookie"));
         assert!(schemes.contains_key("bearer_token"));
+    }
+
+    /// The web UI switches exhaustively over these wire strings (D77)
+    /// and the statuses are load-bearing for every /v1 consumer — both
+    /// pinned here so neither can drift silently.
+    #[test]
+    fn error_codes_pin_wire_strings_and_statuses() {
+        let all = [
+            (ErrorCode::BadRequest, "bad_request", 400),
+            (ErrorCode::UploadExpired, "upload_expired", 400),
+            (ErrorCode::Unauthorized, "unauthorized", 401),
+            (ErrorCode::InvalidCredentials, "invalid_credentials", 401),
+            (ErrorCode::OwnerOnly, "owner_only", 403),
+            (ErrorCode::InvalidInvite, "invalid_invite", 403),
+            (ErrorCode::CsrfRejected, "csrf_rejected", 403),
+            (ErrorCode::NotFound, "not_found", 404),
+            (ErrorCode::UsernameTaken, "username_taken", 409),
+            (ErrorCode::Busy, "busy", 503),
+            (ErrorCode::StoreFull, "store_full", 507),
+            (ErrorCode::Internal, "internal", 500),
+        ];
+        for (code, wire, status) in all {
+            assert_eq!(
+                serde_json::to_string(&code).expect("json"),
+                format!("\"{wire}\""),
+            );
+            assert_eq!(code.http_status(), status, "{wire}");
+        }
     }
 
     /// The omitted-vs-null distinctions the handlers rely on — each

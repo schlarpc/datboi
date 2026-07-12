@@ -1247,3 +1247,51 @@ msgstr "can't reach the daemon"
 #: src/screens/Ingest.svelte
 msgid "lost contact with the job — it may still be running; check the jobs tray"
 msgstr "lost contact with the job — it may still be running; check the jobs tray"
+
+#: src/lib/api/errors.svelte.ts
+msgid "the daemon refused the request as malformed"
+msgstr "the daemon refused the request as malformed"
+
+#: src/lib/api/errors.svelte.ts
+msgid "the staged upload expired — upload the file again"
+msgstr "the staged upload expired — upload the file again"
+
+#: src/lib/api/errors.svelte.ts
+msgid "you need to sign in"
+msgstr "you need to sign in"
+
+#: src/lib/api/errors.svelte.ts
+msgid "wrong username or password"
+msgstr "wrong username or password"
+
+#: src/lib/api/errors.svelte.ts
+msgid "only the owner can do this"
+msgstr "only the owner can do this"
+
+#: src/lib/api/errors.svelte.ts
+msgid "this invite is invalid, already used, or expired"
+msgstr "this invite is invalid, already used, or expired"
+
+#: src/lib/api/errors.svelte.ts
+msgid "the daemon rejected a cross-origin request"
+msgstr "the daemon rejected a cross-origin request"
+
+#: src/lib/api/errors.svelte.ts
+msgid "the daemon can't find what this screen asked for"
+msgstr "the daemon can't find what this screen asked for"
+
+#: src/lib/api/errors.svelte.ts
+msgid "that username is already taken"
+msgstr "that username is already taken"
+
+#: src/lib/api/errors.svelte.ts
+msgid "the daemon is busy with a conflicting task — try again shortly"
+msgstr "the daemon is busy with a conflicting task — try again shortly"
+
+#: src/lib/api/errors.svelte.ts
+msgid "not enough free space in the store"
+msgstr "not enough free space in the store"
+
+#: src/lib/api/errors.svelte.ts
+msgid "the daemon hit an internal error"
+msgstr "the daemon hit an internal error"

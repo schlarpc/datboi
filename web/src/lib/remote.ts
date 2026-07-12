@@ -16,10 +16,11 @@ export const loading = <T>(): Remote<T> => ({ st: 'loading' });
 export const ready = <T>(data: T): Remote<T> => ({ st: 'ready', data });
 export const failed = <T>(msg: string): Remote<T> => ({ st: 'error', msg });
 
-/** The one spelling for rejection → message (ApiError carries the
- * server's words; anything else stringifies). */
-export const errorText = (e: unknown): string =>
-  e instanceof Error ? e.message : String(e);
+import { describeError } from './api/errors.svelte';
+
+/** The one spelling for rejection → message: coded ApiErrors map to
+ * translated copy (errors.svelte.ts, D77); anything else stringifies. */
+export const errorText = describeError;
 
 /**
  * Settle a promise into a Remote through `set`. The caller's `live`

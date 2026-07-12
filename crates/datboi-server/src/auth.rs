@@ -24,13 +24,15 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
-use datboi_api::{InviteAcceptRequest, LoginRequest, OkResponse, SessionResponse, WhoamiResponse};
+use datboi_api::{
+    ErrorCode, InviteAcceptRequest, LoginRequest, OkResponse, SessionResponse, WhoamiResponse,
+};
 use datboi_core::hash::Blake3;
 use datboi_index::{Db, InviteOutcome, Role};
 
 use crate::App;
 use crate::api::err;
-use crate::http::{ApiJson, json_response, run_blocking, text};
+use crate::http::{ApiJson, json_response, run_blocking};
 
 /// The browser session cookie (D68).
 pub(crate) const SESSION_COOKIE: &str = "datboi_session";
@@ -222,7 +224,7 @@ pub(crate) async fn gate(
     // origin that resolves to 127.0.0.1, and loopback-is-owner (D68)
     // makes that ambient authority; this check is what closes it.
     if let Err(msg) = crate::hardening::csrf_check(req.method(), req.headers()) {
-        return err(StatusCode::FORBIDDEN, msg);
+        return err(ErrorCode::CsrfRejected, msg);
     }
     let caller = if peer.ip().is_loopback() {
         Caller::Local // no DB touch on the hot local path
@@ -256,7 +258,9 @@ pub(crate) async fn gate(
 }
 
 fn unauthorized(msg: &str) -> Response {
-    let mut resp = text(StatusCode::UNAUTHORIZED, msg);
+    // The JSON envelope, same as every other /v1 error (D77) — the
+    // gate's rejections used to be the one plain-text holdout.
+    let mut resp = err(ErrorCode::Unauthorized, msg);
     resp.headers_mut()
         .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
     resp
@@ -387,19 +391,19 @@ pub(crate) async fn invite_accept(
         } = &body;
         if !valid_username(username) {
             return Err(err(
-                StatusCode::BAD_REQUEST,
+                ErrorCode::BadRequest,
                 "username must be 1-32 characters of [a-z0-9_-]",
             ));
         }
         if password.len() < 8 {
             return Err(err(
-                StatusCode::BAD_REQUEST,
+                ErrorCode::BadRequest,
                 "password must be at least 8 characters",
             ));
         }
         // Hash before taking the DB lock: argon2 is deliberately slow.
         let phc = hash_password(password)
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &format!("hashing: {e}")))?;
+            .map_err(|e| err(ErrorCode::Internal, &format!("hashing: {e}")))?;
         let now = now_unix();
         let db = app
             .db
@@ -407,16 +411,16 @@ pub(crate) async fn invite_accept(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let outcome = db
             .accept_invite(&token_hash(token), username, &phc, now)
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
+            .map_err(|e| err(ErrorCode::Internal, &e.to_string()))?;
         match outcome {
             InviteOutcome::Accepted { user_id, role } => {
                 session_response(&db, user_id, username, role, now)
             }
             InviteOutcome::InviteInvalid => {
-                Err(err(StatusCode::FORBIDDEN, "invalid or expired invite"))
+                Err(err(ErrorCode::InvalidInvite, "invalid or expired invite"))
             }
             InviteOutcome::UsernameTaken => {
-                Err(err(StatusCode::CONFLICT, "username already taken"))
+                Err(err(ErrorCode::UsernameTaken, "username already taken"))
             }
         }
     })
@@ -437,7 +441,7 @@ pub(crate) async fn login(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             db.user_by_name(username)
-                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?
+                .map_err(|e| err(ErrorCode::Internal, &e.to_string()))?
         };
         // Verify OUTSIDE the DB lock — argon2 is ~100ms of pure CPU.
         let ok = match &user {
@@ -448,7 +452,7 @@ pub(crate) async fn login(
             }
         };
         let (Some(user), true) = (user, ok) else {
-            return Err(err(StatusCode::UNAUTHORIZED, "invalid credentials"));
+            return Err(err(ErrorCode::InvalidCredentials, "invalid credentials"));
         };
         let now = now_unix();
         let db = app
@@ -494,11 +498,10 @@ fn session_response(
     role: Role,
     now: i64,
 ) -> Result<Response, Response> {
-    let token = mint_token()
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &format!("entropy: {e}")))?;
+    let token = mint_token().map_err(|e| err(ErrorCode::Internal, &format!("entropy: {e}")))?;
     let expires_at = now + SESSION_TTL_SECS;
     db.create_session(&token_hash(&token), user_id, expires_at)
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
+        .map_err(|e| err(ErrorCode::Internal, &e.to_string()))?;
     let mut resp = json_response(
         StatusCode::OK,
         &SessionResponse {

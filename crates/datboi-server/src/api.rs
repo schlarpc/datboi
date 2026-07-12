@@ -25,11 +25,11 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use datboi_api::{
     BlobDetail, BlobDigests, BlobInfo, BlobRow, BlobsPage, ClaimRef, ClaimState, ClassBytes,
-    Counts, Definition, Endpoints, EntriesPage, EntryDetail, EntryRow, EntryState, FileRow,
-    HashRef, ImageStatus, JobsResponse, Nullable, ProvenanceRow, Quarantine, QuarantineItem,
-    ResidencyState, Revision, RomClaim, RomHashes, RouteEdge, RouteInfo, RouteVerify, SourceBytes,
-    StorageBreakdown, StorageResponse, System, SystemsResponse, ViewDetail, ViewFilesPage,
-    ViewSummary, ViewsResponse,
+    Counts, Definition, Endpoints, EntriesPage, EntryDetail, EntryRow, EntryState, ErrorCode,
+    FileRow, HashRef, ImageStatus, JobsResponse, Nullable, ProvenanceRow, Quarantine,
+    QuarantineItem, ResidencyState, Revision, RomClaim, RomHashes, RouteEdge, RouteInfo,
+    RouteVerify, SourceBytes, StorageBreakdown, StorageResponse, System, SystemsResponse,
+    ViewDetail, ViewFilesPage, ViewSummary, ViewsResponse,
 };
 use datboi_catalog::ViewDef;
 use datboi_core::hash::Blake3;
@@ -41,18 +41,21 @@ use crate::auth::{self, Caller};
 use crate::http::{enc_seg, json_response, run_blocking};
 use crate::vfs;
 
-/// Uniform API error shape (datboi-api, D69): `{"error": "<message>"}`.
-pub(crate) fn err(status: StatusCode, msg: &str) -> Response {
+/// Uniform API error shape (datboi-api, D69/D77): the machine-readable
+/// code picks the HTTP status — a handler cannot pair them wrong — and
+/// `msg` rides along as diagnostic detail for CLI/log consumers.
+pub(crate) fn err(code: datboi_api::ErrorCode, msg: &str) -> Response {
     json_response(
-        status,
+        StatusCode::from_u16(code.http_status()).expect("contract statuses are valid"),
         &datboi_api::ApiError {
             error: msg.to_owned(),
+            code,
         },
     )
 }
 
 fn internal(e: impl std::fmt::Display) -> Response {
-    err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
+    err(datboi_api::ErrorCode::Internal, &e.to_string())
 }
 
 /// Owner check (D68): loopback and owner-role callers pass; friends
@@ -62,7 +65,7 @@ pub(crate) fn require_owner(caller: &Caller) -> Result<(), Response> {
     if caller.is_owner() {
         Ok(())
     } else {
-        Err(err(StatusCode::FORBIDDEN, "owner only"))
+        Err(err(datboi_api::ErrorCode::OwnerOnly, "owner only"))
     }
 }
 
@@ -178,7 +181,7 @@ fn parse_page(query: Option<&str>) -> Result<Page, Response> {
             "state" => {
                 page.state = Some(state_code(&value).ok_or_else(|| {
                     err(
-                        StatusCode::BAD_REQUEST,
+                        ErrorCode::BadRequest,
                         "state must be one of verified|claimed|missing|nodump",
                     )
                 })?);
@@ -186,12 +189,12 @@ fn parse_page(query: Option<&str>) -> Result<Page, Response> {
             "offset" => {
                 page.offset = value
                     .parse()
-                    .map_err(|_| err(StatusCode::BAD_REQUEST, "offset must be an integer"))?;
+                    .map_err(|_| err(ErrorCode::BadRequest, "offset must be an integer"))?;
             }
             "limit" => {
                 let limit: u64 = value
                     .parse()
-                    .map_err(|_| err(StatusCode::BAD_REQUEST, "limit must be an integer"))?;
+                    .map_err(|_| err(ErrorCode::BadRequest, "limit must be an integer"))?;
                 page.limit = limit.clamp(1, LIMIT_MAX);
             }
             _ => {} // unknown params are ignored, not errors
@@ -321,12 +324,12 @@ fn resolve_revision(conn: &rusqlite::Connection, source_id: i64) -> Result<Optio
     )
     .optional()
     .map_err(internal)?
-    .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such system"))
+    .ok_or_else(|| err(ErrorCode::NotFound, "no such system"))
 }
 
 fn parse_system_id(id: &str) -> Result<i64, Response> {
     id.parse()
-        .map_err(|_| err(StatusCode::NOT_FOUND, "no such system"))
+        .map_err(|_| err(ErrorCode::NotFound, "no such system"))
 }
 
 // ---- GET /v1/systems/{id}/entries ----
@@ -478,7 +481,7 @@ fn entry_body(app: &App, source_id: i64, name: &str) -> Result<EntryDetail, Resp
         let db = lock_db(app);
         let conn = db.cache();
         let Some(revision_id) = resolve_revision(conn, source_id)? else {
-            return Err(err(StatusCode::NOT_FOUND, "no such entry"));
+            return Err(err(ErrorCode::NotFound, "no such entry"));
         };
         let Some((entry_id, state, size, wanted)) = conn
             .query_row(
@@ -501,7 +504,7 @@ fn entry_body(app: &App, source_id: i64, name: &str) -> Result<EntryDetail, Resp
             .optional()
             .map_err(internal)?
         else {
-            return Err(err(StatusCode::NOT_FOUND, "no such entry"));
+            return Err(err(ErrorCode::NotFound, "no such entry"));
         };
         let (rev_version, rev_date, rev_imported_at) = conn
             .query_row(
@@ -865,12 +868,12 @@ fn view_detail_body(app: &App, caller: &Caller, name: &str) -> Result<ViewDetail
         // View-scoped resource: denial answers exactly like a miss
         // (auth.rs convention) so probing learns nothing.
         if !auth::view_allowed(&db, caller, name) {
-            return Err(err(StatusCode::NOT_FOUND, "no such view"));
+            return Err(err(ErrorCode::NotFound, "no such view"));
         }
         let snapshot = db.get_tag(&format!("view/{name}")).map_err(internal)?;
         let def = datboi_catalog::get_view(&db, name).map_err(internal)?;
         if snapshot.is_none() && def.is_none() {
-            return Err(err(StatusCode::NOT_FOUND, "no such view"));
+            return Err(err(ErrorCode::NotFound, "no such view"));
         }
         // D62: `image/<name>` tag = a minted FAT32 image for this view.
         let image_minted = match def.as_ref().and_then(|d| d.image.as_ref()) {
@@ -948,11 +951,11 @@ fn view_files_body(
         // (auth.rs convention) so probing learns nothing.
         let db = lock_db(app);
         if !auth::view_allowed(&db, caller, name) {
-            return Err(err(StatusCode::NOT_FOUND, "no such view"));
+            return Err(err(ErrorCode::NotFound, "no such view"));
         }
     }
     let idx = vfs::view_index(app, name).map_err(|e| match e {
-        vfs::LookupError::NoSuchView => err(StatusCode::NOT_FOUND, "no such view"),
+        vfs::LookupError::NoSuchView => err(ErrorCode::NotFound, "no such view"),
         // A tagged snapshot that won't resolve is server-side damage.
         other => internal(other),
     })?;
@@ -1288,7 +1291,7 @@ fn parse_blobs_query(query: Option<&str>) -> Result<BlobsQuery, Response> {
                 page.ns = Some(match value.as_str() {
                     "data" => Namespace::Data.code(),
                     "meta" => Namespace::Meta.code(),
-                    _ => return Err(err(StatusCode::BAD_REQUEST, "ns must be data|meta")),
+                    _ => return Err(err(ErrorCode::BadRequest, "ns must be data|meta")),
                 });
             }
             "residency" => {
@@ -1298,7 +1301,7 @@ fn parse_blobs_query(query: Option<&str>) -> Result<BlobsQuery, Response> {
                     "absent" => Residency::Absent.code(),
                     _ => {
                         return Err(err(
-                            StatusCode::BAD_REQUEST,
+                            ErrorCode::BadRequest,
                             "residency must be one of resident|evicted_covered|absent",
                         ));
                     }
@@ -1307,12 +1310,12 @@ fn parse_blobs_query(query: Option<&str>) -> Result<BlobsQuery, Response> {
             "offset" => {
                 page.offset = value
                     .parse()
-                    .map_err(|_| err(StatusCode::BAD_REQUEST, "offset must be an integer"))?;
+                    .map_err(|_| err(ErrorCode::BadRequest, "offset must be an integer"))?;
             }
             "limit" => {
                 let limit: u64 = value
                     .parse()
-                    .map_err(|_| err(StatusCode::BAD_REQUEST, "limit must be an integer"))?;
+                    .map_err(|_| err(ErrorCode::BadRequest, "limit must be an integer"))?;
                 page.limit = limit.clamp(1, LIMIT_MAX);
             }
             _ => {} // unknown params are ignored, not errors
@@ -1376,7 +1379,7 @@ pub(crate) async fn blob_detail(
         let hash: Blake3 = hash
             .to_lowercase()
             .parse()
-            .map_err(|_| err(StatusCode::BAD_REQUEST, "not a blake3 hex hash"))?;
+            .map_err(|_| err(ErrorCode::BadRequest, "not a blake3 hex hash"))?;
         Ok(json_response(
             StatusCode::OK,
             &blob_detail_body(&app, &hash)?,
@@ -1422,7 +1425,7 @@ fn blob_detail_body(app: &App, hash: &Blake3) -> Result<BlobDetail, Response> {
             .optional()
             .map_err(internal)?
         else {
-            return Err(err(StatusCode::NOT_FOUND, "no such blob"));
+            return Err(err(ErrorCode::NotFound, "no such blob"));
         };
 
         // Alias digests (D22). ChdSha1 attests decompressed content,
@@ -1627,11 +1630,11 @@ pub(crate) async fn job_detail(
     match require_owner(&caller) {
         Ok(()) => {
             let Ok(id) = id.parse::<i64>() else {
-                return err(StatusCode::BAD_REQUEST, "job id must be an integer");
+                return err(ErrorCode::BadRequest, "job id must be an integer");
             };
             match app.jobs.detail(id) {
                 Some(detail) => json_response(StatusCode::OK, &detail),
-                None => err(StatusCode::NOT_FOUND, "no such job"),
+                None => err(ErrorCode::NotFound, "no such job"),
             }
         }
         Err(resp) => resp,

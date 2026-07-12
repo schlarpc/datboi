@@ -12,6 +12,7 @@
   import { followJob, jobsSignal, LostContact } from '../lib/jobs.svelte';
   import { router } from '../lib/router.svelte';
   import { completenessPct } from '../lib/state';
+  import { errorText } from '../lib/remote';
 
   let systems = $state<System[] | null>(null);
   let error = $state<string | null>(null);
@@ -37,7 +38,7 @@
   $effect(() => {
     fetchSystems().then(
       (body) => (systems = body.systems),
-      (e: unknown) => (error = e instanceof Error ? e.message : String(e)),
+      (e: unknown) => (error = errorText(e)),
     );
   });
 
@@ -51,7 +52,7 @@
         imports.push({
           name: file.name,
           ok: false,
-          detail: e instanceof Error ? e.message : String(e),
+          detail: errorText(e),
         });
       }
     }

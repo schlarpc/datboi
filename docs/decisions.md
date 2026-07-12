@@ -1425,3 +1425,28 @@ serializer is the single seam every /v1 JSON passes through —
 correct by construction beats a per-handler courtesy); CSP
 hash-sources for a theme-flash inline script (deferred until that
 fix is taken up).
+
+## D77 — Error surfacing: closed ErrorCode union, translated by construction (2026-07-12)
+
+Server error messages were hardcoded English rendered verbatim by the
+UI — untranslatable by design of the envelope. The envelope becomes
+`{"error": msg, "code": code}`: `code` is a CLOSED enum in datboi-api
+(bad_request, upload_expired, unauthorized, invalid_credentials,
+owner_only, invalid_invite, csrf_rejected, not_found, username_taken,
+busy, store_full, internal), and the HTTP status derives FROM the code
+(`ErrorCode::http_status`) so a handler cannot pair them wrong —
+`err()` takes a code, not a StatusCode. The web maps codes to catalog
+copy through a `Record<ErrorCode, …>` (errors.svelte.ts): adding a
+variant fails `svelte-check` until the variant has a translated
+message. `error` stays on the wire as diagnostic detail for CLI/log
+consumers; the UI appends it parenthetically only for the codes where
+it helps (bad_request, store_full, internal). The auth gate's
+plain-text 401 — the one non-envelope /v1 holdout — now wears the
+envelope too. Wire strings and statuses are pinned by a datboi-api
+test; unknown future codes fall back to the raw message client-side.
+*Rejected:* translating on the server (the daemon would need the
+user's locale and a catalog per consumer); fine-grained per-message
+codes (the UI context already knows what it asked for — categories
+carry the user-meaningful distinction, detail carries the rest);
+assertNever switch in the client (a Record is exhaustive at the type
+level AND total at runtime for unknown codes).

@@ -27,6 +27,7 @@ import type {
   EntriesBody,
   EntriesParams,
   EntryDetail,
+  ErrorCode,
   GcApplyReport,
   IngestStarted,
   InviteAcceptParams,
@@ -51,14 +52,19 @@ import type {
   Whoami,
 } from './types';
 
-/** Any non-2xx answer, with the server's message (JSON `error` or text). */
+/** Any non-2xx answer: the machine-readable code (when the body wore
+ * the D77 envelope) plus the server's diagnostic message. Screens
+ * present the code's translated copy (errors.svelte.ts), never the
+ * message — the message is for logs and power users. */
 export class ApiError extends Error {
   readonly status: number;
+  readonly code: ErrorCode | undefined;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: ErrorCode) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -70,11 +76,12 @@ export function onUnauthorized(handler: () => void): void {
 }
 
 /**
- * api.rs answers `{"error": msg}`; auth.rs validation and the session
- * middleware's 401 answer plain text. ONE decoder for both transports
- * (the fetch client below and uploadRom's XHR).
+ * Every /v1 error wears `{"error": msg, "code": code}` (D77). ONE
+ * decoder for both transports (the fetch client below and uploadRom's
+ * XHR); a non-envelope body (proxy error page, route-level 404)
+ * decodes to the raw text with no code.
  */
-function envelopeMessage(text: string, fallback: string): string {
+function decodeEnvelope(text: string, fallback: string): { message: string; code?: ErrorCode } {
   try {
     const parsed: unknown = JSON.parse(text);
     if (
@@ -82,12 +89,18 @@ function envelopeMessage(text: string, fallback: string): string {
       parsed !== null &&
       typeof (parsed as { error?: unknown }).error === 'string'
     ) {
-      return (parsed as { error: string }).error;
+      const code = (parsed as { code?: unknown }).code;
+      return {
+        message: (parsed as { error: string }).error,
+        // Trust the contract for the cast; a code this build doesn't
+        // know simply misses the message map and falls back.
+        code: typeof code === 'string' ? (code as ErrorCode) : undefined,
+      };
     }
   } catch {
     // not JSON — fall through to the raw text
   }
-  return text || fallback;
+  return { message: text || fallback };
 }
 
 /** Open auth endpoints: a 401 here is a typed answer (bad credentials,
@@ -124,10 +137,10 @@ client.use({
       return undefined;
     }
     const text = await response.text().catch(() => '');
-    const message = envelopeMessage(text, response.statusText);
+    const { message, code } = decodeEnvelope(text, response.statusText);
     const pathname = new URL(request.url, window.location.origin).pathname;
     handleUnauthorized(response.status, !OPEN_AUTH.has(pathname));
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, message, code);
   },
 });
 
@@ -295,9 +308,9 @@ export function uploadRom(
         }
         return;
       }
-      const message = envelopeMessage(xhr.responseText, xhr.statusText);
+      const { message, code } = decodeEnvelope(xhr.responseText, xhr.statusText);
       handleUnauthorized(xhr.status, true);
-      reject(new ApiError(xhr.status, message));
+      reject(new ApiError(xhr.status, message, code));
     };
     xhr.onerror = () => reject(new ApiError(0, 'network error during upload'));
     xhr.onabort = () => reject(new ApiError(0, 'upload aborted'));

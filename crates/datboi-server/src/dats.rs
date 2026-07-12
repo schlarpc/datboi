@@ -17,7 +17,7 @@ use axum::body::Bytes;
 use axum::extract::{RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::Response;
-use datboi_api::DatImportResponse;
+use datboi_api::{DatImportResponse, ErrorCode};
 use datboi_catalog::{CatalogError, ImportOptions, import_dat};
 
 use crate::App;
@@ -54,7 +54,7 @@ pub(crate) async fn import(
             }
         }
         if body.is_empty() {
-            return Err(err(StatusCode::BAD_REQUEST, "empty request body"));
+            return Err(err(ErrorCode::BadRequest, "empty request body"));
         }
         let mut db = app
             .db
@@ -80,7 +80,7 @@ pub(crate) async fn import(
                 [report.source_id],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
+            .map_err(|e| err(ErrorCode::Internal, &e.to_string()))?;
         // Operator log line (stderr is the log until the durable job
         // table — see ingest.rs run_job): a dat import rewrites what
         // the catalog wants, and the response body vanishes with the
@@ -110,9 +110,9 @@ pub(crate) async fn import(
 /// failures are ours (500). import_dat validates before storing, so a
 /// refused body leaves no blob behind.
 fn import_err(e: CatalogError) -> Response {
-    let status = match &e {
-        CatalogError::Parse(_) => StatusCode::BAD_REQUEST,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    let code = match &e {
+        CatalogError::Parse(_) => ErrorCode::BadRequest,
+        _ => ErrorCode::Internal,
     };
-    err(status, &e.to_string())
+    err(code, &e.to_string())
 }

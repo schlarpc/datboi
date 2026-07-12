@@ -24,15 +24,20 @@
         "type": "object"
       },
       "ApiError": {
-        "description": "Every /v1 error body: `{\"error\": \"<message>\"}`.",
+        "description": "Every /v1 error body: `{\"error\": \"<message>\", \"code\": \"<code>\"}`.",
         "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode",
+            "description": "Machine-readable failure category (D77)."
+          },
           "error": {
-            "description": "Human-readable failure description.",
+            "description": "Human-readable failure description — diagnostic detail for CLI\nand log consumers. The web UI presents `code`, not this.",
             "type": "string"
           }
         },
         "required": [
-          "error"
+          "error",
+          "code"
         ],
         "type": "object"
       },
@@ -580,6 +585,24 @@
           "claimed",
           "missing",
           "nodump"
+        ],
+        "type": "string"
+      },
+      "ErrorCode": {
+        "description": "Machine-readable failure category (D77). A CLOSED union: the web UI\nmaps every variant to a translated message through an exhaustive\nswitch, so adding a variant here fails the web typecheck until that\nmessage exists — errors are translatable by construction, never by\npassing English prose through.\n\nThe HTTP status derives FROM the code ([`ErrorCode::http_status`]),\nso a handler cannot pair a code with a contradicting status.",
+        "enum": [
+          "bad_request",
+          "upload_expired",
+          "unauthorized",
+          "invalid_credentials",
+          "owner_only",
+          "invalid_invite",
+          "csrf_rejected",
+          "not_found",
+          "username_taken",
+          "busy",
+          "store_full",
+          "internal"
         ],
         "type": "string"
       },

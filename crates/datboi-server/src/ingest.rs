@@ -34,8 +34,8 @@ use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use datboi_api::{
-    DatImportedItem, IngestErrorItem, IngestReportBody, IngestRequest, IngestStartResponse,
-    MatchedEntry, UploadResponse,
+    DatImportedItem, ErrorCode, IngestErrorItem, IngestReportBody, IngestRequest,
+    IngestStartResponse, MatchedEntry, UploadResponse,
 };
 use datboi_catalog::{ImportOptions, import_dat};
 use datboi_index::Db;
@@ -84,13 +84,13 @@ pub(crate) async fn upload(
         match app.store.available_bytes() {
             Ok(Some(avail)) if avail < len.saturating_add(STAGING_SLACK) => {
                 return err(
-                    StatusCode::INSUFFICIENT_STORAGE,
+                    ErrorCode::StoreFull,
                     &format!("insufficient store headroom: need ~{len} bytes, {avail} available"),
                 );
             }
             // Unanswerable platforms stay permissive (store.rs says why).
             Ok(_) => {}
-            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+            Err(e) => return err(ErrorCode::Internal, &e.to_string()),
         }
     }
 
@@ -140,34 +140,28 @@ pub(crate) async fn upload(
         Ok(Ok(written)) => written,
         Ok(Err(io)) => {
             let _ = std::fs::remove_file(&path);
-            return err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("staging write: {io}"),
-            );
+            return err(ErrorCode::Internal, &format!("staging write: {io}"));
         }
         Err(join) => {
             let _ = std::fs::remove_file(&path);
-            return err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("staging task failed: {join}"),
-            );
+            return err(ErrorCode::Internal, &format!("staging task failed: {join}"));
         }
     };
     // A truncated body must not become a silently-short ROM.
     if stream_error || declared.is_some_and(|len| len != written) {
         let _ = std::fs::remove_file(&path);
-        return err(StatusCode::BAD_REQUEST, "upload aborted or short body");
+        return err(ErrorCode::BadRequest, "upload aborted or short body");
     }
     if written == 0 {
         let _ = std::fs::remove_file(&path);
-        return err(StatusCode::BAD_REQUEST, "empty upload");
+        return err(ErrorCode::BadRequest, "empty upload");
     }
 
     let token = match auth::mint_token() {
         Ok(token) => token,
         Err(e) => {
             let _ = std::fs::remove_file(&path);
-            return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("entropy: {e}"));
+            return err(ErrorCode::Internal, &format!("entropy: {e}"));
         }
     };
     app.jobs.stage(
@@ -196,14 +190,14 @@ fn upload_name(query: Option<&str>) -> Result<String, Response> {
         .map(|(_, v)| v)
         .unwrap_or_default();
     if name.is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "missing query param \"name\""));
+        return Err(err(ErrorCode::BadRequest, "missing query param \"name\""));
     }
     if name.starts_with('/')
         || name.contains('\0')
         || name.split('/').any(|seg| seg.is_empty() || seg == "..")
     {
         return Err(err(
-            StatusCode::BAD_REQUEST,
+            ErrorCode::BadRequest,
             "name must be a relative path without \"..\" segments",
         ));
     }
@@ -221,11 +215,11 @@ pub(crate) async fn start(
         require_owner(&caller)?;
         let tokens = req.uploads;
         if tokens.is_empty() {
-            return Err(err(StatusCode::BAD_REQUEST, "uploads must not be empty"));
+            return Err(err(ErrorCode::BadRequest, "uploads must not be empty"));
         }
         let staged = app.jobs.take(&tokens).map_err(|t| {
             err(
-                StatusCode::BAD_REQUEST,
+                ErrorCode::UploadExpired,
                 &format!("unknown or expired upload: {t}"),
             )
         })?;

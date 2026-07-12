@@ -32,6 +32,7 @@ use crate::{admin, api, dats, ingest};
 use crate::App;
 use crate::auth::{self, Caller};
 use crate::vfs::{self, LookupError, RowMeta, ViewIndex};
+use datboi_api::ErrorCode;
 
 /// Streamed responses move through the verified range path in windows
 /// of this size (a multiple of the 16 KiB bao group).
@@ -309,23 +310,21 @@ async fn view_image(
             // wear the typed /v1 shape (D69) — this is a /v1 route,
             // however binary its success body.
             if !auth::view_allowed(&db, &caller, &name) {
-                return Err(api::err(StatusCode::NOT_FOUND, "no such view"));
+                return Err(api::err(ErrorCode::NotFound, "no such view"));
             }
             let hash = db
                 .get_tag(&format!("image/{name}"))
-                .map_err(|e| api::err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?
-                .ok_or_else(|| api::err(StatusCode::NOT_FOUND, "no image minted for this view"))?;
+                .map_err(|e| api::err(ErrorCode::Internal, &e.to_string()))?
+                .ok_or_else(|| api::err(ErrorCode::NotFound, "no image minted for this view"))?;
             // A tag pointing at an unindexed/sizeless blob is server-side
             // damage, not a client miss.
             let blob = db
                 .blob_by_hash(&hash)
-                .map_err(|e| api::err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?
-                .ok_or_else(|| {
-                    api::err(StatusCode::INTERNAL_SERVER_ERROR, "image blob not indexed")
-                })?;
-            let size = blob.size.ok_or_else(|| {
-                api::err(StatusCode::INTERNAL_SERVER_ERROR, "image blob has no size")
-            })?;
+                .map_err(|e| api::err(ErrorCode::Internal, &e.to_string()))?
+                .ok_or_else(|| api::err(ErrorCode::Internal, "image blob not indexed"))?;
+            let size = blob
+                .size
+                .ok_or_else(|| api::err(ErrorCode::Internal, "image blob has no size"))?;
             // D27 class, derived exactly like snapshot rows record it:
             // resident reads affinely, otherwise the best route's class
             // (the mint recipe is affine assemble, D62).
@@ -333,7 +332,7 @@ async fn view_image(
                 0
             } else {
                 db.recipes_for_output(blob.blob_id)
-                    .map_err(|e| api::err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?
+                    .map_err(|e| api::err(ErrorCode::Internal, &e.to_string()))?
                     .iter()
                     .filter(|r| r.verify != datboi_index::VerifyState::Failed)
                     .map(|r| match r.seek_class {
@@ -884,13 +883,12 @@ where
     async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Response> {
         match axum::Json::<T>::from_request(req, state).await {
             Ok(axum::Json(value)) => Ok(Self(value)),
-            Err(rejection) => {
-                let status = match &rejection {
-                    JsonRejection::JsonDataError(_) => StatusCode::BAD_REQUEST,
-                    other => other.status(),
-                };
-                Err(crate::api::err(status, &rejection.body_text()))
-            }
+            Err(rejection) => Err(crate::api::err(
+                // Every body rejection is request-shaped (D77): the
+                // 413/415 nuance rides in the detail text, not the code.
+                ErrorCode::BadRequest,
+                &rejection.body_text(),
+            )),
         }
     }
 }

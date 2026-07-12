@@ -16,8 +16,8 @@ use axum::extract::{Path as UrlPath, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use datboi_api::{
-    AdminUsersResponse, GrantAddRequest, InviteMintRequest, InviteMintResponse, InviteRow,
-    OkResponse, SessionsRevokedResponse, UserRow,
+    AdminUsersResponse, ErrorCode, GrantAddRequest, InviteMintRequest, InviteMintResponse,
+    InviteRow, OkResponse, SessionsRevokedResponse, UserRow,
 };
 use datboi_core::hash::Blake3;
 use datboi_index::Role;
@@ -28,7 +28,7 @@ use crate::auth::{self, Caller};
 use crate::http::{ApiJson, json_response, run_blocking};
 
 fn internal(e: impl std::fmt::Display) -> Response {
-    err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
+    err(ErrorCode::Internal, &e.to_string())
 }
 
 fn lock_db(app: &App) -> std::sync::MutexGuard<'_, datboi_index::Db> {
@@ -119,12 +119,12 @@ pub(crate) async fn invite_create(
         let days = body.expires_days.unwrap_or(7);
         if !(1..=365).contains(&days) {
             return Err(err(
-                StatusCode::BAD_REQUEST,
+                ErrorCode::BadRequest,
                 "expires_days must be between 1 and 365",
             ));
         }
-        let token = auth::mint_token()
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &format!("entropy: {e}")))?;
+        let token =
+            auth::mint_token().map_err(|e| err(ErrorCode::Internal, &format!("entropy: {e}")))?;
         let expires_at = auth::now_unix() + days * DAY_SECS;
         // Web mints record the minting user; loopback (CLI-equivalent
         // shell access) mints with no user row, same as `datboi user
@@ -160,12 +160,12 @@ pub(crate) async fn invite_delete(
         // the 64-hex-chars decoder this needs.
         let hash: Blake3 = token_hash_hex
             .parse()
-            .map_err(|_| err(StatusCode::BAD_REQUEST, "not a token hash"))?;
+            .map_err(|_| err(ErrorCode::BadRequest, "not a token hash"))?;
         let db = lock_db(&app);
         if db.delete_invite(&hash.0).map_err(internal)? {
             Ok(json_response(StatusCode::OK, &OkResponse { ok: true }))
         } else {
-            Err(err(StatusCode::NOT_FOUND, "no such pending invite"))
+            Err(err(ErrorCode::NotFound, "no such pending invite"))
         }
     })
     .await
@@ -177,7 +177,7 @@ fn user_id_by_name(db: &datboi_index::Db, username: &str) -> Result<i64, Respons
     db.user_by_name(username)
         .map_err(internal)?
         .map(|user| user.user_id)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such user"))
+        .ok_or_else(|| err(ErrorCode::NotFound, "no such user"))
 }
 
 pub(crate) async fn grant_create(
@@ -200,7 +200,7 @@ pub(crate) async fn grant_create(
             .map_err(internal)?
             .is_some();
         if !tagged && !defined {
-            return Err(err(StatusCode::NOT_FOUND, "no such view"));
+            return Err(err(ErrorCode::NotFound, "no such view"));
         }
         db.grant_view(user_id, view).map_err(internal)?;
         Ok(json_response(StatusCode::OK, &OkResponse { ok: true }))
@@ -220,7 +220,7 @@ pub(crate) async fn grant_delete(
         if db.revoke_view(user_id, &view).map_err(internal)? {
             Ok(json_response(StatusCode::OK, &OkResponse { ok: true }))
         } else {
-            Err(err(StatusCode::NOT_FOUND, "no such grant"))
+            Err(err(ErrorCode::NotFound, "no such grant"))
         }
     })
     .await

@@ -9,6 +9,7 @@
   import { router } from '../lib/router.svelte';
   import { session } from '../lib/session.svelte';
   import logoUrl from '../lib/assets/logo.svg';
+  import { errorText } from '../lib/remote';
 
   // Read once at mount: the token is the fragment, sans '#'.
   const token = window.location.hash.slice(1);
@@ -30,7 +31,7 @@
     } catch (e) {
       // Server messages are precise (bad username charset, short
       // password, expired invite, taken name) — surface them as-is.
-      error = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
+      error = errorText(e);
     } finally {
       busy = false;
     }

@@ -11,6 +11,7 @@
   import { bandFor } from '../lib/bands';
   import { fmtAge, fmtSize, snapShort } from '../lib/format';
   import { router } from '../lib/router.svelte';
+  import { errorText } from '../lib/remote';
 
   let views = $state<View[] | null>(null);
   let error = $state<string | null>(null);
@@ -18,7 +19,7 @@
   $effect(() => {
     fetchViews().then(
       (body) => (views = body.views),
-      (e: unknown) => (error = e instanceof Error ? e.message : String(e)),
+      (e: unknown) => (error = errorText(e)),
     );
   });
 

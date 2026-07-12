@@ -18,7 +18,8 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
 use datboi_api::{
-    GcApplyRequest, GcApplyResponse, GcKeepRequest, OkResponse, OrphanItem, OrphansResponse,
+    ErrorCode, GcApplyRequest, GcApplyResponse, GcKeepRequest, OkResponse, OrphanItem,
+    OrphansResponse,
 };
 use datboi_core::hash::Blake3;
 use datboi_exec::policy;
@@ -32,7 +33,7 @@ use crate::http::{json_response, run_blocking};
 use crate::maintain::claim_guard;
 
 fn internal(e: impl std::fmt::Display) -> Response {
-    err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
+    err(ErrorCode::Internal, &e.to_string())
 }
 
 // ---- GET /v1/gc/orphans ----
@@ -87,7 +88,7 @@ pub(crate) async fn keep(
         let hash: Blake3 = req
             .hash
             .parse()
-            .map_err(|_| err(StatusCode::BAD_REQUEST, "not a blake3 hex hash"))?;
+            .map_err(|_| err(ErrorCode::BadRequest, "not a blake3 hex hash"))?;
         let keep = req.keep;
         let db = app
             .db
@@ -110,7 +111,7 @@ pub(crate) async fn apply(
         require_owner(&caller)?;
         let mut holder = [0u8; 16];
         getrandom::getrandom(&mut holder)
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &format!("entropy: {e}")))?;
+            .map_err(|e| err(ErrorCode::Internal, &format!("entropy: {e}")))?;
         let holder = GuardHolder(holder);
 
         let mut db = app
@@ -130,7 +131,7 @@ pub(crate) async fn apply(
 
         if !claim_guard(&db, &holder) {
             return Err(err(
-                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::Busy,
                 "gc guard busy (an eviction or apply is running); retry shortly",
             ));
         }

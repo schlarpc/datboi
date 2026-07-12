@@ -5,6 +5,7 @@
    * token system: cartridge card shell, mono inputs, filled pill.
    */
   import { ApiError, login } from '../lib/api/client';
+  import { errorText } from '../lib/remote';
   import { router } from '../lib/router.svelte';
   import { session } from '../lib/session.svelte';
   import logoUrl from '../lib/assets/logo.svg';
@@ -28,7 +29,7 @@
       if (e instanceof ApiError && e.status === 401) {
         failed = true;
       } else {
-        otherError = e instanceof Error ? e.message : String(e);
+        otherError = errorText(e);
       }
     } finally {
       busy = false;
