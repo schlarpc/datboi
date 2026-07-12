@@ -12,7 +12,8 @@
   import type { BlobDetail, RouteEdge } from '../lib/api/types';
   import { copyText } from '../lib/clipboard';
   import Link from '../lib/components/Link.svelte';
-  import { fmtDate, fmtSize, residencyLabel, shortHash } from '../lib/format';
+  import { fmtDate, fmtSize, shortHash } from '../lib/format';
+  import { residencyLabel } from '../lib/residency.svelte';
   import { loading, settle, type Remote } from '../lib/remote';
 
   let { hash }: { hash: string } = $props();

@@ -225,10 +225,8 @@ msgstr "you're invited"
 msgid "Ingest"
 msgstr "Ingest"
 
-#. 0: systems.length.toLocaleString(); 1: entryTotal.toLocaleString()
-#: src/screens/Library.svelte
-msgid "{0} systems · {1} entries"
-msgstr "{0} systems · {1} entries"
+#~ msgid "{0} systems · {1} entries"
+#~ msgstr "{0} systems · {1} entries"
 
 #~ msgid "dat import is CLI-only for now — run:"
 #~ msgstr "dat import is CLI-only for now — run:"
@@ -300,8 +298,10 @@ msgstr "excluded from completeness math"
 msgid "verified {0}"
 msgstr "verified {0}"
 
-#~ msgid "blob {0} · {1}"
-#~ msgstr "blob {0} · {1}"
+#. 0: shortHash(rom.blob.hash); 1: residencyLabel(rom.blob.residency)
+#: src/lib/components/EntryDrawer.svelte
+msgid "blob {0} · {1}"
+msgstr "blob {0} · {1}"
 
 #: src/lib/components/EntryDrawer.svelte
 msgid "verify pending replay"
@@ -384,15 +384,15 @@ msgstr "{0} missing"
 #~ msgid "+ import a dat to start a new system"
 #~ msgstr "+ import a dat to start a new system"
 
-#: src/lib/components/EntryDrawer.svelte
+#: src/lib/residency.svelte.ts
 msgid "resident"
 msgstr "resident"
 
-#: src/lib/components/EntryDrawer.svelte
+#: src/lib/residency.svelte.ts
 msgid "absent"
 msgstr "absent"
 
-#: src/lib/components/EntryDrawer.svelte
+#: src/lib/residency.svelte.ts
 msgid "evicted (covered)"
 msgstr "evicted (covered)"
 
@@ -666,10 +666,8 @@ msgstr "{0}{1} profile"
 msgid "served by tag only — no stored definition"
 msgstr "served by tag only — no stored definition"
 
-#. 0: view.rows.toLocaleString()
-#: src/screens/Views.svelte
-msgid "{0} files"
-msgstr "{0} files"
+#~ msgid "{0} files"
+#~ msgstr "{0} files"
 
 #. 0: snapShort(view.snapshot)
 #. 0: snapShort(view.snapshot)
@@ -877,10 +875,8 @@ msgstr "{0}{1} layout"
 msgid "served read-only"
 msgstr "served read-only"
 
-#. 0: view.rows.toLocaleString(); 1: fmtSize(view.bytes)
-#: src/screens/Shelves.svelte
-msgid "{0} files · {1}"
-msgstr "{0} files · {1}"
+#~ msgid "{0} files · {1}"
+#~ msgstr "{0} files · {1}"
 
 #: src/screens/Shelves.svelte
 msgid "● verified — hash-checked as it streams"
@@ -904,9 +900,7 @@ msgstr "{0}{1} files"
 msgid "snap {0}<0/><1/>"
 msgstr "snap {0}<0/><1/>"
 
-#. 0: d.provider; 1: d.system; 2: d.entries.toLocaleString()
 #. 0: dat.provider; 1: dat.system; 2: dat.entries.toLocaleString()
-#: src/screens/Ingest.svelte
 #: src/screens/Library.svelte
 msgid "{0}/{1} — {2} entries"
 msgstr "{0}/{1} — {2} entries"
@@ -968,27 +962,23 @@ msgstr "— processing {0}…"
 msgid "INGESTING"
 msgstr "INGESTING"
 
-#. 0: job.files_done; 1: job.files_total
-#: src/screens/Ingest.svelte
-msgid "{0} / {1} files <0/>"
-msgstr "{0} / {1} files <0/>"
+#~ msgid "{0} / {1} files <0/>"
+#~ msgstr "{0} / {1} files <0/>"
 
 #: src/screens/Ingest.svelte
 msgctxt "files the pipeline would not take"
 msgid "refused"
 msgstr "refused"
 
-#: src/screens/Ingest.svelte
-msgid "<0/> new blobs"
-msgstr "<0/> new blobs"
+#~ msgid "<0/> new blobs"
+#~ msgstr "<0/> new blobs"
 
 #: src/screens/Ingest.svelte
 msgid "<0/> dupes"
 msgstr "<0/> dupes"
 
-#: src/screens/Ingest.svelte
-msgid "<0/> archive members"
-msgstr "<0/> archive members"
+#~ msgid "<0/> archive members"
+#~ msgstr "<0/> archive members"
 
 #. 0: job.report.members_claimed.toLocaleString(); 1: job.report.members_extracted.toLocaleString()
 #: src/screens/Ingest.svelte
@@ -1025,9 +1015,8 @@ msgstr "<0/> matched"
 msgid "drop ROMs, zips, dats, or folders here — or click to pick files"
 msgstr "drop ROMs, zips, dats, or folders here — or click to pick files"
 
-#: src/screens/Ingest.svelte
-msgid "<0/> dats imported"
-msgstr "<0/> dats imported"
+#~ msgid "<0/> dats imported"
+#~ msgstr "<0/> dats imported"
 
 #: src/screens/Library.svelte
 msgid "+ import a dat (zipped is fine) to start a new system — drop files here or click to pick"
@@ -1047,10 +1036,8 @@ msgctxt "job state"
 msgid "failed"
 msgstr "failed"
 
-#. 0: detail.files_done; 1: detail.files_total; 2: detail.matched_total; 3: refused(detail)
-#: src/lib/components/JobsTray.svelte
-msgid "{0}/{1} files <0/> · {2} matched · {3} refused"
-msgstr "{0}/{1} files <0/> · {2} matched · {3} refused"
+#~ msgid "{0}/{1} files <0/> · {2} matched · {3} refused"
+#~ msgstr "{0}/{1} files <0/> · {2} matched · {3} refused"
 
 #: src/screens/Blob.svelte
 msgid "inputs"
@@ -1155,15 +1142,11 @@ msgstr "largest blobs"
 msgid "WHERE THE BYTES LIVE"
 msgstr "WHERE THE BYTES LIVE"
 
-#. 0: detail.report.errors.length
-#: src/lib/components/JobsTray.svelte
-msgid "· {0} errors"
-msgstr "· {0} errors"
+#~ msgid "· {0} errors"
+#~ msgstr "· {0} errors"
 
-#. 0: detail.files_done; 1: detail.files_total
-#: src/lib/components/JobsTray.svelte
-msgid "{0}/{1} blobs <0/> <1/>"
-msgstr "{0}/{1} blobs <0/> <1/>"
+#~ msgid "{0}/{1} blobs <0/> <1/>"
+#~ msgstr "{0}/{1} blobs <0/> <1/>"
 
 #: src/screens/Storage.svelte
 msgid "watermarks (\"off\" disarms); manual pass: datboi evict --dry-run:"
@@ -1228,10 +1211,8 @@ msgstr "delete failed — {0}"
 msgid "couldn't load more — {0}"
 msgstr "couldn't load more — {0}"
 
-#. 0: shortHash(rom.blob.hash)
-#: src/lib/components/EntryDrawer.svelte
-msgid "blob {0} · <0/>"
-msgstr "blob {0} · <0/>"
+#~ msgid "blob {0} · <0/>"
+#~ msgstr "blob {0} · <0/>"
 
 #: src/screens/Blob.svelte
 #: src/screens/Views.svelte
@@ -1368,3 +1349,60 @@ msgstr "{0} · datboi"
 
 #~ msgid "Enter"
 #~ msgstr "Enter"
+
+#: src/lib/components/JobsTray.svelte
+#: src/screens/Ingest.svelte
+#: src/screens/Shelves.svelte
+#: src/screens/Views.svelte
+msgid "# file"
+msgid_plural "# files"
+msgstr[0] "# file"
+msgstr[1] "# files"
+
+#: src/screens/Ingest.svelte
+msgid "dat imported"
+msgid_plural "dats imported"
+msgstr[0] "dat imported"
+msgstr[1] "dats imported"
+
+#: src/screens/Ingest.svelte
+#: src/screens/Library.svelte
+msgid "# entry"
+msgid_plural "# entries"
+msgstr[0] "# entry"
+msgstr[1] "# entries"
+
+#: src/screens/Ingest.svelte
+msgid "new blob"
+msgid_plural "new blobs"
+msgstr[0] "new blob"
+msgstr[1] "new blobs"
+
+#: src/screens/Ingest.svelte
+msgid "archive member"
+msgid_plural "archive members"
+msgstr[0] "archive member"
+msgstr[1] "archive members"
+
+#: src/screens/Library.svelte
+msgid "# system"
+msgid_plural "# systems"
+msgstr[0] "# system"
+msgstr[1] "# systems"
+
+#: src/lib/components/JobsTray.svelte
+msgid "# blob"
+msgid_plural "# blobs"
+msgstr[0] "# blob"
+msgstr[1] "# blobs"
+
+#: src/lib/components/JobsTray.svelte
+msgid "# error"
+msgid_plural "# errors"
+msgstr[0] "# error"
+msgstr[1] "# errors"
+
+#. 0: detail.files_done; 1: plural(detail.files_total, ['# file', '# files']); 2: detail.matched_total; 3: refused(detail)
+#: src/lib/components/JobsTray.svelte
+msgid "{0}/{1} <0/> · {2} matched · {3} refused"
+msgstr "{0}/{1} <0/> · {2} matched · {3} refused"

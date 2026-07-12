@@ -114,7 +114,7 @@ test('breakdown renders class bars, the source table, and largest blobs', async 
   // by_class rows: namespace · residency labels, wire underscore
   // rendered as a space, bytes + sizeless surfaced.
   expect(screen.getByText('data · resident')).toBeTruthy();
-  expect(screen.getByText('data · evicted covered')).toBeTruthy();
+  expect(screen.getByText('data · evicted (covered)')).toBeTruthy();
   expect(screen.getByText('meta · resident')).toBeTruthy();
   expect(screen.getByText('500.0 GB')).toBeTruthy();
   expect(screen.getByText(/3 sizeless/)).toBeTruthy();

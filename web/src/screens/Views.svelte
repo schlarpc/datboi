@@ -29,6 +29,7 @@
   import CliHint from '../lib/components/CliHint.svelte';
   import { fmtAge, fmtSize, shortHash, snapShort } from '../lib/format';
   import { loading, settle, type Remote } from '../lib/remote';
+  import { plural } from '../lib/plural';
 
   // The list (names) and each card's detail are INDEPENDENT resources
   // (the remote.ts principle): one failed or slow detail renders its
@@ -195,7 +196,7 @@
 
             <div class="stats">
               {#if view.rows != null}
-                <span>{view.rows.toLocaleString()} files</span>
+                <span>{plural(view.rows, ['# file', '# files'])}</span>
               {/if}
               {#if view.snapshot !== null}
                 <span>

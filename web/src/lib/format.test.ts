@@ -1,5 +1,10 @@
+import { loadLocale } from 'wuchale/load-utils';
 import { describe, expect, test } from 'vitest';
-import { fmtAge, fmtDate, fmtSize, parseRegion, residencyLabel, shortHash, snapShort } from './format';
+import '../locales/main.loader.svelte.js';
+import { fmtAge, fmtDate, fmtSize, parseRegion, shortHash, snapShort } from './format';
+import { residencyLabel } from './residency.svelte';
+
+await loadLocale('en');
 
 describe('shortHash', () => {
   test('renders 5 hex + ellipsis + last 2 (spec §3.2)', () => {
@@ -60,9 +65,9 @@ describe('snapShort', () => {
 });
 
 describe('residencyLabel', () => {
-  test('wire words render with spaces, not underscores', () => {
+  test('wire words render as display copy, not underscores', () => {
     expect(residencyLabel('resident')).toBe('resident');
-    expect(residencyLabel('evicted_covered')).toBe('evicted covered');
+    expect(residencyLabel('evicted_covered')).toBe('evicted (covered)');
     expect(residencyLabel('absent')).toBe('absent');
   });
 });

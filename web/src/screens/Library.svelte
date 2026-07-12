@@ -13,6 +13,7 @@
   import { router } from '../lib/router.svelte';
   import { completenessPct } from '../lib/state';
   import { errorText } from '../lib/remote';
+  import { plural } from '../lib/plural';
 
   let systems = $state<System[] | null>(null);
   let error = $state<string | null>(null);
@@ -126,7 +127,7 @@
     <h2>The shelf</h2>
     {#if systems !== null}
       <span class="sub">
-        {systems.length.toLocaleString()} systems · {entryTotal.toLocaleString()} entries
+        {plural(systems.length, ['# system', '# systems'])} · {plural(entryTotal, ['# entry', '# entries'])}
       </span>
     {/if}
   </div>

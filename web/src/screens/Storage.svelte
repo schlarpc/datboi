@@ -24,7 +24,8 @@
   import type { OrphansBody, StorageBody, StorageBreakdownBody } from '../lib/api/types';
   import CliHint from '../lib/components/CliHint.svelte';
   import Link from '../lib/components/Link.svelte';
-  import { fmtDate, fmtSize, residencyLabel, shortHash } from '../lib/format';
+  import { fmtDate, fmtSize, shortHash } from '../lib/format';
+  import { residencyLabel } from '../lib/residency.svelte';
   import { errorText, loading, settle, type Remote } from '../lib/remote';
 
   // Three independent resources, three Remotes: a failed orphan refresh

@@ -5,7 +5,6 @@
  * fragments a component composes INTO a translatable string.
  */
 
-import type { ResidencyState } from './api/types';
 
 /**
  * Hash rendering per spec §3.2: 5 hex chars, ellipsis, last 2 —
@@ -73,17 +72,3 @@ export function fmtAge(unixSecs: number, nowMs: number = Date.now()): string {
 export function snapShort(hash: string): string {
   return `#${hash.slice(0, 4)}`;
 }
-
-/** `evicted_covered` → `evicted covered`: residency words are data
- * (mono, untranslated — spec §6 note) but the underscore is a wire
- * artifact, not display. A Record over the generated union, so a new
- * residency variant fails typecheck instead of rendering its raw wire
- * spelling (the STATE_GLYPHS pattern, state.ts). */
-const RESIDENCY_LABELS: Record<ResidencyState, string> = {
-  resident: 'resident',
-  evicted_covered: 'evicted covered',
-  absent: 'absent',
-};
-
-export const residencyLabel = (residency: ResidencyState): string =>
-  RESIDENCY_LABELS[residency];

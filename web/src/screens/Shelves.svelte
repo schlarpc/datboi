@@ -12,6 +12,7 @@
   import { fmtAge, fmtSize, snapShort } from '../lib/format';
   import { router } from '../lib/router.svelte';
   import { errorText } from '../lib/remote';
+  import { plural } from '../lib/plural';
 
   let views = $state<View[] | null>(null);
   let error = $state<string | null>(null);
@@ -71,7 +72,7 @@
             </div>
             <div class="stats">
               {#if view.rows != null && view.bytes != null}
-                <span>{view.rows.toLocaleString()} files · {fmtSize(view.bytes)}</span>
+                <span>{plural(view.rows, ['# file', '# files'])} · {fmtSize(view.bytes)}</span>
               {/if}
               {#if view.snapshot !== null}
                 <span>

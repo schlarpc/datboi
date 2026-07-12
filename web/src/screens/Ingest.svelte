@@ -19,6 +19,7 @@
   import { followJob, jobsSignal, LostContact } from '../lib/jobs.svelte';
   import { collectDrop, pickedFiles, type DropFile } from '../lib/upload';
   import { errorText } from '../lib/remote';
+  import { plural } from '../lib/plural';
 
   interface QueueItem {
     name: string;
@@ -227,7 +228,7 @@
     <div class="card">
       <div class="caps">INGESTING</div>
       <p class="progress-line">
-        {job.files_done} / {job.files_total} files
+        {job.files_done} / {plural(job.files_total, ['# file', '# files'])}
         {#if job.current !== undefined}
           — processing {job.current}…
         {/if}
@@ -267,27 +268,31 @@
              dats — loose or zipped — and imported instead of
              ingesting. Same register as the matched list. -->
         <p class="matched-head">
-          <b>{job.report.dats_imported.length.toLocaleString()}</b> dats imported
+          <b>{job.report.dats_imported.length.toLocaleString()}</b>
+          {plural(job.report.dats_imported.length, ['dat imported', 'dats imported'])}
         </p>
         <ul class="matched">
           {#each job.report.dats_imported as d, i (i)}
             <li>
               <span class="file">{d.path}</span>
-              <span class="source">{d.provider}/{d.system} — {d.entries.toLocaleString()} entries</span>
+              <span class="source">{d.provider}/{d.system} — {plural(d.entries, ['# entry', '# entries'])}</span>
             </li>
           {/each}
         </ul>
       {/if}
       {#if job !== null}
         <div class="counts">
-          <span><b>{job.report.files_stored.toLocaleString()}</b> new blobs</span>
+          <span>
+            <b>{job.report.files_stored.toLocaleString()}</b>
+            {plural(job.report.files_stored, ['new blob', 'new blobs'])}
+          </span>
           <span>
             <b>{(job.report.files_already_present + job.report.files_unchanged).toLocaleString()}</b>
             dupes
           </span>
           <span>
             <b>{(job.report.members_claimed + job.report.members_extracted).toLocaleString()}</b>
-            archive members
+            {plural(job.report.members_claimed + job.report.members_extracted, ['archive member', 'archive members'])}
           </span>
           <span class:bad={refusedCount > 0}>
             <b>{refusedCount.toLocaleString()}</b>

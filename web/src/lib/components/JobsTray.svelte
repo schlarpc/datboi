@@ -22,6 +22,7 @@
   import { assertNever } from '../exhaustive';
   import { jobsSignal } from '../jobs.svelte';
   import JobRow from './JobRow.svelte';
+  import { plural } from '../plural';
 
   let jobs = $state<Job[]>([]);
   /** The last poll failed: the list below is last-known, not live. */
@@ -152,19 +153,19 @@
                   <!-- Refine/gc/scrub count ITEMS, and their story is
                        the closing note, not matches/refusals. -->
                   <p class="detail">
-                    {detail.files_done}/{detail.files_total} blobs
+                    {detail.files_done}/{plural(detail.files_total, ['# blob', '# blobs'])}
                     {#if detail.current != null}
                       · {detail.current.slice(0, 10)}…
                     {/if}
                     {#if detail.report.notes.length > 0}
                       · {detail.report.notes[detail.report.notes.length - 1]}
                     {:else if detail.report.errors.length > 0}
-                      · {detail.report.errors.length} errors
+                      · {plural(detail.report.errors.length, ['# error', '# errors'])}
                     {/if}
                   </p>
                 {:else}
                   <p class="detail">
-                    {detail.files_done}/{detail.files_total} files
+                    {detail.files_done}/{plural(detail.files_total, ['# file', '# files'])}
                     {#if detail.current != null}
                       · {detail.current}
                     {/if}

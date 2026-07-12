@@ -23,6 +23,12 @@
   // Locale is app-level state; a real switcher arrives with later polish.
   let locale = $state('en');
 
+  // The document mirrors the app locale (WCAG 3.1.1) — index.html's
+  // static lang="en" only covers the boot screen.
+  $effect(() => {
+    document.documentElement.lang = locale;
+  });
+
   const route = $derived(router.route);
 
   // Boot: one whoami probe decides login page vs app shell. Loopback

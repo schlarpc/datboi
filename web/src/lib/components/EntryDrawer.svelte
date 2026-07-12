@@ -17,7 +17,7 @@
    *   so no fake released/publisher/genre rows.
    */
   import type { EntryDetail } from '../api/types';
-  import { assertNever } from '../exhaustive';
+  import { residencyLabel } from '../residency.svelte';
   import { fmtDate, fmtSize, parseRegion, shortHash } from '../format';
   import { STATE_GLYPHS } from '../state';
 
@@ -32,16 +32,6 @@
   const region = $derived(parseRegion(detail.name));
   let storOpen = $state(false);
 
-  // Residency words are user-visible (they compose into the storage
-  // lines below) but lowercase, so each is force-included. Kept as
-  // individual consts referenced from markup (a lookup object would
-  // capture only the boot locale's catalog values).
-  // @wc-include
-  const wordResident = 'resident';
-  // @wc-include
-  const wordAbsent = 'absent';
-  // @wc-include
-  const wordEvicted = 'evicted (covered)';
 
   // Lowercase attribute copy, forced at statement level (an element
   // directive would sweep class names into the catalog too).
@@ -139,7 +129,7 @@
                 <!-- Exhaustive: a fourth ResidencyState fails check
                      here instead of rendering as "evicted (covered)". -->
                 blob {shortHash(rom.blob.hash)} ·
-                {#if rom.blob.residency === 'resident'}{wordResident}{:else if rom.blob.residency === 'absent'}{wordAbsent}{:else if rom.blob.residency === 'evicted_covered'}{wordEvicted}{:else}{assertNever(rom.blob.residency)}{/if}
+                {residencyLabel(rom.blob.residency)}
               </div>
               {#if rom.blob.verified_at !== null}
                 <div>verified {fmtDate(rom.blob.verified_at)}</div>

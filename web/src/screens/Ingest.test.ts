@@ -85,7 +85,7 @@ test('pick → upload → auto-ingest → report card', async () => {
   expect(sent.map((s) => s.name)).toEqual(['alpha.gba', 'pack.zip']);
 
   // The job finished immediately (scripted), so the report renders.
-  expect(await screen.findByText(/new blobs/)).toBeTruthy();
+  expect(await screen.findByText(/new blob/)).toBeTruthy(); // 1 stored: singular
   expect(screen.getByText(/dupes/)).toBeTruthy();
   expect(screen.getByText(/archive members/)).toBeTruthy();
   expect(screen.getByText('refused')).toBeTruthy();
@@ -137,7 +137,7 @@ test('the dats lane renders imported dats with their resolved identity', async (
 
   await pickFiles([new File(['aaaa'], 'alpha.gba'), new File(['zzzz'], 'nds.zip')]);
 
-  expect(await screen.findByText(/dats imported/)).toBeTruthy();
+  expect(await screen.findByText(/dat imported/)).toBeTruthy(); // 1 dat: singular
   expect(screen.getByText('nds.zip')).toBeTruthy();
   expect(screen.getByText('no-intro/nds — 5,000 entries')).toBeTruthy();
 });
