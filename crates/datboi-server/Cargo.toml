@@ -27,6 +27,8 @@ datboi-index.workspace = true
 datboi-ingest.workspace = true
 datboi-store-fs.workspace = true
 dav-server.workspace = true
+# Response compression for the text surfaces (JSON, UI assets, DAV XML).
+tower-http.workspace = true
 futures-core.workspace = true
 include_dir.workspace = true
 nfsserve.workspace = true

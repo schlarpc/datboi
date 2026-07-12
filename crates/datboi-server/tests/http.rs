@@ -640,6 +640,54 @@ fn auth_flow_over_http() {
     );
 }
 
+/// Compression (D78): negotiated for text-shaped responses, never for
+/// the byte surfaces, and only above the framing-overhead floor.
+/// Raw sockets on purpose: ureq's gzip feature transparently decodes
+/// AND strips Content-Encoding, hiding exactly what this test pins.
+#[test]
+fn d78_compression_for_text_surfaces_only() {
+    use std::io::{Read as _, Write as _};
+    let f = fixture();
+
+    let head = |path: &str, accept: Option<&str>| -> String {
+        let mut sock = std::net::TcpStream::connect(f.addr).expect("connect");
+        let extra = accept.map_or(String::new(), |v| format!("Accept-Encoding: {v}\r\n"));
+        write!(
+            sock,
+            "GET {path} HTTP/1.1\r\nHost: test\r\n{extra}Connection: close\r\n\r\n"
+        )
+        .expect("send");
+        let mut response = Vec::new();
+        sock.read_to_end(&mut response).expect("read");
+        let end = response
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("header block");
+        String::from_utf8_lossy(&response[..end]).to_ascii_lowercase()
+    };
+
+    // The SPA shell is html: gzip when asked...
+    let shell = head("/", Some("gzip"));
+    assert!(shell.contains("content-encoding: gzip"), "{shell}");
+    assert!(
+        shell.contains("vary:") && shell.contains("accept-encoding"),
+        "caches must key on the negotiated encoding: {shell}"
+    );
+
+    // ...and raw when the client didn't ask.
+    assert!(!head("/", None).contains("content-encoding"));
+
+    // The traced-path favicon is 54 KB of SVG text: prime material.
+    assert!(head("/icon.svg", Some("gzip")).contains("content-encoding: gzip"));
+
+    // Tiny JSON stays raw — below MIN_BYTES the framing outweighs it.
+    assert!(!head("/v1/views", Some("gzip")).contains("content-encoding"));
+
+    // The verified byte path stays raw whatever the client asks for.
+    let file = head("/view/test/Alpha/alpha.gba", Some("gzip"));
+    assert!(!file.contains("content-encoding"), "{file}");
+}
+
 /// Browser hardening (D70): the security-header set on every response
 /// class, and the Fetch-Metadata CSRF gate on state-changing methods.
 #[test]

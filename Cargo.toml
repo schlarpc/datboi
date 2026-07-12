@@ -55,6 +55,9 @@ async-trait = "0.1"
 # tokio, ratified day-one surface). Only `datboi serve` enters the
 # runtime; client subcommands stay blocking (ureq).
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+# Runtime response compression (D78): negotiated per Accept-Encoding,
+# gated by a content-type predicate so verified byte surfaces stay raw.
+tower-http = { version = "0.6", default-features = false, features = ["compression-gzip", "compression-br"] }
 blake3 = "1"
 # Named directly because dav-server's traits speak bytes::Bytes.
 bytes = "1"

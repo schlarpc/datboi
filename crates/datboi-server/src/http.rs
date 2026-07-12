@@ -162,7 +162,12 @@ pub(crate) fn router(app: Arc<App>) -> Router {
     // Everything registered below the /v1 merge is deliberately outside
     // the contract (datboi-api lib.rs header): serving surfaces, not
     // API operations.
-    Router::new()
+    //
+    // Compression (D78) rides this inner router — every surface EXCEPT
+    // /dav: dav-server's response body panics if polled again after
+    // completion, which the active-compression wrapper does, so the DAV
+    // tree opts out at the routing level rather than by predicate.
+    let compressed = Router::new()
         .merge(v1().router)
         .route("/healthz", get(|| async { "ok" }))
         .route("/view/{name}", get(view_bare))
@@ -171,13 +176,19 @@ pub(crate) fn router(app: Arc<App>) -> Router {
         .route("/snap/{hash}", get(snap_bare))
         .route("/snap/{hash}/", get(snap_root))
         .route("/snap/{hash}/{*path}", get(snap_path))
-        .route("/dav", any(dav_route.clone()))
-        .route("/dav/", any(dav_route.clone()))
-        .route("/dav/{*path}", any(dav_route))
         // `/` and every path the API didn't claim belong to the web UI
         // (D67): embedded dist with an SPA fallback. The old plaintext
         // root listing died with it — its content is `/v1/views`.
         .fallback(crate::web::fallback)
+        .layer(crate::compress::layer())
+        .with_state(Arc::clone(&app));
+    Router::new()
+        .route("/dav", any(dav_route.clone()))
+        .route("/dav/", any(dav_route.clone()))
+        .route("/dav/{*path}", any(dav_route))
+        // Everything that isn't /dav falls through to the compressed
+        // router above — including the SPA fallback it carries.
+        .fallback_service(compressed)
         // Identity resolution + per-class enforcement (D68) wraps
         // everything, fallback included; the gate also runs the D70
         // Fetch-Metadata CSRF check before any handler.
@@ -191,7 +202,6 @@ pub(crate) fn router(app: Arc<App>) -> Router {
         .layer(axum::middleware::from_fn(
             crate::hardening::security_headers,
         ))
-        .with_state(app)
 }
 
 // ---- handlers ----

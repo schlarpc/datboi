@@ -13,6 +13,7 @@
 mod admin;
 mod api;
 pub mod auth;
+mod compress;
 mod dats;
 mod dav;
 mod gc;
