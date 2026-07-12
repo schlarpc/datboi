@@ -6,7 +6,7 @@
   import FriendHeader from './lib/components/FriendHeader.svelte';
   import Header from './lib/components/Header.svelte';
   import JobsTray from './lib/components/JobsTray.svelte';
-  import { router } from './lib/router.svelte';
+  import { router, type Route } from './lib/router.svelte';
   import { session } from './lib/session.svelte';
   import Admin from './screens/Admin.svelte';
   import Audit from './screens/Audit.svelte';
@@ -52,7 +52,56 @@
       router.replace('/');
     }
   });
+
+  // Route → tab title + screen-reader announcement. A Record over the
+  // closed screen union: a new screen fails typecheck until it names
+  // itself. Thunks because this script runs before the catalog loads.
+  // @wc-include
+  const titleLibrary = () => 'library';
+  // @wc-include
+  const titleAudit = () => 'audit';
+  // @wc-include
+  const titleViews = () => 'views';
+  // @wc-include
+  const titleIngest = () => 'ingest';
+  // @wc-include
+  const titleStorage = () => 'storage';
+  // @wc-include
+  const titleBlob = () => 'blob inspector';
+  // @wc-include
+  const titleAdmin = () => 'admin';
+  // @wc-include
+  const titleLogin = () => 'sign in';
+  // @wc-include
+  const titleInvite = () => 'invite';
+  // @wc-include
+  const titleBrowse = () => 'browse';
+  // @wc-include
+  const titleNotfound = () => 'not found';
+  const TITLES: Record<Route['screen'], () => string> = {
+    library: titleLibrary,
+    audit: titleAudit,
+    views: titleViews,
+    ingest: titleIngest,
+    storage: titleStorage,
+    blob: titleBlob,
+    admin: titleAdmin,
+    login: titleLogin,
+    invite: titleInvite,
+    browse: titleBrowse,
+    notfound: titleNotfound,
+  };
+  /** Read by the polite live region below: SPA navigation is silent to
+   * a screen reader without it (the tab title change is not announced). */
+  let announcement = $state('');
+  $effect(() => {
+    const name = TITLES[route.screen]();
+    document.title = `${name} · datboi`;
+    announcement = name;
+  });
 </script>
+
+<div class="route-announcer" aria-live="polite">{announcement}</div>
 
 {#await loadLocale(locale)}
   <!-- Rendered before the catalog is loaded, so untranslatable by design. -->
@@ -128,6 +177,17 @@
     font: 400 12.5px var(--font-data);
     color: var(--faint);
     padding: 26px var(--pad-x);
+  }
+
+  /* Present for screen readers, invisible and out of flow for everyone
+     else — the standard visually-hidden recipe. */
+  .route-announcer {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .notfound {

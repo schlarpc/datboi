@@ -692,6 +692,7 @@ msgstr "⎘ copy link"
 msgid "re-eval"
 msgstr "re-eval"
 
+#: src/App.svelte
 #: src/screens/Views.svelte
 msgid "browse"
 msgstr "browse"
@@ -1316,3 +1317,48 @@ msgstr "light theme"
 #: src/lib/components/ThemeToggle.svelte
 msgid "dark theme"
 msgstr "dark theme"
+
+#: src/App.svelte
+msgid "library"
+msgstr "library"
+
+#: src/App.svelte
+msgid "audit"
+msgstr "audit"
+
+#: src/App.svelte
+msgid "views"
+msgstr "views"
+
+#: src/App.svelte
+msgid "ingest"
+msgstr "ingest"
+
+#: src/App.svelte
+msgid "storage"
+msgstr "storage"
+
+#: src/App.svelte
+msgid "blob inspector"
+msgstr "blob inspector"
+
+#: src/App.svelte
+msgid "admin"
+msgstr "admin"
+
+#: src/App.svelte
+msgid "sign in"
+msgstr "sign in"
+
+#: src/App.svelte
+msgid "invite"
+msgstr "invite"
+
+#: src/App.svelte
+msgid "not found"
+msgstr "not found"
+
+#. 0: name
+#: src/App.svelte
+msgid "{0} · datboi"
+msgstr "{0} · datboi"
