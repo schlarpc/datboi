@@ -45,8 +45,11 @@
    * issues one server query per pause, not one per keystroke. */
   const dq = debounced(() => q);
   let selected = $state<string | null>(null);
-  let detail = $state<EntryDetail | null>(null);
+  let detail = $state<Remote<EntryDetail>>(loading());
   let exporting = $state(false);
+  /** A failed export must say so — the button silently re-enabling
+   * reads as "maybe it worked". */
+  let exportError = $state<string | null>(null);
 
   $effect(() => {
     fetchSystems().then(
@@ -105,24 +108,24 @@
   function select(name: string) {
     if (selected === name) {
       selected = null;
-      detail = null;
+      detail = loading();
       return;
     }
     selected = name;
-    detail = null;
-    entryDetail(systemId, name).then(
-      (body) => {
-        if (selected === name) {
-          detail = body;
-        }
-      },
-      () => (detail = null),
+    detail = loading();
+    // Both arms ride the same liveness guard: a slow REJECTION for row
+    // A must not clobber row B's already-open drawer any more than a
+    // slow success could (the settle() rule, remote.ts).
+    settle(
+      entryDetail(systemId, name),
+      (value) => (detail = value),
+      () => selected === name,
     );
   }
 
   function close() {
     selected = null;
-    detail = null;
+    detail = loading();
   }
 
   function onkeydown(event: KeyboardEvent) {
@@ -152,6 +155,7 @@
     if (exporting || system.st !== 'ready') return;
     const sys = system.data;
     exporting = true;
+    exportError = null;
     try {
       const names: string[] = [];
       for (;;) {
@@ -176,6 +180,8 @@
       a.download = `${sys.system}-missing.txt`;
       a.click();
       URL.revokeObjectURL(url);
+    } catch (e) {
+      exportError = errorText(e);
     } finally {
       exporting = false;
     }
@@ -225,6 +231,9 @@
         <button class="missing-list" onclick={exportMissing} disabled={exporting}>
           ⬇ missing-list
         </button>
+        {#if exportError !== null}
+          <span class="export-error">export failed — {exportError}</span>
+        {/if}
       </div>
       <div class="row2">
         <span class="pct">{pct}%</span>
@@ -336,8 +345,14 @@
         {/if}
       </div>
 
-      {#if selected !== null && detail !== null}
-        <EntryDrawer {detail} onclose={close} />
+      {#if selected !== null}
+        {#if detail.st === 'ready'}
+          <EntryDrawer detail={detail.data} onclose={close} />
+        {:else if detail.st === 'error'}
+          <p class="drawer-fallback">something went wrong — {detail.msg}</p>
+        {:else}
+          <p class="drawer-fallback">loading…</p>
+        {/if}
       {/if}
     </div>
   {/if}
@@ -501,6 +516,18 @@
     border-radius: var(--r-input);
     background: var(--bg);
     color: var(--text);
+  }
+
+  .export-error {
+    font: 400 0.71875rem var(--font-data);
+    color: var(--bad);
+  }
+
+  .drawer-fallback {
+    margin: 0;
+    padding: 12px 16px;
+    font: 400 0.78125rem var(--font-data);
+    color: var(--faint);
   }
 
   .rail-density {
@@ -672,7 +699,19 @@
       padding: 0;
     }
 
-    .rail-density {
+    .export-error {
+    font: 400 0.71875rem var(--font-data);
+    color: var(--bad);
+  }
+
+  .drawer-fallback {
+    margin: 0;
+    padding: 12px 16px;
+    font: 400 0.78125rem var(--font-data);
+    color: var(--faint);
+  }
+
+  .rail-density {
       flex-basis: 100%;
       margin: 4px 0 0;
     }

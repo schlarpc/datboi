@@ -86,6 +86,7 @@ msgstr "# datboi missing-list · {0} {1} {2}"
 #. 0: entries.msg
 #. 0: detail.msg
 #. 0: detail.msg
+#. 0: detail.msg
 #. 0: files.msg
 #. 0: failure
 #. 0: error
@@ -99,6 +100,7 @@ msgstr "# datboi missing-list · {0} {1} {2}"
 #: src/screens/Admin.svelte
 #: src/screens/Admin.svelte
 #: src/screens/Admin.svelte
+#: src/screens/Audit.svelte
 #: src/screens/Audit.svelte
 #: src/screens/Audit.svelte
 #: src/screens/Blob.svelte
@@ -117,6 +119,7 @@ msgid "something went wrong — {0}"
 msgstr "something went wrong — {0}"
 
 #: src/screens/Admin.svelte
+#: src/screens/Audit.svelte
 #: src/screens/Audit.svelte
 #: src/screens/Audit.svelte
 #: src/screens/Blob.svelte
@@ -1423,3 +1426,8 @@ msgstr "revoke invite"
 #: src/screens/Storage.svelte
 msgid "keep toggle failed — {0}"
 msgstr "keep toggle failed — {0}"
+
+#. 0: exportError
+#: src/screens/Audit.svelte
+msgid "export failed — {0}"
+msgstr "export failed — {0}"
