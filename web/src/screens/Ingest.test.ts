@@ -100,6 +100,20 @@ test('pick → upload → auto-ingest → report card', async () => {
   expect(screen.getByText(/and 1 more/)).toBeTruthy();
 });
 
+test('the flow survives leaving and returning — the report is still there', async () => {
+  installFetch({ jobTimeline: [doneJob({ files_scanned: 1, files_stored: 1 })] });
+  installUploadXhr();
+  const first = render(Ingest);
+  await pickFiles([new File(['x'], 'come-back.gba')]);
+  expect(await screen.findByText('REPORT')).toBeTruthy();
+
+  // Navigate away (unmount) and back (fresh mount): the flow is app
+  // state, so the report — not a pristine dropzone — greets the user.
+  first.unmount();
+  render(Ingest);
+  expect(await screen.findByText('REPORT')).toBeTruthy();
+});
+
 test('refusals list per-file reasons from the report', async () => {
   installFetch({
     jobTimeline: [

@@ -122,6 +122,12 @@
   }
 </script>
 
+<svelte:window
+  onbeforeunload={(e) => {
+    // Tab close mid-import kills the upload for real — prompt first.
+    if (importing !== null) e.preventDefault();
+  }}
+/>
 <main>
   <div class="title-row">
     <h2>The shelf</h2>

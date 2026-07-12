@@ -13,43 +13,23 @@
    * can't move your originals, only send copies. NAS-local ingest
    * (and the eventual --move) stays with the CLI.
    */
-  import { startIngest, uploadRom } from '../lib/api/client';
-  import type { JobDetailBody } from '../lib/api/types';
   import CliHint from '../lib/components/CliHint.svelte';
-  import { followJob, jobsSignal, LostContact } from '../lib/jobs.svelte';
-  import { collectDrop, pickedFiles, type DropFile } from '../lib/upload';
-  import { errorText } from '../lib/remote';
+  import { ingestFlow } from '../lib/ingest.svelte';
+  import { collectDrop, pickedFiles } from '../lib/upload';
   import { plural } from '../lib/plural';
 
-  interface QueueItem {
-    name: string;
-    file: File;
-    size: number;
-    sent: number;
-    state: 'queued' | 'uploading' | 'staged' | 'failed';
-    token?: string;
-    error?: string;
-  }
-
+  // The flow itself is app state (lib/ingest.svelte.ts) so navigation
+  // can't orphan a multi-GB upload; this screen is a view over it.
   let fileInput = $state<HTMLInputElement | null>(null);
   let dirInput = $state<HTMLInputElement | null>(null);
   let dragOver = $state(false);
-  let phase = $state<'idle' | 'uploading' | 'ingesting' | 'report'>('idle');
-  let queue = $state<QueueItem[]>([]);
-  let job = $state<JobDetailBody | null>(null);
-  /** Infrastructure failure (start/poll); per-file refusals live in the report. */
-  let failure = $state<string | null>(null);
-  /** Polling gave up (LostContact) — the job may well still be running. */
-  let lostContact = $state(false);
+  const phase = $derived(ingestFlow.phase);
+  const queue = $derived(ingestFlow.queue);
+  const job = $derived(ingestFlow.job);
+  const failure = $derived(ingestFlow.failure);
+  const lostContact = $derived(ingestFlow.lostContact);
 
-  // Unmount stops the follow loop — the tray owns job visibility; a
-  // destroyed screen must not keep a private poll running for hours.
-  let alive = true;
-  $effect(() => () => {
-    alive = false;
-  });
-
-  const busy = $derived(phase === 'uploading' || phase === 'ingesting');
+  const busy = $derived(ingestFlow.busy);
   const uploadedBytes = $derived(queue.reduce((sum, item) => sum + item.sent, 0));
   const totalBytes = $derived(queue.reduce((sum, item) => sum + item.size, 0));
   const refusedUploads = $derived(queue.filter((item) => item.state === 'failed'));
@@ -62,80 +42,17 @@
           Number(job.report.skipper_skipped_large)),
   );
 
-  async function begin(files: DropFile[]): Promise<void> {
-    if (files.length === 0 || busy) {
-      return;
-    }
-    failure = null;
-    lostContact = false;
-    job = null;
-    phase = 'uploading';
-    queue = files.map(({ name, file }) => ({
-      name,
-      file,
-      size: file.size,
-      sent: 0,
-      state: 'queued' as const,
-    }));
-    // Sequential uploads: steady per-file bars, and the store write is
-    // the bottleneck anyway.
-    for (const item of queue) {
-      item.state = 'uploading';
-      try {
-        const receipt = await uploadRom(item.name, item.file, (sent) => (item.sent = sent));
-        item.token = receipt.upload;
-        item.sent = item.size;
-        item.state = 'staged';
-      } catch (e) {
-        item.state = 'failed';
-        item.error = errorText(e);
-      }
-    }
-    const tokens = queue.flatMap((item) => (item.token === undefined ? [] : [item.token]));
-    if (tokens.length === 0) {
-      phase = 'report'; // nothing staged; the queue rows carry the reasons
-      return;
-    }
-    try {
-      const started = await startIngest(tokens);
-      jobsSignal.bump(); // wake the tray now, not on its own cadence
-      phase = 'ingesting';
-      await follow(started.job);
-    } catch (e) {
-      failure = errorText(e);
-      phase = 'report';
-    }
-  }
-
-  async function follow(id: number): Promise<void> {
-    try {
-      const done = await followJob(id, {
-        alive: () => alive,
-        onUpdate: (detail) => (job = detail),
-      });
-      if (done === null) return; // unmounted mid-job: the tray takes over
-    } catch (e) {
-      if (e instanceof LostContact) {
-        lostContact = true; // NOT a job failure — the report card says so
-      } else {
-        failure = errorText(e);
-      }
-    }
-    phase = 'report';
-    jobsSignal.bump(); // flip the tray row to done promptly
-  }
-
   function onDrop(e: DragEvent): void {
     e.preventDefault();
     dragOver = false;
     if (!busy && e.dataTransfer) {
-      void collectDrop(e.dataTransfer).then(begin);
+      void collectDrop(e.dataTransfer).then((files) => ingestFlow.begin(files));
     }
   }
 
   function onPick(input: HTMLInputElement | null): void {
     if (input?.files && input.files.length > 0) {
-      void begin(pickedFiles(input.files));
+      void ingestFlow.begin(pickedFiles(input.files));
       input.value = '';
     }
   }
