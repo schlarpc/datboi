@@ -37,9 +37,10 @@ describe('fmtSize', () => {
 });
 
 describe('fmtDate', () => {
-  test('unix seconds → UTC date', () => {
-    expect(fmtDate(0)).toBe('1970-01-01');
-    expect(fmtDate(1_780_000_000)).toBe('2026-05-28');
+  test("unix seconds → the viewer's local calendar day", () => {
+    // Built from local components, so the expectation holds in any TZ.
+    const ts = new Date(2026, 6, 12, 15, 0, 0).getTime() / 1000;
+    expect(fmtDate(ts)).toBe('2026-07-12');
   });
 });
 

@@ -47,9 +47,14 @@ export function fmtSize(bytes: number): string {
   return `${(bytes / GB).toFixed(1)} GB`;
 }
 
-/** Unix seconds → `YYYY-MM-DD` (UTC), the drawer's verified-date render. */
+/** Unix seconds → `YYYY-MM-DD` in the VIEWER'S timezone. The old UTC
+ * render put events near midnight on the wrong calendar day for anyone
+ * off UTC — and disagreed with fmtAge below, which is local. The ISO
+ * shape stays; only the day boundary moves. */
 export function fmtDate(unixSecs: number): string {
-  return new Date(unixSecs * 1000).toISOString().slice(0, 10);
+  const d = new Date(unixSecs * 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 /**
