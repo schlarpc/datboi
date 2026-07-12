@@ -285,7 +285,14 @@ export function uploadRom(
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText) as UploadReceipt);
+        // This runs in an event handler, not the executor: a throw here
+        // would vanish into the event loop and the promise would hang
+        // forever — every exit must be an explicit resolve/reject.
+        try {
+          resolve(JSON.parse(xhr.responseText) as UploadReceipt);
+        } catch {
+          reject(new ApiError(xhr.status, 'malformed upload receipt'));
+        }
         return;
       }
       const message = envelopeMessage(xhr.responseText, xhr.statusText);
@@ -293,6 +300,9 @@ export function uploadRom(
       reject(new ApiError(xhr.status, message));
     };
     xhr.onerror = () => reject(new ApiError(0, 'network error during upload'));
+    xhr.onabort = () => reject(new ApiError(0, 'upload aborted'));
+    // No xhr.timeout: it caps TOTAL duration, and a legitimate multi-GB
+    // upload to a NAS can run for hours — a fixed cap would kill it.
     xhr.send(file);
   });
 }

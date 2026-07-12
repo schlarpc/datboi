@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { router } from '../router.svelte';
-import { ApiError, entryDetail, login, onUnauthorized, systemEntries, systems } from './client';
+import { ApiError, entryDetail, login, onUnauthorized, systemEntries, systems, uploadRom } from './client';
 
 function stub(status: number, body: unknown, contentType = 'application/json') {
   const fn = vi.fn(
@@ -92,5 +92,47 @@ describe('request shapes', () => {
     await systems();
     const request = fn.mock.calls[0][0] as Request;
     expect(request.credentials).toBe('same-origin');
+  });
+});
+
+describe('uploadRom transport', () => {
+  /** Minimal scriptable XHR: onload fires with the given status/body. */
+  function stubXhr(status: number, responseText: string) {
+    class ScriptedXhr {
+      upload = { onprogress: null };
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onabort: (() => void) | null = null;
+      status = 0;
+      responseText = '';
+      open(): void {}
+      setRequestHeader(): void {}
+      send(): void {
+        queueMicrotask(() => {
+          this.status = status;
+          this.responseText = responseText;
+          this.onload?.();
+        });
+      }
+    }
+    vi.stubGlobal('XMLHttpRequest', ScriptedXhr as unknown as typeof XMLHttpRequest);
+  }
+
+  test('a malformed 2xx body rejects — never a promise that hangs forever', async () => {
+    // A proxy/captive portal/truncation can hand a 2xx with garbage; the
+    // parse runs in an event handler where a throw would strand the
+    // await in Ingest's begin() with no error and no way out.
+    stubXhr(200, 'not json');
+    const err = await uploadRom('a.gba', new Blob(['x'])).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).message).toBe('malformed upload receipt');
+  });
+
+  test('a well-formed receipt resolves', async () => {
+    stubXhr(200, JSON.stringify({ upload: 'tok-1', bytes: 1 }));
+    await expect(uploadRom('a.gba', new Blob(['x']))).resolves.toEqual({
+      upload: 'tok-1',
+      bytes: 1,
+    });
   });
 });
