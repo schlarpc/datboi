@@ -105,6 +105,12 @@ impl Default for Limits {
 pub enum RuntimeError {
     #[error("invalid transform component: {0}")]
     Component(#[source] wasmtime::Error),
+    /// Instantiation/link failure: a host linker regression or a
+    /// component/world mismatch. Wiring, not evidence about the guest's
+    /// behavior — kept distinct from [`RuntimeError::Trap`] so the
+    /// executor never poisons a claim over it.
+    #[error("component instantiation failed (host/world wiring): {0}")]
+    Instantiate(#[source] wasmtime::Error),
     #[error("transform trapped or exhausted its resource budget: {0}")]
     Trap(#[source] wasmtime::Error),
     #[error("transform returned an error: {0}")]
@@ -176,13 +182,13 @@ impl TransformHost {
     ) -> Result<Transform, RuntimeError> {
         let component = Component::from_binary(&self.engine, component_bytes)
             .map_err(RuntimeError::Component)?;
-        Transform::instantiate(store, &component, &self.linker).map_err(RuntimeError::Trap)
+        Transform::instantiate(store, &component, &self.linker).map_err(RuntimeError::Instantiate)
     }
 
     /// Read a transform's static capability metadata for `op`.
     ///
     /// # Errors
-    /// If the component is invalid or traps.
+    /// If the component is invalid, fails to instantiate, or traps.
     pub fn describe(&self, component_bytes: &[u8], op: &str) -> Result<Descriptor, RuntimeError> {
         let mut store = self.store()?;
         let transform = self.instantiate(&mut store, component_bytes)?;
@@ -201,9 +207,11 @@ impl TransformHost {
     /// in recipe order.
     ///
     /// # Errors
-    /// [`RuntimeError::Component`] for an invalid binary, [`RuntimeError::Trap`]
-    /// for a trap or exhausted budget, [`RuntimeError::Transform`] for an
-    /// error the transform itself returned.
+    /// [`RuntimeError::Component`] for an invalid binary,
+    /// [`RuntimeError::Instantiate`] for link/world wiring failures,
+    /// [`RuntimeError::Trap`] for a trap or exhausted budget,
+    /// [`RuntimeError::Transform`] for an error the transform itself
+    /// returned.
     pub fn run(
         &self,
         component_bytes: &[u8],

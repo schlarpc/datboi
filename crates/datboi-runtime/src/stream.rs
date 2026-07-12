@@ -314,13 +314,13 @@ impl StreamHost {
         transform: &StreamTransform,
     ) -> Result<TransformStream, RuntimeError> {
         TransformStream::instantiate(store, &transform.component, &self.linker)
-            .map_err(RuntimeError::Trap)
+            .map_err(RuntimeError::Instantiate)
     }
 
     /// Read a transform's static capability metadata for `op`.
     ///
     /// # Errors
-    /// If the component is invalid or traps.
+    /// If the component is invalid, fails to instantiate, or traps.
     pub fn describe(
         &self,
         transform: &StreamTransform,
@@ -347,6 +347,7 @@ impl StreamHost {
     ///
     /// # Errors
     /// [`RuntimeError::Component`] for an invalid binary,
+    /// [`RuntimeError::Instantiate`] for link/world wiring failures,
     /// [`RuntimeError::Trap`] for traps / exhausted budgets,
     /// [`RuntimeError::Transform`] for guest-reported errors.
     pub fn run(

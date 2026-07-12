@@ -186,7 +186,7 @@ impl ExtractorHost {
         component: &ExtractorComponent,
     ) -> Result<Extractor, RuntimeError> {
         Extractor::instantiate(store, &component.component, &self.linker)
-            .map_err(RuntimeError::Trap)
+            .map_err(RuntimeError::Instantiate)
     }
 
     /// Enumerate the archive's file members.

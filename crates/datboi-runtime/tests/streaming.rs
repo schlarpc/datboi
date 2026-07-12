@@ -381,3 +381,16 @@ fn ambient_imports_still_refused() {
         "unexpected failure shape: {msg}"
     );
 }
+
+/// A world mismatch (here: the frozen @1 component under the @2 host) is
+/// a WIRING failure — [`RuntimeError::Instantiate`], never a trap. The
+/// executor's poison classification hangs on the distinction: wiring
+/// errors are retryable, traps indict the claim.
+#[test]
+fn world_mismatch_is_an_instantiate_error_not_a_trap() {
+    const V1_COMPONENT: &[u8] = include_bytes!("fixtures/xf_reference.wasm");
+    let (host, _) = shared();
+    let v1 = host.load(V1_COMPONENT).expect("valid, stamped component");
+    let err = host.describe(&v1, "byteswap").expect_err("wrong world");
+    assert!(matches!(err, RuntimeError::Instantiate(_)), "got {err:?}");
+}

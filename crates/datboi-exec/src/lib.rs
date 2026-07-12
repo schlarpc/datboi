@@ -102,6 +102,10 @@ impl ExecError {
             Self::Store(StoreError::HashMismatch { .. }) | Self::Malformed(_) => true,
             Self::Runtime(e @ RuntimeError::Trap(_)) => !e.is_fuel_exhaustion(),
             Self::Runtime(RuntimeError::Transform(_)) => true,
+            // Instantiation/link failures are host wiring (a linker
+            // regression, a component/world mismatch), not disproof of
+            // the data claim — retryable by construction.
+            Self::Runtime(RuntimeError::Instantiate(_)) => false,
             _ => false,
         }
     }
@@ -1503,5 +1507,9 @@ mod tests {
         assert!(guest_error.is_claim_failure());
         let fuel = ExecError::Runtime(RuntimeError::Trap(wasmtime::Trap::OutOfFuel.into()));
         assert!(!fuel.is_claim_failure());
+        let wiring = ExecError::Runtime(RuntimeError::Instantiate(wasmtime::Error::msg(
+            "linker regression",
+        )));
+        assert!(!wiring.is_claim_failure());
     }
 }
