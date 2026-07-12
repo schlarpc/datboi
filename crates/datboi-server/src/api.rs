@@ -1026,11 +1026,23 @@ fn storage_body(app: &App) -> Result<StorageResponse, Response> {
         .map_err(internal)?;
     // D49 rule 3: components whose seek path produced bad bytes.
     let quarantined = db.list_seek_quarantined().map_err(internal)?;
+    // The scrub-run readout (D74): newest finished scrub row, whichever
+    // side ran it (CLI stamps terminal rows; a daemon scrub would too).
+    let last_scrub = db
+        .latest_finished_job_of_kind(datboi_index::jobs::KIND_SCRUB)
+        .map_err(internal)?
+        .and_then(|row| {
+            Some(datboi_api::LastScrub {
+                finished_at: row.finished_at?,
+                name: row.name,
+            })
+        });
     Ok(StorageResponse {
         blob_count,
         on_disk_bytes: on_disk,
         represented_bytes: represented,
         literal_only_bytes: literal_only,
+        last_scrub,
         quarantine: Quarantine {
             count: quarantined.len() as u64,
             items: quarantined

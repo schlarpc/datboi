@@ -17,6 +17,7 @@ const stats: StorageBody = {
   represented_bytes: 3.8 * 1024 * GB,
   literal_only_bytes: 214 * GB,
   quarantine: { count: 0, items: [] },
+  last_scrub: null,
 };
 
 const breakdown: StorageBreakdownBody = {
@@ -144,6 +145,7 @@ test('scrub and eviction cards reveal verified CLI hints', async () => {
 
   await fireEvent.click(screen.getByText('run via CLI'));
   expect(screen.getByText(/datboi scrub/)).toBeTruthy();
+  expect(screen.getByText(/no scrub recorded yet/)).toBeTruthy();
 
   // D72: eviction is automatic and reversible; the card tunes, not plans.
   expect(screen.getByText(/rebuildable literals evict automatically/)).toBeTruthy();
@@ -193,4 +195,17 @@ test('orphan review card lists candidates with provenance and arms the delete', 
   const applyButton = screen.getByText('delete non-kept…');
   await fireEvent.click(applyButton);
   expect(screen.getByText('confirm: delete non-kept')).toBeTruthy();
+});
+
+
+test('scrub card reads the D74 run ledger when a row exists', async () => {
+  installFetch({
+    storage: {
+      ...stats,
+      last_scrub: { finished_at: 1_780_000_000, name: 'cli: scrub — 100% sample' },
+    },
+  });
+  render(Storage);
+  await screen.findByText('BLOBS');
+  expect(screen.getByText(/cli: scrub — 100% sample/)).toBeTruthy();
 });

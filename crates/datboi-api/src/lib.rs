@@ -507,6 +507,19 @@ pub struct StorageResponse {
     /// shrink yet" tax.
     pub literal_only_bytes: i64,
     pub quarantine: Quarantine,
+    /// Newest finished scrub from the D74 ledger; null before the
+    /// first recorded run.
+    #[schema(required = true)]
+    pub last_scrub: Option<LastScrub>,
+}
+
+/// The scrub-run ledger readout (D74 rows, kind scrub).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct LastScrub {
+    /// Unix seconds the run finished.
+    pub finished_at: i64,
+    /// The run's ledger name (carries the sample %).
+    pub name: String,
 }
 
 /// D49 rule 3: components whose seek path produced bad bytes.

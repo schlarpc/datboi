@@ -4,17 +4,15 @@
    * The stat tiles are REAL from /v1/storage; the savings % is computed
    * client-side (the API ships raw byte counts only).
    *
-   * Action cards (M5 scope ruling, open-questions 2026-07-11 —
-   * mutating pipeline actions are CLI-only):
-   * - Scrub: no scrub-run ledger exists (open-questions § "Scrub runs
-   *   and verify methods aren't recorded"), so the card says so
-   *   honestly and hints `datboi scrub` instead of faking `last: 2d`.
+   * Action cards:
+   * - Scrub: last-run line reads the D74 job ledger (CLI runs stamp
+   *   terminal rows); the CLI hint stays — scrub itself is CLI-only.
    * - Quarantine: REAL count + reason lines. The `review →` flow was
    *   never designed (open-questions § "Quarantine review screen") —
    *   the inline items list IS the review for M5.
-   * - Eviction: the planner screen (§3.8) is not built — there is no
-   *   plan API; the dry-run CLI is the only entry point, and the
-   *   design's promise copy stays.
+   * - Eviction: automatic at the watermark since D72 (reversible by
+   *   construction); the card tunes rather than plans.
+   * - Orphans: the D73 review gate — list, keep, two-click apply.
    */
   import {
     gcApply,
@@ -145,7 +143,11 @@
     <div class="cards">
       <div class="action-card">
         <div class="card-title">Scrub</div>
-        <p class="copy">no scrub ledger yet — the index records per-blob verify dates, not runs</p>
+        {#if stats.last_scrub !== null}
+          <p class="copy">last: {fmtDate(stats.last_scrub.finished_at)} · {stats.last_scrub.name}</p>
+        {:else}
+          <p class="copy">no scrub recorded yet — runs land in the job ledger</p>
+        {/if}
         <button class="pill" onclick={() => (scrubHint = !scrubHint)}>run via CLI</button>
         {#if scrubHint}
           <CliHint command={'datboi scrub [--sample <pct>]'}>

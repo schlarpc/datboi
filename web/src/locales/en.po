@@ -565,9 +565,8 @@ msgstr "re-hash stored blobs and report corruption:"
 msgid "Scrub"
 msgstr "Scrub"
 
-#: src/screens/Storage.svelte
-msgid "no scrub ledger yet — the index records per-blob verify dates, not runs"
-msgstr "no scrub ledger yet — the index records per-blob verify dates, not runs"
+#~ msgid "no scrub ledger yet — the index records per-blob verify dates, not runs"
+#~ msgstr "no scrub ledger yet — the index records per-blob verify dates, not runs"
 
 #: src/screens/Storage.svelte
 msgid "run via CLI"
@@ -1195,3 +1194,12 @@ msgstr "{0} reclaimable · every delete re-verifies unreferenced at delete time"
 #: src/lib/components/JobsTray.svelte
 msgid "recent activity log — history is recorded (D74); the feed UI is not designed yet"
 msgstr "recent activity log — history is recorded (D74); the feed UI is not designed yet"
+
+#. 0: fmtDate(stats.last_scrub.finished_at); 1: stats.last_scrub.name
+#: src/screens/Storage.svelte
+msgid "last: {0} · {1}"
+msgstr "last: {0} · {1}"
+
+#: src/screens/Storage.svelte
+msgid "no scrub recorded yet — runs land in the job ledger"
+msgstr "no scrub recorded yet — runs land in the job ledger"

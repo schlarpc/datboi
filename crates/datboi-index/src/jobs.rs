@@ -130,6 +130,32 @@ impl Db {
             .optional()?)
     }
 
+    /// Newest FINISHED row of one kind — the last-scrub readout
+    /// (/v1/storage) and any future per-kind "last run" surface.
+    pub fn latest_finished_job_of_kind(&self, kind: i64) -> Result<Option<JobRow>, IndexError> {
+        use rusqlite::OptionalExtension as _;
+        Ok(self
+            .state()
+            .query_row(
+                "SELECT job_id, kind, name, state, started_at, finished_at, detail
+                 FROM job WHERE kind = ?1 AND state != ?2
+                 ORDER BY job_id DESC LIMIT 1",
+                params![kind, JOB_RUNNING],
+                |row| {
+                    Ok(JobRow {
+                        job_id: row.get(0)?,
+                        kind: row.get(1)?,
+                        name: row.get(2)?,
+                        state: row.get(3)?,
+                        started_at: row.get(4)?,
+                        finished_at: row.get(5)?,
+                        detail: row.get(6)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
     /// The startup sweep: any row still `running` belonged to a dead
     /// process (one daemon per db-dir). Returns rows marked.
     pub fn interrupt_running_jobs(&self, now_unix: i64) -> Result<usize, IndexError> {

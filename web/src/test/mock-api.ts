@@ -82,6 +82,7 @@ export const emptyStorage: StorageBody = {
   represented_bytes: 0,
   literal_only_bytes: 0,
   quarantine: { count: 0, items: [] },
+  last_scrub: null,
 };
 
 export const emptyBreakdown: StorageBreakdownBody = {

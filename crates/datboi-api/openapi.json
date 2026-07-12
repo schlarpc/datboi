@@ -1269,6 +1269,25 @@
         ],
         "type": "object"
       },
+      "LastScrub": {
+        "description": "The scrub-run ledger readout (D74 rows, kind scrub).",
+        "properties": {
+          "finished_at": {
+            "description": "Unix seconds the run finished.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "name": {
+            "description": "The run's ledger name (carries the sample %).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "finished_at",
+          "name"
+        ],
+        "type": "object"
+      },
       "LoginRequest": {
         "description": "Login credentials. Fields are `Option` so the handler owns the\n\"missing field\" 400 (the D69 refactor preserves the wire behavior\nexactly); the contract still marks them required.",
         "properties": {
@@ -1804,6 +1823,17 @@
             "format": "int64",
             "type": "integer"
           },
+          "last_scrub": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LastScrub",
+                "description": "Newest finished scrub from the D74 ledger; null before the\nfirst recorded run."
+              }
+            ]
+          },
           "literal_only_bytes": {
             "description": "Resident bytes with no non-failed rebuild route — the \"can't\nshrink yet\" tax.",
             "format": "int64",
@@ -1828,7 +1858,8 @@
           "on_disk_bytes",
           "represented_bytes",
           "literal_only_bytes",
-          "quarantine"
+          "quarantine",
+          "last_scrub"
         ],
         "type": "object"
       },
