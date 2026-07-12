@@ -50,6 +50,19 @@ describe('matchPath', () => {
       expect(matchPath(path).screen).toBe('notfound');
     },
   );
+
+  test.each([
+    '/library/abc%',
+    '/library/%zz',
+    '/shelf/abc%',
+    '/storage/blob/ab%',
+  ])(
+    'malformed percent-sequence %s is notfound, not a throw',
+    (path) => {
+      expect(() => matchPath(path)).not.toThrow();
+      expect(matchPath(path).screen).toBe('notfound');
+    },
+  );
 });
 
 describe('router', () => {

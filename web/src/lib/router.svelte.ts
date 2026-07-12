@@ -24,7 +24,20 @@ export type Route =
   | { screen: 'browse'; view: string }
   | { screen: 'notfound' };
 
-/** Pure path → route match, unit-testable without a window. */
+/**
+ * Total percent-decode: a malformed sequence ('/library/abc%') is null,
+ * never a thrown URIError — matchPath runs at module scope, so a throw
+ * here would white-screen the app instead of rendering notfound.
+ */
+function safeDecode(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+}
+
+/** Pure path → route match, unit-testable without a window. Total: never throws. */
 export function matchPath(pathname: string): Route {
   switch (pathname) {
     case '/':
@@ -46,15 +59,18 @@ export function matchPath(pathname: string): Route {
     default: {
       const audit = pathname.match(/^\/library\/([^/]+)$/);
       if (audit) {
-        return { screen: 'audit', systemId: decodeURIComponent(audit[1]) };
+        const systemId = safeDecode(audit[1]);
+        if (systemId !== null) return { screen: 'audit', systemId };
       }
       const shelf = pathname.match(/^\/shelf\/([^/]+)$/);
       if (shelf) {
-        return { screen: 'browse', view: decodeURIComponent(shelf[1]) };
+        const view = safeDecode(shelf[1]);
+        if (view !== null) return { screen: 'browse', view };
       }
       const blob = pathname.match(/^\/storage\/blob\/([^/]+)$/);
       if (blob) {
-        return { screen: 'blob', hash: decodeURIComponent(blob[1]) };
+        const hash = safeDecode(blob[1]);
+        if (hash !== null) return { screen: 'blob', hash };
       }
       return { screen: 'notfound' };
     }
