@@ -819,12 +819,7 @@ pub(crate) fn mint_recipe(
         inputs,
         outputs,
     })?;
-    db.set_verify_state(
-        recipe_id,
-        datboi_index::VerifyState::Verified,
-        now_unix(),
-        None,
-    )?;
+    db.set_verify_state(recipe_id, datboi_index::VerifyAdvance::Verified, now_unix())?;
     Ok(recipe_id)
 }
 

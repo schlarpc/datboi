@@ -37,7 +37,9 @@ use datboi_core::assemble::AssembleParams;
 use datboi_core::hash::Blake3;
 use datboi_core::params::{DeflateWindow, ExtractorParams};
 use datboi_core::recipe::{Op, Recipe, World};
-use datboi_index::{Db, IndexError, RecipeSource, Residency, SeekClass, VerifyState};
+use datboi_index::{
+    Db, IndexError, RecipeSource, Residency, SeekClass, VerifyAdvance, VerifyState,
+};
 use datboi_runtime::extractor::{ExtractorComponent, ExtractorHost};
 use datboi_runtime::stream::{
     RangeRead, SequentialInput, StreamHost, StreamInput, StreamTransform,
@@ -263,7 +265,7 @@ impl<'s> Executor<'s> {
         match result {
             Ok(outputs) => {
                 if row.verify != VerifyState::ReplayedLocal {
-                    db.set_verify_state(recipe_id, VerifyState::ReplayedLocal, now_unix(), None)?;
+                    db.set_verify_state(recipe_id, VerifyAdvance::ReplayedLocal, now_unix())?;
                 }
                 // License the recipes that executed inside this replay
                 // (D25): each ran on this host, and the top-level claim
@@ -275,12 +277,7 @@ impl<'s> Executor<'s> {
                     }
                     let child = db.recipe_by_id(child_id)?;
                     if child.verify == VerifyState::Verified {
-                        db.set_verify_state(
-                            child_id,
-                            VerifyState::ReplayedLocal,
-                            now_unix(),
-                            None,
-                        )?;
+                        db.set_verify_state(child_id, VerifyAdvance::ReplayedLocal, now_unix())?;
                     }
                 }
                 for (output, (hash, _)) in recipe.outputs.iter().zip(&outputs) {
@@ -298,9 +295,11 @@ impl<'s> Executor<'s> {
                 if e.is_claim_failure() {
                     db.set_verify_state(
                         recipe_id,
-                        VerifyState::Failed,
+                        VerifyAdvance::Failed {
+                            error: &e.to_string(),
+                            peer: None,
+                        },
                         now_unix(),
-                        Some((&e.to_string(), None)),
                     )?;
                 }
                 Err(e)
@@ -332,7 +331,7 @@ impl<'s> Executor<'s> {
             }
             let child = db.recipe_by_id(child_id)?;
             if child.verify == VerifyState::Verified {
-                db.set_verify_state(child_id, VerifyState::ReplayedLocal, now_unix(), None)?;
+                db.set_verify_state(child_id, VerifyAdvance::ReplayedLocal, now_unix())?;
             }
         }
         for (output, (hash, _)) in recipe.outputs.iter().zip(&outputs) {

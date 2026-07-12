@@ -6,7 +6,7 @@ use datboi_core::hash::Blake3;
 use datboi_index::recipes::NewRecipe;
 use datboi_index::{
     AliasAlgo, ClaimKind, ClaimStatus, Db, IndexError, Namespace, OpKind, RecipeSource, Residency,
-    SeekClass, VerifyState,
+    SeekClass, VerifyAdvance, VerifyState,
 };
 
 fn open_db() -> (tempfile::TempDir, Db) {
@@ -53,11 +53,11 @@ fn recipe(db: &mut Db, seed: &[u8], inputs: &[i64], outputs: &[i64], state: Veri
         })
         .expect("insert recipe");
     if matches!(state, VerifyState::Verified | VerifyState::ReplayedLocal) {
-        db.set_verify_state(recipe_id, VerifyState::Verified, 1, None)
+        db.set_verify_state(recipe_id, VerifyAdvance::Verified, 1)
             .expect("to verified");
     }
     if state == VerifyState::ReplayedLocal {
-        db.set_verify_state(recipe_id, VerifyState::ReplayedLocal, 2, None)
+        db.set_verify_state(recipe_id, VerifyAdvance::ReplayedLocal, 2)
             .expect("to replayed");
     }
     recipe_id
@@ -413,35 +413,33 @@ fn recipes_for_output_and_verify_machine() {
     assert_eq!(rows[0].verify, VerifyState::Pending);
     assert!(db.recipes_for_output(input).unwrap().is_empty());
 
-    // Legal: pending → verified → replayed-local.
-    db.set_verify_state(recipe_id, VerifyState::Verified, 10, None)
+    // Legal: pending → verified → replayed-local. (A downgrade to
+    // Pending is no longer expressible: VerifyAdvance has no such
+    // target.)
+    db.set_verify_state(recipe_id, VerifyAdvance::Verified, 10)
         .unwrap();
-    // Illegal: downgrade to pending.
-    let err = db
-        .set_verify_state(recipe_id, VerifyState::Pending, 11, None)
-        .unwrap_err();
-    assert!(matches!(err, IndexError::IllegalTransition { .. }));
-    db.set_verify_state(recipe_id, VerifyState::ReplayedLocal, 12, None)
+    db.set_verify_state(recipe_id, VerifyAdvance::ReplayedLocal, 12)
         .unwrap();
 
     // Late nondeterminism: replayed-local → failed is legal and terminal.
     db.set_verify_state(
         recipe_id,
-        VerifyState::Failed,
+        VerifyAdvance::Failed {
+            error: "hash mismatch on scrub",
+            peer: None,
+        },
         13,
-        Some(("hash mismatch on scrub", None)),
     )
     .unwrap();
     for next in [
-        VerifyState::Pending,
-        VerifyState::Verified,
-        VerifyState::ReplayedLocal,
-        VerifyState::Failed,
+        VerifyAdvance::Verified,
+        VerifyAdvance::ReplayedLocal,
+        VerifyAdvance::Failed {
+            error: "again",
+            peer: None,
+        },
     ] {
-        let failure = (next == VerifyState::Failed).then_some(("again", None));
-        let err = db
-            .set_verify_state(recipe_id, next, 14, failure)
-            .unwrap_err();
+        let err = db.set_verify_state(recipe_id, next, 14).unwrap_err();
         assert!(
             matches!(err, IndexError::IllegalTransition { .. }),
             "poison must be terminal, got past {next:?}"
@@ -744,7 +742,10 @@ fn sweep_leases_and_priority_tiers() {
 
     assert_eq!(db.enqueue_unanalyzed(&analyzer, 10).unwrap(), 3);
     // Fresh tier: promotes the queued row, skips the settled blob.
-    assert_eq!(db.enqueue_fresh(&analyzer, &[fresh, settled], 11).unwrap(), 1);
+    assert_eq!(
+        db.enqueue_fresh(&analyzer, &[fresh, settled], 11).unwrap(),
+        1
+    );
 
     // Claim: fresh outranks ambient; the absent blob is never picked.
     let claimed = db.claim_sweep_items(&analyzer, 10, 100, 60).unwrap();
@@ -756,9 +757,16 @@ fn sweep_leases_and_priority_tiers() {
     assert_eq!(claimed[0].priority, PRIORITY_FRESH);
 
     // Leased items are invisible to a second claimant...
-    assert!(db.claim_sweep_items(&analyzer, 10, 100, 60).unwrap().is_empty());
+    assert!(
+        db.claim_sweep_items(&analyzer, 10, 100, 60)
+            .unwrap()
+            .is_empty()
+    );
     // ...visible again after expiry...
-    assert_eq!(db.claim_sweep_items(&analyzer, 10, 161, 60).unwrap().len(), 2);
+    assert_eq!(
+        db.claim_sweep_items(&analyzer, 10, 161, 60).unwrap().len(),
+        2
+    );
     // ...and an early release returns one item without waiting.
     db.release_sweep_lease(ambient, &analyzer).unwrap();
     let reclaimed = db.claim_sweep_items(&analyzer, 10, 162, 60).unwrap();
@@ -769,7 +777,10 @@ fn sweep_leases_and_priority_tiers() {
 
     // Startup amnesty: every lease clears at once.
     assert_eq!(db.clear_sweep_leases().unwrap(), 2);
-    assert_eq!(db.claim_sweep_items(&analyzer, 10, 163, 60).unwrap().len(), 2);
+    assert_eq!(
+        db.claim_sweep_items(&analyzer, 10, 163, 60).unwrap().len(),
+        2
+    );
 
     // Completing removes the row entirely (lease and all).
     db.complete_sweep_item(fresh, &analyzer, AnalysisOutcome::Positive, None, 200)
@@ -803,7 +814,9 @@ fn sweep_lease_renewal_extends_visibility() {
     let keeper = db.lease_keeper().unwrap();
     keeper.renew(target, &analyzer, 150, 60).unwrap();
     assert!(
-        db.claim_sweep_items(&analyzer, 1, 161, 60).unwrap().is_empty(),
+        db.claim_sweep_items(&analyzer, 1, 161, 60)
+            .unwrap()
+            .is_empty(),
         "past the ORIGINAL expiry the renewed lease still holds"
     );
     assert_eq!(
@@ -813,8 +826,14 @@ fn sweep_lease_renewal_extends_visibility() {
     );
 
     // Renewing a completed (deleted) item is a harmless no-op.
-    db.complete_sweep_item(target, &analyzer, datboi_index::AnalysisOutcome::Negative, None, 300)
-        .unwrap();
+    db.complete_sweep_item(
+        target,
+        &analyzer,
+        datboi_index::AnalysisOutcome::Negative,
+        None,
+        300,
+    )
+    .unwrap();
     keeper.renew(target, &analyzer, 301, 60).unwrap();
     assert_eq!(db.sweep_queue_len(&analyzer).unwrap(), 0);
 }
@@ -828,16 +847,28 @@ fn gc_guard_single_holder_with_expiry() {
     let a = GuardHolder([1; 16]);
     let b = GuardHolder([2; 16]);
 
-    assert!(db.claim_gc_guard(&a, 100, 60).unwrap(), "free guard: A wins");
+    assert!(
+        db.claim_gc_guard(&a, 100, 60).unwrap(),
+        "free guard: A wins"
+    );
     assert!(!db.claim_gc_guard(&b, 120, 60).unwrap(), "held: B loses");
-    assert!(db.claim_gc_guard(&a, 130, 60).unwrap(), "A re-claims = renews");
-    assert!(!db.claim_gc_guard(&b, 189, 60).unwrap(), "renewed lease holds");
+    assert!(
+        db.claim_gc_guard(&a, 130, 60).unwrap(),
+        "A re-claims = renews"
+    );
+    assert!(
+        !db.claim_gc_guard(&b, 189, 60).unwrap(),
+        "renewed lease holds"
+    );
     assert!(db.claim_gc_guard(&b, 191, 60).unwrap(), "expired: B steals");
     // A's release must not free B's guard.
     db.release_gc_guard(&a).unwrap();
     assert!(!db.claim_gc_guard(&a, 200, 60).unwrap(), "B still holds");
     db.release_gc_guard(&b).unwrap();
-    assert!(db.claim_gc_guard(&a, 210, 60).unwrap(), "released: free again");
+    assert!(
+        db.claim_gc_guard(&a, 210, 60).unwrap(),
+        "released: free again"
+    );
 }
 
 /// D73 orphan lifecycle: mark preserves the first-seen clock, anything
@@ -863,18 +894,29 @@ fn orphan_marks_clear_on_rooting_and_delete_reverifies() {
     }
 
     let (marked, cleared) = db.sweep_orphan_marks(&[], 10).unwrap();
-    assert_eq!((marked, cleared), (2, 0), "junk + wanted marked; queued spared");
+    assert_eq!(
+        (marked, cleared),
+        (2, 0),
+        "junk + wanted marked; queued spared"
+    );
 
     // A recipe roots `wanted`: the next sweep clears its mark and the
     // first-seen clock of `junk` survives re-sweeps.
     recipe(&mut db, b"r", &[wanted], &[junk], VerifyState::Pending);
     let (marked, cleared) = db.sweep_orphan_marks(&[], 50).unwrap();
-    assert_eq!((marked, cleared), (0, 2), "wanted rooted; junk now recipe-output-rooted too");
+    assert_eq!(
+        (marked, cleared),
+        (0, 2),
+        "wanted rooted; junk now recipe-output-rooted too"
+    );
 
     // A genuinely junk blob ages through grace into the review set.
     let lone = blob(&db, b"lone junk", Residency::Resident);
     db.sweep_orphan_marks(&[], 100).unwrap();
-    assert!(db.list_orphan_candidates(110, 60).unwrap().is_empty(), "grace not elapsed");
+    assert!(
+        db.list_orphan_candidates(110, 60).unwrap().is_empty(),
+        "grace not elapsed"
+    );
     let listed = db.list_orphan_candidates(170, 60).unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].blob_id, lone);
@@ -882,10 +924,16 @@ fn orphan_marks_clear_on_rooting_and_delete_reverifies() {
     // Delete-time re-verification: extra roots refuse, aging holds.
     assert!(db.orphan_still_deletable(lone, &[], 170, 60).unwrap());
     assert!(!db.orphan_still_deletable(lone, &[lone], 170, 60).unwrap());
-    assert!(!db.orphan_still_deletable(lone, &[], 130, 60).unwrap(), "not aged");
+    assert!(
+        !db.orphan_still_deletable(lone, &[], 130, 60).unwrap(),
+        "not aged"
+    );
 
     // Row deletion cascades and the blob is gone.
     db.delete_orphan_rows(lone).unwrap();
-    assert_eq!(db.get_blob_id(&Blake3::compute(b"lone junk")).unwrap(), None);
+    assert_eq!(
+        db.get_blob_id(&Blake3::compute(b"lone junk")).unwrap(),
+        None
+    );
     assert!(db.list_orphan_candidates(200, 0).unwrap().is_empty());
 }

@@ -19,7 +19,7 @@ use datboi_core::hash::Blake3;
 use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe};
 use datboi_core::viewsnap::ViewSnapshot;
 use datboi_index::{
-    Db, Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass, VerifyState,
+    Db, Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass, VerifyAdvance,
     recipes::NewRecipe,
 };
 use datboi_store_fs::{Namespace as StoreNs, Store, obao};
@@ -353,7 +353,7 @@ pub fn mint_image(
             inputs: &inputs,
             outputs: &[(0, image_blob_id, total_size, None)],
         })?;
-        db.set_verify_state(recipe_id, VerifyState::Verified, now, None)?;
+        db.set_verify_state(recipe_id, VerifyAdvance::Verified, now)?;
     }
 
     // The flip: `image/<name>` is the pin and the serving root.

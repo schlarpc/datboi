@@ -11,7 +11,8 @@ use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe, World as WasmWorld};
 use datboi_exec::{ExecConfig, ExecError, Executor};
 use datboi_index::recipes::NewRecipe;
 use datboi_index::{
-    Db, Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass, VerifyState,
+    Db, Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass, VerifyAdvance,
+    VerifyState,
 };
 use datboi_store_fs::{Namespace as StoreNs, Store, StoreError};
 use flate2::Compression;
@@ -724,9 +725,11 @@ fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
     );
     w.db.set_verify_state(
         good_id,
-        VerifyState::Failed,
+        VerifyAdvance::Failed {
+            error: "simulated host bug",
+            peer: None,
+        },
         0,
-        Some(("simulated host bug", None)),
     )
     .expect("poison by fiat");
 
@@ -758,8 +761,15 @@ fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
         &[(0, input_id)],
         &[(0, bogus_id, 17)],
     );
-    w.db.set_verify_state(bad_id, VerifyState::Failed, 0, Some(("real poison", None)))
-        .expect("poison");
+    w.db.set_verify_state(
+        bad_id,
+        VerifyAdvance::Failed {
+            error: "real poison",
+            peer: None,
+        },
+        0,
+    )
+    .expect("poison");
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
 

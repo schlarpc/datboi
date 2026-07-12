@@ -34,6 +34,30 @@ pub struct RecipeInputRow {
     pub role: Option<String>,
 }
 
+/// A legal target for [`Db::set_verify_state`]: the Failed⇔detail
+/// correlation is the type — `Failed` cannot travel without its error,
+/// and `Pending` (which no transition reaches) is unrepresentable.
+#[derive(Debug, Clone, Copy)]
+pub enum VerifyAdvance<'a> {
+    Verified,
+    ReplayedLocal,
+    Failed {
+        error: &'a str,
+        /// The peer that supplied the failing claim, for reputation (D8).
+        peer: Option<&'a [u8]>,
+    },
+}
+
+impl VerifyAdvance<'_> {
+    fn state(self) -> VerifyState {
+        match self {
+            Self::Verified => VerifyState::Verified,
+            Self::ReplayedLocal => VerifyState::ReplayedLocal,
+            Self::Failed { .. } => VerifyState::Failed,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecipeRow {
     pub recipe_id: i64,
@@ -211,20 +235,15 @@ impl Db {
 
     /// Advance the verify state machine. Illegal transitions (including
     /// anything out of the `Failed` poison state) are rejected (D25).
-    /// `Failed` requires an error message; the peer that supplied a
-    /// failing claim may be recorded for reputation (D8).
+    /// The target is a [`VerifyAdvance`], so `Failed` carries its error
+    /// by construction and `Pending` (which no transition reaches) is
+    /// unrepresentable.
     pub fn set_verify_state(
         &self,
         recipe_id: i64,
-        to: VerifyState,
+        to: VerifyAdvance<'_>,
         at_unix: i64,
-        failure: Option<(&str, Option<&[u8]>)>,
     ) -> Result<(), IndexError> {
-        assert_eq!(
-            to == VerifyState::Failed,
-            failure.is_some(),
-            "failure detail iff transitioning to Failed"
-        );
         let from = self
             .cache()
             .query_row(
@@ -235,20 +254,18 @@ impl Db {
             .optional()?
             .ok_or(IndexError::RecipeNotFound(recipe_id))?;
         let from = VerifyState::from_code(from)?;
-        if !from.can_transition_to(to) {
-            return Err(IndexError::IllegalTransition { from, to });
+        let to_state = to.state();
+        if !from.can_transition_to(to_state) {
+            return Err(IndexError::IllegalTransition { from, to: to_state });
         }
-        let (fail_error, fail_peer) = failure.unzip();
+        let (fail_error, fail_peer) = match to {
+            VerifyAdvance::Failed { error, peer } => (Some(error), peer),
+            VerifyAdvance::Verified | VerifyAdvance::ReplayedLocal => (None, None),
+        };
         self.cache().execute(
             "UPDATE recipe SET verify = ?2, verified_at = ?3, fail_error = ?4, fail_peer = ?5
              WHERE recipe_id = ?1",
-            params![
-                recipe_id,
-                to.code(),
-                at_unix,
-                fail_error,
-                fail_peer.flatten()
-            ],
+            params![recipe_id, to_state.code(), at_unix, fail_error, fail_peer],
         )?;
         Ok(())
     }

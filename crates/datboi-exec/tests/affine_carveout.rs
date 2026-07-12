@@ -220,7 +220,7 @@ fn computed_route_still_requires_outboard() {
     use datboi_core::cbor::{self, Value};
     use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe};
     use datboi_index::recipes::NewRecipe;
-    use datboi_index::{OpKind, RecipeSource, SeekClass, VerifyState};
+    use datboi_index::{OpKind, RecipeSource, SeekClass, VerifyAdvance};
     use flate2::Compression;
     use flate2::write::DeflateEncoder;
     use std::io::Write as _;
@@ -294,7 +294,7 @@ fn computed_route_still_requires_outboard() {
             outputs: &[(0, out_blob, plain.len() as u64, None)],
         })
         .expect("insert");
-    w.db.set_verify_state(recipe_id, VerifyState::Verified, 1, None)
+    w.db.set_verify_state(recipe_id, VerifyAdvance::Verified, 1)
         .expect("verify");
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
