@@ -420,7 +420,10 @@ impl<'a> Ingester<'a> {
                     op: Op::Wasm {
                         component: self.extractor_component_hash()?,
                         world: World::Extractor1,
-                        export: "extract".into(),
+                        export: World::Extractor1
+                            .required_export()
+                            .expect("extractor world fixes its export")
+                            .into(),
                     },
                     inputs: vec![InputRef {
                         hash: *container_hash,

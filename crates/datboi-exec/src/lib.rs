@@ -784,7 +784,20 @@ impl<'s> Executor<'s> {
                     })
                 }
                 World::Extractor1 => {
-                    // export is "extract"; params pin the member index.
+                    // The world fixes its one export: any other string is
+                    // a skewed recipe identity that would silently run the
+                    // same code — refuse it, don't execute it (and don't
+                    // poison: the claim was never tested).
+                    let required = world
+                        .required_export()
+                        .expect("extractor world fixes its export");
+                    if export != required {
+                        return Err(ExecError::UnsupportedOp(format!(
+                            "{}#{export} (world exports only {required})",
+                            world.as_str()
+                        )));
+                    }
+                    // Params pin the member index.
                     let member_ix = decode_member_ix(&recipe.params)?;
                     let compiled = self.load_extractor_component(component)?;
                     Ok(OpImpl::Extractor {

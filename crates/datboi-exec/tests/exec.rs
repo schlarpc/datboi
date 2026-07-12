@@ -843,6 +843,57 @@ fn unknown_worlds_refuse_instead_of_dispatching_or_poisoning() {
     }
 }
 
+/// The extractor world sanctions exactly one export: a recipe naming any
+/// other must refuse at dispatch (identity skew — it would silently run
+/// `extract` under a different recipe hash), not execute and not poison.
+#[test]
+fn extractor_recipe_with_wrong_export_refuses() {
+    let mut w = world();
+    let (container_hash, container_id) = w.put_literal(&pattern(4096));
+    let (component_hash, _) = w.put_literal(datboi_ingest::EX_UNRAR_WASM);
+    let (member_hash, member_id) = w.claim_absent(b"member bytes");
+    let recipe = Recipe {
+        op: Op::Wasm {
+            component: component_hash,
+            world: WasmWorld::Extractor1,
+            export: "garbage".into(),
+        },
+        inputs: vec![InputRef {
+            hash: container_hash,
+            role: None,
+        }],
+        outputs: vec![OutputRef {
+            hash: member_hash,
+            size: 12,
+            name: None,
+        }],
+        params: cbor::encode(&Value::Map(vec![(1, Value::Uint(0))])).expect("params"),
+    };
+    let recipe_id = w.mint_recipe(
+        &recipe,
+        "ex-unrar/garbage",
+        OpKind::Wasm,
+        SeekClass::Opaque,
+        &[(0, container_id)],
+        &[(0, member_id, 12)],
+    );
+
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+    let err = exec
+        .replay(&w.db, recipe_id)
+        .expect_err("wrong export must refuse");
+    assert!(
+        matches!(&err, ExecError::UnsupportedOp(msg) if msg.contains("garbage")),
+        "{err}"
+    );
+    assert!(!err.is_claim_failure(), "refusal stays retryable");
+    assert_ne!(
+        w.db.recipe_by_id(recipe_id).expect("row").verify,
+        VerifyState::Failed,
+        "wrong export must not poison"
+    );
+}
+
 /// An extractor guest that refuses (or traps) during replay is a CLAIM
 /// failure: the typed verdict must survive the pipe path and poison the
 /// recipe, instead of dissolving into retryable consumer I/O that

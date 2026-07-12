@@ -68,6 +68,19 @@ impl World {
         }
     }
 
+    /// The single export a world sanctions, when the world fixes it:
+    /// the extractor world has exactly one entry point, so any other
+    /// export string is a different recipe identity for the same
+    /// computation. Transform worlds export op families chosen per
+    /// recipe (None). Mint and dispatch both read this — one home.
+    #[must_use]
+    pub fn required_export(&self) -> Option<&'static str> {
+        match self {
+            Self::Extractor1 => Some("extract"),
+            _ => None,
+        }
+    }
+
     /// The canonical wire spelling — the ONE string mint sites and the
     /// encoder emit for a known world, so spelling variants can never
     /// fragment recipe identity.
@@ -451,6 +464,11 @@ mod tests {
             assert_eq!(World::parse(s), World::Other(s.to_owned()));
             assert_eq!(World::parse(s).as_str(), s, "verbatim survival");
         }
+        // The extractor world fixes its one export; transform worlds
+        // pick exports per recipe.
+        assert_eq!(World::Extractor1.required_export(), Some("extract"));
+        assert_eq!(World::Transform1.required_export(), None);
+        assert_eq!(World::Transform2.required_export(), None);
     }
 
     #[test]
