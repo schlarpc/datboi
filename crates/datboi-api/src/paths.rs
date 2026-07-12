@@ -5,8 +5,8 @@
 //! the `OpenApi` derive collects them without reaching into another
 //! crate's private handler fns. Each fn body is empty — the operation
 //! metadata is the deliverable; datboi-server's routing table is the
-//! implementation and the integration tests are what hold the two
-//! together.
+//! implementation, and its `v1_router_matches_the_contract` test holds
+//! the two together (method+path set equality against this spec).
 //!
 //! Auth model in one line (D68): loopback peers are implicitly the
 //! owner; everyone else presents the `datboi_session` cookie or the
@@ -23,12 +23,11 @@ use utoipa::{Modify, OpenApi, ToSchema};
 
 use crate::{
     AdminUsersResponse, ApiError, BlobDetail, BlobsPage, DatImportResponse, EntriesPage,
-    EntryDetail, EntryState, GrantAddRequest, IngestRequest, IngestStartResponse,
-    InviteAcceptRequest, InviteMintRequest, InviteMintResponse, JobDetail, JobsResponse,
-    LoginRequest, OkResponse, ResidencyState, SessionResponse, SessionsRevokedResponse,
-    GcApplyRequest, GcApplyResponse, GcKeepRequest, OrphansResponse, StorageBreakdown,
-    StorageResponse, SystemsResponse, UploadResponse, ViewDetail, ViewFilesPage, ViewsResponse,
-    WhoamiResponse,
+    EntryDetail, EntryState, GcApplyRequest, GcApplyResponse, GcKeepRequest, GrantAddRequest,
+    IngestRequest, IngestStartResponse, InviteAcceptRequest, InviteMintRequest, InviteMintResponse,
+    JobDetail, JobsResponse, LoginRequest, OkResponse, OrphansResponse, ResidencyState,
+    SessionResponse, SessionsRevokedResponse, StorageBreakdown, StorageResponse, SystemsResponse,
+    UploadResponse, ViewDetail, ViewFilesPage, ViewsResponse, WhoamiResponse,
 };
 
 /// Marker schema for the minted-image download body: raw octets, not

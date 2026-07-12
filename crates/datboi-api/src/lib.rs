@@ -1056,40 +1056,13 @@ mod tests {
         );
     }
 
+    /// The spec's envelope. Path coverage is NOT asserted here — the
+    /// axum route table is the other party to that agreement, so
+    /// datboi-server's `v1_router_matches_the_contract` checks
+    /// router↔spec set equality where the routes actually live.
     #[test]
-    fn spec_covers_every_v1_operation() {
+    fn spec_declares_the_envelope() {
         let spec: serde_json::Value = serde_json::from_str(&openapi_json()).expect("parse");
-        let paths = spec["paths"].as_object().expect("paths");
-        for path in [
-            "/v1/auth/whoami",
-            "/v1/auth/invite/accept",
-            "/v1/auth/login",
-            "/v1/auth/logout",
-            "/v1/systems",
-            "/v1/systems/{id}/entries",
-            "/v1/systems/{id}/entries/{name}",
-            "/v1/dats/import",
-            "/v1/ingest/uploads",
-            "/v1/ingest",
-            "/v1/views",
-            "/v1/views/{name}",
-            "/v1/views/{name}/files",
-            "/v1/views/{name}/image",
-            "/v1/storage",
-            "/v1/storage/breakdown",
-            "/v1/blobs",
-            "/v1/blobs/{hash}",
-            "/v1/jobs",
-            "/v1/jobs/{id}",
-            "/v1/admin/users",
-            "/v1/admin/invites",
-            "/v1/admin/invites/{token_hash}",
-            "/v1/admin/grants",
-            "/v1/admin/grants/{username}/{view}",
-            "/v1/admin/sessions/{username}",
-        ] {
-            assert!(paths.contains_key(path), "spec is missing {path}");
-        }
         assert_eq!(spec["openapi"], "3.1.0", "OpenAPI 3.1 (D69)");
         // Both credential presentations are declared (D68).
         let schemes = spec["components"]["securitySchemes"]

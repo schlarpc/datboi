@@ -18,9 +18,10 @@ use std::task::{Context, Poll};
 
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Path as UrlPath, RawQuery, State};
+use axum::handler::Handler;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
-use axum::routing::{any, delete, get, post};
+use axum::routing::{MethodRouter, any, get};
 use axum::{Extension, Router};
 use datboi_core::hash::Blake3;
 use serde_json::json;
@@ -35,69 +36,133 @@ use crate::vfs::{self, LookupError, RowMeta, ViewIndex};
 /// of this size (a multiple of the 16 KiB bao group).
 const WINDOW: u64 = 8 << 20;
 
+/// The /v1 route table, declared once. Registering here is what makes
+/// an operation exist, and the recorded (method, path) pairs are what
+/// [`tests::v1_router_matches_the_contract`] compares against the
+/// OpenAPI spec as set equality — a specified-but-unregistered route
+/// (or the reverse) is a red test, not a drift.
+fn v1() -> V1Routes {
+    V1Routes::new()
+        // Auth surface (D30/D68): open endpoints — the invitee/login
+        // caller has no identity yet by definition.
+        .get("/v1/auth/whoami", auth::whoami)
+        .post("/v1/auth/invite/accept", auth::invite_accept)
+        .post("/v1/auth/login", auth::login)
+        .post("/v1/auth/logout", auth::logout)
+        // The M5 read-model API (api.rs) + admin management (admin.rs).
+        // Owner-only except the view surface (friends see grants, D68).
+        .get("/v1/systems", api::systems)
+        .get("/v1/systems/{id}/entries", api::system_entries)
+        .get("/v1/systems/{id}/entries/{*name}", api::system_entry)
+        // The one mutating catalog action the web owns (dats.rs) —
+        // request-sized, unlike the CLI-only pipeline actions. The
+        // route-level limit replaces axum's 2 MiB default; real dats
+        // run to hundreds of MiB.
+        .post_router(
+            "/v1/dats/import",
+            axum::routing::post(dats::import).layer(DefaultBodyLimit::max(dats::BODY_LIMIT)),
+        )
+        // Ingest uploads STREAM to staging (never buffered), so no
+        // body cap — the D56-style headroom guard in the handler is
+        // the real limit.
+        .post_router(
+            "/v1/ingest/uploads",
+            axum::routing::post(ingest::upload).layer(DefaultBodyLimit::disable()),
+        )
+        .post("/v1/ingest", ingest::start)
+        .get("/v1/views", api::views)
+        .get("/v1/views/{name}", api::view_detail)
+        .get("/v1/views/{name}/files", api::view_files)
+        .get("/v1/views/{name}/image", view_image)
+        .get("/v1/storage", api::storage)
+        .get("/v1/storage/breakdown", api::storage_breakdown)
+        .get("/v1/blobs", api::blobs)
+        .get("/v1/blobs/{hash}", api::blob_detail)
+        .get("/v1/jobs", api::jobs)
+        .get("/v1/jobs/{id}", api::job_detail)
+        .get("/v1/gc/orphans", crate::gc::orphans)
+        .post("/v1/gc/orphans/apply", crate::gc::apply)
+        .post("/v1/gc/keep", crate::gc::keep)
+        .get("/v1/admin/users", admin::users)
+        .post("/v1/admin/invites", admin::invite_create)
+        .delete("/v1/admin/invites/{token_hash}", admin::invite_delete)
+        .post("/v1/admin/grants", admin::grant_create)
+        .delete("/v1/admin/grants/{username}/{view}", admin::grant_delete)
+        .delete("/v1/admin/sessions/{username}", admin::sessions_delete)
+}
+
+/// A recording [`Router`]: each registration method names the HTTP
+/// verb, so the recorded table cannot disagree with what axum serves.
+/// axum's `get` answers HEAD too; the table records `get` because the
+/// spec follows the OpenAPI convention of leaving HEAD implicit.
+struct V1Routes {
+    router: Router<Arc<App>>,
+    table: Vec<(&'static str, &'static str)>,
+}
+
+impl V1Routes {
+    fn new() -> Self {
+        Self {
+            router: Router::new(),
+            table: Vec::new(),
+        }
+    }
+
+    fn get<H, T>(self, path: &'static str, handler: H) -> Self
+    where
+        H: Handler<T, Arc<App>>,
+        T: 'static,
+    {
+        self.record("get", path, axum::routing::get(handler))
+    }
+
+    fn post<H, T>(self, path: &'static str, handler: H) -> Self
+    where
+        H: Handler<T, Arc<App>>,
+        T: 'static,
+    {
+        self.record("post", path, axum::routing::post(handler))
+    }
+
+    fn delete<H, T>(self, path: &'static str, handler: H) -> Self
+    where
+        H: Handler<T, Arc<App>>,
+        T: 'static,
+    {
+        self.record("delete", path, axum::routing::delete(handler))
+    }
+
+    /// POST with a caller-built [`MethodRouter`] (route-level layers);
+    /// the recorded verb is still fixed by this method's name.
+    fn post_router(self, path: &'static str, router: MethodRouter<Arc<App>>) -> Self {
+        self.record("post", path, router)
+    }
+
+    fn record(
+        mut self,
+        method: &'static str,
+        path: &'static str,
+        router: MethodRouter<Arc<App>>,
+    ) -> Self {
+        debug_assert!(path.starts_with("/v1/"), "not a /v1 operation: {path}");
+        self.table.push((method, path));
+        self.router = self.router.route(path, router);
+        self
+    }
+}
+
 pub(crate) fn router(app: Arc<App>) -> Router {
     let dav = crate::dav::handler(Arc::clone(&app));
     let dav_route = move |req: axum::extract::Request| {
         let dav = dav.clone();
         async move { dav.handle(req).await.map(Body::new) }
     };
+    // Everything registered below the /v1 merge is deliberately outside
+    // the contract (datboi-api lib.rs header): serving surfaces, not
+    // API operations.
     Router::new()
+        .merge(v1().router)
         .route("/healthz", get(|| async { "ok" }))
-        // Auth surface (D30/D68): open endpoints — the invitee/login
-        // caller has no identity yet by definition.
-        .route("/v1/auth/whoami", get(auth::whoami))
-        .route("/v1/auth/invite/accept", post(auth::invite_accept))
-        .route("/v1/auth/login", post(auth::login))
-        .route("/v1/auth/logout", post(auth::logout))
-        // The M5 read-model API (api.rs) + admin management (admin.rs).
-        // Owner-only except the view surface (friends see grants, D68).
-        .route("/v1/systems", get(api::systems))
-        .route("/v1/systems/{id}/entries", get(api::system_entries))
-        .route("/v1/systems/{id}/entries/{*name}", get(api::system_entry))
-        // The one mutating catalog action the web owns (dats.rs) —
-        // request-sized, unlike the CLI-only pipeline actions. The
-        // route-level limit replaces axum's 2 MiB default; real dats
-        // run to hundreds of MiB.
-        .route(
-            "/v1/dats/import",
-            post(dats::import).layer(DefaultBodyLimit::max(dats::BODY_LIMIT)),
-        )
-        // Ingest uploads STREAM to staging (never buffered), so no
-        // body cap — the D56-style headroom guard in the handler is
-        // the real limit.
-        .route(
-            "/v1/ingest/uploads",
-            post(ingest::upload).layer(DefaultBodyLimit::disable()),
-        )
-        .route("/v1/ingest", post(ingest::start))
-        .route("/v1/views", get(api::views))
-        .route("/v1/views/{name}", get(api::view_detail))
-        .route("/v1/views/{name}/files", get(api::view_files))
-        .route("/v1/views/{name}/image", get(view_image))
-        .route("/v1/storage", get(api::storage))
-        .route("/v1/storage/breakdown", get(api::storage_breakdown))
-        .route("/v1/blobs", get(api::blobs))
-        .route("/v1/blobs/{hash}", get(api::blob_detail))
-        .route("/v1/jobs", get(api::jobs))
-        .route("/v1/jobs/{id}", get(api::job_detail))
-        .route("/v1/gc/orphans", get(crate::gc::orphans))
-        .route("/v1/gc/orphans/apply", post(crate::gc::apply))
-        .route("/v1/gc/keep", post(crate::gc::keep))
-        .route("/v1/admin/users", get(admin::users))
-        .route("/v1/admin/invites", post(admin::invite_create))
-        .route(
-            "/v1/admin/invites/{token_hash}",
-            delete(admin::invite_delete),
-        )
-        .route("/v1/admin/grants", post(admin::grant_create))
-        .route(
-            "/v1/admin/grants/{username}/{view}",
-            delete(admin::grant_delete),
-        )
-        .route(
-            "/v1/admin/sessions/{username}",
-            delete(admin::sessions_delete),
-        )
         .route("/view/{name}", get(view_bare))
         .route("/view/{name}/", get(view_root))
         .route("/view/{name}/{*path}", get(view_path))
@@ -888,6 +953,36 @@ fn enc_path(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The router IS the spec, method for method and path for path:
+    /// both sides reduce to (method, path-template) sets and must be
+    /// EQUAL — an operation only in the spec means an unimplemented
+    /// contract, one only in the router means an undocumented surface.
+    /// The `{*name}` catch-all normalizes to `{name}`: OpenAPI has no
+    /// wildcard syntax, and `/v1/systems/{id}/entries/{name}` documents
+    /// slash-bearing names as percent-encoded path params.
+    #[test]
+    fn v1_router_matches_the_contract() {
+        let spec: serde_json::Value =
+            serde_json::from_str(&datboi_api::openapi_json()).expect("spec parses");
+        let spec_ops: std::collections::BTreeSet<(String, String)> = spec["paths"]
+            .as_object()
+            .expect("paths")
+            .iter()
+            .flat_map(|(path, item)| {
+                item.as_object()
+                    .expect("path item")
+                    .keys()
+                    .map(|method| (method.clone(), path.clone()))
+            })
+            .collect();
+        let router_ops: std::collections::BTreeSet<(String, String)> = v1()
+            .table
+            .into_iter()
+            .map(|(method, path)| (method.to_owned(), path.replace("{*", "{")))
+            .collect();
+        assert_eq!(router_ops, spec_ops, "axum /v1 route table ≠ OpenAPI spec");
+    }
 
     #[test]
     fn range_parser_covers_the_rfc_shapes() {
