@@ -16,17 +16,59 @@
    *   plan API; the dry-run CLI is the only entry point, and the
    *   design's promise copy stays.
    */
-  import { storage as fetchStorage, storageBreakdown } from '../lib/api/client';
-  import type { StorageBody, StorageBreakdownBody } from '../lib/api/types';
+  import {
+    gcApply,
+    gcKeep,
+    gcOrphans,
+    storage as fetchStorage,
+    storageBreakdown,
+  } from '../lib/api/client';
+  import type { OrphansBody, StorageBody, StorageBreakdownBody } from '../lib/api/types';
   import CliHint from '../lib/components/CliHint.svelte';
   import Link from '../lib/components/Link.svelte';
   import { fmtDate, fmtSize, shortHash } from '../lib/format';
 
   let stats = $state<StorageBody | null>(null);
   let breakdown = $state<StorageBreakdownBody | null>(null);
+  let orphans = $state<OrphansBody | null>(null);
   let error = $state<string | null>(null);
   let scrubHint = $state(false);
   let evictHint = $state(false);
+  /** Two-click delete: first click arms, second applies (D73's human
+   * gate deserves more than one tap, less than a modal). */
+  let applyArmed = $state(false);
+  let applying = $state(false);
+
+  const refreshOrphans = () => {
+    gcOrphans().then(
+      (body) => (orphans = body),
+      (e: unknown) => (error = e instanceof Error ? e.message : String(e)),
+    );
+  };
+
+  const toggleKeep = (hash: string, keep: boolean) => {
+    gcKeep(hash, keep).then(refreshOrphans, refreshOrphans);
+  };
+
+  const applyAll = () => {
+    if (!applyArmed) {
+      applyArmed = true;
+      return;
+    }
+    applying = true;
+    gcApply().then(
+      () => {
+        applying = false;
+        applyArmed = false;
+        refreshOrphans();
+      },
+      (e: unknown) => {
+        applying = false;
+        applyArmed = false;
+        error = e instanceof Error ? e.message : String(e);
+      },
+    );
+  };
 
   $effect(() => {
     fetchStorage().then(
@@ -41,6 +83,10 @@
       (e: unknown) => (error = e instanceof Error ? e.message : String(e)),
     );
   });
+
+  $effect(refreshOrphans);
+
+  const reviewable = $derived(orphans === null ? [] : orphans.orphans);
 
   /** `−68% via recipes`: how much smaller disk is than what it represents. */
   const savingsPct = $derived(
@@ -133,15 +179,52 @@
 
       <div class="action-card">
         <div class="card-title"><!-- @wc-context: storage eviction -->Eviction</div>
-        <p class="copy bad">nothing is deleted without a plan you approve</p>
-        <!-- The eviction planner (§3.8) is not built: no plan API — the
-             dry-run CLI is the only entry (M5 scope ruling,
-             open-questions 2026-07-11). -->
-        <button class="pill" onclick={() => (evictHint = !evictHint)}>plan (dry-run) via CLI</button>
+        <!-- D72: watermark eviction is automatic and REVERSIBLE by
+             construction — every drop has a locally-replayed rebuild
+             route. Tune or disarm via `datboi gc config`. -->
+        <p class="copy">rebuildable literals evict automatically at the watermark — nothing unrecoverable is ever dropped</p>
+        <button class="pill" onclick={() => (evictHint = !evictHint)}>tune via CLI</button>
         {#if evictHint}
-          <CliHint command={'datboi evict --target-bytes <n> --dry-run'}>
-            plan first; the same command without --dry-run executes:
+          <CliHint command={'datboi gc config --high-water 90% --low-water 85%'}>
+            watermarks ("off" disarms); manual pass: datboi evict --dry-run:
           </CliHint>
+        {/if}
+      </div>
+
+      <div class="action-card" class:danger={reviewable.some((o) => !o.kept)}>
+        <div class="card-title">
+          <!-- @wc-context: unreferenced blobs, not people -->
+          Orphans · {reviewable.length.toLocaleString()}
+        </div>
+        {#if orphans === null}
+          <p class="copy">loading…</p>
+        {:else if reviewable.length === 0}
+          <p class="copy">nothing unreferenced — every blob is rooted or still under grace</p>
+        {:else}
+          <!-- D73 review gate: deletion is THIS surface, never ambient.
+               Each row shows ingest provenance; keep excludes it. -->
+          <div class="q-items">
+            {#each reviewable as orphan (orphan.hash)}
+              <div class="q-item">
+                <span class="q-hash">{shortHash(orphan.hash)}</span>
+                <span class="q-reason">
+                  {fmtSize(orphan.size)}{orphan.sources.length > 0
+                    ? ` · ${orphan.sources.join(', ')}`
+                    : ''}
+                </span>
+                <button class="pill" onclick={() => toggleKeep(orphan.hash, !orphan.kept)}>
+                  {orphan.kept ? 'kept ✓' : 'keep'}
+                </button>
+              </div>
+            {/each}
+          </div>
+          <p class="copy">
+            {fmtSize(orphans.reclaimable_bytes)} reclaimable · every delete re-verifies
+            unreferenced at delete time
+          </p>
+          <button class="pill" class:bad-pill={applyArmed} disabled={applying} onclick={applyAll}>
+            {#if applying}deleting…{:else if applyArmed}confirm: delete non-kept{:else}delete non-kept…{/if}
+          </button>
         {/if}
       </div>
     </div>
@@ -211,7 +294,7 @@
   main {
     flex: 1;
     overflow-y: auto;
-    padding: 24px 28px 30px;
+    padding: 24px var(--pad-x) 30px;
   }
 
   .title-row {
@@ -321,10 +404,6 @@
     line-height: 1.6;
   }
 
-  .copy.bad {
-    color: var(--bad);
-  }
-
   .pill {
     all: unset;
     border: 2px solid var(--ink);
@@ -333,6 +412,17 @@
     background: var(--panel);
     font: 600 12px var(--font-data);
     cursor: pointer;
+  }
+
+  /* The armed state of the two-click delete: unmistakably destructive. */
+  .pill.bad-pill {
+    border-color: var(--bad);
+    color: var(--bad);
+  }
+
+  .pill:disabled {
+    cursor: default;
+    color: var(--faint);
   }
 
   .q-items {
@@ -481,5 +571,47 @@
     text-decoration: underline;
     text-decoration-color: var(--dim);
     text-underline-offset: 2px;
+  }
+
+  /* Tablet: four stat tiles pair up, the three action cards and the
+     by-source / largest-blobs split each go single column. */
+  @media (max-width: 720px) {
+    .title-row {
+      flex-wrap: wrap;
+      gap: 4px 14px;
+    }
+
+    .tiles {
+      grid-template-columns: repeat(2, 1fr);
+    }
+
+    .cards {
+      grid-template-columns: 1fr;
+    }
+
+    .split {
+      grid-template-columns: 1fr;
+      gap: 20px;
+    }
+  }
+
+  @media (max-width: 640px) {
+    /* The class row's three fixed columns (170 + 72 + 160px) blow past a
+       phone width, so the label takes its own line and the track, bytes,
+       and blob count share the line below it. */
+    .class-row {
+      flex-wrap: wrap;
+      row-gap: 4px;
+    }
+
+    .class-label {
+      flex-basis: 100%;
+      width: auto;
+    }
+
+    .class-blobs {
+      width: auto;
+      margin-left: auto;
+    }
   }
 </style>

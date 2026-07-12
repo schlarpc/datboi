@@ -136,6 +136,11 @@ pub struct IngestReport {
     pub member_skips: Vec<(PathBuf, String, String)>,
     /// Non-fatal oddities worth surfacing (deferred swap recipes, …).
     pub notes: Vec<String>,
+    /// Blob row ids that became RESIDENT during this run (stored files,
+    /// extracted members, header blobs) — the narrow slice a refinement
+    /// scheduler fast-tracks (D71). Ids, not hashes: they feed straight
+    /// back into the same database's sweep queue.
+    pub fresh_blobs: Vec<i64>,
 }
 
 /// Lazily-built rar extractor state (D58): the wasm host, the compiled
@@ -155,6 +160,17 @@ pub struct Ingester<'a> {
     /// Built on the first rar container encountered (avoids the wasm engine
     /// cost when a sweep has no rar).
     extractor: Option<ExtractorRt>,
+    /// Resident-blob ids accumulated across `record_resident_blob`
+    /// calls; drained into `IngestReport::fresh_blobs` per run.
+    fresh: Vec<i64>,
+    /// Source-identity override for staged single-file ingests (web
+    /// uploads): the `source_file` key becomes this name instead of
+    /// the throwaway staging path, so provenance reads
+    /// "roms/pack.zip", re-uploads update one row instead of minting
+    /// dead staging-path rows, and the mtime+size check still defeats
+    /// false rescan-cache hits. Single-file semantics only — a
+    /// directory walk under one name would collide keys.
+    source_name: Option<String>,
 }
 
 impl<'a> Ingester<'a> {
@@ -165,12 +181,23 @@ impl<'a> Ingester<'a> {
             detectors,
             config: IngestConfig::default(),
             extractor: None,
+            fresh: Vec::new(),
+            source_name: None,
         }
     }
 
     #[must_use]
     pub fn with_config(mut self, config: IngestConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Name the source (see the field docs): callers staging one file
+    /// under a throwaway path give provenance the identity the USER
+    /// knows.
+    #[must_use]
+    pub fn with_source_name(mut self, name: impl Into<String>) -> Self {
+        self.source_name = Some(name.into());
         self
     }
 
@@ -181,6 +208,7 @@ impl<'a> Ingester<'a> {
         for path in paths {
             self.walk(path.as_ref(), &mut report);
         }
+        report.fresh_blobs = std::mem::take(&mut self.fresh);
         report
     }
 
@@ -225,7 +253,10 @@ impl<'a> Ingester<'a> {
         report: &mut IngestReport,
     ) -> Result<(), IngestError> {
         let canonical = fs::canonicalize(path).map_err(|e| IngestError::io(path, e))?;
-        let key = canonical.to_string_lossy().into_owned();
+        let key = self
+            .source_name
+            .clone()
+            .unwrap_or_else(|| canonical.to_string_lossy().into_owned());
         let mtime_ns = mtime_ns(meta);
         let size = meta.len();
 
@@ -728,6 +759,7 @@ impl<'a> Ingester<'a> {
                 .upsert_blob(hash, Some(aliases.size), IndexNs::Data, Residency::Resident)?;
         self.db.insert_aliases(id, aliases)?;
         self.db.set_verified(id, now_unix())?;
+        self.fresh.push(id);
         Ok(id)
     }
 

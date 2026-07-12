@@ -670,6 +670,69 @@
         ],
         "type": "object"
       },
+      "GcApplyRequest": {
+        "description": "Apply the reviewed set (D73: the ONE human-triggered destructive\naction). Absent `hashes` = every reviewable, non-kept candidate.",
+        "properties": {
+          "hashes": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "GcApplyResponse": {
+        "properties": {
+          "bytes_reclaimed": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "deleted": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "skipped": {
+            "description": "Requested but refused at delete-time re-verification (rooted\nsince review, kept, or not aged) — never an error, always\nvisible.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deleted",
+          "bytes_reclaimed",
+          "skipped"
+        ],
+        "type": "object"
+      },
+      "GcKeepRequest": {
+        "description": "Set or clear a keep-mark (\"this is not junk\").",
+        "properties": {
+          "hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "keep": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "hash",
+          "keep"
+        ],
+        "type": "object"
+      },
       "GrantAddRequest": {
         "description": "Grant a friend a view (D68). Same Option-for-400 convention as the\nauth requests; both fields are contractually required.",
         "properties": {
@@ -1175,9 +1238,12 @@
         "description": "GET /v1/jobs/{id}: the row plus counters and the (growing, then\nfinal) report. File paths in the report are the CLIENT's original\nnames — staging paths never leak."
       },
       "JobKind": {
-        "description": "What a job is doing. One variant today; scrub/eval/evict join it\nwhen they graduate from CLI-only.",
+        "description": "What a job is doing. Scrub/eval/evict join these when they graduate\nfrom CLI-only.",
         "enum": [
-          "ingest"
+          "ingest",
+          "refine",
+          "gc",
+          "scrub"
         ],
         "type": "string"
       },
@@ -1296,6 +1362,69 @@
           "held_first"
         ],
         "type": "string"
+      },
+      "OrphanItem": {
+        "description": "One reviewable orphan (D73): unreferenced past the grace window,\nstill unrooted as of the last sweep. The mark is REVIEW state —\napply re-verifies reachability at delete time.",
+        "properties": {
+          "hash": {
+            "type": "string"
+          },
+          "kept": {
+            "description": "Operator keep-mark: excluded from apply until unkept.",
+            "type": "boolean"
+          },
+          "marked_at": {
+            "description": "Unix seconds of first-observed-unreferenced (the grace clock).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "size": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sources": {
+            "description": "Ingest paths that ever carried these bytes — the context a\nreviewer needs to say junk-or-keep.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "hash",
+          "size",
+          "marked_at",
+          "sources",
+          "kept"
+        ],
+        "type": "object"
+      },
+      "OrphansResponse": {
+        "properties": {
+          "grace_secs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "orphans": {
+            "items": {
+              "$ref": "#/components/schemas/OrphanItem"
+            },
+            "type": "array"
+          },
+          "reclaimable_bytes": {
+            "description": "Bytes across non-kept candidates (what apply-all would free).",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "orphans",
+          "reclaimable_bytes",
+          "grace_secs"
+        ],
+        "type": "object"
       },
       "ProvenanceRow": {
         "description": "One rescan-cache row: a filesystem path that hashed to this blob.",
@@ -2819,6 +2948,139 @@
         "summary": "Import a dat file — the same operation as `datboi dat import`. The\nbody is the raw dat bytes in any supported format (Logiqx,\nClrMamePro, RomCenter, MAME XML / software list); format detection\nand the provider/system defaults come from the bytes themselves.",
         "tags": [
           "systems"
+        ]
+      }
+    },
+    "/v1/gc/keep": {
+      "post": {
+        "operationId": "gc_keep",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GcKeepRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            },
+            "description": "Keep-mark updated"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Missing field / not a blake3 hash"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Not the owner"
+          }
+        },
+        "summary": "Set or clear a keep-mark (\"this is not junk\") — authoritative\nstate, survives cache rebuilds, excludes the blob from apply.",
+        "tags": [
+          "gc"
+        ]
+      }
+    },
+    "/v1/gc/orphans": {
+      "get": {
+        "operationId": "gc_orphans",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrphansResponse"
+                }
+              }
+            },
+            "description": "Reviewable candidates, oldest first"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Not the owner"
+          }
+        },
+        "summary": "Reviewable orphan candidates (D73): unreferenced data blobs past\nthe grace window, with ingest provenance and keep-marks. Marks are\nreview state — apply re-verifies at delete time.",
+        "tags": [
+          "gc"
+        ]
+      }
+    },
+    "/v1/gc/orphans/apply": {
+      "post": {
+        "operationId": "gc_apply",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GcApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GcApplyResponse"
+                }
+              }
+            },
+            "description": "Deletion report"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Not the owner"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "GC guard busy (eviction in progress); retry"
+          }
+        },
+        "summary": "Apply the reviewed set — the one human-triggered destructive action\n(D73). Every deletion re-verifies unreferenced + aged + unkept at\ndelete time under the D72 singleton guard; refusals count as\n`skipped`, never errors.",
+        "tags": [
+          "gc"
         ]
       }
     },

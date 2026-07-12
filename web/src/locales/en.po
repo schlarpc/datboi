@@ -108,6 +108,7 @@ msgstr "something went wrong — {0}"
 #: src/screens/Library.svelte
 #: src/screens/Shelves.svelte
 #: src/screens/Storage.svelte
+#: src/screens/Storage.svelte
 #: src/screens/Views.svelte
 msgid "loading…"
 msgstr "loading…"
@@ -586,17 +587,14 @@ msgctxt "storage eviction"
 msgid "Eviction"
 msgstr "Eviction"
 
-#: src/screens/Storage.svelte
-msgid "plan first; the same command without --dry-run executes:"
-msgstr "plan first; the same command without --dry-run executes:"
+#~ msgid "plan first; the same command without --dry-run executes:"
+#~ msgstr "plan first; the same command without --dry-run executes:"
 
-#: src/screens/Storage.svelte
-msgid "nothing is deleted without a plan you approve"
-msgstr "nothing is deleted without a plan you approve"
+#~ msgid "nothing is deleted without a plan you approve"
+#~ msgstr "nothing is deleted without a plan you approve"
 
-#: src/screens/Storage.svelte
-msgid "plan (dry-run) via CLI"
-msgstr "plan (dry-run) via CLI"
+#~ msgid "plan (dry-run) via CLI"
+#~ msgstr "plan (dry-run) via CLI"
 
 #: src/screens/Views.svelte
 msgid "held-first"
@@ -998,9 +996,8 @@ msgstr "uploads are copies — your originals stay where they are. for content a
 msgid "NAS-local ingest runs in the CLI:"
 msgstr "NAS-local ingest runs in the CLI:"
 
-#: src/lib/components/JobsTray.svelte
-msgid "recent activity log — needs a durable job table"
-msgstr "recent activity log — needs a durable job table"
+#~ msgid "recent activity log — needs a durable job table"
+#~ msgstr "recent activity log — needs a durable job table"
 
 #. 0: (detail.claims_total - detail.claims.length).toLocaleString()
 #. 0: (job.matched_total - job.matched.length).toLocaleString()
@@ -1146,3 +1143,55 @@ msgstr "largest blobs"
 #: src/screens/Storage.svelte
 msgid "WHERE THE BYTES LIVE"
 msgstr "WHERE THE BYTES LIVE"
+
+#. 0: detail.report.errors.length
+#: src/lib/components/JobsTray.svelte
+msgid "· {0} errors"
+msgstr "· {0} errors"
+
+#. 0: detail.files_done; 1: detail.files_total
+#: src/lib/components/JobsTray.svelte
+msgid "{0}/{1} blobs <0/> <1/>"
+msgstr "{0}/{1} blobs <0/> <1/>"
+
+#: src/screens/Storage.svelte
+msgid "watermarks (\"off\" disarms); manual pass: datboi evict --dry-run:"
+msgstr "watermarks (\"off\" disarms); manual pass: datboi evict --dry-run:"
+
+#: src/screens/Storage.svelte
+msgid "rebuildable literals evict automatically at the watermark — nothing unrecoverable is ever dropped"
+msgstr "rebuildable literals evict automatically at the watermark — nothing unrecoverable is ever dropped"
+
+#: src/screens/Storage.svelte
+msgid "tune via CLI"
+msgstr "tune via CLI"
+
+#: src/screens/Storage.svelte
+msgctxt "unreferenced blobs, not people"
+msgid "Orphans ·"
+msgstr "Orphans ·"
+
+#: src/screens/Storage.svelte
+msgid "nothing unreferenced — every blob is rooted or still under grace"
+msgstr "nothing unreferenced — every blob is rooted or still under grace"
+
+#: src/screens/Storage.svelte
+msgid "deleting…"
+msgstr "deleting…"
+
+#: src/screens/Storage.svelte
+msgid "confirm: delete non-kept"
+msgstr "confirm: delete non-kept"
+
+#: src/screens/Storage.svelte
+msgid "delete non-kept…"
+msgstr "delete non-kept…"
+
+#. 0: fmtSize(orphans.reclaimable_bytes)
+#: src/screens/Storage.svelte
+msgid "{0} reclaimable · every delete re-verifies unreferenced at delete time"
+msgstr "{0} reclaimable · every delete re-verifies unreferenced at delete time"
+
+#: src/lib/components/JobsTray.svelte
+msgid "recent activity log — history is recorded (D74); the feed UI is not designed yet"
+msgstr "recent activity log — history is recorded (D74); the feed UI is not designed yet"

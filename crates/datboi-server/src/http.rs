@@ -80,6 +80,9 @@ pub(crate) fn router(app: Arc<App>) -> Router {
         .route("/v1/blobs/{hash}", get(api::blob_detail))
         .route("/v1/jobs", get(api::jobs))
         .route("/v1/jobs/{id}", get(api::job_detail))
+        .route("/v1/gc/orphans", get(crate::gc::orphans))
+        .route("/v1/gc/orphans/apply", post(crate::gc::apply))
+        .route("/v1/gc/keep", post(crate::gc::keep))
         .route("/v1/admin/users", get(admin::users))
         .route("/v1/admin/invites", post(admin::invite_create))
         .route(

@@ -34,6 +34,47 @@ pub struct AnalysisResult {
     pub detail: Option<String>,
 }
 
+/// Liveness-as-progress (D71): analyzers pulse this as bytes move
+/// through their streaming loops — typically by wrapping the long
+/// reader in [`TickReader`]. The sweep driver wires it to lease
+/// renewal, so a lease stays alive exactly as long as work advances:
+/// a wedged analyzer (dead NFS mount, livelocked guest) stops pulsing
+/// and its lease lapses for another worker to claim. Byte counts ride
+/// along for a future intra-item progress surface (the jobs-tray open
+/// question).
+pub trait Pulse {
+    fn tick(&mut self, bytes: u64);
+}
+
+/// For direct analyzer invocations that have nothing to keep alive.
+pub struct NoPulse;
+impl Pulse for NoPulse {
+    fn tick(&mut self, _bytes: u64) {}
+}
+
+/// `Read` adapter that pulses per successful read — the one-line way
+/// for an analyzer to make its longest loop heartbeat-bearing.
+pub struct TickReader<'p, R> {
+    inner: R,
+    pulse: &'p mut dyn Pulse,
+}
+
+impl<'p, R: std::io::Read> TickReader<'p, R> {
+    pub fn new(inner: R, pulse: &'p mut dyn Pulse) -> Self {
+        Self { inner, pulse }
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for TickReader<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            self.pulse.tick(n as u64);
+        }
+        Ok(n)
+    }
+}
+
 /// One analyzer. Implementations mint recipes/claims through their own
 /// side effects (they get store + db access) and report provenance via
 /// the returned result. What they claim must be dat-blind (D47).
@@ -50,7 +91,10 @@ pub trait Analyzer {
     /// Identity hash — what provenance rows pin (D48).
     fn id(&self) -> Blake3;
 
-    /// Analyze one blob's bytes.
+    /// Analyze one blob's bytes. Long byte-crunching loops should
+    /// `pulse` as they progress (wrap the reader in [`TickReader`]) so
+    /// the item's lease outlives any fixed TTL exactly while work
+    /// advances.
     ///
     /// # Errors
     /// A per-blob error string: recorded nowhere, item stays queued (the
@@ -61,6 +105,7 @@ pub trait Analyzer {
         item: &SweepItem,
         store: &Store,
         db: &mut Db,
+        pulse: &mut dyn Pulse,
     ) -> Result<AnalysisResult, String>;
 }
 
@@ -87,6 +132,7 @@ impl Analyzer for NoopAnalyzer {
         _item: &SweepItem,
         _store: &Store,
         _db: &mut Db,
+        _pulse: &mut dyn Pulse,
     ) -> Result<AnalysisResult, String> {
         Ok(AnalysisResult {
             outcome: AnalysisOutcome::Negative,
@@ -165,17 +211,112 @@ pub fn set_analyzer_params(
     db.config_set(&params_key(family), params.unwrap_or(b""))
 }
 
-/// Run one sweep round: enqueue unanalyzed candidates (dat-blind),
-/// apply dat-aware ordering, then process up to `limit` items.
+/// Lease TTL for a claimed sweep item (D71). Short on purpose: leases
+/// renew while the analyzer makes progress (the [`Pulse`] heartbeat),
+/// so the TTL only has to outlive renewal jitter — not the analysis.
+/// A wedged worker stops pulsing and its item frees in at most this
+/// long; a crashed CLI's leases lapse on the same clock (the daemon
+/// additionally clears all leases at startup). Doubles as the error
+/// backoff: a failed item keeps its lease, so it retries after expiry
+/// instead of hot-looping — one ambient-rescan beat later.
+pub const SWEEP_LEASE_SECS: i64 = 15 * 60;
+
+/// Progress-gated renewal cadence: the heartbeat re-stamps the lease
+/// at most this often, and only when [`Pulse::tick`] fires — bytes
+/// moving is the proof of liveness, a timer would keep renewing for a
+/// worker wedged on a dead mount.
+const LEASE_RENEW_SECS: u64 = 5 * 60;
+
+/// The sweep driver's pulse: renews one item's lease through a
+/// [`SweepLeaseKeeper`] (its own connection — the main one is mutably
+/// borrowed by the analyzer while this fires). A renewal failure is
+/// deliberately swallowed: the lease lapsing costs at worst a
+/// duplicated pure function, while aborting a half-done split over a
+/// scheduling row would cost real work.
+struct LeaseHeartbeat<'a> {
+    keeper: &'a datboi_index::SweepLeaseKeeper,
+    analyzer: Blake3,
+    blob_id: i64,
+    last: std::time::Instant,
+}
+
+impl<'a> LeaseHeartbeat<'a> {
+    fn new(keeper: &'a datboi_index::SweepLeaseKeeper, analyzer: Blake3, blob_id: i64) -> Self {
+        Self {
+            keeper,
+            analyzer,
+            blob_id,
+            last: std::time::Instant::now(),
+        }
+    }
+}
+
+impl Pulse for LeaseHeartbeat<'_> {
+    fn tick(&mut self, _bytes: u64) {
+        if self.last.elapsed().as_secs() < LEASE_RENEW_SECS {
+            return;
+        }
+        self.last = std::time::Instant::now();
+        let _ = self
+            .keeper
+            .renew(self.blob_id, &self.analyzer, now_unix(), SWEEP_LEASE_SECS);
+    }
+}
+
+/// Per-item hooks for a sweep driver that reports progress (the
+/// daemon's refine worker). Callbacks fire on the sweeping thread,
+/// between db transactions — keep them cheap.
+pub trait SweepObserver {
+    fn item_started(&mut self, _item: &SweepItem) {}
+    fn item_finished(&mut self, _item: &SweepItem, _outcome: Result<AnalysisOutcome, &str>) {}
+    /// Checked before each item: `true` ends the round early. Nothing
+    /// needs releasing — items are claimed one at a time, so an early
+    /// stop simply never claims the rest.
+    fn should_stop(&mut self) -> bool {
+        false
+    }
+}
+
+/// The CLI's observer: nothing to report mid-round, never stops early.
+pub struct NoObserver;
+impl SweepObserver for NoObserver {}
+
+/// Refresh one analyzer's queue: enqueue unanalyzed candidates
+/// (dat-blind, D47) and apply dat-aware ordering. Returns rows
+/// enqueued. Separate from [`process_round`] so a draining driver pays
+/// the full-corpus candidate scan once per wake, not once per batch.
 ///
 /// # Errors
-/// Database errors abort the sweep; per-blob analyzer errors are
-/// reported and leave their items queued.
-pub fn run_sweep(
+/// Index I/O.
+pub fn refresh_queue(
+    db: &mut Db,
+    analyzer: &dyn Analyzer,
+) -> Result<usize, datboi_index::IndexError> {
+    let enqueued = db.enqueue_unanalyzed(&analyzer.id(), now_unix())?;
+    db.bump_dat_matched_priorities()?;
+    Ok(enqueued)
+}
+
+/// Process up to `limit` already-queued items, one claim at a time:
+/// the lease clock starts when the ITEM's work starts, never when a
+/// batch was planned (claim granularity = execution granularity — the
+/// fix for upfront batch leases going stale before their turn). Each
+/// item runs under a [`SWEEP_LEASE_SECS`] lease that the analyzer's
+/// progress renews (the [`Pulse`] heartbeat); provenance + queue
+/// removal commit per item (the at-least-once discipline). A per-blob
+/// analyzer ERROR keeps its lease — the item retries after expiry, so
+/// a draining loop can't hot-spin on a poisoned item; a deliberate
+/// early stop simply claims nothing further.
+///
+/// # Errors
+/// Database errors abort the round; per-blob analyzer errors are
+/// reported in the result and leave their items queued.
+pub fn process_round(
     db: &mut Db,
     store: &Store,
     analyzer: &mut dyn Analyzer,
     limit: usize,
+    observer: &mut dyn SweepObserver,
 ) -> Result<SweepReport, datboi_index::IndexError> {
     // D60: policy gate at the one entry point every sweep caller uses.
     if !analyzer_enabled(db, analyzer.family())? {
@@ -185,16 +326,21 @@ pub fn run_sweep(
         });
     }
     let id = analyzer.id();
-    let now = now_unix();
-    let mut report = SweepReport {
-        enqueued: db.enqueue_unanalyzed(&id, now)?,
-        ..SweepReport::default()
-    };
-    db.bump_dat_matched_priorities()?;
-
-    let items = db.next_sweep_items(&id, limit)?;
-    for item in items {
-        match analyzer.analyze(&item, store, db) {
+    let mut report = SweepReport::default();
+    let keeper = db.lease_keeper()?;
+    for _ in 0..limit {
+        if observer.should_stop() {
+            break;
+        }
+        let Some(item) = db
+            .claim_sweep_items(&id, 1, now_unix(), SWEEP_LEASE_SECS)?
+            .pop()
+        else {
+            break;
+        };
+        observer.item_started(&item);
+        let mut pulse = LeaseHeartbeat::new(&keeper, id, item.blob_id);
+        match analyzer.analyze(&item, store, db, &mut pulse) {
             Ok(result) => {
                 db.complete_sweep_item(
                     item.blob_id,
@@ -208,10 +354,38 @@ pub fn run_sweep(
                     AnalysisOutcome::Positive => report.positive += 1,
                     AnalysisOutcome::Negative => report.negative += 1,
                 }
+                observer.item_finished(&item, Ok(result.outcome));
             }
-            Err(e) => report.errors.push((item.hash, e)),
+            Err(e) => {
+                observer.item_finished(&item, Err(&e));
+                report.errors.push((item.hash, e));
+            }
         }
     }
+    Ok(report)
+}
+
+/// Run one sweep round: [`refresh_queue`] + [`process_round`] — the
+/// CLI's single-shot shape.
+///
+/// # Errors
+/// Database errors abort the sweep; per-blob analyzer errors are
+/// reported and leave their items queued (leased until expiry).
+pub fn run_sweep(
+    db: &mut Db,
+    store: &Store,
+    analyzer: &mut dyn Analyzer,
+    limit: usize,
+) -> Result<SweepReport, datboi_index::IndexError> {
+    if !analyzer_enabled(db, analyzer.family())? {
+        return Ok(SweepReport {
+            disabled: true,
+            ..SweepReport::default()
+        });
+    }
+    let enqueued = refresh_queue(db, analyzer)?;
+    let mut report = process_round(db, store, analyzer, limit, &mut NoObserver)?;
+    report.enqueued = enqueued;
     Ok(report)
 }
 
@@ -219,4 +393,42 @@ fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+#[cfg(test)]
+mod pulse_tests {
+    use super::*;
+    use std::io::Read as _;
+
+    struct Counter {
+        ticks: usize,
+        bytes: u64,
+    }
+    impl Pulse for Counter {
+        fn tick(&mut self, bytes: u64) {
+            self.ticks += 1;
+            self.bytes += bytes;
+        }
+    }
+
+    /// The heartbeat-bearing adapter pulses exactly the bytes that
+    /// flow, and never on EOF — the mechanism every analyzer's long
+    /// loop rides.
+    #[test]
+    fn tick_reader_pulses_bytes_read() {
+        let mut pulse = Counter { ticks: 0, bytes: 0 };
+        let data = vec![7u8; 10_000];
+        let mut out = Vec::new();
+        TickReader::new(std::io::Cursor::new(&data), &mut pulse)
+            .read_to_end(&mut out)
+            .expect("read");
+        assert_eq!(out.len(), data.len());
+        assert_eq!(pulse.bytes, data.len() as u64);
+        assert!(pulse.ticks >= 1);
+        // EOF reads don't tick.
+        let before = pulse.ticks;
+        let mut empty = TickReader::new(std::io::empty(), &mut pulse);
+        empty.read_to_end(&mut Vec::new()).expect("read");
+        assert_eq!(pulse.ticks, before);
+    }
 }

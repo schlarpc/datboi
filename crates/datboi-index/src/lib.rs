@@ -14,6 +14,8 @@ pub mod analysis;
 pub mod auth;
 pub mod blobs;
 pub mod dats;
+pub mod gc;
+pub mod jobs;
 pub mod recipes;
 pub mod schema;
 pub mod state;
@@ -23,9 +25,13 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
-pub use analysis::{AnalysisOutcome, SweepItem};
+pub use analysis::{
+    AnalysisOutcome, PRIORITY_AMBIENT, PRIORITY_DAT_MATCHED, PRIORITY_FRESH, SweepItem,
+    SweepLeaseKeeper,
+};
 pub use auth::{InviteOutcome, InviteRow, SessionRow, UserRow};
 pub use blobs::BlobRow;
+pub use gc::{GuardHolder, OrphanCandidate};
 pub use recipes::GroundingMode;
 pub use types::{
     AliasAlgo, ClaimKind, ClaimStatus, Namespace, OpKind, RecipeSource, Residency, Role, SeekClass,
@@ -220,6 +226,11 @@ fn open_file(
     on_older: OnOlderVersion,
 ) -> Result<Connection, IndexError> {
     let conn = Connection::open(path)?;
+    // Multiple connections share these files (the daemon's request
+    // handle + the refine worker's, or a CLI alongside the daemon):
+    // WAL serializes writers, and this makes a contended writer wait
+    // instead of failing SQLITE_BUSY.
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
     // page_size must precede WAL; a WAL database's page size is frozen.
     conn.pragma_update(None, "page_size", 8192)?;
     // journal_mode returns a result row; query instead of execute.

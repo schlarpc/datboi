@@ -159,6 +159,9 @@ fn fixture_ext(with_image: bool) -> Fixture {
         listen: SocketAddr::from_str("127.0.0.1:0").expect("addr"),
         nfs_listen: None,
         detectors_dir: None,
+        // Tests want a quiescent database: no background analyzer
+        // perturbing counts mid-assertion.
+        refine: false,
     })
     .expect("bind");
     let addr = server.local_addr().expect("addr");

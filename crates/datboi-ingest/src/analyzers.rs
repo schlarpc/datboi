@@ -10,7 +10,7 @@ use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe};
 use datboi_index::{AnalysisOutcome, Db, Namespace as IndexNs, Residency, SeekClass, SweepItem};
 use datboi_store_fs::{Namespace as StoreNs, Store};
 
-use crate::refine::{AnalysisResult, Analyzer, analyzer_tag};
+use crate::refine::{AnalysisResult, Analyzer, Pulse, TickReader, analyzer_tag};
 
 /// FastCDC parameters (D3 strategy ladder, rung 3): gear hash, NC level
 /// 2, 64 KiB / 256 KiB / 1 MiB — tuned for disc images. The values are
@@ -259,6 +259,7 @@ impl Analyzer for PreflateZipAnalyzer {
         item: &SweepItem,
         store: &Store,
         db: &mut Db,
+        pulse: &mut dyn Pulse,
     ) -> Result<AnalysisResult, String> {
         use std::io::{Read, Seek, SeekFrom};
 
@@ -330,7 +331,10 @@ impl Analyzer for PreflateZipAnalyzer {
             file.seek(SeekFrom::Start(start))
                 .map_err(|e| e.to_string())?;
             let mut reader = SplitReader::new(&mut file, len);
-            let put = store.put_new(StoreNs::Data, &mut reader);
+            // The split is the long haul (minutes for disc-sized
+            // members): plaintext flowing into the store is the
+            // heartbeat that keeps this item's lease alive (D71).
+            let put = store.put_new(StoreNs::Data, TickReader::new(&mut reader, &mut *pulse));
             match put {
                 Ok((plaintext_hash, aliases, _)) => {
                     let plaintext_id = db
@@ -641,6 +645,7 @@ impl Analyzer for ChunkAnalyzer {
         item: &SweepItem,
         store: &Store,
         db: &mut Db,
+        pulse: &mut dyn Pulse,
     ) -> Result<AnalysisResult, String> {
         let Some(size) = item
             .size
@@ -684,8 +689,10 @@ impl Analyzer for ChunkAnalyzer {
         let mut input_rows: Vec<(u32, i64, Option<&str>)> = Vec::new();
         let mut segments: Vec<Segment> = Vec::new();
         let mut chunk_ids: Vec<(Blake3, u64)> = Vec::new();
+        // Chunking a big image is a full sequential read: the bytes
+        // themselves are the lease heartbeat (D71).
         let chunker = fastcdc::v2020::StreamCDC::with_level(
-            BufReader::new(file),
+            BufReader::new(TickReader::new(file, pulse)),
             CHUNK_MIN,
             CHUNK_AVG,
             CHUNK_MAX,
@@ -914,6 +921,7 @@ impl Analyzer for EcmAnalyzer {
         item: &SweepItem,
         store: &Store,
         db: &mut Db,
+        pulse: &mut dyn Pulse,
     ) -> Result<AnalysisResult, String> {
         use std::io::Read;
 
@@ -946,8 +954,10 @@ impl Analyzer for EcmAnalyzer {
         file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
 
         let mut reader = EcmSplitReader::new(&mut file, size);
+        // Full sector-grid walk of the image: same heartbeat rule as
+        // the other streaming analyzers (D71).
         let (stripped_hash, aliases, _) = store
-            .put_new(StoreNs::Data, &mut reader)
+            .put_new(StoreNs::Data, TickReader::new(&mut reader, pulse))
             .map_err(|e| e.to_string())?;
         let regenerable: u64 = reader.sectors[1] + reader.sectors[2] + reader.sectors[3];
         if regenerable == 0 {

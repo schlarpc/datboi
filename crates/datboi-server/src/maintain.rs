@@ -1,0 +1,202 @@
+//! The D72/D73 maintenance phases, run by the D71 worker thread after
+//! its refine drains — one background writer, so heavy maintenance IO
+//! never fights analyzer IO for the spindle:
+//!
+//! 1. **Eager licensing** (every cycle, NO guard — additive): replay
+//!    verified-only routes so literals are evictable before pressure.
+//! 2. **Orphan mark sweep** (ambient tick only — full-table scans):
+//!    surface unreferenced candidates for the review gate. Marking is
+//!    reversible bookkeeping; it needs no guard either.
+//! 3. **Watermark eviction** (under the D72 singleton guard): the one
+//!    concurrently-unsafe critical section — two grounding
+//!    computations must never jointly approve stranding a
+//!    mutually-inverse recipe pair. `datboi evict` and the orphan
+//!    apply path contend for the same guard.
+//!
+//! Crash safety is compositional: licensing commits per recipe,
+//! marks are derivable, eviction's unlink→flip order is recovery's
+//! reconciliation direction, and a lapsed guard just re-plans.
+
+use datboi_exec::{Executor, policy};
+use datboi_index::{Db, GuardHolder};
+use datboi_store_fs::Store;
+
+use crate::auth::now_unix;
+use crate::jobs::Registry;
+
+/// Routes licensed per cycle — bounds a cycle's IO so fresh-ingest
+/// wakes aren't starved behind a giant backlog; the remainder rides
+/// the next wake.
+const LICENSE_BATCH: usize = 32;
+
+/// Guard TTL: must outlive one full plan+drop round (the grounding
+/// fixpoint at corpus scale plus the unlinks), chosen with the same
+/// honesty as the D71 lease — a crashed holder stalls eviction for at
+/// most this long.
+const GUARD_TTL_SECS: i64 = 15 * 60;
+
+pub(crate) struct Maintainer {
+    exec: Executor<'static>,
+    holder: GuardHolder,
+}
+
+impl Maintainer {
+    pub(crate) fn new(store: &'static Store) -> anyhow::Result<Self> {
+        let mut holder = [0u8; 16];
+        getrandom::getrandom(&mut holder)?;
+        Ok(Self {
+            exec: Executor::new(store, datboi_exec::ExecConfig::default())?,
+            holder: GuardHolder(holder),
+        })
+    }
+
+    /// One maintenance cycle. Every step is fallible-but-contained:
+    /// a phase failure logs and yields to the next cycle rather than
+    /// killing the worker.
+    pub(crate) fn cycle(&self, db: &mut Db, store: &Store, jobs: &Registry, ambient: bool) {
+        self.license(db, jobs);
+        if ambient {
+            self.mark_orphans(db);
+        }
+        self.watermark_evict(db, store, jobs);
+    }
+
+    /// Phase 1 — eager licensing (D72). Tray job only when something
+    /// actually licensed; persistent failures go to stderr and retry
+    /// next cycle (the pool re-derives from verify state).
+    fn license(&self, db: &mut Db, jobs: &Registry) {
+        let pending = match self.exec.license_pending(db) {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("maintenance: license pool: {e}");
+                return;
+            }
+        };
+        if pending == 0 {
+            return;
+        }
+        let batch = pending.min(LICENSE_BATCH);
+        let job = jobs.create_gc("license — rebuild routes", batch as u64, now_unix());
+        match self.exec.license_covered(db, LICENSE_BATCH) {
+            Ok(report) => {
+                for (hash, error) in &report.failed {
+                    eprintln!("maintenance job {job}: license {hash}: {error}");
+                }
+                let done = report.replayed as u64;
+                jobs.refine_progress(job, done, done + report.failed.len() as u64);
+                jobs.push_note(
+                    job,
+                    format!(
+                        "{} route(s) licensed, {} failed, {} still pending",
+                        report.replayed,
+                        report.failed.len(),
+                        pending.saturating_sub(batch)
+                    ),
+                );
+                jobs.finish(job, now_unix());
+                eprintln!(
+                    "maintenance job {job}: licensed {}/{batch} route(s)",
+                    report.replayed
+                );
+            }
+            Err(e) => {
+                eprintln!("maintenance job {job}: FAILED — {e}");
+                jobs.fail(job, &e.to_string(), now_unix());
+            }
+        }
+    }
+
+    /// Phase 2 — orphan mark sweep (D73). Bookkeeping only: no tray
+    /// job, no guard; the counts go to stderr and the Storage surface
+    /// reads the table.
+    fn mark_orphans(&self, db: &mut Db) {
+        let roots = match self.exec.orphan_extra_roots(db) {
+            Ok(roots) => roots,
+            Err(e) => {
+                eprintln!("maintenance: orphan roots: {e}");
+                return;
+            }
+        };
+        match db.sweep_orphan_marks(&roots, now_unix()) {
+            Ok((marked, cleared)) if marked + cleared > 0 => {
+                eprintln!("maintenance: orphan sweep — {marked} newly marked, {cleared} cleared");
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("maintenance: orphan sweep: {e}"),
+        }
+    }
+
+    /// Phase 3 — watermark eviction (D72), under the singleton guard.
+    fn watermark_evict(&self, db: &mut Db, store: &Store, jobs: &Registry) {
+        let usage = match store.fs_usage() {
+            Ok(Some(pair)) => pair,
+            Ok(None) => return, // unanswerable platform: stay additive
+            Err(e) => {
+                eprintln!("maintenance: fs usage: {e}");
+                return;
+            }
+        };
+        let (total, avail) = usage;
+        let used = total.saturating_sub(avail);
+        let high = match policy::high_water(db).map(|w| w.threshold_bytes(total)) {
+            Ok(Some(high)) => high,
+            Ok(None) => return, // disarmed
+            Err(e) => {
+                eprintln!("maintenance: watermark config: {e}");
+                return;
+            }
+        };
+        if used < high {
+            return;
+        }
+        let low = policy::low_water(db)
+            .ok()
+            .and_then(|w| w.threshold_bytes(total))
+            .unwrap_or(high);
+        let reclaim = used.saturating_sub(low.min(high));
+
+        if !claim_guard(db, &self.holder) {
+            eprintln!("maintenance: watermark crossed but gc guard is busy; retrying next cycle");
+            return;
+        }
+        let job = jobs.create_gc("evict — watermark", 0, now_unix());
+        eprintln!(
+            "maintenance job {job}: watermark crossed (used {used} of {total}); reclaiming ~{reclaim} byte(s)"
+        );
+        let result = self.exec.evict_reclaim(db, reclaim);
+        db.release_gc_guard(&self.holder).unwrap_or_else(|e| {
+            eprintln!("maintenance: guard release: {e}"); // TTL is the backstop
+        });
+        match result {
+            Ok(report) => {
+                let evicted = report.evicted as u64;
+                jobs.refine_progress(job, evicted, evicted);
+                jobs.push_note(
+                    job,
+                    format!(
+                        "{} blob(s) evicted, {} byte(s) reclaimed, {} blocked",
+                        report.evicted,
+                        report.bytes_reclaimed,
+                        report.blocked.len()
+                    ),
+                );
+                jobs.finish(job, now_unix());
+                eprintln!(
+                    "maintenance job {job}: evicted {} blob(s), {} byte(s)",
+                    report.evicted, report.bytes_reclaimed
+                );
+            }
+            Err(e) => {
+                eprintln!("maintenance job {job}: FAILED — {e}");
+                jobs.fail(job, &e.to_string(), now_unix());
+            }
+        }
+    }
+}
+
+/// Claim the D72 guard for one critical section. Exposed shape shared
+/// with the orphan-apply path (api.rs).
+pub(crate) fn claim_guard(db: &Db, holder: &GuardHolder) -> bool {
+    db.claim_gc_guard(holder, now_unix(), GUARD_TTL_SECS)
+        .unwrap_or(false)
+}

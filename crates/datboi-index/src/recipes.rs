@@ -293,13 +293,25 @@ impl Db {
     /// [`Db::is_evictable`] per pick (dropping one candidate can strand
     /// another — order matters, sets don't).
     pub fn list_eviction_candidates(&self) -> Result<Vec<crate::BlobRow>, IndexError> {
+        // Ordering is POLICY, not cosmetics (D27/D72): best licensed
+        // route's seek class first (affine-routed literals rebuild
+        // cheap and seekable — drop those first; opaque-routed ones
+        // cost a spill per read — keep those longest), then biggest
+        // first within a class. This is also what steers a
+        // mutually-inverse pair (container ⇄ member plaintext, the
+        // preflate shape) to the RIGHT residual: the affine-routed
+        // container evicts, D21 grounding then refuses the
+        // opaque-routed plaintext, and what stays resident is exactly
+        // D53's "the bytes dats name". Size-first ordering strands the
+        // pair the other way around.
         let mut stmt = self.cache().prepare_cached(
-            "SELECT DISTINCT b.blob_id, b.hash, b.size, b.namespace, b.residency
+            "SELECT b.blob_id, b.hash, b.size, b.namespace, b.residency
              FROM blob b
              JOIN recipe_output ro ON ro.blob_id = b.blob_id
              JOIN recipe r ON r.recipe_id = ro.recipe_id
              WHERE b.namespace = 0 AND b.residency = 0 AND r.verify = 3
-             ORDER BY b.size DESC, b.hash",
+             GROUP BY b.blob_id
+             ORDER BY MIN(r.seek_class), b.size DESC, b.hash",
         )?;
         let rows = stmt
             .query_map([], |row| {

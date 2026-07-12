@@ -33,6 +33,9 @@ nfsserve.workspace = true
 # The /v1 read models query cache.db directly (same SQL family as
 # `datboi status`/`datboi audit` — see api.rs).
 rusqlite.workspace = true
+# nice(19) for the refine worker thread (D71) — safe wrapper, same
+# rationale as datboi-index's statfs use.
+rustix.workspace = true
 # Trait bound only (`json_response<T: Serialize>`); derives stay in
 # datboi-api per D69.
 serde.workspace = true
@@ -42,6 +45,9 @@ tokio.workspace = true
 [dev-dependencies]
 # stored_zip fixture builder for the ingest integration test.
 crc32fast.workspace = true
+# deflate_zip fixture: the D71 refine e2e needs a member preflate can
+# actually split.
+flate2.workspace = true
 tempfile.workspace = true
 ureq.workspace = true
 

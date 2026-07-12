@@ -698,7 +698,17 @@ pub fn evict(
         return Ok(ExitCode::SUCCESS);
     }
 
-    let report = exec.evict_covered(&env.db, target_bytes, license)?;
+    // The drop critical section runs under the D72 singleton guard:
+    // this CLI racing the daemon's watermark eviction (or another CLI)
+    // is exactly the jointly-stranded-pair hazard the guard exists for.
+    let holder = mint_guard_holder()?;
+    anyhow::ensure!(
+        env.db.claim_gc_guard(&holder, gc_now(), GC_GUARD_TTL_SECS)?,
+        "gc guard busy (the daemon is evicting or a gc apply is running); retry shortly"
+    );
+    let report = exec.evict_covered(&env.db, target_bytes, license);
+    env.db.release_gc_guard(&holder)?;
+    let report = report?;
     // Every blocked blob gets its reasons spelled out — "0 evicted" with
     // no explanation is how a residency planner loses trust.
     let mut blocked: Vec<(String, Vec<String>)> = Vec::with_capacity(report.blocked.len());
@@ -752,6 +762,179 @@ pub fn materialize(env: Env, hash_hex: &str, json: bool) -> anyhow::Result<ExitC
     Ok(ExitCode::SUCCESS)
 }
 
+// ---- gc (D72/D73) ----
+
+fn mint_guard_holder() -> anyhow::Result<datboi_index::GuardHolder> {
+    let mut holder = [0u8; 16];
+    getrandom::getrandom(&mut holder)?;
+    Ok(datboi_index::GuardHolder(holder))
+}
+
+fn gc_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// Guard TTL for CLI-held critical sections — same bound the daemon
+/// uses (a crashed CLI stalls background eviction at most this long).
+const GC_GUARD_TTL_SECS: i64 = 15 * 60;
+
+pub fn gc_list(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
+    use datboi_exec::policy;
+    let grace = policy::grace_secs(&env.db)?;
+    let keeps = policy::keep_set(&env.db)?;
+    let candidates = env.db.list_orphan_candidates(gc_now(), grace)?;
+    if json {
+        println!(
+            "{}",
+            json!({
+                "grace_secs": grace,
+                "orphans": candidates.iter().map(|c| json!({
+                    "hash": c.hash.to_hex(),
+                    "size": c.size,
+                    "marked_at": c.marked_at,
+                    "sources": c.sources,
+                    "kept": keeps.contains(&c.hash),
+                })).collect::<Vec<_>>(),
+            })
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    if candidates.is_empty() {
+        println!("no reviewable orphan candidates (grace {grace}s)");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut reclaimable = 0u64;
+    for c in &candidates {
+        let kept = keeps.contains(&c.hash);
+        if !kept {
+            reclaimable += c.size.unwrap_or(0);
+        }
+        println!(
+            "{} {:>12} {}{}",
+            c.hash.to_hex(),
+            c.size.unwrap_or(0),
+            if kept { "[kept] " } else { "" },
+            c.sources.join(", ")
+        );
+    }
+    println!(
+        "{} candidate(s); {} byte(s) reclaimable via `datboi gc apply`",
+        candidates.len(),
+        reclaimable
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn gc_keep(env: &Env, hash_hex: &str, keep: bool) -> anyhow::Result<ExitCode> {
+    let hash: datboi_core::hash::Blake3 = hash_hex
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{hash_hex:?} is not a blake3 hex hash"))?;
+    datboi_exec::policy::set_keep(&env.db, &hash, keep)?;
+    println!("{} {hash}", if keep { "kept" } else { "unkept" });
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The CLI apply mirrors the daemon's discipline exactly: guard, then
+/// delete-time re-verification per blob, bytes before rows.
+pub fn gc_apply(mut env: Env, hashes: &[String], json: bool) -> anyhow::Result<ExitCode> {
+    use datboi_exec::policy;
+    let exec = datboi_exec::Executor::new(&env.store, datboi_exec::ExecConfig::default())?;
+    let grace = policy::grace_secs(&env.db)?;
+    let keeps = policy::keep_set(&env.db)?;
+    let roots = exec.orphan_extra_roots(&env.db)?;
+    let now = gc_now();
+    let mut wanted = env.db.list_orphan_candidates(now, grace)?;
+    if !hashes.is_empty() {
+        let requested: std::collections::HashSet<&str> =
+            hashes.iter().map(String::as_str).collect();
+        wanted.retain(|c| requested.contains(c.hash.to_hex().as_str()));
+    }
+    let holder = mint_guard_holder()?;
+    anyhow::ensure!(
+        env.db.claim_gc_guard(&holder, now, GC_GUARD_TTL_SECS)?,
+        "gc guard busy (the daemon is evicting or another apply is running); retry shortly"
+    );
+    let mut deleted = 0u64;
+    let mut bytes = 0u64;
+    let mut skipped = 0u64;
+    let result: anyhow::Result<()> = (|| {
+        for c in &wanted {
+            if keeps.contains(&c.hash)
+                || !env.db.orphan_still_deletable(c.blob_id, &roots, now, grace)?
+            {
+                skipped += 1;
+                continue;
+            }
+            env.store
+                .remove_blob(datboi_store_fs::Namespace::Data, &c.hash)?;
+            env.db.delete_orphan_rows(c.blob_id)?;
+            deleted += 1;
+            bytes += c.size.unwrap_or(0);
+        }
+        Ok(())
+    })();
+    env.db.release_gc_guard(&holder)?;
+    result?;
+    if json {
+        println!(
+            "{}",
+            json!({"deleted": deleted, "bytes_reclaimed": bytes, "skipped": skipped})
+        );
+    } else {
+        println!(
+            "deleted {deleted} orphan(s), reclaimed {bytes} byte(s), {skipped} skipped by delete-time re-verification"
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+pub fn gc_config(
+    env: &Env,
+    high_water: Option<&str>,
+    low_water: Option<&str>,
+    grace_secs: Option<i64>,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    use datboi_exec::policy;
+    for (key, value) in [
+        (policy::KEY_HIGH_WATER, high_water),
+        (policy::KEY_LOW_WATER, low_water),
+    ] {
+        if let Some(value) = value {
+            // Validate on write (the read side falls back to defaults
+            // rather than obeying a typo).
+            anyhow::ensure!(
+                value.eq_ignore_ascii_case("off")
+                    || value.strip_suffix('%').is_some_and(|p| p.parse::<u8>().is_ok_and(|n| n <= 100))
+                    || value.parse::<u64>().is_ok(),
+                "{value:?}: expected \"off\", \"NN%\", or absolute bytes"
+            );
+            env.db.config_set(key, value.as_bytes())?;
+        }
+    }
+    if let Some(grace) = grace_secs {
+        anyhow::ensure!(grace >= 0, "grace must be non-negative");
+        env.db
+            .config_set(policy::KEY_GRACE_SECS, grace.to_string().as_bytes())?;
+    }
+    let (high, low, grace) = (
+        policy::high_water(&env.db)?,
+        policy::low_water(&env.db)?,
+        policy::grace_secs(&env.db)?,
+    );
+    if json {
+        println!(
+            "{}",
+            json!({"high_water": format!("{high:?}"), "low_water": format!("{low:?}"), "grace_secs": grace})
+        );
+    } else {
+        println!("high-water: {high:?}\nlow-water:  {low:?}\ngrace:      {grace}s");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 // ---- sweep ----
 
 /// One refinement sweep round (D45): enqueue unanalyzed data blobs for
@@ -772,7 +955,7 @@ pub fn sweep(
         }
         "ecm" => Box::new(datboi_ingest::analyzers::EcmAnalyzer::new()),
         other => {
-            anyhow::bail!("unknown analyzer {other:?} (available: noop, chunk, deflate-trial)")
+            anyhow::bail!("unknown analyzer {other:?} (available: noop, chunk, preflate, ecm)")
         }
     };
     let report =

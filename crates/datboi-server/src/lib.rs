@@ -15,11 +15,14 @@ mod api;
 pub mod auth;
 mod dats;
 mod dav;
+mod gc;
 mod hardening;
 mod http;
 mod ingest;
 mod jobs;
+mod maintain;
 mod nfs;
+mod refine;
 mod vfs;
 mod web;
 
@@ -50,6 +53,11 @@ pub struct Config {
     /// Header-skipper detector XML directory (same as the CLI's
     /// `--detectors`); `None` = ingest runs without skipper variants.
     pub detectors_dir: Option<PathBuf>,
+    /// Ambient refinement (D71): a niced background worker analyzes
+    /// fresh ingests immediately and the corpus backlog continuously.
+    /// On by default in `datboi serve`; off in tests that need a
+    /// quiescent database.
+    pub refine: bool,
 }
 
 /// Shared server state. One SQLite handle behind a mutex serializes
@@ -62,10 +70,15 @@ pub(crate) struct App {
     /// Decoded manifests by snapshot hash. Immutable objects, so
     /// entries never invalidate; bounded by wholesale clear.
     pub(crate) manifests: Mutex<HashMap<Blake3, Arc<vfs::ViewIndex>>>,
-    /// Staged uploads + the in-memory job registry (web ingest).
-    pub(crate) jobs: jobs::Registry,
+    /// Staged uploads + the in-memory job registry (web ingest +
+    /// refine drains). Arc: the refine worker reports into it from
+    /// its own thread.
+    pub(crate) jobs: Arc<jobs::Registry>,
     /// Header-skipper detectors, loaded once at open (CLI parity).
     pub(crate) detectors: Vec<datboi_formats::skipper::Detector>,
+    /// Ambient refinement worker handle (D71); `None` when disabled.
+    /// Ingest completion feeds it fresh blob ids.
+    pub(crate) refiner: Option<refine::Refiner>,
 }
 
 /// A bound-but-not-yet-serving daemon, so callers (and tests) can learn
@@ -104,13 +117,25 @@ impl App {
         let db = Db::open(&config.db_dir)
             .with_context(|| format!("opening databases in {}", config.db_dir.display()))?;
         let exec = Executor::new(store, ExecConfig::default())?;
+        // The registry's own connection pair (D74): job history writes
+        // never contend with the request path's db mutex.
+        let jobs = Arc::new(
+            jobs::Registry::durable(Db::open(&config.db_dir)?, auth::now_unix())
+                .context("hydrating the job ledger")?,
+        );
+        // Spawned before the first request on purpose: the startup
+        // drain covers whatever accumulated while the daemon was down.
+        let refiner = config
+            .refine
+            .then(|| refine::Refiner::spawn(config.db_dir.clone(), store, Arc::clone(&jobs)));
         Ok(Arc::new(App {
             db: Mutex::new(db),
             exec,
             store,
             manifests: Mutex::new(HashMap::new()),
-            jobs: jobs::Registry::new(),
+            jobs,
             detectors,
+            refiner,
         }))
     }
 }

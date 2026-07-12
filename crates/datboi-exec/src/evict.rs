@@ -53,6 +53,14 @@ pub enum EvictOutcome {
 }
 
 #[derive(Debug, Default)]
+pub struct LicenseReport {
+    /// Blobs whose route reached `ReplayedLocal` this drain.
+    pub replayed: usize,
+    /// (blob, why) — routes that did not license; retried next drain.
+    pub failed: Vec<(Blake3, String)>,
+}
+
+#[derive(Debug, Default)]
 pub struct EvictReport {
     pub evicted: usize,
     pub bytes_reclaimed: u64,
@@ -204,6 +212,119 @@ impl<'s> Executor<'s> {
             }
         }
         Ok(report)
+    }
+
+    /// Eager ambient licensing (D72): replay up to `limit` routes from
+    /// the verified-only pool — recipes covering CURRENTLY RESIDENT
+    /// blobs, the one scope where replay is storage-neutral (outputs
+    /// already resident; the content-addressed put no-ops). Blanket
+    /// licensing of every Verified recipe would materialize member
+    /// CLAIMS into the store — the bytes D35 ruled we never store.
+    /// Additive and idempotent, so it needs NO gc guard; each success
+    /// commits `ReplayedLocal` per recipe (at-least-once).
+    ///
+    /// # Errors
+    /// Index/store failures abort the drain; per-route failures ride
+    /// the report and the pool retries them next drain (poisoned
+    /// claim-failures drop out of the pool by verify state).
+    pub fn license_covered(
+        &self,
+        db: &Db,
+        limit: usize,
+    ) -> Result<LicenseReport, ExecError> {
+        let mut report = LicenseReport::default();
+        for (blob_id, hash) in verified_only_candidates(db)?.into_iter().take(limit) {
+            let mut licensed = false;
+            let mut last_error = None;
+            for recipe in db.recipes_for_output(blob_id)? {
+                if recipe.verify != VerifyState::Verified {
+                    continue;
+                }
+                match self.replay(db, recipe.recipe_id) {
+                    Ok(_) => {
+                        licensed = true;
+                        break;
+                    }
+                    Err(e) if e.is_claim_failure() => {
+                        last_error = Some(e.to_string()); // poisoned; try next route
+                    }
+                    Err(e) => {
+                        last_error = Some(e.to_string());
+                        break; // infrastructure: report, move to next blob
+                    }
+                }
+            }
+            if licensed {
+                report.replayed += 1;
+            } else {
+                report
+                    .failed
+                    .push((hash, last_error.unwrap_or_else(|| "no Verified route".into())));
+            }
+        }
+        Ok(report)
+    }
+
+    /// How many resident blobs currently sit in the verified-only pool
+    /// (would-be licensing work) — the maintenance worker's job-sizing
+    /// read.
+    ///
+    /// # Errors
+    /// Index I/O.
+    pub fn license_pending(&self, db: &Db) -> Result<usize, ExecError> {
+        Ok(verified_only_candidates(db)?.len())
+    }
+
+    /// Watermark reclaim (D72): evict licensed literals until roughly
+    /// `reclaim_bytes` are freed. Thin wrapper translating "free this
+    /// much" into [`Executor::evict_covered`]'s resident-bytes target.
+    /// Never licenses inline — D72 licenses eagerly, elsewhere.
+    ///
+    /// # Errors
+    /// See [`Executor::evict_covered`].
+    pub fn evict_reclaim(&self, db: &Db, reclaim_bytes: u64) -> Result<EvictReport, ExecError> {
+        let resident = resident_data_bytes(db)?;
+        self.evict_covered(db, resident.saturating_sub(reclaim_bytes), false)
+    }
+
+    /// The tag-closure roots the D73 orphan sweep cannot compute at the
+    /// index layer (snapshot decode needs store reads): every tagged
+    /// hash itself, plus every data blob any pinned `view/*` snapshot
+    /// row references (ALL rows — orphan reachability is broader than
+    /// D27's opaque-only eviction protection). `image/*` inputs are
+    /// already recipe-rooted; the tagged output rides the tagged-hash
+    /// rule.
+    ///
+    /// # Errors
+    /// Index/store failures; a tag naming an undecodable snapshot
+    /// errors rather than silently rooting nothing (deletion adjacency
+    /// — same strictness rule as [`Executor::evict`]'s pin check).
+    pub fn orphan_extra_roots(&self, db: &Db) -> Result<Vec<i64>, ExecError> {
+        let mut roots = std::collections::HashSet::new();
+        for (name, hash) in db.list_tags()? {
+            if let Some(row) = db.blob_by_hash(&hash)? {
+                roots.insert(row.blob_id);
+            }
+            if name.starts_with("view/") {
+                use std::io::Read as _;
+                let mut bytes = Vec::new();
+                self.store
+                    .get(StoreNs::Meta, &hash)?
+                    .ok_or_else(|| {
+                        ExecError::Malformed(format!("pinned snapshot {hash} missing from meta/"))
+                    })?
+                    .read_to_end(&mut bytes)?;
+                let snap = datboi_core::viewsnap::ViewSnapshot::decode(&bytes).map_err(|e| {
+                    ExecError::Malformed(format!("pinned snapshot {hash} does not decode: {e}"))
+                })?;
+                for row in &snap.rows {
+                    if let Some(blob) = db.blob_by_hash(&row.hash)? {
+                        roots.insert(blob.blob_id);
+                    }
+                }
+            }
+        }
+        Ok(roots.into_iter().collect())
     }
 
     /// Blob ids no eviction may touch while their pins stand (D27):

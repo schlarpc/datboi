@@ -22,6 +22,7 @@ import type {
   EntriesBody,
   EntriesParams,
   EntryDetail,
+  GcApplyReport,
   GrantParams,
   IngestParams,
   IngestStarted,
@@ -32,6 +33,7 @@ import type {
   MintedInvite,
   MintInviteParams,
   OkBody,
+  OrphansBody,
   RevokedSessions,
   SessionInfo,
   StorageBody,
@@ -214,6 +216,17 @@ export function blobs(params: BlobsParams = {}): Promise<BlobsBody> {
 
 export const blobDetail = (hash: string): Promise<BlobDetail> =>
   request('GET', `/v1/blobs/${encodeURIComponent(hash)}`);
+
+// ---- gc (D73 review/apply) ----
+
+export const gcOrphans = (): Promise<OrphansBody> => request('GET', '/v1/gc/orphans');
+
+export const gcKeep = (hash: string, keep: boolean): Promise<OkBody> =>
+  request('POST', '/v1/gc/keep', { body: { hash, keep } });
+
+/** Absent hashes = every reviewable, non-kept candidate. */
+export const gcApply = (hashes?: string[]): Promise<GcApplyReport> =>
+  request('POST', '/v1/gc/orphans/apply', { body: hashes ? { hashes } : {} });
 
 // ---- ingest ----
 

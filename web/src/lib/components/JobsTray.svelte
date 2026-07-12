@@ -13,8 +13,9 @@
    * re-runs the effect, so there is no second timer system.
    *
    * `activity ▾` (recent activity log) is reserved per the spec but
-   * disabled: finished jobs vanish with the in-memory registry, so a
-   * real feed wants the durable job table (open-questions).
+   * still disabled: the D74 ledger now persists history (and CLI jobs
+   * appear here via the poll-time merge), but the feed UI itself is
+   * undesigned — the data is ready when it is.
    */
   import { jobDetail, jobs as fetchJobs } from '../api/client';
   import type { Job, JobDetailBody } from '../api/types';
@@ -30,7 +31,7 @@
 
   // Lowercase title copy — forced into the catalog at statement level.
   // @wc-include
-  const activityTitle = 'recent activity log — needs a durable job table';
+  const activityTitle = 'recent activity log — history is recorded (D74); the feed UI is not designed yet';
 
   const POLL_MS = 2000;
 
@@ -122,13 +123,29 @@
                 {/if}
               </button>
               {#if detail !== undefined && (job.state === 'running' || selected === job.id)}
-                <p class="detail">
-                  {detail.files_done}/{detail.files_total} files
-                  {#if detail.current != null}
-                    · {detail.current}
-                  {/if}
-                  · {detail.matched_total} matched · {refused(detail)} refused
-                </p>
+                {#if job.kind !== 'ingest'}
+                  <!-- Refine/gc/scrub count ITEMS, and their story is
+                       the closing note, not matches/refusals. -->
+                  <p class="detail">
+                    {detail.files_done}/{detail.files_total} blobs
+                    {#if detail.current != null}
+                      · {detail.current.slice(0, 10)}…
+                    {/if}
+                    {#if detail.report.notes.length > 0}
+                      · {detail.report.notes[detail.report.notes.length - 1]}
+                    {:else if detail.report.errors.length > 0}
+                      · {detail.report.errors.length} errors
+                    {/if}
+                  </p>
+                {:else}
+                  <p class="detail">
+                    {detail.files_done}/{detail.files_total} files
+                    {#if detail.current != null}
+                      · {detail.current}
+                    {/if}
+                    · {detail.matched_total} matched · {refused(detail)} refused
+                  </p>
+                {/if}
               {/if}
             </li>
           {/each}
@@ -144,7 +161,7 @@
     display: flex;
     align-items: center;
     gap: 16px;
-    padding: 8px 28px;
+    padding: 8px var(--pad-x);
     border-top: 2px solid var(--ink);
     background: var(--tray);
     font: 500 12px var(--font-data);
@@ -164,9 +181,9 @@
 
   .panel {
     position: absolute;
-    left: 28px;
+    left: var(--pad-x);
     bottom: calc(100% + 10px);
-    width: min(560px, calc(100vw - 56px));
+    width: min(560px, calc(100vw - 2 * var(--pad-x)));
     max-height: 320px;
     overflow-y: auto;
     background: var(--panel);
@@ -221,5 +238,24 @@
     margin: 2px 0 0;
     font: 400 11.5px var(--font-data);
     color: var(--faint);
+  }
+
+  /* The strip carries the expander, any running job bars, and the
+     activity stub inline; on a narrow screen it scrolls sideways rather
+     than clipping a job mid-bar. The expander stays put as the anchor. */
+  @media (max-width: 720px) {
+    .tray {
+      gap: 12px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .tray::-webkit-scrollbar {
+      display: none;
+    }
+
+    .expander {
+      flex: none;
+    }
   }
 </style>

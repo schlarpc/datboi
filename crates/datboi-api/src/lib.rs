@@ -723,12 +723,22 @@ pub struct JobsResponse {
     pub jobs: Vec<Job>,
 }
 
-/// What a job is doing. One variant today; scrub/eval/evict join it
-/// when they graduate from CLI-only.
+/// What a job is doing. Scrub/eval/evict join these when they graduate
+/// from CLI-only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum JobKind {
     Ingest,
+    /// A refinement drain (D71): the daemon's ambient analyzer worker
+    /// chewing through one family's sweep queue. `files_*`/`bytes_*`
+    /// in the detail count ITEMS (blobs), not files/bytes.
+    Refine,
+    /// GC-family maintenance (D72/D73): licensing drains, watermark
+    /// evictions, orphan applies. Item counts, like refine.
+    Gc,
+    /// A scrub pass (CLI-recorded via the D74 ledger; the run ledger
+    /// the storage screen wants).
+    Scrub,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -786,6 +796,58 @@ pub struct JobDetail {
     /// report.
     #[schema(required = true)]
     pub error: Option<String>,
+}
+
+// ---- GET /v1/gc/orphans (+ keep / apply) ----
+
+/// One reviewable orphan (D73): unreferenced past the grace window,
+/// still unrooted as of the last sweep. The mark is REVIEW state —
+/// apply re-verifies reachability at delete time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OrphanItem {
+    pub hash: String,
+    pub size: u64,
+    /// Unix seconds of first-observed-unreferenced (the grace clock).
+    pub marked_at: i64,
+    /// Ingest paths that ever carried these bytes — the context a
+    /// reviewer needs to say junk-or-keep.
+    pub sources: Vec<String>,
+    /// Operator keep-mark: excluded from apply until unkept.
+    pub kept: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OrphansResponse {
+    pub orphans: Vec<OrphanItem>,
+    /// Bytes across non-kept candidates (what apply-all would free).
+    pub reclaimable_bytes: u64,
+    pub grace_secs: i64,
+}
+
+/// Set or clear a keep-mark ("this is not junk").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct GcKeepRequest {
+    #[schema(required = true)]
+    pub hash: Option<String>,
+    #[schema(required = true)]
+    pub keep: Option<bool>,
+}
+
+/// Apply the reviewed set (D73: the ONE human-triggered destructive
+/// action). Absent `hashes` = every reviewable, non-kept candidate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct GcApplyRequest {
+    pub hashes: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct GcApplyResponse {
+    pub deleted: u64,
+    pub bytes_reclaimed: u64,
+    /// Requested but refused at delete-time re-verification (rooted
+    /// since review, kept, or not aged) — never an error, always
+    /// visible.
+    pub skipped: u64,
 }
 
 /// One dat entry an ingest job newly satisfied — the user-vocabulary

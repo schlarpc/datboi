@@ -556,6 +556,7 @@ mod tests {
             listen: "127.0.0.1:0".parse().expect("addr"),
             nfs_listen: None,
             detectors_dir: None,
+            refine: false,
         })
         .expect("app");
         let fs = NfsFs::new(Arc::clone(&app));

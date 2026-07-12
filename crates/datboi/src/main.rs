@@ -41,6 +41,11 @@ enum Command {
         /// default in M5, D68).
         #[arg(long, env = "DATBOI_NFS_LISTEN", value_name = "ADDR")]
         nfs_listen: Option<std::net::SocketAddr>,
+        /// Disable ambient refinement (D71): no background analyzer
+        /// worker; sweeps go back to being a manual `datboi sweep`
+        /// errand. Per-family control stays `datboi analyzer`.
+        #[arg(long, env = "DATBOI_NO_REFINE")]
+        no_refine: bool,
     },
     /// Hash and claim content into the store (copy semantics, D40).
     Ingest {
@@ -119,6 +124,12 @@ enum Command {
         limit: usize,
         #[arg(long)]
         json: bool,
+    },
+    /// Orphan review + GC policy (D72/D73): list reviewable orphan
+    /// candidates, keep-mark, apply deletions, tune watermarks/grace.
+    Gc {
+        #[command(subcommand)]
+        cmd: GcCommand,
     },
     /// Ingest-policy config for background analyzers (D60): per-family
     /// enable/disable + analyzer-owned opaque params in the config KV.
@@ -223,6 +234,48 @@ enum SessionCommand {
     /// Revoke ALL of a user's sessions (cookies and bearer tokens).
     Revoke {
         username: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum GcCommand {
+    /// Reviewable orphan candidates (past grace, unrooted, with ingest
+    /// provenance). Marks are review state — apply re-verifies.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Keep-mark a hash ("this is not junk"): excluded from apply,
+    /// survives cache rebuilds.
+    Keep {
+        /// Blob hash (blake3 hex).
+        hash: String,
+    },
+    /// Clear a keep-mark.
+    Unkeep {
+        /// Blob hash (blake3 hex).
+        hash: String,
+    },
+    /// Delete reviewed candidates (D73's one destructive action). Every
+    /// deletion re-verifies unreferenced + aged + unkept at delete time
+    /// under the D72 guard.
+    Apply {
+        /// Specific hashes; none = every reviewable, non-kept candidate.
+        hashes: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show or set GC policy (D72 watermarks, D73 grace). Values:
+    /// "off", "NN%", or absolute bytes.
+    Config {
+        #[arg(long)]
+        high_water: Option<String>,
+        #[arg(long)]
+        low_water: Option<String>,
+        #[arg(long)]
+        grace_secs: Option<i64>,
         #[arg(long)]
         json: bool,
     },
@@ -430,9 +483,110 @@ enum ViewCommand {
     },
 }
 
+/// D74's structurally-can't-forget device: this match is EXHAUSTIVE
+/// ON PURPOSE — no wildcard arm, ever. Adding a `Command` variant
+/// refuses to compile until its author answers, HERE, whether it is a
+/// byte-level job the ledger records (`Some(kind, name)`) or not
+/// (`None`). The compiler asks the question so no reviewer has to
+/// remember it. CLI rows are TERMINAL-ONLY (insert_finished_job): a
+/// `running` row from a CLI process would be falsely tombstoned by
+/// the daemon's interruption sweep, whose one-daemon-per-db-dir
+/// assumption a live CLI legitimately violates.
+fn ledger_stamp(command: &Command) -> Option<(i64, String)> {
+    use datboi_index::jobs::{KIND_GC, KIND_INGEST, KIND_REFINE, KIND_SCRUB};
+    match command {
+        // ---- byte-level jobs: recorded ----
+        Command::Ingest { paths, .. } => Some((
+            KIND_INGEST,
+            format!(
+                "cli: ingest — {} path{}",
+                paths.len(),
+                if paths.len() == 1 { "" } else { "s" }
+            ),
+        )),
+        Command::Evict { dry_run: false, .. } => Some((KIND_GC, "cli: evict".into())),
+        Command::Materialize { hash, .. } => Some((
+            KIND_GC,
+            format!("cli: materialize {}", &hash[..hash.len().min(10)]),
+        )),
+        Command::Sweep { analyzer, .. } => {
+            Some((KIND_REFINE, format!("cli: sweep — {analyzer}")))
+        }
+        Command::Gc {
+            cmd: GcCommand::Apply { .. },
+        } => Some((KIND_GC, "cli: gc apply".into())),
+        Command::Scrub { sample, .. } => {
+            Some((KIND_SCRUB, format!("cli: scrub — {sample}% sample")))
+        }
+
+        // ---- not jobs: reads, config, auth, serving ----
+        // Dry-run evict plans; gc list/keep/config mutate policy rows,
+        // not bytes.
+        Command::Evict { dry_run: true, .. } | Command::Gc { .. } => None,
+        // The daemon records its own jobs through the registry.
+        Command::Serve { .. } => None,
+        // Catalog/config/read surfaces. View Eval/Image and
+        // Recover/Snapshot are real byte-level work that deserve their
+        // OWN kinds when their history surfaces exist (the
+        // open-questions eval-report entry) — do not shoehorn them
+        // into Gc.
+        Command::Dat(_)
+        | Command::Audit { .. }
+        | Command::Export(_)
+        | Command::Recover { .. }
+        | Command::Snapshot { .. }
+        | Command::Analyzer { .. }
+        | Command::View { .. }
+        | Command::Status { .. }
+        | Command::User { .. }
+        | Command::Token { .. }
+        | Command::Session { .. } => None,
+    }
+}
+
+/// Best-effort terminal ledger row for a stamped CLI command (D74):
+/// history failing to write must never fail the work it describes.
+fn record_cli_job(db_dir: &std::path::Path, kind: i64, name: &str, started: i64, failed: bool) {
+    use datboi_index::jobs::{JOB_DONE, JOB_FAILED, LEDGER_KEEP};
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    match datboi_index::Db::open(db_dir) {
+        Ok(db) => {
+            let state = if failed { JOB_FAILED } else { JOB_DONE };
+            if let Err(e) = db.insert_finished_job(kind, name, state, started, now) {
+                eprintln!("warning: job ledger write failed: {e}");
+            }
+            let _ = db.prune_jobs(LEDGER_KEEP);
+        }
+        Err(e) => eprintln!("warning: job ledger unavailable: {e}"),
+    }
+}
+
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
+    // Stamp BEFORE dispatch (the arms consume `cli`); record after.
+    let stamp = ledger_stamp(&cli.command);
+    let ledger_dir = stamp
+        .is_some()
+        .then(|| cli.global.resolve_db_dir().ok())
+        .flatten();
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let result = dispatch(cli);
+    if let (Some((kind, name)), Some(dir)) = (stamp, ledger_dir) {
+        record_cli_job(&dir, kind, &name, started, result.is_err());
+    }
+    result
+}
+
+fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.command {
-        Command::Serve { listen, nfs_listen } => {
+        Command::Serve {
+            listen,
+            nfs_listen,
+            no_refine,
+        } => {
             let Some(store_root) = cli.global.store.clone() else {
                 anyhow::bail!("store root not set: pass --store or set DATBOI_STORE");
             };
@@ -445,6 +599,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 // The global --detectors/DATBOI_DETECTORS flag: web
                 // ingest applies the same skipper set CLI ingest does.
                 detectors_dir: cli.global.detectors.clone(),
+                refine: !no_refine,
             })?;
             Ok(ExitCode::SUCCESS)
         }
@@ -497,6 +652,24 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             json,
         } => cmds::evict(cli.global.open()?, target_bytes, license, dry_run, json),
         Command::Materialize { hash, json } => cmds::materialize(cli.global.open()?, &hash, json),
+        Command::Gc { cmd } => match cmd {
+            GcCommand::List { json } => cmds::gc_list(&cli.global.open()?, json),
+            GcCommand::Keep { hash } => cmds::gc_keep(&cli.global.open()?, &hash, true),
+            GcCommand::Unkeep { hash } => cmds::gc_keep(&cli.global.open()?, &hash, false),
+            GcCommand::Apply { hashes, json } => cmds::gc_apply(cli.global.open()?, &hashes, json),
+            GcCommand::Config {
+                high_water,
+                low_water,
+                grace_secs,
+                json,
+            } => cmds::gc_config(
+                &cli.global.open()?,
+                high_water.as_deref(),
+                low_water.as_deref(),
+                grace_secs,
+                json,
+            ),
+        },
         Command::View { cmd } => match cmd {
             ViewCommand::Define {
                 name,

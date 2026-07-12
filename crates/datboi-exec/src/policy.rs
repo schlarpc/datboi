@@ -1,0 +1,115 @@
+//! Molten GC policy (D72/D73): watermarks, orphan grace, keep-marks.
+//! Everything here is state.db config KV — authoritative, snapshot-
+//! carried, shared verbatim by the daemon's maintenance worker and the
+//! CLI (`datboi evict` / `datboi gc`). Parsing lives here so the two
+//! surfaces cannot drift.
+
+use std::collections::HashSet;
+
+use datboi_core::hash::Blake3;
+use datboi_index::{Db, IndexError};
+
+pub const KEY_HIGH_WATER: &str = "evict:high-water";
+pub const KEY_LOW_WATER: &str = "evict:low-water";
+pub const KEY_GRACE_SECS: &str = "gc:grace-secs";
+/// Keep-marks: `gc:keep:<hex>` → optional operator note. By HASH, not
+/// blob id — intent must survive a cache rebuild (D73).
+pub const KEEP_PREFIX: &str = "gc:keep:";
+
+/// D72: armed by default at a safe margin.
+pub const DEFAULT_HIGH_PCT: u8 = 90;
+pub const DEFAULT_LOW_PCT: u8 = 85;
+/// D73 review-eligibility grace from first-observed-unreferenced.
+pub const DEFAULT_GRACE_SECS: i64 = 24 * 60 * 60;
+
+/// A watermark setting: `off`, a percentage of the store filesystem
+/// (`"90%"`), or absolute used bytes (`"500000000000"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Watermark {
+    Off,
+    Pct(u8),
+    Bytes(u64),
+}
+
+impl Watermark {
+    /// The used-bytes threshold this watermark denotes on a filesystem
+    /// of `total` bytes; `None` = disarmed.
+    #[must_use]
+    pub fn threshold_bytes(self, total: u64) -> Option<u64> {
+        match self {
+            Self::Off => None,
+            Self::Pct(pct) => Some(total / 100 * u64::from(pct.min(100))),
+            Self::Bytes(bytes) => Some(bytes),
+        }
+    }
+
+    fn parse(raw: &[u8]) -> Option<Self> {
+        let text = std::str::from_utf8(raw).ok()?.trim();
+        if text.eq_ignore_ascii_case("off") {
+            return Some(Self::Off);
+        }
+        if let Some(pct) = text.strip_suffix('%') {
+            return pct.parse::<u8>().ok().filter(|p| *p <= 100).map(Self::Pct);
+        }
+        text.parse::<u64>().ok().map(Self::Bytes)
+    }
+}
+
+/// # Errors
+/// Index I/O. An unparsable stored value falls back to the default —
+/// a typo in policy must not disarm (or arm) eviction silently; the
+/// CLI validates on write, this is the belt.
+pub fn high_water(db: &Db) -> Result<Watermark, IndexError> {
+    Ok(db
+        .config_get(KEY_HIGH_WATER)?
+        .and_then(|v| Watermark::parse(&v))
+        .unwrap_or(Watermark::Pct(DEFAULT_HIGH_PCT)))
+}
+
+/// # Errors
+/// Index I/O.
+pub fn low_water(db: &Db) -> Result<Watermark, IndexError> {
+    Ok(db
+        .config_get(KEY_LOW_WATER)?
+        .and_then(|v| Watermark::parse(&v))
+        .unwrap_or(Watermark::Pct(DEFAULT_LOW_PCT)))
+}
+
+/// # Errors
+/// Index I/O.
+pub fn grace_secs(db: &Db) -> Result<i64, IndexError> {
+    Ok(db
+        .config_get(KEY_GRACE_SECS)?
+        .and_then(|v| std::str::from_utf8(&v).ok()?.trim().parse().ok())
+        .unwrap_or(DEFAULT_GRACE_SECS))
+}
+
+/// Every kept hash (operator "this is not junk" marks).
+///
+/// # Errors
+/// Index I/O.
+pub fn keep_set(db: &Db) -> Result<HashSet<Blake3>, IndexError> {
+    Ok(db
+        .config_list_prefix(KEEP_PREFIX)?
+        .into_iter()
+        .filter_map(|(key, _)| key.strip_prefix(KEEP_PREFIX)?.parse().ok())
+        .collect())
+}
+
+/// Set or clear one keep-mark.
+///
+/// # Errors
+/// Index I/O.
+pub fn set_keep(db: &Db, hash: &Blake3, keep: bool) -> Result<(), IndexError> {
+    let key = format!("{KEEP_PREFIX}{}", hash.to_hex());
+    if keep {
+        db.config_set(&key, b"1")
+    } else {
+        // Empty value = cleared (config_get of empty is still Some, so
+        // delete outright).
+        db.state()
+            .execute("DELETE FROM config WHERE key = ?1", [key])
+            .map(|_| ())
+            .map_err(Into::into)
+    }
+}

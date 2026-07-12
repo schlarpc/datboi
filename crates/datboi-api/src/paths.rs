@@ -26,8 +26,9 @@ use crate::{
     EntryDetail, EntryState, GrantAddRequest, IngestRequest, IngestStartResponse,
     InviteAcceptRequest, InviteMintRequest, InviteMintResponse, JobDetail, JobsResponse,
     LoginRequest, OkResponse, ResidencyState, SessionResponse, SessionsRevokedResponse,
-    StorageBreakdown, StorageResponse, SystemsResponse, UploadResponse, ViewDetail, ViewFilesPage,
-    ViewsResponse, WhoamiResponse,
+    GcApplyRequest, GcApplyResponse, GcKeepRequest, OrphansResponse, StorageBreakdown,
+    StorageResponse, SystemsResponse, UploadResponse, ViewDetail, ViewFilesPage, ViewsResponse,
+    WhoamiResponse,
 };
 
 /// Marker schema for the minted-image download body: raw octets, not
@@ -530,8 +531,55 @@ impl Modify for SecurityAddon {
     }
 }
 
+/// Reviewable orphan candidates (D73): unreferenced data blobs past
+/// the grace window, with ingest provenance and keep-marks. Marks are
+/// review state — apply re-verifies at delete time.
+#[utoipa::path(
+    get,
+    path = "/v1/gc/orphans",
+    tag = "gc",
+    responses(
+        (status = 200, description = "Reviewable candidates, oldest first", body = OrphansResponse),
+        (status = 403, description = "Not the owner", body = ApiError),
+    ),
+)]
+fn gc_orphans() {}
+
+/// Set or clear a keep-mark ("this is not junk") — authoritative
+/// state, survives cache rebuilds, excludes the blob from apply.
+#[utoipa::path(
+    post,
+    path = "/v1/gc/keep",
+    tag = "gc",
+    request_body = GcKeepRequest,
+    responses(
+        (status = 200, description = "Keep-mark updated", body = OkResponse),
+        (status = 400, description = "Missing field / not a blake3 hash", body = ApiError),
+        (status = 403, description = "Not the owner", body = ApiError),
+    ),
+)]
+fn gc_keep() {}
+
+/// Apply the reviewed set — the one human-triggered destructive action
+/// (D73). Every deletion re-verifies unreferenced + aged + unkept at
+/// delete time under the D72 singleton guard; refusals count as
+/// `skipped`, never errors.
+#[utoipa::path(
+    post,
+    path = "/v1/gc/orphans/apply",
+    tag = "gc",
+    request_body = GcApplyRequest,
+    responses(
+        (status = 200, description = "Deletion report", body = GcApplyResponse),
+        (status = 403, description = "Not the owner", body = ApiError),
+        (status = 503, description = "GC guard busy (eviction in progress); retry", body = ApiError),
+    ),
+)]
+fn gc_apply() {}
+
 #[derive(OpenApi)]
 #[openapi(
+
     info(
         title = "datboi /v1",
         description = "The datboi daemon's JSON API (D69 contract). Loopback callers are \
@@ -566,6 +614,9 @@ impl Modify for SecurityAddon {
         grant_create,
         grant_delete,
         sessions_delete,
+        gc_orphans,
+        gc_keep,
+        gc_apply,
     ),
     modifiers(&SecurityAddon),
 )]

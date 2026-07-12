@@ -26,6 +26,7 @@ import type {
   ViewDetail,
   ViewFileRow,
   Whoami,
+  OrphansBody,
 } from '../lib/api/types';
 
 export interface MockUniverse {
@@ -43,6 +44,8 @@ export interface MockUniverse {
   /** GET /v1/blobs/{hash} bodies by lowercase hash; misses answer 404
    * (non-hex answers 400 like the server). */
   blobDetails?: Record<string, BlobDetail>;
+  /** GET /v1/gc/orphans body (D73 review surface); defaults empty. */
+  orphans?: OrphansBody;
   /** GET /v1/jobs rows (the in-memory registry's tray render). */
   jobs?: Job[];
   /** GET /v1/jobs/{id} script: each poll SHIFTS one entry until the
@@ -210,6 +213,18 @@ export function installFetch(universe: MockUniverse) {
         }
         const body = universe.blobDetails?.[hash];
         return body ? json(200, body) : json(404, { error: 'no such blob' });
+      }
+      if (path === '/v1/gc/orphans' && method === 'GET') {
+        return json(
+          200,
+          universe.orphans ?? { orphans: [], reclaimable_bytes: 0, grace_secs: 86_400 },
+        );
+      }
+      if (path === '/v1/gc/keep' && method === 'POST') {
+        return json(200, { ok: true });
+      }
+      if (path === '/v1/gc/orphans/apply' && method === 'POST') {
+        return json(200, { deleted: 0, bytes_reclaimed: 0, skipped: 0 });
       }
       if (path === '/v1/jobs') {
         return json(200, { jobs: universe.jobs ?? [] });

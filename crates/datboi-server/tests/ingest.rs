@@ -14,10 +14,17 @@ use datboi_store_fs::Store;
 struct Fixture {
     addr: SocketAddr,
     store_root: std::path::PathBuf,
+    db_dir: std::path::PathBuf,
     _root: tempfile::TempDir,
 }
 
 fn fixture() -> Fixture {
+    // Most tests want a quiescent database: no background analyzer
+    // perturbing counts mid-assertion.
+    fixture_with_refine(false)
+}
+
+fn fixture_with_refine(refine: bool) -> Fixture {
     let root = tempfile::tempdir().expect("tempdir");
     let store_root = root.path().join("store");
     let db_dir = root.path().join("db");
@@ -27,10 +34,11 @@ fn fixture() -> Fixture {
     drop(Db::open(&db_dir).expect("db"));
     let server = Server::bind(&Config {
         store_root: store_root.clone(),
-        db_dir,
+        db_dir: db_dir.clone(),
         listen: SocketAddr::from_str("127.0.0.1:0").expect("addr"),
         nfs_listen: None,
         detectors_dir: None,
+        refine,
     })
     .expect("bind");
     let addr = server.local_addr().expect("addr");
@@ -38,6 +46,7 @@ fn fixture() -> Fixture {
     Fixture {
         addr,
         store_root,
+        db_dir,
         _root: root,
     }
 }
@@ -542,5 +551,177 @@ fn upload_and_start_reject_bad_requests() {
             .expect("tmp")
             .count(),
         0
+    );
+}
+
+/// Minimal zip with one DEFLATE member (the shape preflate rebuilds) —
+/// the datboi-ingest refine fixture, trimmed to one call site.
+fn deflate_zip(name: &[u8], payload: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let compressed = {
+        let mut enc =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(6));
+        enc.write_all(payload).expect("deflate");
+        enc.finish().expect("finish")
+    };
+    let crc = {
+        let mut h = crc32fast::Hasher::new();
+        h.update(payload);
+        h.finalize()
+    };
+    let (nlen, csize, usize_) = (
+        u16::try_from(name.len()).unwrap(),
+        u32::try_from(compressed.len()).unwrap(),
+        u32::try_from(payload.len()).unwrap(),
+    );
+    let mut out = Vec::new();
+    out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&8u16.to_le_bytes()); // method: DEFLATE
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&crc.to_le_bytes());
+    out.extend_from_slice(&csize.to_le_bytes());
+    out.extend_from_slice(&usize_.to_le_bytes());
+    out.extend_from_slice(&nlen.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(name);
+    out.extend_from_slice(&compressed);
+    let cd_offset = u32::try_from(out.len()).unwrap();
+    out.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&8u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&crc.to_le_bytes());
+    out.extend_from_slice(&csize.to_le_bytes());
+    out.extend_from_slice(&usize_.to_le_bytes());
+    out.extend_from_slice(&nlen.to_le_bytes());
+    out.extend_from_slice(&[0; 12]);
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(name);
+    let cd_size = u32::try_from(out.len()).unwrap() - cd_offset;
+    out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+    out.extend_from_slice(&[0; 4]);
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&cd_size.to_le_bytes());
+    out.extend_from_slice(&cd_offset.to_le_bytes());
+    out.extend_from_slice(&[0; 2]);
+    out
+}
+
+/// D71 end to end: drop a deflate zip on the web surface with ambient
+/// refinement ON, and the preflate drain follows the ingest without
+/// any CLI involvement — a `refine — preflate` job appears in the
+/// tray, concludes positive, and the container's rebuild recipes exist
+/// in the index.
+#[test]
+fn ambient_refine_follows_ingest() {
+    let f = fixture_with_refine(true);
+    let payload: Vec<u8> = (0..100_000u32)
+        .map(|i| (i % 251) as u8 ^ (i / 997) as u8)
+        .collect();
+    let zip = deflate_zip(b"game.bin", &payload);
+
+    let (status, v) = post_bytes(f.addr, "/v1/ingest/uploads?name=game.zip", &zip);
+    assert_eq!(status, 200, "{v}");
+    let token = v["upload"].as_str().expect("token").to_owned();
+    let (status, v) = post_json(
+        f.addr,
+        "/v1/ingest",
+        &format!("{{\"uploads\":[{}]}}", serde_json::json!(token)),
+    );
+    assert_eq!(status, 200, "{v}");
+    let ingest_job = v["job"].as_i64().expect("job id");
+    let done = wait_done(f.addr, ingest_job);
+    assert_eq!(done["state"], "done", "{done}");
+
+    // The refine job is spawned by the daemon, not the client: poll the
+    // tray until the preflate drain shows up and finishes.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let detail = loop {
+        let (status, v) = get(f.addr, "/v1/jobs");
+        assert_eq!(status, 200, "{v}");
+        let preflate = v["jobs"].as_array().expect("jobs").iter().find(|j| {
+            j["kind"] == "refine" && j["name"].as_str().is_some_and(|n| n.contains("preflate"))
+        });
+        if let Some(job) = preflate
+            && job["state"] != "running"
+        {
+            assert_eq!(job["state"], "done", "{job}");
+            assert_eq!(job["progress"], 100);
+            let (status, detail) = get(f.addr, &format!("/v1/jobs/{}", job["id"]));
+            assert_eq!(status, 200, "{detail}");
+            break detail;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no finished preflate refine job appeared: {v}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let notes = detail["report"]["notes"].to_string();
+    assert!(notes.contains("1 rebuildable"), "{detail}");
+
+    // The claims are real: the container gained its preflate recreate
+    // route (read through a second connection; WAL permits it).
+    let db = Db::open(&f.db_dir).expect("open alongside daemon");
+    let recreates: i64 = db
+        .cache()
+        .query_row(
+            "SELECT COUNT(*) FROM recipe WHERE op_name = 'xf-preflate/recreate'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("query");
+    assert_eq!(recreates, 1, "one recreate recipe per split member");
+}
+
+/// D74 over the wire: a second daemon on the same db-dir serves the
+/// first daemon's finished jobs — same ids, same report — where the
+/// old in-memory registry served amnesia.
+#[test]
+fn job_history_survives_daemon_restart() {
+    let f = fixture();
+    let rom = b"history-worthy rom content";
+    let (status, v) = post_bytes(f.addr, "/v1/ingest/uploads?name=keep%2Fme.gba", rom);
+    assert_eq!(status, 200, "{v}");
+    let token = v["upload"].as_str().expect("token").to_owned();
+    let (status, v) = post_json(
+        f.addr,
+        "/v1/ingest",
+        &format!("{{\"uploads\":[{}]}}", serde_json::json!(token)),
+    );
+    assert_eq!(status, 200, "{v}");
+    let job = v["job"].as_i64().expect("job");
+    let done = wait_done(f.addr, job);
+    assert_eq!(done["state"], "done", "{done}");
+
+    // "Restart": a second daemon over the same universe (the first
+    // keeps running — WAL arbitrates; one-daemon-per-db-dir is the
+    // production rule, not a test constraint).
+    let second = Server::bind(&Config {
+        store_root: f.store_root.clone(),
+        db_dir: f.db_dir.clone(),
+        listen: SocketAddr::from_str("127.0.0.1:0").expect("addr"),
+        nfs_listen: None,
+        detectors_dir: None,
+        refine: false,
+    })
+    .expect("bind second");
+    let addr2 = second.local_addr().expect("addr");
+    std::thread::spawn(move || second.serve());
+
+    let (status, v) = get(addr2, &format!("/v1/jobs/{job}"));
+    assert_eq!(status, 200, "history lost across restart: {v}");
+    assert_eq!(v["state"], "done", "{v}");
+    assert_eq!(v["files_total"], 1, "{v}");
+    assert_eq!(v["report"]["files_stored"], 1, "frozen report served: {v}");
+    let (_, v) = get(addr2, "/v1/jobs");
+    assert!(
+        v["jobs"].as_array().expect("jobs").iter().any(|j| j["id"] == job),
+        "tray list misses the historical job: {v}"
     );
 }

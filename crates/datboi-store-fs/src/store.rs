@@ -299,6 +299,25 @@ impl Store {
         }
     }
 
+    /// Filesystem capacity under the store root: `(total, available)`
+    /// bytes, `None` where statvfs has no answer (same posture as
+    /// [`Store::available_bytes`]). The D72 watermark reads this.
+    pub fn fs_usage(&self) -> Result<Option<(u64, u64)>, StoreError> {
+        #[cfg(unix)]
+        {
+            let st = rustix::fs::statvfs(&self.root)
+                .map_err(|e| StoreError::io(&self.root, io::Error::from(e)))?;
+            Ok(Some((
+                st.f_blocks.saturating_mul(st.f_frsize),
+                st.f_bavail.saturating_mul(st.f_frsize),
+            )))
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(None)
+        }
+    }
+
     /// Walk one namespace's shard tree — the recovery-scan primitive
     /// (D15). Yields `(hash, size)` per blob file; foreign files come back
     /// as [`StoreError::Foreign`] items so callers can count them without
@@ -663,6 +682,19 @@ impl Store {
         // Make the removal durable the same way publishes are.
         fsync_dir(path.parent().expect("blob paths have parents"))?;
         Ok(true)
+    }
+
+    /// Remove a blob COMPLETELY: bytes and obao sidecar (D73 orphan
+    /// deletion). Unlike [`Store::evict_literal`] — which keeps the
+    /// sidecar so recipe-served range reads stay verifiable (D49) —
+    /// an orphan by definition has no recipe to serve it, so the
+    /// sidecar is dead weight. Returns whether bytes existed.
+    pub fn remove_blob(&self, ns: Namespace, hash: &Blake3) -> Result<bool, StoreError> {
+        let obao = self.obao_path(ns, hash);
+        match fs::remove_file(&obao) {
+            Ok(()) | Err(_) => {} // sidecar may never have existed
+        }
+        self.evict_literal(ns, hash)
     }
 
     /// Remove crash-orphaned temp files older than `max_age`. Returns how

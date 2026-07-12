@@ -145,7 +145,52 @@ test('scrub and eviction cards reveal verified CLI hints', async () => {
   await fireEvent.click(screen.getByText('run via CLI'));
   expect(screen.getByText(/datboi scrub/)).toBeTruthy();
 
-  expect(screen.getByText('nothing is deleted without a plan you approve')).toBeTruthy();
-  await fireEvent.click(screen.getByText('plan (dry-run) via CLI'));
-  expect(screen.getByText('datboi evict --target-bytes <n> --dry-run')).toBeTruthy();
+  // D72: eviction is automatic and reversible; the card tunes, not plans.
+  expect(screen.getByText(/rebuildable literals evict automatically/)).toBeTruthy();
+  await fireEvent.click(screen.getByText('tune via CLI'));
+  expect(screen.getByText(/datboi gc config --high-water/)).toBeTruthy();
+});
+
+test('orphan review card: empty state, then keep + two-click apply (D73)', async () => {
+  installFetch({ storage: stats });
+  render(Storage);
+  await screen.findByText('BLOBS');
+  expect(await screen.findByText(/nothing unreferenced/)).toBeTruthy();
+});
+
+test('orphan review card lists candidates with provenance and arms the delete', async () => {
+  installFetch({
+    storage: stats,
+    orphans: {
+      grace_secs: 86_400,
+      reclaimable_bytes: 3 * MB,
+      orphans: [
+        {
+          hash: 'cd'.repeat(32),
+          size: 3 * MB,
+          marked_at: 1_780_000_000,
+          sources: ['roms/mystery.bin'],
+          kept: false,
+        },
+        {
+          hash: 'ef'.repeat(32),
+          size: 1 * MB,
+          marked_at: 1_780_000_000,
+          sources: [],
+          kept: true,
+        },
+      ],
+    },
+  });
+  render(Storage);
+  await screen.findByText(/Orphans · 2/);
+
+  // Provenance is the review context; the kept row shows its state.
+  expect(screen.getByText(/roms\/mystery\.bin/)).toBeTruthy();
+  expect(screen.getByText('kept ✓')).toBeTruthy();
+
+  // Two-click delete: first arms, second (mock) applies and refreshes.
+  const applyButton = screen.getByText('delete non-kept…');
+  await fireEvent.click(applyButton);
+  expect(screen.getByText('confirm: delete non-kept')).toBeTruthy();
 });

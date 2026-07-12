@@ -1618,3 +1618,44 @@ fn auth_cli_surface() {
         .code(2)
         .stderr(predicate::str::contains("no such user"));
 }
+
+/// D74 CLI wiring: mutating commands stamp terminal ledger rows (the
+/// ledger_stamp exhaustive match in main.rs); reads don't. Kind and
+/// state codes are the datboi-index constants.
+#[test]
+fn cli_commands_stamp_the_job_ledger() {
+    use datboi_index::jobs::{JOB_DONE, KIND_INGEST, KIND_REFINE, KIND_SCRUB};
+
+    let world = Universe::new();
+    let rom = world.src().join("thing.gba");
+    std::fs::create_dir_all(world.src()).expect("src dir");
+    std::fs::write(&rom, b"ledger-worthy bytes").expect("rom");
+
+    world.cmd().args(["ingest"]).arg(&rom).assert().success();
+    world
+        .cmd()
+        .args(["sweep", "--analyzer", "noop"])
+        .assert()
+        .success();
+    world.cmd().args(["scrub"]).assert().success();
+    // A read must NOT stamp.
+    world.cmd().args(["status"]).assert().success();
+
+    let db = datboi_index::Db::open(&world.db()).expect("db");
+    let rows = db.recent_jobs(100).expect("rows");
+    let kinds: Vec<i64> = rows.iter().map(|r| r.kind).collect();
+    assert_eq!(
+        kinds,
+        [KIND_INGEST, KIND_REFINE, KIND_SCRUB],
+        "exactly the three mutating commands stamped: {rows:?}"
+    );
+    assert!(rows.iter().all(|r| r.state == JOB_DONE), "{rows:?}");
+    assert!(
+        rows[0].name.starts_with("cli: ingest"),
+        "names carry the cli: prefix: {rows:?}"
+    );
+    assert!(
+        rows.iter().all(|r| r.finished_at.is_some()),
+        "terminal-only rows, never running: {rows:?}"
+    );
+}

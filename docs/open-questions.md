@@ -1,6 +1,6 @@
 # Open questions & active research
 
-Design passes R1–R8 complete; decisions ratified through D52. Docs
+Design passes R1–R8 complete; decisions ratified through D73. Docs
 00–90 are the record.
 
 ## Flagged for ruling (raised 2026-07-07, M2/M3 build session)
@@ -42,7 +42,11 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
   containers keep paying the D24 stays-literal tax. Paths if it ever
   matters: upstream issue / patch the fixed 4096-chain ceiling in
   complevel_estimator, or a fallback corrections codec. Revisit when
-  wild-corpus hit rates are measurable (M3 sweep telemetry).
+  wild-corpus hit rates are measurable — and note that D71's ambient
+  refinement now accumulates exactly that telemetry by itself (D48
+  negatives with per-member failure details, no manual sweeps
+  needed): after the first real corpus soaks, the hit rate is a
+  provenance query away.
 - **xf- policy creep / unsandboxed discovery** (watch item 2026-07-07;
   censused + largely resolved 2026-07-10 as **D58**): the census found
   unrar_sys (vendored C++) was the only memory-unsafe wild-byte
@@ -58,7 +62,11 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
   of concat-of-derived (e.g. concat over decompressed members) spills
   each derived child even though pure sequential streaming would do.
   Chunk recipes are unaffected (children are literals). Optimization
-  noted, not designed.
+  noted, not designed. Update 2026-07-11: D72's automatic watermark
+  eviction now produces exactly this serving shape ROUTINELY (evicted
+  containers serve through assemble-over-recreate), so the first real
+  NFS/serving workload after eviction kicks in will tell us whether
+  this gets promoted from noted to needed.
 
 ## Open (minor / deferred to build-time)
 
@@ -71,9 +79,14 @@ Design passes R1–R8 complete; decisions ratified through D52. Docs
 
 - Shard fanout + inline-outboard threshold: frozen by the M1 NFS
   benchmark (spec in 90-roadmap.md), not by discussion.
-- State snapshot cadence + exact encoding: settle when implementing the
-  snapshot encoder (state.db round-trip requirement is already fixed by
-  D37).
+- State snapshot CADENCE: the encoding half settled long ago (the
+  statesnap codec shipped with golden-hash tests; `datboi snapshot`
+  is the manual trigger). Still open: WHEN snapshots happen — today
+  it is operator-remembered, and the D73 session raised the stakes:
+  keep-marks and GC watermark config are state.db rows now, so
+  "crashed before I ever ran snapshot" loses operator intent from
+  the recovery root. An auto-cadence (post-mutation debounce, or a
+  maintenance-cycle rider) is probably a small D-ruling.
 - Browser-side wasm lane in the web UI: deferred until a concrete need
   (M5 at the earliest, post-D50).
 - Auto-fill-gaps-from-peers policy (beyond the manual fetch action):
@@ -122,16 +135,89 @@ strict mode + retool clonelist consumption are M4 work items).
 - **wuchale is pre-1.0** (D67 accepted this eyes-open). Catalogs are
   standard gettext PO, so the worst case is swapping the compiler,
   not the translations. Revisit when it hits 1.0 or stalls.
-- **Jobs tray backend**: the minimal in-daemon jobs surface shipped
-  2026-07-11 with web ingest (`/v1/jobs` + `/v1/jobs/{id}`, in-memory
-  registry in datboi-server jobs.rs: running jobs + a bounded finished
-  tail, forgotten on restart). Still open: a DURABLE job/report table
-  (the design's "reachable from Jobs" eval/ingest history — finished
-  jobs currently vanish with the process), and intra-file progress —
-  the Ingester has no callbacks, so job progress moves at file
-  boundaries only; if per-byte hooks ever land in datboi-ingest, SSE
-  over the existing bounded-mpsc streaming pattern is the natural
-  upgrade from the tray's 2 s poll.
+- **Jobs tray backend**: the in-daemon jobs surface shipped 2026-07-11
+  with web ingest; refine + gc maintenance joined the tray the same
+  day (D71–D73). The durable half RULED AND SHIPPED same day as
+  **D74**: state.db `job` ledger (session precedent —
+  snapshot-excluded), terminal-snapshot persistence, db-assigned ids
+  stable across restarts, interrupted-on-restart crash evidence.
+  Still open, smaller now: intra-file/intra-item progress — the
+  Ingester has no callbacks (the D71 Pulse trait carries bytes for
+  analyzers and is the natural hook when the tray wants it), and SSE
+  over the bounded-mpsc pattern remains the upgrade from the 2 s poll
+  if per-byte progress ever lands; scrub-run and eval-report rows are
+  future consumers of the D74 table (additive kind codes), each
+  needing its own wiring when its surface wants history.
+- **Dat-aware residency policy** (raised 2026-07-11): D47 splits
+  claims (dat-blind, hard) from scheduling (dat-aware, allowed); D71
+  exercises the scheduling half. The third knob — WHICH literal holds
+  the bytes — is local policy and may also be dat-aware without
+  fraying convergence: e.g. "keep dat-named blobs resident",
+  "materialize members of view-pinned sets whose containers refused a
+  preflate split" (the one case where container-literal carving
+  leaves a dat-matched member absent + opaque-routed). Update
+  2026-07-11: the planner DID grow its first preference — D72 orders
+  candidates seek-class-first (still dat-blind; it fixed the
+  mutually-inverse-pair stranding the e2e caught). The dat-AWARE half
+  (keep dat-named blobs resident, materialize view-pinned absent
+  members) remains open and still wants its ruling.
+- **GC-family concurrency preconditions** (raised 2026-07-11, D71
+  session; RULED same day — D72 takes the singleton guard, D73 takes
+  the grace-window/mark-clearing shape; kept for the reasoning): two
+  degenerate cases that MUST hold in those implementations.
+  1. *Orphan GC vs. in-flight analysis.* Today's evict cannot touch
+     analysis intermediates (plaintext/corrections/skeleton enter the
+     recipe graph as INPUTS; candidacy requires being a
+     replay-licensed OUTPUT — the sound-by-construction claim in
+     D71). But a sweep-unreferenced-blobs GC sees them as textbook
+     garbage: the preflate analyzer stores every member's split
+     products FIRST and mints recipes AFTER, so they sit
+     reference-less for the whole multi-member split (minutes on a
+     big container), plus an instant of bytes-in-CAS-with-no-index-row
+     inside every `put` → `upsert_blob` pair. Killing them there
+     leaves blob rows saying Resident for vanished bytes —
+     index/store divergence, worse than re-paying the analysis. And
+     reference counts CANNOT distinguish these from real garbage: a
+     crashed split leaves identical orphans that at-least-once
+     re-attaches on the next sweep — they are pending, not abandoned.
+     Required mitigation: a creation-time grace window ("never sweep
+     anything younger than N" — the cleanup_temp precedent), NOT
+     GC-reads-leases (couples the storage plane to the scheduler
+     plane; D71 deliberately kept leases dedup-only). Optional
+     window-shrinker: mint each member's recreate recipe right after
+     its split instead of batching, though the container assemble
+     inherently waits for all members, so grace is the actual fix.
+  2. *Evict racing evict.* Two eviction runs (CLI + CLI today;
+     CLI + daemon tomorrow) can each compute the D21 grounding
+     fixpoint, each individually approve dropping one half of a
+     mutually-inverse recipe pair, and both commit — jointly
+     circular, both literals gone, exactly what D21 forbids. The
+     grounding check and the drop are not one cross-process atomic
+     unit, and SQLite serializes statements, not reasoning. Eviction
+     therefore needs a SINGLETON guard (one coarse lease or an
+     exclusive-writer rule) — and unlike the sweep leases, this one
+     IS a correctness gate, which is why it must not be conflated
+     with them.
+- **Acquisition provenance vs the rescan cache** (raised 2026-07-11,
+  orphan-review session): `source_file` is doing two jobs — the
+  rescan cache (`lookup_unchanged_source`, its real job) and the
+  byte-provenance display (orphan review, blob inspector) — and they
+  want different lifecycles: a cache row for a renamed directory is
+  garbage; "these bytes arrived as roms/pack.zip" should outlive any
+  path. Today the tension is harmless (both origins are
+  filesystem-shaped; web rows carry the client name since the D73
+  session). It becomes REAL the day a non-filesystem byte origin
+  ships — p2p fetch is the obvious one; a peer arrival has no path
+  and cannot live in a path-keyed table at all. Trigger condition:
+  when that origin lands, split typed acquisition events
+  (blob, origin, detail, actor, at) out of source_file and design the
+  origin vocabulary against the ACTUAL p2p shapes (channel? ticket?
+  policy?), not a speculated enum. Explicitly deferred WITH it:
+  snapshot-batching acquisition history (D22/D48 pattern) — by the
+  measured-need standard that machinery wants a real cost-of-loss,
+  and losing arrival names costs a review-card label, not the days of
+  CPU that justified batching analysis provenance. Decide
+  batch-vs-accept-loss then, with evidence.
 - **Authenticated WebDAV** (basic auth against D68 bearer tokens)
   so friends can mount views; NFS auth is likely never (protocol);
   both stay loopback-only meanwhile.
@@ -159,8 +245,12 @@ strict mode + retool clonelist consumption are M4 work items).
 - **Scrub runs and verify methods aren't recorded**: the index keeps
   per-blob `verified_at` only — no method, no scrub-run ledger — so
   `/v1/storage` cannot report last-scrub and the entry drawer's
-  verify line shows a date without a "how". A run ledger belongs to
-  the same future job table as the Jobs tray backend above.
+  verify line shows a date without a "how". Half closed 2026-07-11
+  (D74 amendment): `datboi scrub` now stamps a terminal ledger row
+  (kind scrub) via the CLI's exhaustive ledger_stamp match, and the
+  tray shows it live through the poll-time merge. Remaining: teach
+  /v1/storage (and the Scrub action card) to read last-scrub from the
+  ledger, and record the verify METHOD per blob.
 - **System ids are cache surrogates**: `/v1/systems` keys on
   `dat_source.source_id`, which `datboi recover` re-mints from
   scratch. UI deep-links survive a browsing session, not a cache
@@ -171,10 +261,13 @@ strict mode + retool clonelist consumption are M4 work items).
   CLI-only), so the editor (spec §3.4) shrinks to a read-only
   definition fold on the Views cards with redefine/eval CLI hints;
   the eval report and snapshot diff (§3.5) have no API at all — no
-  eval history or per-snapshot diff is stored — and want the same
-  durable job/report table as the Jobs tray backend above. The
-  eviction planner (§3.7/§3.8) is deferred on the same grounds (no
-  plan API; the dry-run CLI is the only entry).
+  eval history or per-snapshot diff is stored — the D74 ledger is the
+  place for eval rows when that screen gets built. The
+  eviction planner (§3.7/§3.8) shrank rather than shipped: D72 made
+  watermark eviction automatic (the Storage card now tunes
+  watermarks instead of promising a plan-approval flow), so what
+  remains open is only a plan PREVIEW surface (dry-run over the API;
+  the CLI's --dry-run is the only entry today).
 - **Web rulings made during implementation** (recorded here, not
   D-numbered): nav = `Library · Views · Ingest · Storage · Admin`
   (audit is the drill-down under Library; the hi-fi "Dats" tab
@@ -257,6 +350,31 @@ strict mode + retool clonelist consumption are M4 work items).
   direct-API contract path.
 
 ## Next sessions (pick up here)
+
+**Position as of 2026-07-11 (GC session, after the M5 web sessions)**:
+**D71–D73 SHIPPED IN FULL.** Analysis, licensing, and eviction are
+now ambient in serve mode: D71 (one niced worker thread, private Db
+connection, fresh > dat-matched > ambient priority tiers,
+progress-gated heartbeat leases claimed at execution granularity —
+timer-heartbeat and upfront-batch-claim explicitly rejected), D72
+(watermark eviction armed by default at 90/85%, eager storage-neutral
+licensing of the verified-only pool, the gc_guard singleton — the ONE
+correctness lease — shared by daemon/CLI/apply; candidate ordering is
+seek-class-first after the e2e caught size-first stranding the
+container⇄plaintext inverse pair backwards), D73 (orphan sweep:
+reachability-only roots — custody is deliberately NOT a root, ruled —
+mark→grace→review→apply with delete-time re-verification; keep-marks
+are authoritative state KV; deletion is the one human-gated action,
+via Storage-screen card / `datboi gc` / the /v1/gc API). Cache schema
+v4 (leases, gc_guard, orphan_candidate). Web ingest provenance fixed
+(source_file keys on the client name, not the staging path). E2E:
+drop-a-zip → refine → license → container auto-evicts in one wake;
+full orphan keep/apply lifecycle over the live API. NEXT candidates:
+the durable job table (three entries below depend on it and the tray
+is now busy enough to make restart amnesia visible), fuzz targets for
+the wild-byte parsers (D58 hygiene tail), snapshot auto-cadence (see
+the updated entry — keep-marks raised its stakes), quarantine-review
+design (the orphan review card is the pattern to reuse).
 
 **Position as of 2026-07-10 (third session of the day)**: **M4 IS
 COMPLETE.** After the FAT32 session (below), the M4 tail shipped in
@@ -447,4 +565,4 @@ Priority order:
 
 ## Resolved
 
-See [decisions.md](decisions.md) (D1–D53).
+See [decisions.md](decisions.md) (D1–D73).

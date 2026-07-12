@@ -1154,3 +1154,212 @@ credential). *Rejected:* synchronizer/double-submit tokens (state
 + plumbing a header-check makes redundant in 2026 browsers);
 CORS-allowlist theater (we serve one origin; nothing legitimate is
 cross-origin).
+
+## D71 — Ambient refinement in serve mode: fresh tier, sweep leases, one niced worker (2026-07-11)
+
+Analysis must not be a CLI errand while the daemon runs: the D45
+fixpoint now advances by itself. `datboi serve` spawns ONE
+daemon-lifetime worker thread (niced to 19 — optimization never
+competes with serving; on Linux niceness is per-task and bfq derives
+io priority from it, so an unsafe `ioprio_set` waits for a measured
+need) that drains the sweep queues of the auto families in dependency
+order (preflate → ecm → chunk, so the D59 "route-less?" question is
+asked AFTER routes get minted). Two triggers: ingest completion feeds
+the just-stored blob ids into a new fresh priority tier
+(fresh > dat-matched > ambient — D47 intact, tiers order work,
+membership stays dat-blind) and wakes the worker; a slow ambient
+clock (30 min) re-runs the dat-blind candidate scan for everything
+else. `--no-refine` / `DATBOI_NO_REFINE` opts out wholesale; D60
+per-family gates keep working (checked per item, so a disable lands
+mid-drain).
+
+The worker owns a PRIVATE Db connection pair: a minutes-long preflate
+split must never hold the request path's `Mutex<Db>`. SQLite WAL +
+`busy_timeout` (now set on every connection) arbitrate; every index
+write in the sweep path is a short transaction between long
+byte-crunching stretches. Deconfliction across workers (daemon +
+concurrent CLI sweeps) is a `leased_until` column on sweep_queue:
+claim-then-analyze, at EXECUTION granularity — the driver claims one
+item at a time, so a lease's clock starts when its work starts, never
+when a batch was planned. The TTL is short (15 min) because renewal
+is a PROGRESS-GATED heartbeat: analyzers pulse as bytes move through
+their streaming loops (a `TickReader` wrapping the long read), and
+the pulse re-stamps the lease every ~5 min over a second connection
+(the main one is mutably borrowed mid-analysis). Liveness is
+progress, not a timer — a wedged worker (dead NFS mount) stops
+pulsing and its item frees in ≤ TTL, while a slow-but-alive split of
+a disc-sized member renews indefinitely. Leases are DEDUP, never a
+correctness gate — analyzers are pure functions and completion is
+at-least-once, so a lapsed lease costs a duplicated pure function at
+worst (renewal failures are swallowed for the same reason); the
+daemon clears all leases at startup (one daemon per db-dir), and a
+failed item KEEPS its lease as retry backoff (no hot-spinning on a
+poisoned blob). *Rejected here:* a timer heartbeat thread (renews
+while wedged — exactly the case the lease should lapse in), and
+upfront batch claiming (a late batch item's lease aged before its
+work began). Refine drains
+report as first-class jobs in the tray (`JobKind::Refine`, item
+counts, per-item current hash, closing outcome note).
+
+Eviction needs no coordination with this worker by construction, and
+that's the load-bearing observation: analysis is additive (mints
+recipes, never destroys bytes), evict drops only replay-licensed
+literals (D25), and an analyzer losing a race to eviction sees "blob
+not resident" — a retryable error the queue absorbs. *Rejected:*
+inline analysis at ingest (re-litigating D45; preflate at ingest
+craters throughput exactly when the user is watching), a worker pool
+(one writer beside the request path is honest for SQLite; parallel
+splits are a measured-need change), coarse GC/analyzer locking
+(nothing to protect — see above), durable refine jobs (rides the
+existing open question; provenance rows D48 already persist the part
+that matters).
+
+## D72 — Background eviction: armed watermark, eager licensing, singleton guard (2026-07-11)
+
+Eviction joins the daemon's background maintenance (the D71 worker
+thread — ONE background writer beside the request path, so heavy
+maintenance IO never runs concurrently with analyzer IO). Three
+rulings:
+
+**Armed by default.** High-water = 90% of the store filesystem
+(statvfs), evict down to 85%; molten config
+(`evict:high-water`/`evict:low-water`, absolute-bytes variants
+accepted, `off` disarms). Eviction is reversible by construction
+(D25: every drop has a locally-replayed route), so autonomy is safe;
+the reconstruction-latency tradeoff is D27's, already ruled.
+
+**Licensing is eager and ambient.** The worker replays Verified
+routes in the background so literals are evictable BEFORE pressure,
+and evictable-bytes reporting is always live. Scope is the
+load-bearing constraint: only recipes covering CURRENTLY RESIDENT
+blobs (the evict.rs verified-only pool) — replaying those is
+storage-neutral (outputs already resident; content-addressed put
+no-ops). Blanket-replaying every Verified recipe would materialize
+every member CLAIM into the store — the exact bytes D35 ruled we
+never store. *Rejected:* lazy license-at-pressure (a burst of heavy
+replays exactly when the disk is full; speculative reclaim
+reporting).
+
+**The singleton guard — the ONE correctness lease.** Two concurrent
+eviction runs can each compute the D21 grounding fixpoint, each
+approve dropping one half of a mutually-inverse recipe pair, and
+jointly strand both (the open-questions "evict racing evict" entry).
+The drop critical section (plan → is_evictable → unlink) therefore
+runs under a cross-process singleton lease (single-row cache.db
+claim, TTL + renewal between drops, atomic UPDATE-claim under WAL);
+`datboi evict` takes the same guard and reports "maintenance busy"
+rather than waiting. Licensing replays run OUTSIDE the guard — they
+are additive and need no exclusivity. Unlike D71's sweep leases
+(dedup), this lease IS load-bearing for correctness and the two must
+never be conflated or merged.
+
+Candidate ORDERING is policy: best-licensed-route seek class first
+(affine before opaque — D27's reconstruction-cost model), then size.
+Found the hard way (the D72 e2e test): size-first eviction of a
+mutually-inverse pair (container ⇄ preflate plaintext) drops the
+plaintext and strands the container as a permanent literal — the
+exact inverse of D53's plaintext-stays posture. Seek-class-first
+evicts the affine-routed container, grounding then refuses the
+opaque-routed plaintext, and the residual is the D53 promise with no
+special-casing.
+
+Crash safety is inherited, not added: drop order is unlink → flip
+residency (recovery's store scan reconciles bytes-as-truth), replay
+licensing commits per recipe, and a lapsed guard mid-run leaves a
+half-finished eviction round that the next holder simply re-plans.
+
+## D73 — Orphan sweep: reachability roots, mark→review→apply, delete stays human (2026-07-11)
+
+The counterpart to D72 for bytes with NO rebuild route — the only
+irreversible operation in the system, so it gets the only human gate.
+
+**Reachability-only roots** (ruled over custody-as-root): a data
+blob is a root-reachable non-orphan iff any of — referenced by any
+recipe row, input or output, ANY verify state including Failed
+(poisoned provenance still names real bytes); a dat revision or
+detector blob; catalog-named (identity_blob ∩ rom_claim); reachable
+from any tag (view/* snapshot row closure, image/* via their
+recipes); pinned (blob.pinned_reason). Custody (source_file) is
+deliberately NOT a root — an ingested blob nothing names is exactly
+the junk the operator should see surfaced, and the review gate is
+the protection. Meta-namespace lifecycle (old snapshots, alias
+batches) is OUT of scope here — separate ruling when it matters.
+
+**Mark → age → review → apply.** The ambient sweep MARKS candidates
+(cache-grade `orphan_candidate` rows, derivable by re-sweep):
+unreferenced AND not awaiting any enabled analyzer (a queued blob's
+references may not exist YET — deleting it forecloses discovery) AND
+re-verified each sweep (a mark clears the moment anything roots the
+blob). A candidate becomes REVIEWABLE after a grace window from
+first mark (default 24 h, molten) — no created_at column needed;
+first-observed-unreferenced IS the clock, and the analyzer-queue
+filter plus mark-clearing make the window self-healing for fresh
+ingests. DELETION never happens ambiently: an operator applies the
+reviewed set (Storage UI / CLI / API), each deletion re-verifies
+unreferenced + grace + keep-mark AT DELETE TIME under the D72
+singleton guard, then unlinks bytes and removes the cache rows
+(children first; a crash between unlink and row-delete reconciles
+bytes-as-truth like eviction).
+
+**Keep-marks are authoritative.** "This is not junk" must survive a
+cache rebuild: keeps live in state.db config KV (`gc:keep:<hash>`,
+by hash not blob_id), riding the existing snapshot codec; a
+dedicated table when keeps outgrow KV. *Rejected:* fully-autonomous
+deletion (a root-set bug eats unrecoverable bytes before anyone
+looks — revisit only after the root set has soaked), custody-as-root
+(shrinks the reclaim surface the operator explicitly wanted),
+cache-grade keeps (operator intent lost on rebuild = data loss on
+the next apply).
+
+## D74 — Durable job ledger: state.db by the session precedent, terminal snapshots only (2026-07-11)
+
+The jobs tray's restart amnesia (recorded open question since the M5
+web session, made user-visible by D71–D73's background jobs) closes
+with a `job` table. Three rulings folded in:
+
+**Placement.** state.db, by the `session` table's precedent:
+authoritative but truncatable, EXCLUDED from CAS snapshots. Not
+cache.db — job history is not derivable, and cache placement would
+erase it on exactly the rebuilds it should survive; not
+snapshot-carried — history is worth surviving a restart, not worth
+carrying in the recovery root (the acquisition-provenance
+measured-need reasoning applies verbatim).
+
+**Terminal snapshots, not live rows.** The in-memory registry stays
+the live surface; the ledger gets three writes per job — insert at
+create (state running), finalize once at finish/fail (terminal state
++ the wire JobDetail JSON frozen as `detail`), prune to a bounded
+tail (500). No per-file write amplification, and the frozen JSON
+means a future JobDetail shape change degrades old rows to
+column-stub rendering, never errors. Ids are db-assigned and thereby
+unique across restarts — the in-memory counter would have collided
+with history.
+
+**Crash evidence is the point, not a bonus.** Registry construction
+sweeps rows still `running` into an `interrupted` state (one daemon
+per db-dir: any running row belonged to a dead process), surfaced in
+the tray as failed-with-"interrupted" — a crashed 40-minute eviction
+leaves a tombstone. Ledger failures never fail the job they describe
+(best-effort persistence, loud on stderr). The scrub-run ledger and
+eval report history remain future consumers of the same table
+(additive kind codes). *Rejected:* per-progress-update persistence
+(write amplification for a poll surface), cache.db placement
+(derivability lie), a separate history service (the registry already
+owns the vocabulary).
+
+Amended same day — CLI wiring, structurally-can't-forget: every
+mutating CLI command records a TERMINAL-ONLY ledger row (never
+`running` — a live CLI legitimately violates the interruption sweep's
+one-daemon-per-db-dir assumption, and a running row would be falsely
+tombstoned; CLI crash evidence is worthless anyway, the human watched
+it die). The enforcement device is `ledger_stamp` in the CLI
+dispatcher: an EXHAUSTIVE match on `Command` with no wildcard arm, so
+adding a command refuses to compile until its author decides
+Some(kind)/None right there — the compiler asks the question. Kind
+codes live once in datboi-index (`KIND_*`); scrub gained its own kind
+(the scrub-run ledger's data half). The daemon's registry merges
+recent ledger rows into `/v1/jobs` at poll time, so CLI history
+reaches the tray live, not after a restart. View eval/image and
+recover/snapshot are deliberately UNstamped: real byte-level work
+that deserves its own kinds when its history surfaces exist, not a
+shoehorn into Gc.

@@ -22,6 +22,7 @@
 //! affect results — determinism needs no cooperative scheduler.
 
 pub mod evict;
+pub mod policy;
 pub mod random;
 
 pub use datboi_runtime::pipe;

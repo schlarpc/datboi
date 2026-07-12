@@ -1,11 +1,15 @@
-//! The in-memory job registry + staged-upload table (web ingest).
+//! The job registry: in-memory LIVE surface + the D74 durable ledger.
 //!
-//! This is the minimal in-daemon jobs surface the M5 scope ruling
-//! deferred to (docs/open-questions.md § "Jobs tray backend"): enough
-//! state for `/v1/jobs` to render truthfully while an ingest runs.
-//! Deliberately NOT durable — a daemon restart forgets tokens and job
-//! history (staged bytes are swept with the store's tmp/); a real job
-//! table with durable reports remains the recorded open question.
+//! Running jobs live here (progress moves without touching disk);
+//! the ledger (datboi-index jobs.rs, state.db) gets exactly three
+//! writes per job — insert at create, finalize at finish/fail, prune —
+//! and hydrates the finished tail back into this registry at startup,
+//! so history survives restarts and ids stay unique across them (the
+//! db assigns them). Rows still `running` at startup are marked
+//! interrupted: a crashed 40-minute job leaves a tombstone, never a
+//! blank. Upload tokens remain memory-only on purpose (staged bytes
+//! are swept with the store's tmp/; a token that outlives its bytes
+//! would be a lie).
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -15,11 +19,38 @@ use datboi_api::{
     IngestErrorItem, IngestMemberSkipItem, IngestReportBody, Job, JobDetail, JobKind, JobRunState,
     MatchedEntry,
 };
+use datboi_index::Db;
+use datboi_index::jobs::{
+    JOB_DONE, JOB_FAILED, JOB_INTERRUPTED, JobRow, KIND_GC, KIND_INGEST, KIND_REFINE, KIND_SCRUB,
+    LEDGER_KEEP,
+};
 use datboi_ingest::IngestReport;
 
-/// Finished jobs kept for the tray/history after they complete;
+/// Finished jobs kept IN MEMORY for the tray after they complete;
 /// running jobs are never pruned.
 const KEEP_FINISHED: usize = 20;
+
+/// Ledger kind codes ↔ the wire enum. The codes are defined ONCE in
+/// datboi-index (the CLI's ledger_stamp writes them too); this pair
+/// only translates, and the exhaustive match means a new wire kind
+/// fails to compile until it gets a code.
+fn kind_code(kind: JobKind) -> i64 {
+    match kind {
+        JobKind::Ingest => KIND_INGEST,
+        JobKind::Refine => KIND_REFINE,
+        JobKind::Gc => KIND_GC,
+        JobKind::Scrub => KIND_SCRUB,
+    }
+}
+
+fn kind_from_code(code: i64) -> JobKind {
+    match code {
+        KIND_REFINE => JobKind::Refine,
+        KIND_GC => JobKind::Gc,
+        KIND_SCRUB => JobKind::Scrub,
+        _ => JobKind::Ingest,
+    }
+}
 
 /// One staged upload: bytes already on disk in the store's tmp/,
 /// waiting for a `POST /v1/ingest` to spend the token.
@@ -35,6 +66,12 @@ pub(crate) struct StagedUpload {
 
 struct JobState {
     id: i64,
+    kind: JobKind,
+    /// Display name; ingest jobs bake the file count in at creation,
+    /// refine jobs carry their analyzer family.
+    name: String,
+    /// For refine jobs these count sweep ITEMS, not files — the honest
+    /// unit of that work (JobKind doc in datboi-api).
     files_total: u64,
     files_done: u64,
     bytes_total: u64,
@@ -54,7 +91,8 @@ struct JobState {
 impl JobState {
     /// Byte-weighted at file granularity (the pipeline reports no
     /// intra-file progress), capped at 99 while running so only a
-    /// finished job reads 100.
+    /// finished job reads 100. Refine jobs mirror item counts into the
+    /// byte fields, so the same arithmetic is item-weighted there.
     fn progress(&self) -> u8 {
         match self.state {
             JobRunState::Running => {
@@ -68,13 +106,9 @@ impl JobState {
     fn row(&self) -> Job {
         Job {
             id: self.id,
-            name: format!(
-                "ingest — {} file{}",
-                self.files_total,
-                if self.files_total == 1 { "" } else { "s" }
-            ),
+            name: self.name.clone(),
             progress: self.progress(),
-            kind: JobKind::Ingest,
+            kind: self.kind,
             state: self.state,
         }
     }
@@ -83,6 +117,9 @@ impl JobState {
 pub(crate) struct Registry {
     uploads: Mutex<HashMap<String, StagedUpload>>,
     jobs: Mutex<JobsInner>,
+    /// The D74 ledger's own connection pair (`None` in unit tests):
+    /// writes are rare and short, so one mutex is honest.
+    ledger: Option<Mutex<Db>>,
 }
 
 struct JobsInner {
@@ -96,14 +133,37 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Registry {
-    pub(crate) fn new() -> Self {
+    /// Memory-only (unit tests): ids from a counter, nothing persists.
+    #[cfg(test)]
+    pub(crate) fn ephemeral() -> Self {
         Self {
             uploads: Mutex::new(HashMap::new()),
             jobs: Mutex::new(JobsInner {
                 next_id: 1,
                 jobs: VecDeque::new(),
             }),
+            ledger: None,
         }
+    }
+
+    /// The production registry (D74): sweep crash evidence, hydrate
+    /// the finished tail, and persist every job from here on.
+    pub(crate) fn durable(db: Db, now: i64) -> Result<Self, datboi_index::IndexError> {
+        let interrupted = db.interrupt_running_jobs(now)?;
+        if interrupted > 0 {
+            eprintln!(
+                "jobs: {interrupted} job(s) were running when the last daemon died — marked interrupted"
+            );
+        }
+        let mut jobs = VecDeque::new();
+        for row in db.recent_jobs(KEEP_FINISHED)? {
+            jobs.push_back(hydrate(row));
+        }
+        Ok(Self {
+            uploads: Mutex::new(HashMap::new()),
+            jobs: Mutex::new(JobsInner { next_id: 1, jobs }),
+            ledger: Some(Mutex::new(db)),
+        })
     }
 
     /// Record a staged upload under a fresh token.
@@ -124,16 +184,26 @@ impl Registry {
             .collect())
     }
 
-    /// Create a running job over the staged set; answers the id.
-    pub(crate) fn create(&self, files: &[StagedUpload], now: i64) -> i64 {
+    fn push_job(&self, kind: JobKind, name: String, files_total: u64, bytes_total: u64, now: i64) -> i64 {
+        // The ledger assigns ids (unique across restarts); the counter
+        // is the ephemeral fallback — and the escape hatch if the
+        // ledger write fails (a job must run even when history can't).
+        let ledger_id = self.ledger.as_ref().and_then(|db| {
+            lock(db)
+                .insert_job(kind_code(kind), &name, now)
+                .map_err(|e| eprintln!("jobs: ledger insert failed ({e}); job runs unrecorded"))
+                .ok()
+        });
         let mut inner = lock(&self.jobs);
-        let id = inner.next_id;
-        inner.next_id += 1;
+        let id = ledger_id.unwrap_or(inner.next_id);
+        inner.next_id = inner.next_id.max(id) + 1;
         inner.jobs.push_back(JobState {
             id,
-            files_total: files.len() as u64,
+            kind,
+            name,
+            files_total,
             files_done: 0,
-            bytes_total: files.iter().map(|f| f.bytes).sum(),
+            bytes_total,
             bytes_done: 0,
             current: None,
             state: JobRunState::Running,
@@ -145,6 +215,71 @@ impl Registry {
             finished_at: None,
         });
         id
+    }
+
+    /// Create a running ingest job over the staged set; answers the id.
+    pub(crate) fn create(&self, files: &[StagedUpload], now: i64) -> i64 {
+        let name = format!(
+            "ingest — {} file{}",
+            files.len(),
+            if files.len() == 1 { "" } else { "s" }
+        );
+        self.push_job(
+            JobKind::Ingest,
+            name,
+            files.len() as u64,
+            files.iter().map(|f| f.bytes).sum(),
+            now,
+        )
+    }
+
+    /// Create a running refine job for one analyzer family's drain
+    /// (D71). Totals start at the current queue depth and move via
+    /// [`Registry::refine_progress`] as the drain claims and finishes
+    /// items (fresh arrivals can grow the total mid-drain).
+    pub(crate) fn create_refine(&self, family: &str, queued: u64, now: i64) -> i64 {
+        self.push_job(
+            JobKind::Refine,
+            format!("refine — {family}"),
+            queued,
+            queued,
+            now,
+        )
+    }
+
+    /// A GC-family maintenance job (D72/D73): licensing drain,
+    /// watermark eviction, orphan apply. Same item-counting shape as
+    /// refine.
+    pub(crate) fn create_gc(&self, name: &str, items: u64, now: i64) -> i64 {
+        self.push_job(JobKind::Gc, name.to_owned(), items, items, now)
+    }
+
+    /// Refine drain progress: `done` items finished, `total` = done +
+    /// still queued. Item counts mirror into the byte fields so the
+    /// shared progress arithmetic stays item-weighted.
+    pub(crate) fn refine_progress(&self, id: i64, done: u64, total: u64) {
+        self.with_job(id, |j| {
+            j.files_done = done;
+            j.files_total = total;
+            j.bytes_done = done;
+            j.bytes_total = total;
+        });
+    }
+
+    /// One refine item failed (analyzer error, not a negative
+    /// conclusion): rides the report's error lane under the blob hash.
+    pub(crate) fn refine_error(&self, id: i64, blob: &str, error: &str) {
+        self.with_job(id, |j| {
+            j.report.errors.push(IngestErrorItem {
+                path: blob.to_owned(),
+                error: error.to_owned(),
+            });
+        });
+    }
+
+    /// Closing summary line for a refine drain (outcome counts).
+    pub(crate) fn push_note(&self, id: i64, note: String) {
+        self.with_job(id, |j| j.report.notes.push(note));
     }
 
     /// Prune finished history beyond the keep window (running jobs are
@@ -199,56 +334,151 @@ impl Registry {
     }
 
     pub(crate) fn finish(&self, id: i64, now: i64) {
-        let mut inner = lock(&self.jobs);
-        if let Some(j) = inner.jobs.iter_mut().find(|j| j.id == id) {
-            j.state = JobRunState::Done;
-            j.current = None;
-            j.finished_at = Some(now);
+        {
+            let mut inner = lock(&self.jobs);
+            if let Some(j) = inner.jobs.iter_mut().find(|j| j.id == id) {
+                j.state = JobRunState::Done;
+                j.current = None;
+                j.finished_at = Some(now);
+            }
+            Self::prune(&mut inner);
         }
-        Self::prune(&mut inner);
+        self.persist(id, JOB_DONE, now);
     }
 
     /// Infrastructure failure (not a per-file refusal): the job's
     /// closing relink/rollup pass hitting the db is exactly this case.
     pub(crate) fn fail(&self, id: i64, error: &str, now: i64) {
-        let mut inner = lock(&self.jobs);
-        if let Some(j) = inner.jobs.iter_mut().find(|j| j.id == id) {
-            j.state = JobRunState::Failed;
-            j.current = None;
-            j.error = Some(error.to_owned());
-            j.finished_at = Some(now);
+        {
+            let mut inner = lock(&self.jobs);
+            if let Some(j) = inner.jobs.iter_mut().find(|j| j.id == id) {
+                j.state = JobRunState::Failed;
+                j.current = None;
+                j.error = Some(error.to_owned());
+                j.finished_at = Some(now);
+            }
+            Self::prune(&mut inner);
         }
-        Self::prune(&mut inner);
+        self.persist(id, JOB_FAILED, now);
     }
 
-    /// Tray rows, newest first.
+    /// Finalize the ledger row with the frozen wire detail (D74).
+    /// Best-effort by design: history failing to write must never fail
+    /// the job it describes.
+    fn persist(&self, id: i64, state: i64, now: i64) {
+        let Some(db) = &self.ledger else { return };
+        let detail = self
+            .detail(id)
+            .and_then(|d| serde_json::to_vec(&d).ok());
+        let db = lock(db);
+        if let Err(e) = db.finalize_job(id, state, now, detail.as_deref()) {
+            eprintln!("jobs: ledger finalize failed for job {id}: {e}");
+        }
+        if let Err(e) = db.prune_jobs(LEDGER_KEEP) {
+            eprintln!("jobs: ledger prune failed: {e}");
+        }
+    }
+
+    /// Tray rows, newest first — memory (live + this process's
+    /// finished tail) MERGED with recent ledger rows memory has never
+    /// seen (CLI-written history lands live, not after a restart).
+    /// Memory wins on id collision: it is at least as fresh.
     pub(crate) fn list(&self) -> Vec<Job> {
-        lock(&self.jobs)
-            .jobs
-            .iter()
-            .rev()
-            .map(JobState::row)
-            .collect()
+        let mut rows: Vec<Job> = lock(&self.jobs).jobs.iter().map(JobState::row).collect();
+        if let Some(db) = &self.ledger
+            && let Ok(ledger_rows) = lock(db).recent_jobs(KEEP_FINISHED)
+        {
+            let seen: std::collections::HashSet<i64> = rows.iter().map(|j| j.id).collect();
+            rows.extend(
+                ledger_rows
+                    .into_iter()
+                    .filter(|r| !seen.contains(&r.job_id))
+                    .map(|r| hydrate(r).row()),
+            );
+        }
+        rows.sort_by_key(|j| std::cmp::Reverse(j.id)); // ids are monotonic: newest first
+        rows
     }
 
     pub(crate) fn detail(&self, id: i64) -> Option<JobDetail> {
-        let inner = lock(&self.jobs);
-        let j = inner.jobs.iter().find(|j| j.id == id)?;
-        Some(JobDetail {
-            job: j.row(),
-            files_total: j.files_total,
-            files_done: j.files_done,
-            bytes_total: j.bytes_total,
-            bytes_done: j.bytes_done,
-            current: j.current.clone(),
-            started_at: j.started_at,
-            finished_at: j.finished_at,
-            report: j.report.clone(),
-            matched: j.matched.clone(),
-            matched_total: j.matched_total,
-            error: j.error.clone(),
-        })
+        {
+            let inner = lock(&self.jobs);
+            if let Some(j) = inner.jobs.iter().find(|j| j.id == id) {
+                return Some(detail_of(j));
+            }
+        }
+        // Not in memory: CLI-written or pruned-from-memory history.
+        let db = self.ledger.as_ref()?;
+        let row = lock(db).job_by_id(id).ok()??;
+        Some(detail_of(&hydrate(row)))
     }
+
+}
+
+/// The wire detail of one registry entry (memory-held or hydrated).
+fn detail_of(j: &JobState) -> JobDetail {
+    JobDetail {
+        job: j.row(),
+        files_total: j.files_total,
+        files_done: j.files_done,
+        bytes_total: j.bytes_total,
+        bytes_done: j.bytes_done,
+        current: j.current.clone(),
+        started_at: j.started_at,
+        finished_at: j.finished_at,
+        report: j.report.clone(),
+        matched: j.matched.clone(),
+        matched_total: j.matched_total,
+        error: j.error.clone(),
+    }
+}
+
+/// A ledger row back into registry shape (startup hydration). The
+/// frozen detail JSON restores counters and report when it parses; a
+/// future-shape miss (or an interrupted row, which never finalized)
+/// renders a stub from the columns — degraded honestly, never an
+/// error.
+fn hydrate(row: JobRow) -> JobState {
+    let detail: Option<JobDetail> = row
+        .detail
+        .as_deref()
+        .and_then(|bytes| serde_json::from_slice(bytes).ok());
+    let (state, error) = match row.state {
+        JOB_DONE => (JobRunState::Done, None),
+        JOB_INTERRUPTED => (
+            JobRunState::Failed,
+            Some("interrupted: the daemon restarted while this job was running".to_owned()),
+        ),
+        _ => (JobRunState::Failed, None),
+    };
+    let mut job = JobState {
+        id: row.job_id,
+        kind: kind_from_code(row.kind),
+        name: row.name,
+        files_total: 0,
+        files_done: 0,
+        bytes_total: 0,
+        bytes_done: 0,
+        current: None,
+        state,
+        report: IngestReportBody::default(),
+        matched: Vec::new(),
+        matched_total: 0,
+        error,
+        started_at: row.started_at,
+        finished_at: row.finished_at,
+    };
+    if let Some(d) = detail {
+        job.files_total = d.files_total;
+        job.files_done = d.files_done;
+        job.bytes_total = d.bytes_total;
+        job.bytes_done = d.bytes_done;
+        job.report = d.report;
+        job.matched = d.matched;
+        job.matched_total = d.matched_total;
+        job.error = job.error.or(d.error);
+    }
+    job
 }
 
 /// Render one file's `IngestReport` for the wire, translating the
@@ -327,9 +557,73 @@ mod tests {
         }
     }
 
+    /// D74 round-trip: finished jobs survive re-opening the ledger
+    /// (report intact, db-assigned ids), and a row still running at
+    /// the next open is marked interrupted — crash evidence, not
+    /// amnesia.
+    #[test]
+    fn ledger_survives_restart_and_marks_interrupted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let open_db = || datboi_index::Db::open(dir.path()).expect("db");
+
+        let first = Registry::durable(open_db(), 1_000).expect("open");
+        let done_id = first.create(&[staged("kept.gba", 7)], 1_000);
+        first.file_done(done_id, 7, IngestReportBody {
+            files_stored: 1,
+            ..IngestReportBody::default()
+        });
+        first.finish(done_id, 1_500);
+        let crashed_id = first.create_gc("evict — watermark", 3, 1_600);
+        assert_ne!(done_id, crashed_id);
+        drop(first); // daemon dies with the gc job still running
+
+        let second = Registry::durable(open_db(), 2_000).expect("reopen");
+        let detail = second.detail(done_id).expect("history survived");
+        assert_eq!(detail.job.state, JobRunState::Done);
+        assert_eq!(detail.report.files_stored, 1, "frozen report hydrated");
+        assert_eq!(detail.finished_at, Some(1_500));
+        let crashed = second.detail(crashed_id).expect("tombstone exists");
+        assert_eq!(crashed.job.state, JobRunState::Failed);
+        assert!(
+            crashed.error.as_deref().unwrap_or("").contains("interrupted"),
+            "{crashed:?}"
+        );
+        // Fresh ids continue past history — never collide with it.
+        let next = second.create(&[staged("new.gba", 1)], 2_100);
+        assert!(next > crashed_id);
+    }
+
+    /// The poll-time merge (D74 CLI wiring): a terminal row written by
+    /// another process (the CLI's shape) appears in list() and serves
+    /// detail() WITHOUT a daemon restart; memory wins on id collision.
+    #[test]
+    fn ledger_merge_surfaces_cli_rows_live() {
+        use datboi_index::jobs::{JOB_DONE, KIND_SCRUB};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let reg =
+            Registry::durable(datboi_index::Db::open(dir.path()).expect("db"), 1_000).expect("open");
+        let mem_id = reg.create(&[staged("live.gba", 1)], 1_100);
+
+        // "The CLI": a second connection writes a finished scrub row.
+        let cli_db = datboi_index::Db::open(dir.path()).expect("second conn");
+        let cli_id = cli_db
+            .insert_finished_job(KIND_SCRUB, "cli: scrub — 100% sample", JOB_DONE, 1_200, 1_300)
+            .expect("cli row");
+
+        let rows = reg.list();
+        let cli_row = rows.iter().find(|j| j.id == cli_id).expect("cli row surfaced");
+        assert_eq!(cli_row.kind, JobKind::Scrub);
+        assert_eq!(cli_row.state, JobRunState::Done);
+        assert!(rows.iter().any(|j| j.id == mem_id), "live job still listed");
+        assert!(rows[0].id > rows[1].id, "newest first");
+        let detail = reg.detail(cli_id).expect("detail from ledger fallback");
+        assert_eq!(detail.job.name, "cli: scrub — 100% sample");
+        assert_eq!(detail.finished_at, Some(1_300));
+    }
+
     #[test]
     fn tokens_spend_all_or_nothing() {
-        let reg = Registry::new();
+        let reg = Registry::ephemeral();
         reg.stage("a".into(), staged("one.gba", 1));
         reg.stage("b".into(), staged("two.gba", 2));
         // Unknown token: nothing consumed, offender named.
@@ -346,7 +640,7 @@ mod tests {
 
     #[test]
     fn progress_is_byte_weighted_and_caps_at_99_while_running() {
-        let reg = Registry::new();
+        let reg = Registry::ephemeral();
         let files = [staged("big.zip", 900), staged("small.gba", 100)];
         let id = reg.create(&files, 1_000);
         assert_eq!(reg.list()[0].progress, 0);
@@ -379,7 +673,7 @@ mod tests {
 
     #[test]
     fn history_keeps_running_jobs_and_a_bounded_finished_tail() {
-        let reg = Registry::new();
+        let reg = Registry::ephemeral();
         let runner = reg.create(&[staged("slow.zip", 1)], 0);
         let mut finished = Vec::new();
         for i in 0..KEEP_FINISHED + 5 {

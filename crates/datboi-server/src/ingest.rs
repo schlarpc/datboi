@@ -281,9 +281,14 @@ fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
             }
         }
     };
+    // Blob ids that became resident across the whole batch — the
+    // fresh slice the refine worker fast-tracks (D71) once the job's
+    // closing rollup pass is done.
+    let mut fresh_blobs: Vec<i64> = Vec::new();
     for upload in staged {
         app.jobs.set_current(id, &upload.name);
-        let per_file = process_upload(app, &upload);
+        let (per_file, fresh) = process_upload(app, &upload);
+        fresh_blobs.extend(fresh);
         // A dat sliding in on the ROM surface is worth its own line —
         // it changes what the catalog wants, not just what's stored.
         for dat in &per_file.dats_imported {
@@ -322,6 +327,12 @@ fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
         }
     }
     app.jobs.finish(id, auth::now_unix());
+    // The narrow slice of new content refines NOW, not on the ambient
+    // clock (D71) — this is what makes "drop a zip, watch it become
+    // rebuildable" one motion instead of a CLI errand.
+    if let Some(refiner) = &app.refiner {
+        refiner.notify_fresh(fresh_blobs);
+    }
     // The registry accumulated the report; the finish line summarizes
     // it with the web report card's arithmetic (Ingest.svelte): dupes =
     // present + unchanged, members = claimed + extracted, refused =
@@ -357,34 +368,42 @@ enum Classified {
     Rom,
 }
 
-/// One staged file's outcome as a per-file report body: dats fill the
-/// `dats_imported` lane (pipeline counters stay pure), ROMs run the
-/// pipeline, and classification/import failures land in `errors` under
-/// the client's name — the job continues either way.
-fn process_upload(app: &App, upload: &StagedUpload) -> IngestReportBody {
+/// One staged file's outcome as a per-file report body plus the blob
+/// ids it made resident (the refine worker's fresh slice): dats fill
+/// the `dats_imported` lane (pipeline counters stay pure), ROMs run
+/// the pipeline, and classification/import failures land in `errors`
+/// under the client's name — the job continues either way.
+fn process_upload(app: &App, upload: &StagedUpload) -> (IngestReportBody, Vec<i64>) {
     match classify(&upload.path, upload.bytes) {
         Ok(Classified::Dat(bytes)) => {
             let mut db = app
                 .db
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match import_dat_upload(app, &mut db, &bytes, &upload.name) {
+            let body = match import_dat_upload(app, &mut db, &bytes, &upload.name) {
                 Ok(item) => IngestReportBody {
                     dats_imported: vec![item],
                     ..IngestReportBody::default()
                 },
                 Err(error) => error_body(&upload.name, &error),
-            }
+            };
+            (body, Vec::new())
         }
         Ok(Classified::Rom) => {
             let mut db = app
                 .db
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let report = Ingester::new(app.store, &mut db, &app.detectors).ingest(&[&upload.path]);
-            translate(report, upload)
+            // The client's relative name is the source identity —
+            // provenance (orphan review included) must never show the
+            // throwaway staging path.
+            let mut report = Ingester::new(app.store, &mut db, &app.detectors)
+                .with_source_name(&upload.name)
+                .ingest(&[&upload.path]);
+            let fresh = std::mem::take(&mut report.fresh_blobs);
+            (translate(report, upload), fresh)
         }
-        Err(e) => error_body(&upload.name, &format!("classify: {e}")),
+        Err(e) => (error_body(&upload.name, &format!("classify: {e}")), Vec::new()),
     }
 }
 

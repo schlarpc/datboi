@@ -92,6 +92,12 @@ export type RouteEdge = Schemas['RouteEdge'];
 export type ClaimRef = Schemas['ClaimRef'];
 export type BlobDetail = Schemas['BlobDetail'];
 
+// ---- GET /v1/gc/orphans (+ keep / apply) ----
+
+export type OrphanItem = Schemas['OrphanItem'];
+export type OrphansBody = Schemas['OrphansResponse'];
+export type GcApplyReport = Schemas['GcApplyResponse'];
+
 // ---- POST /v1/ingest/uploads + /v1/ingest ----
 
 export type UploadReceipt = Schemas['UploadResponse'];

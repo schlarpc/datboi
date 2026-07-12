@@ -15,7 +15,9 @@
 /// scale a rebuild is a full NFS metadata walk, so routine bumps should
 /// always ship a step; the fallback is for changes not worth one.
 /// v2: seek_quarantine (D49), analysis + sweep_queue (D45/D48).
-pub const CACHE_SCHEMA_VERSION: u32 = 2;
+/// v3: sweep_queue.leased_until (D71 in-daemon refinement leases).
+/// v4: gc_guard + orphan_candidate (D72/D73 background GC).
+pub const CACHE_SCHEMA_VERSION: u32 = 4;
 
 /// cache.db migration ladder, same shape and rules as
 /// [`STATE_MIGRATIONS`]: `CACHE_MIGRATIONS[i]` migrates version `i + 1`
@@ -49,13 +51,48 @@ CREATE TABLE sweep_queue (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX sweep_by_priority ON sweep_queue(priority DESC, enqueued_at);
 ",
+    // v2 → v3 (D71): per-item sweep leases, so the in-daemon refine
+    // worker and a concurrent CLI sweep never duplicate an expensive
+    // analysis. Recreate rather than ALTER: the queue is scheduling
+    // state (enqueue_unanalyzed regrows it on the next sweep), and a
+    // fresh CREATE keeps the stored schema text identical to CACHE_DDL
+    // (the migrated_cache_equals_fresh_schema guarantee).
+    "
+DROP TABLE sweep_queue;
+CREATE TABLE sweep_queue (
+  blob_id      INTEGER NOT NULL REFERENCES blob(blob_id),
+  analyzer     BLOB NOT NULL,
+  priority     INTEGER NOT NULL DEFAULT 0,
+  enqueued_at  INTEGER NOT NULL,
+  leased_until INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (blob_id, analyzer)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX sweep_by_priority ON sweep_queue(priority DESC, enqueued_at);
+",
+    // v3 → v4 (D72/D73): the eviction singleton guard (the ONE
+    // correctness lease — see D72) and orphan candidate marks
+    // (cache-grade; a re-sweep regrows them).
+    "
+CREATE TABLE gc_guard (
+  guard_id   INTEGER PRIMARY KEY CHECK (guard_id = 1),
+  holder     BLOB,
+  expires_at INTEGER NOT NULL DEFAULT 0
+) STRICT;
+INSERT INTO gc_guard (guard_id, holder, expires_at) VALUES (1, NULL, 0);
+CREATE TABLE orphan_candidate (
+  blob_id   INTEGER PRIMARY KEY REFERENCES blob(blob_id),
+  marked_at INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+",
 ];
 
 /// state.db gets REAL migrations forever: an older file is upgraded in
 /// place by [`STATE_MIGRATIONS`], never dropped. A newer-than-supported
 /// version is a hard error in both files (no downgrades).
 /// v2: invite.role + view_grant (auth v1, D30/D68).
-pub const STATE_SCHEMA_VERSION: u32 = 2;
+/// v3: job (D74 durable job history — session-precedent: authoritative
+/// but snapshot-excluded).
+pub const STATE_SCHEMA_VERSION: u32 = 3;
 
 /// The state.db migration ladder: `STATE_MIGRATIONS[i]` is the SQL batch
 /// migrating version `i + 1` to `i + 2`; each step runs in its own
@@ -78,6 +115,21 @@ CREATE TABLE view_grant (
   user_id   INTEGER NOT NULL REFERENCES user(user_id),
   view_name TEXT NOT NULL,
   PRIMARY KEY (user_id, view_name)
+) STRICT;
+",
+    // v2 → v3 (D74): the durable job ledger. Terminal snapshots only —
+    // the in-memory registry remains the live surface; `detail` is the
+    // wire JobDetail JSON frozen at finish (a parse miss on a future
+    // shape renders a stub row from the columns, never an error).
+    "
+CREATE TABLE job (
+  job_id      INTEGER PRIMARY KEY,
+  kind        INTEGER NOT NULL,
+  name        TEXT NOT NULL,
+  state       INTEGER NOT NULL,
+  started_at  INTEGER NOT NULL,
+  finished_at INTEGER,
+  detail      BLOB
 ) STRICT;
 ",
 ];
@@ -302,15 +354,40 @@ CREATE INDEX analysis_by_analyzer ON analysis(analyzer);
 -- D45/D47: the refinement sweep queue. Scheduling state only (never
 -- truth): rows are (candidate × analyzer) pairs awaiting a sweep, with
 -- dat-aware priority allowed by D47 (claims stay dat-blind; ordering may
--- not).
+-- not). leased_until (D71): a claimed item is invisible to other
+-- workers until the lease expires — dedup across the daemon worker and
+-- CLI sweeps, never a correctness gate (at-least-once absorbs stale
+-- leases; 0 = unleased).
 CREATE TABLE sweep_queue (
-  blob_id     INTEGER NOT NULL REFERENCES blob(blob_id),
-  analyzer    BLOB NOT NULL,
-  priority    INTEGER NOT NULL DEFAULT 0,
-  enqueued_at INTEGER NOT NULL,
+  blob_id      INTEGER NOT NULL REFERENCES blob(blob_id),
+  analyzer     BLOB NOT NULL,
+  priority     INTEGER NOT NULL DEFAULT 0,
+  enqueued_at  INTEGER NOT NULL,
+  leased_until INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (blob_id, analyzer)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX sweep_by_priority ON sweep_queue(priority DESC, enqueued_at);
+
+-- D72: the eviction singleton guard — the one lease that IS a
+-- correctness gate (two concurrent grounding computations can jointly
+-- approve stranding a mutually-inverse recipe pair). Single seeded row;
+-- claims are atomic UPDATEs under WAL. Never conflate with the D71
+-- sweep leases (those are dedup).
+CREATE TABLE gc_guard (
+  guard_id   INTEGER PRIMARY KEY CHECK (guard_id = 1),
+  holder     BLOB,
+  expires_at INTEGER NOT NULL DEFAULT 0
+) STRICT;
+INSERT INTO gc_guard (guard_id, holder, expires_at) VALUES (1, NULL, 0);
+
+-- D73: orphan candidate marks. Cache-grade scheduling/review state:
+-- first-observed-unreferenced is the grace clock, and every sweep
+-- clears marks that anything now roots. Deletion NEVER reads this
+-- table alone — apply re-verifies reachability at delete time.
+CREATE TABLE orphan_candidate (
+  blob_id   INTEGER PRIMARY KEY REFERENCES blob(blob_id),
+  marked_at INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE peer (
   peer_id   INTEGER PRIMARY KEY,
@@ -329,7 +406,10 @@ CREATE INDEX ph_by_blob ON peer_have(blob_id);
 ";
 
 /// Truncation order for cache rebuild: children before parents (FKs on).
+/// `gc_guard` is deliberately absent: its single seeded row must exist
+/// for claims to UPDATE, and a stale holder is already handled by TTL.
 pub const CACHE_TABLES_CHILD_FIRST: &[&str] = &[
+    "orphan_candidate",
     "sweep_queue",
     "analysis",
     "seek_quarantine",
@@ -426,6 +506,22 @@ CREATE TABLE subscription (
 CREATE TABLE config (
   key   TEXT PRIMARY KEY,
   value BLOB NOT NULL
+) STRICT;
+
+-- D74: durable job history. The session precedent: authoritative but
+-- truncatable, EXCLUDED from CAS snapshots (history is not recovery
+-- truth). Rows are terminal snapshots — inserted running, finalized
+-- once; a row still `running` at daemon startup is crash evidence and
+-- gets marked interrupted. state codes: 0 running, 1 done, 2 failed,
+-- 3 interrupted. kind codes mirror the wire JobKind (jobs.rs).
+CREATE TABLE job (
+  job_id      INTEGER PRIMARY KEY,
+  kind        INTEGER NOT NULL,
+  name        TEXT NOT NULL,
+  state       INTEGER NOT NULL,
+  started_at  INTEGER NOT NULL,
+  finished_at INTEGER,
+  detail      BLOB
 ) STRICT;
 
 CREATE TABLE snapshot_log (

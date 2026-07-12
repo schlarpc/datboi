@@ -137,7 +137,8 @@ fn version_skew_recreates_cache_and_protects_state() {
     {
         let conn = rusqlite::Connection::open(dir.path().join("cache.db")).expect("raw open");
         conn.execute_batch(
-            "DROP TABLE sweep_queue; DROP TABLE analysis; DROP TABLE seek_quarantine;",
+            "DROP TABLE sweep_queue; DROP TABLE analysis; DROP TABLE seek_quarantine;
+             DROP TABLE gc_guard; DROP TABLE orphan_candidate;",
         )
         .expect("devolve");
         conn.pragma_update(None, "user_version", 1).expect("rewind");
@@ -236,7 +237,8 @@ fn migrated_cache_equals_fresh_schema() {
         let conn =
             rusqlite::Connection::open(migrated_dir.path().join("cache.db")).expect("raw open");
         conn.execute_batch(
-            "DROP TABLE sweep_queue; DROP TABLE analysis; DROP TABLE seek_quarantine;",
+            "DROP TABLE sweep_queue; DROP TABLE analysis; DROP TABLE seek_quarantine;
+             DROP TABLE gc_guard; DROP TABLE orphan_candidate;",
         )
         .expect("devolve");
         conn.pragma_update(None, "user_version", 1).expect("rewind");
@@ -719,4 +721,171 @@ fn open_creates_missing_db_dir() {
     drop(db);
     assert!(dir.join("state.db").is_file());
     assert!(dir.join("cache.db").is_file());
+}
+
+/// D71 sweep leases + priority tiers: a claimed item is invisible to
+/// other workers until its lease expires or is released; fresh-tier
+/// enqueueing outranks dat-matched, never requeues settled analysis,
+/// and never gets demoted by the dat bump.
+#[test]
+fn sweep_leases_and_priority_tiers() {
+    use datboi_index::{AnalysisOutcome, PRIORITY_DAT_MATCHED, PRIORITY_FRESH};
+
+    let (_dir, mut db) = open_db();
+    let analyzer = Blake3::compute(b"analyzer-x");
+    let ambient = blob(&db, b"ambient", Residency::Resident);
+    let fresh = blob(&db, b"fresh", Residency::Resident);
+    let settled = blob(&db, b"settled", Residency::Resident);
+    let _absent = blob(&db, b"absent", Residency::Absent);
+
+    // Settled analysis: enqueue_fresh must not resurrect it.
+    db.record_analysis(settled, &analyzer, AnalysisOutcome::Negative, None, 1)
+        .unwrap();
+
+    assert_eq!(db.enqueue_unanalyzed(&analyzer, 10).unwrap(), 3);
+    // Fresh tier: promotes the queued row, skips the settled blob.
+    assert_eq!(db.enqueue_fresh(&analyzer, &[fresh, settled], 11).unwrap(), 1);
+
+    // Claim: fresh outranks ambient; the absent blob is never picked.
+    let claimed = db.claim_sweep_items(&analyzer, 10, 100, 60).unwrap();
+    assert_eq!(
+        claimed.iter().map(|i| i.blob_id).collect::<Vec<_>>(),
+        [fresh, ambient],
+        "fresh first, absent skipped"
+    );
+    assert_eq!(claimed[0].priority, PRIORITY_FRESH);
+
+    // Leased items are invisible to a second claimant...
+    assert!(db.claim_sweep_items(&analyzer, 10, 100, 60).unwrap().is_empty());
+    // ...visible again after expiry...
+    assert_eq!(db.claim_sweep_items(&analyzer, 10, 161, 60).unwrap().len(), 2);
+    // ...and an early release returns one item without waiting.
+    db.release_sweep_lease(ambient, &analyzer).unwrap();
+    let reclaimed = db.claim_sweep_items(&analyzer, 10, 162, 60).unwrap();
+    assert_eq!(
+        reclaimed.iter().map(|i| i.blob_id).collect::<Vec<_>>(),
+        [ambient]
+    );
+
+    // Startup amnesty: every lease clears at once.
+    assert_eq!(db.clear_sweep_leases().unwrap(), 2);
+    assert_eq!(db.claim_sweep_items(&analyzer, 10, 163, 60).unwrap().len(), 2);
+
+    // Completing removes the row entirely (lease and all).
+    db.complete_sweep_item(fresh, &analyzer, AnalysisOutcome::Positive, None, 200)
+        .unwrap();
+    assert_eq!(db.sweep_queue_len(&analyzer).unwrap(), 2);
+
+    // The dat bump never demotes: re-promote ambient to fresh, bump,
+    // and the fresh tier survives.
+    db.enqueue_fresh(&analyzer, &[ambient], 201).unwrap();
+    db.bump_dat_matched_priorities().unwrap();
+    db.clear_sweep_leases().unwrap();
+    let after = db.claim_sweep_items(&analyzer, 1, 300, 60).unwrap();
+    assert_eq!(after[0].blob_id, ambient);
+    assert!(after[0].priority >= PRIORITY_DAT_MATCHED);
+    assert_eq!(after[0].priority, PRIORITY_FRESH);
+}
+
+/// D71 progress-gated heartbeat: renewal through a `SweepLeaseKeeper`
+/// (its own connection) extends a lease past its original expiry, and
+/// the item frees on the RENEWED clock once progress stops.
+#[test]
+fn sweep_lease_renewal_extends_visibility() {
+    let (_dir, mut db) = open_db();
+    let analyzer = Blake3::compute(b"analyzer-y");
+    let target = blob(&db, b"long-runner", Residency::Resident);
+    db.enqueue_unanalyzed(&analyzer, 10).unwrap();
+    let claimed = db.claim_sweep_items(&analyzer, 1, 100, 60).unwrap();
+    assert_eq!(claimed[0].blob_id, target);
+
+    // Progress at t=150 re-stamps: expiry moves from 160 to 210.
+    let keeper = db.lease_keeper().unwrap();
+    keeper.renew(target, &analyzer, 150, 60).unwrap();
+    assert!(
+        db.claim_sweep_items(&analyzer, 1, 161, 60).unwrap().is_empty(),
+        "past the ORIGINAL expiry the renewed lease still holds"
+    );
+    assert_eq!(
+        db.claim_sweep_items(&analyzer, 1, 211, 60).unwrap().len(),
+        1,
+        "no further renewals: the item frees on the renewed clock"
+    );
+
+    // Renewing a completed (deleted) item is a harmless no-op.
+    db.complete_sweep_item(target, &analyzer, datboi_index::AnalysisOutcome::Negative, None, 300)
+        .unwrap();
+    keeper.renew(target, &analyzer, 301, 60).unwrap();
+    assert_eq!(db.sweep_queue_len(&analyzer).unwrap(), 0);
+}
+
+/// D72 singleton guard: one winner at a time; expiry lets a successor
+/// steal; release is holder-checked; claim doubles as renewal.
+#[test]
+fn gc_guard_single_holder_with_expiry() {
+    use datboi_index::GuardHolder;
+    let (_dir, db) = open_db();
+    let a = GuardHolder([1; 16]);
+    let b = GuardHolder([2; 16]);
+
+    assert!(db.claim_gc_guard(&a, 100, 60).unwrap(), "free guard: A wins");
+    assert!(!db.claim_gc_guard(&b, 120, 60).unwrap(), "held: B loses");
+    assert!(db.claim_gc_guard(&a, 130, 60).unwrap(), "A re-claims = renews");
+    assert!(!db.claim_gc_guard(&b, 189, 60).unwrap(), "renewed lease holds");
+    assert!(db.claim_gc_guard(&b, 191, 60).unwrap(), "expired: B steals");
+    // A's release must not free B's guard.
+    db.release_gc_guard(&a).unwrap();
+    assert!(!db.claim_gc_guard(&a, 200, 60).unwrap(), "B still holds");
+    db.release_gc_guard(&b).unwrap();
+    assert!(db.claim_gc_guard(&a, 210, 60).unwrap(), "released: free again");
+}
+
+/// D73 orphan lifecycle: mark preserves the first-seen clock, anything
+/// that roots a blob clears its mark, grace gates review, delete-time
+/// re-verification refuses rooted blobs, and row deletion cascades.
+#[test]
+fn orphan_marks_clear_on_rooting_and_delete_reverifies() {
+    let (_dir, mut db) = open_db();
+    let junk = blob(&db, b"junk upload", Residency::Resident);
+    let wanted = blob(&db, b"becomes wanted", Residency::Resident);
+    let _queued = blob(&db, b"awaiting analysis", Residency::Resident);
+    db.enqueue_unanalyzed(&Blake3::compute(b"an"), 5).unwrap();
+    // Only `queued` stays in a sweep queue (complete the others).
+    for b in [junk, wanted] {
+        db.complete_sweep_item(
+            b,
+            &Blake3::compute(b"an"),
+            datboi_index::AnalysisOutcome::Negative,
+            None,
+            6,
+        )
+        .unwrap();
+    }
+
+    let (marked, cleared) = db.sweep_orphan_marks(&[], 10).unwrap();
+    assert_eq!((marked, cleared), (2, 0), "junk + wanted marked; queued spared");
+
+    // A recipe roots `wanted`: the next sweep clears its mark and the
+    // first-seen clock of `junk` survives re-sweeps.
+    recipe(&mut db, b"r", &[wanted], &[junk], VerifyState::Pending);
+    let (marked, cleared) = db.sweep_orphan_marks(&[], 50).unwrap();
+    assert_eq!((marked, cleared), (0, 2), "wanted rooted; junk now recipe-output-rooted too");
+
+    // A genuinely junk blob ages through grace into the review set.
+    let lone = blob(&db, b"lone junk", Residency::Resident);
+    db.sweep_orphan_marks(&[], 100).unwrap();
+    assert!(db.list_orphan_candidates(110, 60).unwrap().is_empty(), "grace not elapsed");
+    let listed = db.list_orphan_candidates(170, 60).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].blob_id, lone);
+
+    // Delete-time re-verification: extra roots refuse, aging holds.
+    assert!(db.orphan_still_deletable(lone, &[], 170, 60).unwrap());
+    assert!(!db.orphan_still_deletable(lone, &[lone], 170, 60).unwrap());
+    assert!(!db.orphan_still_deletable(lone, &[], 130, 60).unwrap(), "not aged");
+
+    // Row deletion cascades and the blob is gone.
+    db.delete_orphan_rows(lone).unwrap();
+    assert_eq!(db.get_blob_id(&Blake3::compute(b"lone junk")).unwrap(), None);
+    assert!(db.list_orphan_candidates(200, 0).unwrap().is_empty());
 }
