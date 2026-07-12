@@ -14,7 +14,7 @@
  */
 
 import createClient from 'openapi-fetch';
-import { router } from '../router.svelte';
+import { loginReturn, router } from '../router.svelte';
 import type { EntryState } from '../state';
 import type { operations, paths } from './schema';
 import type {
@@ -117,6 +117,7 @@ const OPEN_AUTH: ReadonlySet<string> = new Set<keyof paths>([
 function handleUnauthorized(status: number, sessionAuth: boolean): void {
   if (status === 401 && sessionAuth) {
     unauthorizedHandler?.();
+    loginReturn.stash(window.location.pathname);
     router.replace('/login');
   }
 }

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'vitest';
-import { matchPath, router } from './router.svelte';
+import { loginReturn, matchPath, router } from './router.svelte';
 
 describe('matchPath', () => {
   test.each([
@@ -88,4 +88,17 @@ describe('router', () => {
     window.dispatchEvent(new PopStateEvent('popstate'));
     expect(router.route.screen).toBe('storage');
   });
+});
+
+test('loginReturn: the bounce destination round-trips once, then defaults home', () => {
+  loginReturn.stash('/storage/blob/abc');
+  expect(loginReturn.consume()).toBe('/storage/blob/abc');
+  expect(loginReturn.consume()).toBe('/'); // consumed — no stale replay
+});
+
+test('loginReturn: the open pages are never a return destination', () => {
+  loginReturn.stash('/login');
+  expect(loginReturn.consume()).toBe('/');
+  loginReturn.stash('/invite');
+  expect(loginReturn.consume()).toBe('/');
 });

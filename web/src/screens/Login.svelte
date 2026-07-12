@@ -6,7 +6,7 @@
    */
   import { ApiError, login } from '../lib/api/client';
   import { errorText } from '../lib/remote';
-  import { router } from '../lib/router.svelte';
+  import { loginReturn, router } from '../lib/router.svelte';
   import { session } from '../lib/session.svelte';
   import logoUrl from '../lib/assets/logo.svg';
 
@@ -24,7 +24,7 @@
     otherError = null;
     try {
       session.apply(await login(username, password));
-      router.replace('/');
+      router.replace(loginReturn.consume());
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         failed = true;

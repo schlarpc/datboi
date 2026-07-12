@@ -6,7 +6,7 @@
   import FriendHeader from './lib/components/FriendHeader.svelte';
   import Header from './lib/components/Header.svelte';
   import JobsTray from './lib/components/JobsTray.svelte';
-  import { router, type Route } from './lib/router.svelte';
+  import { loginReturn, router, type Route } from './lib/router.svelte';
   import { session } from './lib/session.svelte';
   import Admin from './screens/Admin.svelte';
   import Audit from './screens/Audit.svelte';
@@ -36,9 +36,10 @@
   const open = $derived(route.screen === 'login' || route.screen === 'invite');
   $effect(() => {
     if (session.status === 'anonymous' && !open) {
+      loginReturn.stash(window.location.pathname);
       router.replace('/login');
     } else if (session.status === 'authenticated' && route.screen === 'login') {
-      router.replace('/');
+      router.replace(loginReturn.consume());
     }
   });
 

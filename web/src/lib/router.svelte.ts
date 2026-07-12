@@ -100,3 +100,31 @@ export const router = {
 };
 
 window.addEventListener('popstate', () => router.sync());
+
+// ---- login return-to ----
+
+let returnTo: string | null = null;
+
+/**
+ * Where a bounced-to-/login user was actually headed. Both bounce
+ * sites (the client's mid-flight 401 handler and App's anonymous
+ * redirect) stash the current path before replacing to /login, and a
+ * successful login consumes it — a shared deep link or an expired
+ * session no longer strands the user at `/`. Module state, not a URL
+ * param: the bounce never reloads the page, and nothing user-typed
+ * can steer the destination (no open-redirect surface — consume()
+ * only ever yields a path this SPA was already on).
+ */
+export const loginReturn = {
+  stash(path: string): void {
+    // The open pages are never a destination worth returning to.
+    if (path !== '/login' && path !== '/invite') {
+      returnTo = path;
+    }
+  },
+  consume(): string {
+    const path = returnTo ?? '/';
+    returnTo = null;
+    return path;
+  },
+};
