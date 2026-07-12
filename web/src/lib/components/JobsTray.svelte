@@ -43,8 +43,13 @@
   const refused = (d: JobDetailBody): number =>
     d.report.errors.length + d.report.member_skips.length + Number(d.report.skipper_skipped_large);
 
+  /** Backgrounded tabs stop polling; returning re-runs the effect for
+   * an immediate catch-up fetch. */
+  let visible = $state(!document.hidden);
+
   $effect(() => {
     void jobsSignal.version; // a bump re-runs the effect: immediate refetch
+    if (!visible) return; // hidden: no poll burns while nobody watches
     const detailsWanted = open; // panel toggles also re-run: details join the loop
     let timer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
@@ -99,6 +104,8 @@
     };
   });
 </script>
+
+<svelte:document onvisibilitychange={() => (visible = !document.hidden)} />
 
 <footer class="tray">
   <div class="strip">

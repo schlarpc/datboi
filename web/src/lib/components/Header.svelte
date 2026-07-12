@@ -12,6 +12,7 @@
   import Link from './Link.svelte';
   import ThemeToggle from './ThemeToggle.svelte';
   import logoUrl from '../assets/logo.svg';
+  import { jobsSignal } from '../jobs.svelte';
 
   /**
    * Every screen classifies into an owner-nav section — EXHAUSTIVE over
@@ -41,6 +42,9 @@
   // just gets no chip rather than a lie.
   let warnCount = $state<number | null>(null);
   $effect(() => {
+    // A finished job (scrub, ingest) is exactly when quarantine can
+    // change — the signal keeps a session-long header from lying.
+    void jobsSignal.version;
     storage().then(
       (body) => (warnCount = body.quarantine.count),
       () => (warnCount = null),
