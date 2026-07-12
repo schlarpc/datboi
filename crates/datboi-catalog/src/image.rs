@@ -18,10 +18,7 @@ use datboi_core::assemble::{self, AssembleParams, Segment, Source};
 use datboi_core::hash::Blake3;
 use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe};
 use datboi_core::viewsnap::ViewSnapshot;
-use datboi_index::{
-    Db, Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass, VerifyAdvance,
-    recipes::NewRecipe,
-};
+use datboi_index::{Db, Namespace as IndexNs, RecipeSource, Residency, SeekClass, VerifyAdvance};
 use datboi_store_fs::{Namespace as StoreNs, Store, obao};
 use positioned_io::ReadAt;
 
@@ -192,7 +189,6 @@ pub fn mint_image(
 
     // Open + validate content inputs (resident, size matches manifest).
     let mut sources: Vec<Src> = vec![Src::Mem(layout.fat.clone()), Src::Mem(layout.dirs.clone())];
-    let mut content_blob_ids: Vec<i64> = Vec::new();
     let mut missing = 0usize;
     for hash in &input_hashes[2..] {
         let Some(blob) = db.blob_by_hash(hash)? else {
@@ -210,7 +206,6 @@ pub fn mint_image(
                 blob.size
             )));
         }
-        content_blob_ids.push(blob.blob_id);
         sources.push(Src::File { file, len });
     }
     if missing > 0 {
@@ -265,7 +260,7 @@ pub fn mint_image(
     let (image_hash, sidecar) = obao::compute(reader, total_size)
         .map_err(|e| CatalogError::Image(format!("output hash pass: {e}")))?;
 
-    let image_blob_id = db.upsert_blob(
+    db.upsert_blob(
         &image_hash,
         Some(total_size),
         IndexNs::Data,
@@ -278,10 +273,10 @@ pub fn mint_image(
         false
     };
 
-    // The recipe object + row: a private twin of ingest's `mint_recipe`
-    // (crates/datboi-ingest/src/lib.rs) — the policy crate must not
-    // drag the ingest analyzers in for these ~30 lines. Idempotent by
-    // content address, like the original.
+    // The recipe object + row: publish the object, then index it —
+    // rows derive from the object (`Db::index_recipe`), and the
+    // blob-keyed recipe table makes the mint idempotent by content
+    // address.
     let recipe = Recipe {
         op: Op::Builtin {
             name: "assemble".into(),
@@ -317,42 +312,14 @@ pub fn mint_image(
         IndexNs::Meta,
         Residency::Resident,
     )?;
-    let already: Option<i64> = {
-        let mut stmt = db
-            .cache()
-            .prepare_cached("SELECT recipe_id FROM recipe WHERE blob_id = ?1")?;
-        let mut rows = stmt.query((recipe_blob_id,))?;
-        rows.next()?.map(|row| row.get(0)).transpose()?
-    };
-    if already.is_none() {
-        let fat_blob_id = db
-            .blob_by_hash(&fat_hash)?
-            .expect("skeleton upserted above")
-            .blob_id;
-        let dirs_blob_id = db
-            .blob_by_hash(&dirs_hash)?
-            .expect("skeleton upserted above")
-            .blob_id;
-        let mut inputs: Vec<(u32, i64, Option<&str>)> = vec![
-            (0, fat_blob_id, Some("fat")),
-            (1, dirs_blob_id, Some("dirs")),
-        ];
-        for (i, blob_id) in content_blob_ids.iter().enumerate() {
-            inputs.push((
-                u32::try_from(i + 2).expect("input count fits u32"),
-                *blob_id,
-                None,
-            ));
-        }
-        let recipe_id = db.insert_recipe(&NewRecipe {
-            blob_id: recipe_blob_id,
-            op_kind: OpKind::Builtin,
-            op_name: "assemble@1",
-            seek_class: SeekClass::Affine,
-            source: RecipeSource::LocalIngest,
-            inputs: &inputs,
-            outputs: &[(0, image_blob_id, total_size, None)],
-        })?;
+    if db.recipe_id_for_blob(recipe_blob_id)?.is_none() {
+        let recipe_id = db.index_recipe(
+            recipe_blob_id,
+            &recipe,
+            "assemble@1",
+            SeekClass::Affine,
+            RecipeSource::LocalIngest,
+        )?;
         db.set_verify_state(recipe_id, VerifyAdvance::Verified, now)?;
     }
 

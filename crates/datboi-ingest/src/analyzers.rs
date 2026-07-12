@@ -424,48 +424,42 @@ impl Analyzer for PreflateZipAnalyzer {
         store
             .put(StoreNs::Data, skeleton_hash, skeleton.as_slice())
             .map_err(|e| e.to_string())?;
-        let skeleton_id = db
-            .upsert_blob(
-                &skeleton_hash,
-                Some(skeleton.len() as u64),
+        db.upsert_blob(
+            &skeleton_hash,
+            Some(skeleton.len() as u64),
+            IndexNs::Data,
+            Residency::Resident,
+        )
+        .map_err(|e| e.to_string())?;
+
+        // ---- mint: one recreate recipe per split member ----
+        self.ensure_component(store, db)?;
+        let component_hash = Self::component_hash();
+        for &(_, stream_len, ref split) in &covered {
+            db.upsert_blob(
+                &split.corrections_hash,
+                Some(split.corrections_len),
                 IndexNs::Data,
                 Residency::Resident,
             )
             .map_err(|e| e.to_string())?;
-
-        // ---- mint: one recreate recipe per split member ----
-        let component_id = self.ensure_component(store, db)?;
-        let component_hash = Self::component_hash();
-        let mut stream_ids: Vec<i64> = Vec::with_capacity(covered.len());
-        for &(_, stream_len, ref split) in &covered {
-            let corrections_id = db
-                .upsert_blob(
-                    &split.corrections_hash,
-                    Some(split.corrections_len),
-                    IndexNs::Data,
-                    Residency::Resident,
-                )
-                .map_err(|e| e.to_string())?;
-            let plaintext_id = db
-                .upsert_blob(
-                    &split.plaintext_hash,
-                    Some(split.plaintext_len),
-                    IndexNs::Data,
-                    Residency::Resident,
-                )
-                .map_err(|e| e.to_string())?;
+            db.upsert_blob(
+                &split.plaintext_hash,
+                Some(split.plaintext_len),
+                IndexNs::Data,
+                Residency::Resident,
+            )
+            .map_err(|e| e.to_string())?;
             // The stream itself: known hash, no local bytes — it lives
             // inside the container until eviction, and the recipe is its
             // route thereafter.
-            let stream_id = db
-                .upsert_blob(
-                    &split.stream_hash,
-                    Some(stream_len),
-                    IndexNs::Data,
-                    Residency::Absent,
-                )
-                .map_err(|e| e.to_string())?;
-            stream_ids.push(stream_id);
+            db.upsert_blob(
+                &split.stream_hash,
+                Some(stream_len),
+                IndexNs::Data,
+                Residency::Absent,
+            )
+            .map_err(|e| e.to_string())?;
             let recipe = Recipe {
                 op: Op::Wasm {
                     component: component_hash,
@@ -495,14 +489,8 @@ impl Analyzer for PreflateZipAnalyzer {
                 &recipe,
                 "xf-preflate/recreate",
                 SeekClass::Opaque,
-                &[
-                    (0, corrections_id, Some("skeleton")),
-                    (1, plaintext_id, None),
-                ],
-                &[(0, stream_id, stream_len, None)],
             )
             .map_err(|e| e.to_string())?;
-            let _ = component_id; // pinned via the recipe op; row ensured above
         }
 
         // ---- mint: the container assemble over skeleton + streams ----
@@ -510,18 +498,11 @@ impl Analyzer for PreflateZipAnalyzer {
             hash: skeleton_hash,
             role: Some("skeleton".into()),
         }];
-        let mut input_rows: Vec<(u32, i64, Option<&str>)> =
-            vec![(0, skeleton_id, Some("skeleton"))];
-        for (ix, (_, _, split)) in covered.iter().enumerate() {
+        for (_, _, split) in &covered {
             inputs.push(InputRef {
                 hash: split.stream_hash,
                 role: None,
             });
-            input_rows.push((
-                u32::try_from(ix + 1).expect("member count fits u32"),
-                stream_ids[ix],
-                None,
-            ));
         }
         let mut segments: Vec<Segment> = Vec::new();
         let mut skel_off = 0u64;
@@ -565,16 +546,8 @@ impl Analyzer for PreflateZipAnalyzer {
                 .encode()
                 .map_err(|e| e.to_string())?,
         };
-        crate::mint_recipe(
-            store,
-            db,
-            &recipe,
-            "assemble@1",
-            SeekClass::Affine,
-            &input_rows,
-            &[(0, item.blob_id, container_size, None)],
-        )
-        .map_err(|e| e.to_string())?;
+        crate::mint_recipe(store, db, &recipe, "assemble@1", SeekClass::Affine)
+            .map_err(|e| e.to_string())?;
 
         let corr_total: u64 = covered.iter().map(|(_, _, s)| s.corrections_len).sum();
         let pt_total: u64 = covered.iter().map(|(_, _, s)| s.plaintext_len).sum();
@@ -686,7 +659,6 @@ impl Analyzer for ChunkAnalyzer {
 
         // One streaming pass: chunk, store each chunk, build segments.
         let mut inputs: Vec<InputRef> = Vec::new();
-        let mut input_rows: Vec<(u32, i64, Option<&str>)> = Vec::new();
         let mut segments: Vec<Segment> = Vec::new();
         let mut chunk_ids: Vec<(Blake3, u64)> = Vec::new();
         // Chunking a big image is a full sequential read: the bytes
@@ -715,18 +687,12 @@ impl Analyzer for ChunkAnalyzer {
             });
         }
         for (ix, (hash, len)) in chunk_ids.iter().enumerate() {
-            let blob_id = db
-                .upsert_blob(hash, Some(*len), IndexNs::Data, Residency::Resident)
+            db.upsert_blob(hash, Some(*len), IndexNs::Data, Residency::Resident)
                 .map_err(|e| e.to_string())?;
             inputs.push(InputRef {
                 hash: *hash,
                 role: None,
             });
-            input_rows.push((
-                u32::try_from(ix).expect("chunk count fits u32"),
-                blob_id,
-                None,
-            ));
             segments.push(Segment::BlobRange {
                 input_ix: u32::try_from(ix).expect("chunk count fits u32"),
                 offset: 0,
@@ -749,16 +715,8 @@ impl Analyzer for ChunkAnalyzer {
                 .encode()
                 .map_err(|e| e.to_string())?,
         };
-        crate::mint_recipe(
-            store,
-            db,
-            &recipe,
-            "assemble@1",
-            SeekClass::Affine,
-            &input_rows,
-            &[(0, item.blob_id, size, None)],
-        )
-        .map_err(|e| e.to_string())?;
+        crate::mint_recipe(store, db, &recipe, "assemble@1", SeekClass::Affine)
+            .map_err(|e| e.to_string())?;
 
         Ok(AnalysisResult {
             outcome: AnalysisOutcome::Positive,
@@ -979,22 +937,20 @@ impl Analyzer for EcmAnalyzer {
 
         let component_hash = Self::component_hash();
         self.ensure_component(store, db)?;
-        let stripped_id = db
-            .upsert_blob(
-                &stripped_hash,
-                Some(aliases.size),
-                IndexNs::Data,
-                Residency::Resident,
-            )
-            .map_err(|e| e.to_string())?;
-        let layout_id = db
-            .upsert_blob(
-                &layout_hash,
-                Some(layout.len() as u64),
-                IndexNs::Data,
-                Residency::Resident,
-            )
-            .map_err(|e| e.to_string())?;
+        db.upsert_blob(
+            &stripped_hash,
+            Some(aliases.size),
+            IndexNs::Data,
+            Residency::Resident,
+        )
+        .map_err(|e| e.to_string())?;
+        db.upsert_blob(
+            &layout_hash,
+            Some(layout.len() as u64),
+            IndexNs::Data,
+            Residency::Resident,
+        )
+        .map_err(|e| e.to_string())?;
         let recipe = Recipe {
             op: Op::Wasm {
                 component: component_hash,
@@ -1024,8 +980,6 @@ impl Analyzer for EcmAnalyzer {
             &recipe,
             "xf-ecm/recreate",
             SeekClass::ManifestSeekable,
-            &[(0, layout_id, Some("skeleton")), (1, stripped_id, None)],
-            &[(0, item.blob_id, size, None)],
         )
         .map_err(|e| e.to_string())?;
 

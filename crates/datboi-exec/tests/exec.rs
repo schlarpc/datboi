@@ -84,16 +84,8 @@ impl World {
     }
 
     /// Publish a recipe object + index rows (Pending), mirroring what
-    /// ingest/analyzers mint.
-    fn mint_recipe(
-        &mut self,
-        recipe: &Recipe,
-        op_name: &str,
-        op_kind: OpKind,
-        seek: SeekClass,
-        inputs: &[(u32, i64)],
-        outputs: &[(u32, i64, u64)],
-    ) -> i64 {
+    /// ingest/analyzers mint: rows derive from the object itself.
+    fn mint_recipe(&mut self, recipe: &Recipe, op_name: &str, seek: SeekClass) -> i64 {
         let encoded = recipe.encode().expect("valid recipe");
         let recipe_hash = Blake3::compute(&encoded);
         self.store
@@ -108,23 +100,15 @@ impl World {
                 Residency::Resident,
             )
             .expect("recipe blob row");
-        let inputs: Vec<(u32, i64, Option<&str>)> =
-            inputs.iter().map(|(p, id)| (*p, *id, None)).collect();
-        let outputs: Vec<(u32, i64, u64, Option<&str>)> = outputs
-            .iter()
-            .map(|(o, id, s)| (*o, *id, *s, None))
-            .collect();
         self.db
-            .insert_recipe(&NewRecipe {
-                blob_id: recipe_blob_id,
-                op_kind,
+            .index_recipe(
+                recipe_blob_id,
+                recipe,
                 op_name,
-                seek_class: seek,
-                source: RecipeSource::LocalIngest,
-                inputs: &inputs,
-                outputs: &outputs,
-            })
-            .expect("recipe row")
+                seek,
+                RecipeSource::LocalIngest,
+            )
+            .expect("recipe rows")
     }
 }
 
@@ -159,8 +143,8 @@ fn replays_deflate_window_recipe_and_licenses_drop() {
     container.extend_from_slice(&compressed);
     container.extend_from_slice(b"trailing central directory junk");
 
-    let (container_hash, container_id) = w.put_literal(&container);
-    let (member_hash, member_id) = w.claim_absent(&member);
+    let (container_hash, _) = w.put_literal(&container);
+    let (member_hash, _) = w.claim_absent(&member);
     let recipe = Recipe {
         op: Op::Builtin {
             name: "deflate-decompress".into(),
@@ -177,14 +161,7 @@ fn replays_deflate_window_recipe_and_licenses_drop() {
         }],
         params: deflate_window_params(offset, compressed.len() as u64),
     };
-    let recipe_id = w.mint_recipe(
-        &recipe,
-        "deflate-decompress@1",
-        OpKind::Builtin,
-        SeekClass::Opaque,
-        &[(0, container_id)],
-        &[(0, member_id, member.len() as u64)],
-    );
+    let recipe_id = w.mint_recipe(&recipe, "deflate-decompress@1", SeekClass::Opaque);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     let report = exec.replay(&w.db, recipe_id).expect("replays");
@@ -224,12 +201,11 @@ fn replays_deflate_window_recipe_and_licenses_drop() {
 #[test]
 fn lying_claim_poisons_the_recipe_and_publishes_nothing() {
     let mut w = world();
-    let (container_hash, container_id) = w.put_literal(&pattern(50_000));
+    let (container_hash, _) = w.put_literal(&pattern(50_000));
     // Claim: bytes 100..2100 of the container hash to something they don't.
     let lie = Blake3::compute(b"this is not what the slice hashes to");
-    let lie_id =
-        w.db.upsert_blob(&lie, Some(2000), IndexNs::Data, Residency::Absent)
-            .expect("row");
+    w.db.upsert_blob(&lie, Some(2000), IndexNs::Data, Residency::Absent)
+        .expect("row");
     let recipe = Recipe {
         op: Op::Builtin {
             name: "assemble".into(),
@@ -254,14 +230,7 @@ fn lying_claim_poisons_the_recipe_and_publishes_nothing() {
         .encode()
         .expect("params"),
     };
-    let recipe_id = w.mint_recipe(
-        &recipe,
-        "assemble@1",
-        OpKind::Builtin,
-        SeekClass::Affine,
-        &[(0, container_id)],
-        &[(0, lie_id, 2000)],
-    );
+    let recipe_id = w.mint_recipe(&recipe, "assemble@1", SeekClass::Affine);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     let err = exec.replay(&w.db, recipe_id).expect_err("claim is false");
@@ -290,8 +259,8 @@ fn wasm2_recipe_replays_and_streams() {
     let swapped = byteswap(&input);
 
     let (component_hash, _) = w.put_literal(COMPONENT);
-    let (input_hash, input_id) = w.put_literal(&input);
-    let (swapped_hash, swapped_id) = w.claim_absent(&swapped);
+    let (input_hash, _) = w.put_literal(&input);
+    let (swapped_hash, _) = w.claim_absent(&swapped);
 
     let recipe = Recipe {
         op: Op::Wasm {
@@ -310,14 +279,7 @@ fn wasm2_recipe_replays_and_streams() {
         }],
         params: Vec::new(),
     };
-    let recipe_id = w.mint_recipe(
-        &recipe,
-        "wasm:byteswap",
-        OpKind::Wasm,
-        SeekClass::Affine,
-        &[(0, input_id)],
-        &[(0, swapped_id, swapped.len() as u64)],
-    );
+    let recipe_id = w.mint_recipe(&recipe, "wasm:byteswap", SeekClass::Affine);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     exec.replay(&w.db, recipe_id).expect("replays");
@@ -342,10 +304,10 @@ fn composed_route_streams_through_wasm_without_storing_intermediates() {
     fin.extend_from_slice(&tail);
 
     let (component_hash, _) = w.put_literal(COMPONENT);
-    let (input_hash, input_id) = w.put_literal(&input);
-    let (tail_hash, tail_id) = w.put_literal(&tail);
-    let (swapped_hash, swapped_id) = w.claim_absent(&swapped);
-    let (final_hash, final_id) = w.claim_absent(&fin);
+    let (input_hash, _) = w.put_literal(&input);
+    let (tail_hash, _) = w.put_literal(&tail);
+    let (swapped_hash, _) = w.claim_absent(&swapped);
+    let (final_hash, _) = w.claim_absent(&fin);
 
     let swap_recipe = Recipe {
         op: Op::Wasm {
@@ -364,14 +326,7 @@ fn composed_route_streams_through_wasm_without_storing_intermediates() {
         }],
         params: Vec::new(),
     };
-    w.mint_recipe(
-        &swap_recipe,
-        "wasm:byteswap",
-        OpKind::Wasm,
-        SeekClass::Affine,
-        &[(0, input_id)],
-        &[(0, swapped_id, swapped.len() as u64)],
-    );
+    w.mint_recipe(&swap_recipe, "wasm:byteswap", SeekClass::Affine);
 
     let concat_recipe = Recipe {
         op: Op::Builtin {
@@ -410,14 +365,7 @@ fn composed_route_streams_through_wasm_without_storing_intermediates() {
         .encode()
         .expect("params"),
     };
-    let concat_id = w.mint_recipe(
-        &concat_recipe,
-        "assemble@1",
-        OpKind::Builtin,
-        SeekClass::Affine,
-        &[(0, swapped_id), (1, tail_id)],
-        &[(0, final_id, fin.len() as u64)],
-    );
+    let concat_id = w.mint_recipe(&concat_recipe, "assemble@1", SeekClass::Affine);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     exec.materialize(&w.db, &final_hash).expect("materializes");
@@ -478,8 +426,8 @@ fn served_ranges_verify_after_eviction() {
     let swapped = byteswap(&input);
 
     let (component_hash, _) = w.put_literal(COMPONENT);
-    let (input_hash, input_id) = w.put_literal(&input);
-    let (swapped_hash, swapped_id) = w.claim_absent(&swapped);
+    let (input_hash, _) = w.put_literal(&input);
+    let (swapped_hash, _) = w.claim_absent(&swapped);
     let recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
@@ -497,14 +445,7 @@ fn served_ranges_verify_after_eviction() {
         }],
         params: Vec::new(),
     };
-    let recipe_id = w.mint_recipe(
-        &recipe,
-        "wasm:byteswap",
-        OpKind::Wasm,
-        SeekClass::Affine,
-        &[(0, input_id)],
-        &[(0, swapped_id, swapped.len() as u64)],
-    );
+    let recipe_id = w.mint_recipe(&recipe, "wasm:byteswap", SeekClass::Affine);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     exec.replay(&w.db, recipe_id).expect("replay licenses");
@@ -546,8 +487,8 @@ fn lying_seek_path_is_quarantined_and_falls_back() {
     let swapped = byteswap(&payload);
 
     let (component_hash, _) = w.put_literal(COMPONENT);
-    let (payload_hash, payload_id) = w.put_literal(&payload);
-    let (swapped_hash, swapped_id) = w.claim_absent(&swapped);
+    let (payload_hash, _) = w.put_literal(&payload);
+    let (swapped_hash, _) = w.claim_absent(&swapped);
     let recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
@@ -565,14 +506,7 @@ fn lying_seek_path_is_quarantined_and_falls_back() {
         }],
         params: Vec::new(),
     };
-    let recipe_id = w.mint_recipe(
-        &recipe,
-        "wasm:byteswap-lying-range",
-        OpKind::Wasm,
-        SeekClass::Affine,
-        &[(0, payload_id)],
-        &[(0, swapped_id, swapped.len() as u64)],
-    );
+    let recipe_id = w.mint_recipe(&recipe, "wasm:byteswap-lying-range", SeekClass::Affine);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     // Sequential run is honest: the claim replays and licenses (this is
@@ -615,8 +549,8 @@ fn corrupt_input_mismatch_does_not_quarantine_the_component() {
     let swapped = byteswap(&input);
 
     let (component_hash, _) = w.put_literal(COMPONENT);
-    let (input_hash, input_id) = w.put_literal(&input);
-    let (swapped_hash, swapped_id) = w.claim_absent(&swapped);
+    let (input_hash, _) = w.put_literal(&input);
+    let (swapped_hash, _) = w.claim_absent(&swapped);
     let recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
@@ -634,14 +568,7 @@ fn corrupt_input_mismatch_does_not_quarantine_the_component() {
         }],
         params: Vec::new(),
     };
-    let recipe_id = w.mint_recipe(
-        &recipe,
-        "wasm:byteswap",
-        OpKind::Wasm,
-        SeekClass::Affine,
-        &[(0, input_id)],
-        &[(0, swapped_id, swapped.len() as u64)],
-    );
+    let recipe_id = w.mint_recipe(&recipe, "wasm:byteswap", SeekClass::Affine);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     exec.replay(&w.db, recipe_id).expect("replay licenses");
@@ -696,8 +623,8 @@ fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
 
     // A perfectly good recipe, poisoned by fiat (simulating the host bug).
     let (component_hash, _) = w.put_literal(COMPONENT);
-    let (input_hash, input_id) = w.put_literal(&input);
-    let (swapped_hash, swapped_id) = w.claim_absent(&swapped);
+    let (input_hash, _) = w.put_literal(&input);
+    let (swapped_hash, _) = w.claim_absent(&swapped);
     let good = Recipe {
         op: Op::Wasm {
             component: component_hash,
@@ -715,14 +642,7 @@ fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
         }],
         params: Vec::new(),
     };
-    let good_id = w.mint_recipe(
-        &good,
-        "wasm:byteswap",
-        OpKind::Wasm,
-        SeekClass::Affine,
-        &[(0, input_id)],
-        &[(0, swapped_id, swapped.len() as u64)],
-    );
+    let good_id = w.mint_recipe(&good, "wasm:byteswap", SeekClass::Affine);
     w.db.set_verify_state(
         good_id,
         VerifyAdvance::Failed {
@@ -735,7 +655,7 @@ fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
 
     // A genuinely bad claim: same op, wrong claimed output hash.
     let bogus = Blake3::compute(b"never these bytes");
-    let (_, bogus_id) = w.claim_absent(b"never these bytes");
+    w.claim_absent(b"never these bytes");
     let bad = Recipe {
         op: Op::Wasm {
             component: component_hash,
@@ -753,14 +673,7 @@ fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
         }],
         params: Vec::new(),
     };
-    let bad_id = w.mint_recipe(
-        &bad,
-        "wasm:byteswap",
-        OpKind::Wasm,
-        SeekClass::Affine,
-        &[(0, input_id)],
-        &[(0, bogus_id, 17)],
-    );
+    let bad_id = w.mint_recipe(&bad, "wasm:byteswap", SeekClass::Affine);
     w.db.set_verify_state(
         bad_id,
         VerifyAdvance::Failed {
@@ -802,8 +715,8 @@ fn unknown_worlds_refuse_instead_of_dispatching_or_poisoning() {
     let mut w = world();
     let input = pattern(4096);
     let (component_hash, _) = w.put_literal(COMPONENT);
-    let (input_hash, input_id) = w.put_literal(&input);
-    let (output_hash, output_id) = w.claim_absent(&byteswap(&input));
+    let (input_hash, _) = w.put_literal(&input);
+    let (output_hash, _) = w.claim_absent(&byteswap(&input));
 
     let mut minted = Vec::new();
     for world_str in ["datboi:transform@10", "datboi:transform@2.0.0"] {
@@ -824,14 +737,7 @@ fn unknown_worlds_refuse_instead_of_dispatching_or_poisoning() {
             }],
             params: Vec::new(),
         };
-        let recipe_id = w.mint_recipe(
-            &recipe,
-            "wasm:byteswap",
-            OpKind::Wasm,
-            SeekClass::Opaque,
-            &[(0, input_id)],
-            &[(0, output_id, input.len() as u64)],
-        );
+        let recipe_id = w.mint_recipe(&recipe, "wasm:byteswap", SeekClass::Opaque);
         minted.push((world_str, recipe_id));
     }
 
@@ -859,9 +765,9 @@ fn unknown_worlds_refuse_instead_of_dispatching_or_poisoning() {
 #[test]
 fn extractor_recipe_with_wrong_export_refuses() {
     let mut w = world();
-    let (container_hash, container_id) = w.put_literal(&pattern(4096));
+    let (container_hash, _) = w.put_literal(&pattern(4096));
     let (component_hash, _) = w.put_literal(datboi_ingest::EX_UNRAR_WASM);
-    let (member_hash, member_id) = w.claim_absent(b"member bytes");
+    let (member_hash, _) = w.claim_absent(b"member bytes");
     let recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
@@ -879,14 +785,7 @@ fn extractor_recipe_with_wrong_export_refuses() {
         }],
         params: cbor::encode(&Value::Map(vec![(1, Value::Uint(0))])).expect("params"),
     };
-    let recipe_id = w.mint_recipe(
-        &recipe,
-        "ex-unrar/garbage",
-        OpKind::Wasm,
-        SeekClass::Opaque,
-        &[(0, container_id)],
-        &[(0, member_id, 12)],
-    );
+    let recipe_id = w.mint_recipe(&recipe, "ex-unrar/garbage", SeekClass::Opaque);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     let err = exec
@@ -913,9 +812,9 @@ fn extractor_guest_failure_poisons_the_recipe() {
     let mut w = world();
     // Not a rar: ex-unrar refuses it deterministically.
     let container = pattern(4096);
-    let (container_hash, container_id) = w.put_literal(&container);
+    let (container_hash, _) = w.put_literal(&container);
     let (component_hash, _) = w.put_literal(datboi_ingest::EX_UNRAR_WASM);
-    let (member_lie, member_id) = w.claim_absent(b"member that never decodes");
+    let (member_lie, _) = w.claim_absent(b"member that never decodes");
     let recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
@@ -933,14 +832,7 @@ fn extractor_guest_failure_poisons_the_recipe() {
         }],
         params: cbor::encode(&Value::Map(vec![(1, Value::Uint(0))])).expect("params"),
     };
-    let recipe_id = w.mint_recipe(
-        &recipe,
-        "ex-unrar/extract",
-        OpKind::Wasm,
-        SeekClass::Opaque,
-        &[(0, container_id)],
-        &[(0, member_id, 25)],
-    );
+    let recipe_id = w.mint_recipe(&recipe, "ex-unrar/extract", SeekClass::Opaque);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     let err = exec
@@ -970,14 +862,13 @@ fn extractor_guest_failure_poisons_the_recipe() {
 fn child_length_lie_does_not_poison_the_parent() {
     let mut w = world();
     let real = pattern(1000);
-    let (real_hash, real_id) = w.put_literal(&real);
+    let (real_hash, _) = w.put_literal(&real);
     let (component_hash, _) = w.put_literal(COMPONENT);
 
     // Child: an assemble slicing the full 1000 bytes, CLAIMING 2000.
     let fake = Blake3::compute(b"claims 2000, produces 1000");
-    let fake_id =
-        w.db.upsert_blob(&fake, Some(2000), IndexNs::Data, Residency::Absent)
-            .expect("row");
+    w.db.upsert_blob(&fake, Some(2000), IndexNs::Data, Residency::Absent)
+        .expect("row");
     let child = Recipe {
         op: Op::Builtin {
             name: "assemble".into(),
@@ -1002,20 +893,12 @@ fn child_length_lie_does_not_poison_the_parent() {
         .encode()
         .expect("params"),
     };
-    w.mint_recipe(
-        &child,
-        "assemble@1",
-        OpKind::Builtin,
-        SeekClass::Affine,
-        &[(0, real_id)],
-        &[(0, fake_id, 2000)],
-    );
+    w.mint_recipe(&child, "assemble@1", SeekClass::Affine);
 
     // Parent: byteswap over the child's claimed output.
     let out = Blake3::compute(b"parent output, never produced");
-    let out_id =
-        w.db.upsert_blob(&out, Some(2000), IndexNs::Data, Residency::Absent)
-            .expect("row");
+    w.db.upsert_blob(&out, Some(2000), IndexNs::Data, Residency::Absent)
+        .expect("row");
     let parent = Recipe {
         op: Op::Wasm {
             component: component_hash,
@@ -1033,14 +916,7 @@ fn child_length_lie_does_not_poison_the_parent() {
         }],
         params: Vec::new(),
     };
-    let parent_id = w.mint_recipe(
-        &parent,
-        "wasm:byteswap",
-        OpKind::Wasm,
-        SeekClass::Affine,
-        &[(0, fake_id)],
-        &[(0, out_id, 2000)],
-    );
+    let parent_id = w.mint_recipe(&parent, "wasm:byteswap", SeekClass::Affine);
 
     let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
     let err = exec

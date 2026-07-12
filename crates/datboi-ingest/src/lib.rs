@@ -41,8 +41,7 @@ use datboi_core::hash::Blake3;
 use datboi_core::params::{DeflateWindow, ExtractorParams};
 use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe, World};
 use datboi_formats::skipper::{Detector, Operation};
-use datboi_index::recipes::NewRecipe;
-use datboi_index::{Db, Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass};
+use datboi_index::{Db, Namespace as IndexNs, RecipeSource, Residency, SeekClass};
 use datboi_runtime::extractor::ExtractorHost;
 use datboi_runtime::pipe;
 use datboi_runtime::stream::{FileRandom, RangeRead};
@@ -277,7 +276,7 @@ impl<'a> Ingester<'a> {
         if let Some(chd) = datboi_formats::chd::parse_header(&head[..head_len]) {
             self.process_chd(path, blob_id, &chd, report)?;
         } else if zip::looks_like_zip(&head[..head_len]) {
-            if let Err(e) = self.process_zip(path, &hash, blob_id, &mut blob, report) {
+            if let Err(e) = self.process_zip(path, &hash, &mut blob, report) {
                 report.errors.push((path.to_owned(), e.to_string()));
             }
         } else if archive::looks_like_7z(&head[..head_len]) {
@@ -285,7 +284,7 @@ impl<'a> Ingester<'a> {
                 report.errors.push((path.to_owned(), e));
             }
         } else if archive::looks_like_rar(&head[..head_len]) {
-            if let Err(e) = self.process_rar(&hash, blob_id, report) {
+            if let Err(e) = self.process_rar(&hash, report) {
                 report.errors.push((path.to_owned(), e));
             }
         } else if !self.detectors.is_empty() {
@@ -295,7 +294,7 @@ impl<'a> Ingester<'a> {
                 let mut bytes = Vec::with_capacity(size as usize);
                 blob.read_to_end(&mut bytes)
                     .map_err(|e| IngestError::io(path, e))?;
-                self.process_detectors(&bytes, &hash, blob_id, report)?;
+                self.process_detectors(&bytes, &hash, report)?;
             } else {
                 report.skipper_skipped_large += 1;
             }
@@ -370,7 +369,6 @@ impl<'a> Ingester<'a> {
     fn process_rar(
         &mut self,
         container_hash: &Blake3,
-        container_blob_id: i64,
         report: &mut IngestReport,
     ) -> Result<(), String> {
         self.ensure_extractor()?;
@@ -392,8 +390,7 @@ impl<'a> Ingester<'a> {
                     member.name, aliases.size, member.size
                 ));
             }
-            let member_blob_id = self
-                .record_resident_blob(&member_hash, &aliases)
+            self.record_resident_blob(&member_hash, &aliases)
                 .map_err(|e| e.to_string())?;
 
             // Mint the container→member derive recipe (makes the member
@@ -429,8 +426,6 @@ impl<'a> Ingester<'a> {
                     &recipe,
                     "ex-unrar/extract",
                     SeekClass::Opaque,
-                    &[(0, container_blob_id, None)],
-                    &[(0, member_blob_id, member.size, Some(&member.name))],
                 )
                 .map_err(|e| e.to_string())?;
             }
@@ -528,7 +523,6 @@ impl<'a> Ingester<'a> {
         &mut self,
         path: &Path,
         zip_hash: &Blake3,
-        zip_blob_id: i64,
         blob: &mut File,
         report: &mut IngestReport,
     ) -> Result<(), IngestError> {
@@ -548,7 +542,7 @@ impl<'a> Ingester<'a> {
                     continue;
                 }
             };
-            let member_blob_id = self.record_absent_blob(&tuple)?;
+            self.record_absent_blob(&tuple)?;
 
             if member.uncomp_size == 0 {
                 // The empty output needs no recipe (assemble@1 rejects
@@ -599,13 +593,7 @@ impl<'a> Ingester<'a> {
                 }],
                 params,
             };
-            self.record_recipe(
-                &recipe,
-                op_name,
-                seek,
-                &[(0, zip_blob_id, None)],
-                &[(0, member_blob_id, member.uncomp_size, Some(&member.name))],
-            )?;
+            self.record_recipe(&recipe, op_name, seek)?;
             report.members_claimed += 1;
         }
         Ok(())
@@ -616,7 +604,6 @@ impl<'a> Ingester<'a> {
         &mut self,
         bytes: &[u8],
         file_hash: &Blake3,
-        file_blob_id: i64,
         report: &mut IngestReport,
     ) -> Result<(), IngestError> {
         let file_len = bytes.len() as u64;
@@ -633,7 +620,7 @@ impl<'a> Ingester<'a> {
             let mut hasher = AliasHasher::new();
             hasher.update(&variant);
             let tuple = hasher.finalize();
-            let variant_blob_id = self.record_absent_blob(&tuple)?;
+            self.record_absent_blob(&tuple)?;
 
             if decision.operation != Operation::None {
                 report.notes.push(format!(
@@ -668,13 +655,7 @@ impl<'a> Ingester<'a> {
                 }],
                 params: derive_params,
             };
-            self.record_recipe(
-                &derive,
-                "assemble@1",
-                SeekClass::Affine,
-                &[(0, file_blob_id, Some(role.as_str()))],
-                &[(0, variant_blob_id, decision.len(), None)],
-            )?;
+            self.record_recipe(&derive, "assemble@1", SeekClass::Affine)?;
 
             // Rebuild: file = header blob + variant. Only for the common
             // prefix-header shape (decision reaches EOF); the header is a
@@ -686,7 +667,7 @@ impl<'a> Ingester<'a> {
                 let header_tuple = h.finalize();
                 self.store.put(StoreNs::Data, header_tuple.blake3, header)?;
                 let header_hash = header_tuple.blake3;
-                let header_blob_id = self.record_resident_blob(&header_hash, &header_tuple)?;
+                self.record_resident_blob(&header_hash, &header_tuple)?;
 
                 let rebuild_params = AssembleParams {
                     segments: vec![
@@ -723,16 +704,7 @@ impl<'a> Ingester<'a> {
                     }],
                     params: rebuild_params,
                 };
-                self.record_recipe(
-                    &rebuild,
-                    "assemble@1",
-                    SeekClass::Affine,
-                    &[
-                        (0, header_blob_id, Some(role.as_str())),
-                        (1, variant_blob_id, None),
-                    ],
-                    &[(0, file_blob_id, file_len, None)],
-                )?;
+                self.record_recipe(&rebuild, "assemble@1", SeekClass::Affine)?;
             }
             return Ok(());
         }
@@ -772,26 +744,24 @@ impl<'a> Ingester<'a> {
         recipe: &Recipe,
         op_name: &str,
         seek: SeekClass,
-        inputs: &[(u32, i64, Option<&str>)],
-        outputs: &[(u32, i64, u64, Option<&str>)],
     ) -> Result<(), IngestError> {
-        mint_recipe(self.store, self.db, recipe, op_name, seek, inputs, outputs)?;
+        mint_recipe(self.store, self.db, recipe, op_name, seek)?;
         Ok(())
     }
 }
 
 /// Publish a recipe object (meta namespace) and index it as Verified —
 /// shared by the ingest pass and refinement analyzers (both mint claims
-/// about bytes they just hashed, D4). Idempotent by content address.
-/// Returns the recipe row id (existing or new).
+/// about bytes they just hashed, D4). Index rows derive from the recipe
+/// object ([`Db::index_recipe`]), never from caller-supplied tuples.
+/// Idempotent by content address. Returns the recipe row id (existing
+/// or new).
 pub(crate) fn mint_recipe(
     store: &Store,
     db: &mut Db,
     recipe: &Recipe,
     op_name: &str,
     seek: SeekClass,
-    inputs: &[(u32, i64, Option<&str>)],
-    outputs: &[(u32, i64, u64, Option<&str>)],
 ) -> Result<i64, IngestError> {
     let encoded = recipe
         .encode()
@@ -804,21 +774,16 @@ pub(crate) fn mint_recipe(
         IndexNs::Meta,
         Residency::Resident,
     )?;
-    if let Some(existing) = recipe_row_id(db, recipe_blob_id)? {
+    if let Some(existing) = db.recipe_id_for_blob(recipe_blob_id)? {
         return Ok(existing); // re-mint of already-claimed content
     }
-    let recipe_id = db.insert_recipe(&NewRecipe {
-        blob_id: recipe_blob_id,
-        op_kind: match recipe.op {
-            datboi_core::recipe::Op::Builtin { .. } => OpKind::Builtin,
-            datboi_core::recipe::Op::Wasm { .. } => OpKind::Wasm,
-        },
+    let recipe_id = db.index_recipe(
+        recipe_blob_id,
+        recipe,
         op_name,
-        seek_class: seek,
-        source: RecipeSource::LocalIngest,
-        inputs,
-        outputs,
-    })?;
+        seek,
+        RecipeSource::LocalIngest,
+    )?;
     db.set_verify_state(recipe_id, datboi_index::VerifyAdvance::Verified, now_unix())?;
     Ok(recipe_id)
 }
@@ -857,16 +822,6 @@ fn builtin(name_at_major: &str) -> Op {
         name: name.to_owned(),
         major: major.parse().expect("builtin major is numeric"),
     }
-}
-
-/// Idempotency guard for re-mints: the recipe row is UNIQUE on its blob.
-/// (Queries through `Db::cache()`; no direct rusqlite dependency needed.)
-fn recipe_row_id(db: &Db, recipe_blob_id: i64) -> Result<Option<i64>, datboi_index::IndexError> {
-    let mut stmt = db
-        .cache()
-        .prepare_cached("SELECT recipe_id FROM recipe WHERE blob_id = ?1")?;
-    let mut rows = stmt.query((recipe_blob_id,))?;
-    Ok(rows.next()?.map(|row| row.get(0)).transpose()?)
 }
 
 /// Hash one member by streaming out of the stored container. Returns a

@@ -4,11 +4,16 @@
 use std::collections::HashSet;
 
 use datboi_core::hash::Blake3;
+use datboi_core::recipe::{Op, Recipe};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::types::{OpKind, RecipeSource, SeekClass, VerifyState};
-use crate::{Db, IndexError};
+use crate::{Db, IndexError, Namespace, Residency};
 
+/// Raw row shape for [`Db::insert_recipe`]. Production minting goes
+/// through [`Db::index_recipe`], which derives these rows from the
+/// recipe object itself; the raw shape remains for tests that need a
+/// row without a decodable object behind it.
 pub struct NewRecipe<'a> {
     /// The recipe object's own blob (meta/ namespace).
     pub blob_id: i64,
@@ -109,6 +114,77 @@ impl Db {
         }
         tx.commit()?;
         Ok(recipe_id)
+    }
+
+    /// The existing recipe row for a recipe object blob — the
+    /// idempotency check every minting path runs (the recipe table is
+    /// UNIQUE on its blob).
+    pub fn recipe_id_for_blob(&self, recipe_blob_id: i64) -> Result<Option<i64>, IndexError> {
+        Ok(self
+            .cache()
+            .query_row(
+                "SELECT recipe_id FROM recipe WHERE blob_id = ?1",
+                params![recipe_blob_id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Index a recipe object: op kind and every input/output row are
+    /// DERIVED from the decoded [`Recipe`], so the queryable projection
+    /// can never drift from the CAS object that GC, eviction, and
+    /// grounding ultimately trust. Hashes the index has never seen get
+    /// Absent blob rows (referenced-but-missing semantics — recovery,
+    /// peer claims); already-indexed blobs are reused untouched.
+    pub fn index_recipe(
+        &mut self,
+        recipe_blob_id: i64,
+        recipe: &Recipe,
+        op_name: &str,
+        seek_class: SeekClass,
+        source: RecipeSource,
+    ) -> Result<i64, IndexError> {
+        let op_kind = match recipe.op {
+            Op::Builtin { .. } => OpKind::Builtin,
+            Op::Wasm { .. } => OpKind::Wasm,
+        };
+        let mut inputs = Vec::with_capacity(recipe.inputs.len());
+        for (position, input) in recipe.inputs.iter().enumerate() {
+            let id = self.ensure_blob(&input.hash)?;
+            inputs.push((
+                u32::try_from(position).expect("recipe input count fits u32"),
+                id,
+                input.role.as_deref(),
+            ));
+        }
+        let mut outputs = Vec::with_capacity(recipe.outputs.len());
+        for (ordinal, output) in recipe.outputs.iter().enumerate() {
+            let id = self.ensure_blob(&output.hash)?;
+            outputs.push((
+                u32::try_from(ordinal).expect("recipe output count fits u32"),
+                id,
+                output.size,
+                output.name.as_deref(),
+            ));
+        }
+        self.insert_recipe(&NewRecipe {
+            blob_id: recipe_blob_id,
+            op_kind,
+            op_name,
+            seek_class,
+            source,
+            inputs: &inputs,
+            outputs: &outputs,
+        })
+    }
+
+    /// Referenced-but-unindexed blobs get Absent rows (no size claim —
+    /// blob.size records store knowledge, not recipe assertions).
+    fn ensure_blob(&self, hash: &Blake3) -> Result<i64, IndexError> {
+        if let Some(id) = self.get_blob_id(hash)? {
+            return Ok(id);
+        }
+        self.upsert_blob(hash, None, Namespace::Data, Residency::Absent)
     }
 
     /// All recipes claiming to produce `blob_id` — the OR-graph entry

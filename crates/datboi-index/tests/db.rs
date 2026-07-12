@@ -447,6 +447,98 @@ fn recipes_for_output_and_verify_machine() {
     }
 }
 
+/// `index_recipe` derives every row FROM the recipe object: positions,
+/// roles, sizes, names, and op kind all come back exactly as the object
+/// states them, and a hash the index has never seen gets an Absent blob
+/// row — no caller-supplied tuple can drift from the CAS object.
+#[test]
+fn index_recipe_rows_derive_from_the_object() {
+    use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe};
+
+    let (_dir, mut db) = open_db();
+    let known_in = Blake3::compute(b"known input");
+    let known_id = db
+        .upsert_blob(&known_in, Some(64), Namespace::Data, Residency::Resident)
+        .unwrap();
+    let unknown_in = Blake3::compute(b"input the index never saw");
+    let out = Blake3::compute(b"claimed output");
+    let recipe = Recipe {
+        op: Op::Builtin {
+            name: "assemble".into(),
+            major: 1,
+        },
+        inputs: vec![
+            InputRef {
+                hash: known_in,
+                role: Some("skeleton".into()),
+            },
+            InputRef {
+                hash: unknown_in,
+                role: None,
+            },
+        ],
+        outputs: vec![OutputRef {
+            hash: out,
+            size: 524_304,
+            name: Some("Game.nes".into()),
+        }],
+        params: vec![0x80],
+    };
+    let recipe_blob = blob(&db, b"the recipe object", Residency::Resident);
+    assert_eq!(db.recipe_id_for_blob(recipe_blob).unwrap(), None);
+    let recipe_id = db
+        .index_recipe(
+            recipe_blob,
+            &recipe,
+            "assemble@1",
+            SeekClass::Affine,
+            RecipeSource::LocalIngest,
+        )
+        .unwrap();
+    assert_eq!(db.recipe_id_for_blob(recipe_blob).unwrap(), Some(recipe_id));
+
+    let row = db.recipe_by_id(recipe_id).unwrap();
+    assert_eq!(
+        (row.op_kind, row.op_name.as_str(), row.seek_class),
+        (OpKind::Builtin, "assemble@1", SeekClass::Affine)
+    );
+    let inputs = db.recipe_inputs(recipe_id).unwrap();
+    assert_eq!(inputs.len(), 2);
+    assert_eq!(
+        (
+            inputs[0].position,
+            inputs[0].hash,
+            inputs[0].role.as_deref()
+        ),
+        (0, known_in, Some("skeleton"))
+    );
+    assert_eq!(inputs[0].blob_id, known_id, "existing rows are reused");
+    assert_eq!(
+        (
+            inputs[1].position,
+            inputs[1].hash,
+            inputs[1].role.as_deref(),
+            inputs[1].residency
+        ),
+        (1, unknown_in, None, Residency::Absent),
+        "unseen hashes get Absent rows"
+    );
+    let (ordinal, size, name): (i64, i64, Option<String>) = db
+        .cache()
+        .query_row(
+            "SELECT ro.ordinal, ro.size, ro.name FROM recipe_output ro
+             JOIN blob b ON b.blob_id = ro.blob_id
+             WHERE ro.recipe_id = ?1 AND b.hash = ?2",
+            rusqlite::params![recipe_id, out.0.as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (ordinal, size, name.as_deref()),
+        (0, 524_304, Some("Game.nes"))
+    );
+}
+
 #[test]
 fn grounding_diamond_and_ungrounded_cycle() {
     let (_dir, mut db) = open_db();

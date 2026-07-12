@@ -12,11 +12,8 @@ use datboi_catalog::{ImportOptions, audit, diff_source, export_dat, import_dat};
 use datboi_core::alias::AliasHasher;
 use datboi_core::object::{self, ObjectKind};
 use datboi_core::recipe::{Op, Recipe};
-use datboi_core::snapshot::{
-    AliasBatch, AnalysisBatch, StateSnapshot,
-};
-use datboi_index::recipes::NewRecipe;
-use datboi_index::types::{Namespace as NsRow, OpKind, RecipeSource, Residency, SeekClass};
+use datboi_core::snapshot::{AliasBatch, AnalysisBatch, StateSnapshot};
+use datboi_index::types::{Namespace as NsRow, RecipeSource, Residency, SeekClass};
 use datboi_ingest::{IngestReport, Ingester};
 use datboi_store_fs::{Namespace, StoreError, VerifyOutcome};
 use serde_json::json;
@@ -604,7 +601,8 @@ pub fn evict(
     // is exactly the jointly-stranded-pair hazard the guard exists for.
     let holder = mint_guard_holder()?;
     anyhow::ensure!(
-        env.db.claim_gc_guard(&holder, gc_now(), GC_GUARD_TTL_SECS)?,
+        env.db
+            .claim_gc_guard(&holder, gc_now(), GC_GUARD_TTL_SECS)?,
         "gc guard busy (the daemon is evicting or a gc apply is running); retry shortly"
     );
     let report = exec.evict_covered(&env.db, target_bytes, license);
@@ -763,7 +761,9 @@ pub fn gc_apply(mut env: Env, hashes: &[String], json: bool) -> anyhow::Result<E
     let result: anyhow::Result<()> = (|| {
         for c in &wanted {
             if keeps.contains(&c.hash)
-                || !env.db.orphan_still_deletable(c.blob_id, &roots, now, grace)?
+                || !env
+                    .db
+                    .orphan_still_deletable(c.blob_id, &roots, now, grace)?
             {
                 skipped += 1;
                 continue;
@@ -808,7 +808,9 @@ pub fn gc_config(
             // rather than obeying a typo).
             anyhow::ensure!(
                 value.eq_ignore_ascii_case("off")
-                    || value.strip_suffix('%').is_some_and(|p| p.parse::<u8>().is_ok_and(|n| n <= 100))
+                    || value
+                        .strip_suffix('%')
+                        .is_some_and(|p| p.parse::<u8>().is_ok_and(|n| n <= 100))
                     || value.parse::<u64>().is_ok(),
                 "{value:?}: expected \"off\", \"NN%\", or absolute bytes"
             );
@@ -1340,9 +1342,8 @@ fn index_recovered_recipe(
     recipe_blob_id: i64,
     recipe: &Recipe,
 ) -> anyhow::Result<()> {
-    let (op_kind, op_name, seek_class) = match &recipe.op {
+    let (op_name, seek_class) = match &recipe.op {
         Op::Builtin { name, major } => {
-            let full = format!("{name}@{major}");
             // Conservative inference; docs/80-views.md classes. Unknown
             // builtins default to Opaque (never lies toward seekability).
             let class = if name == "assemble" || name == "swap" {
@@ -1350,53 +1351,25 @@ fn index_recovered_recipe(
             } else {
                 SeekClass::Opaque
             };
-            (OpKind::Builtin, full, class)
+            (format!("{name}@{major}"), class)
         }
         Op::Wasm {
             component, export, ..
         } => (
-            OpKind::Wasm,
             format!("{}#{export}", component.to_hex()),
             SeekClass::Opaque,
         ),
     };
-    let mut inputs = Vec::new();
-    for (position, input) in recipe.inputs.iter().enumerate() {
-        let id = ensure_blob(db, &input.hash)?;
-        inputs.push((
-            u32::try_from(position).expect("recipe input count fits u32"),
-            id,
-            input.role.as_deref(),
-        ));
-    }
-    let mut outputs = Vec::new();
-    for (ordinal, output) in recipe.outputs.iter().enumerate() {
-        let id = ensure_blob(db, &output.hash)?;
-        outputs.push((
-            u32::try_from(ordinal).expect("recipe output count fits u32"),
-            id,
-            output.size,
-            output.name.as_deref(),
-        ));
-    }
-    db.insert_recipe(&NewRecipe {
-        blob_id: recipe_blob_id,
-        op_kind,
-        op_name: &op_name,
+    // Rows derive from the object; referenced-but-absent blobs get
+    // Absent rows (peer/member semantics).
+    db.index_recipe(
+        recipe_blob_id,
+        recipe,
+        &op_name,
         seek_class,
-        source: RecipeSource::LocalIngest,
-        inputs: &inputs,
-        outputs: &outputs,
-    })?;
+        RecipeSource::LocalIngest,
+    )?;
     Ok(())
-}
-
-/// Referenced-but-absent blobs get Absent rows (peer/member semantics).
-fn ensure_blob(db: &datboi_index::Db, hash: &datboi_core::hash::Blake3) -> anyhow::Result<i64> {
-    if let Some(id) = db.get_blob_id(hash)? {
-        return Ok(id);
-    }
-    Ok(db.upsert_blob(hash, None, NsRow::Data, Residency::Absent)?)
 }
 
 // ---- scrub ----
