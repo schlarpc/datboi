@@ -457,10 +457,13 @@ same session**: /emu/nds served from the daemon (D66 embed),
 the Browse entry panel (ungated — play≡download, D84 amendment;
 /shelf became an owner-reachable deep link), e2e-verified with a
 live daemon + CDP click-through (dat minted for the homebrew,
-`view define/eval`, shelf → panel → ▶ → pixels). NEXT: milestone 4
-(COEP require-corp + vite dev-server header parity — the CSP half
-already shipped with M3), then spike acceptance: a commercial 2D
-title at full speed, interactively. Watch item (8) under the
+`view define/eval`, shelf → panel → ▶ → pixels). **M4 shipped too**:
+COEP require-corp in the D70 set + vite dev parity, verified
+`crossOriginIsolated === true` with the emulator running — the
+whole D84 spike is code-complete. REMAINING: spike acceptance is a
+human check (a commercial 2D title at full speed, interactively —
+agent-side headless can't hear audio or feel input latency), and
+the dust-upstream items ride the deferred list. Watch item (8) under the
 emulation deferred entry: dust's homebrew heuristic misclassifies
 arm9@4000h homebrew as encrypted.
 

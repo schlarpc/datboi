@@ -716,6 +716,11 @@ fn d70_security_headers_and_csrf() {
             resp.header("cross-origin-opener-policy"),
             Some("same-origin")
         );
+        // COOP+COEP → crossOriginIsolated (the emu lane's SAB headroom).
+        assert_eq!(
+            resp.header("cross-origin-embedder-policy"),
+            Some("require-corp")
+        );
         assert_eq!(
             resp.header("cross-origin-resource-policy"),
             Some("same-origin")

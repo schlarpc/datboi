@@ -15,6 +15,13 @@ export default defineConfig({
       // Serve through the store-symlinked node_modules in the nix dev flow.
       allow: ['.', '/nix/store'],
     },
+    // Parity with the daemon's D70 header set (hardening.rs): dev runs
+    // cross-origin-isolated too, so SAB-dependent emu work (D84) can't
+    // pass in dev and fail in prod or vice versa.
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
     // Dev-loop proxy: `npm run dev` serves the SPA with HMR while the API
     // and content routes come from a locally running daemon
     // (`datboi serve`, default 127.0.0.1:2352). Loopback is implicitly

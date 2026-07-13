@@ -159,18 +159,18 @@ that is a clear error string, never a hang.
 
 ## Headers
 
-COOP `same-origin` and CORP `same-origin` are already stamped on
-every response (D70, hardening.rs). Two additions ride the spike:
+Both shipped (M3 carried the CSP piece, M4 the rest; e2e-verified
+`crossOriginIsolated === true` with the emulator running):
 
-- **COEP `require-corp`** joins the D70 set (plus vite dev-server
-  parity). It is free today — CSP already forbids every cross-origin
-  load — and it buys cross-origin isolation (SharedArrayBuffer,
-  AudioWorklet ring) before anything needs it. Watch item: a future
+- **COEP `require-corp`** joined the D70 set, with vite dev-server
+  parity. It was free — CSP already forbade every cross-origin load —
+  and it banks cross-origin isolation (SharedArrayBuffer, AudioWorklet
+  ring, threaded 3D) before anything needs it. Watch item: a future
   box-art provider must proxy third-party images anyway (CSP), so no
   collision.
-- **`'wasm-unsafe-eval'`** added to CSP script-src —
+- **`'wasm-unsafe-eval'`** in CSP script-src —
   `script-src 'self'` blocks `WebAssembly.compile` in Chromium.
-  Same-origin worker scripts already pass under `'self'`.
+  Same-origin worker scripts pass under `'self'` unchanged.
 
 ## The v1 spike
 

@@ -60,6 +60,16 @@ pub(crate) async fn security_headers(req: Request, next: Next) -> Response {
         HeaderName::from_static("cross-origin-opener-policy"),
         HeaderValue::from_static("same-origin"),
     );
+    // COOP + COEP = cross-origin isolation: SharedArrayBuffer (and so
+    // the emu lane's future AudioWorklet ring / threaded 3D,
+    // docs/88-emulation.md) becomes available. Free to require today:
+    // the CSP above already forbids every cross-origin subresource, so
+    // nothing exists for require-corp to break. A future box-art
+    // provider must proxy third-party images anyway (same CSP).
+    h.insert(
+        HeaderName::from_static("cross-origin-embedder-policy"),
+        HeaderValue::from_static("require-corp"),
+    );
     // CORP is browser-enforced only: it stops OTHER origins' pages from
     // embedding our bytes (Spectre-class exfil); curl/ureq/emulator
     // frontends and every other non-browser consumer ignore it, so the
