@@ -21,6 +21,7 @@
   import type { Descriptor, Touch } from '../lib/emu/protocol';
   import { coreForPath } from '../lib/emu/registry';
   import { EmuSession } from '../lib/emu/session';
+  import TouchCluster from '../lib/emu/TouchCluster.svelte';
 
   let { src }: { src: PlaySrc } = $props();
 
@@ -41,7 +42,9 @@
 
   let canvas = $state<HTMLCanvasElement | null>(null);
   let session: EmuSession | null = null;
-  let descriptor: Descriptor | null = null;
+  // $state because the touch deck renders from it (its button table
+  // decides which controls each cluster draws).
+  let descriptor = $state<Descriptor | null>(null);
 
   // Presentation state, sized once the descriptor arrives.
   let ctx: CanvasRenderingContext2D | null = null;
@@ -54,9 +57,25 @@
   let pointerHeight = 0;
 
   // Input state: keyboard bits accumulate from events; gamepad bits
-  // are re-polled every frame (the Gamepad API is poll-only).
+  // are re-polled every frame (the Gamepad API is poll-only); each
+  // touch-deck cluster pushes its own bitmask as pointers change.
   let keyBits = 0;
+  let deckLeftBits = 0;
+  let deckRightBits = 0;
   let touch: Touch = null;
+
+  // Touch deck gate (D86): capability, never preference — the deck
+  // renders while the PRIMARY pointer is coarse (a finger) and
+  // follows the media query live (a tablet docking a trackpad flips
+  // it off). `any-pointer: coarse` would wrongly catch touchscreen
+  // laptops, whose primary pointer is fine.
+  const coarsePointer = window.matchMedia('(pointer: coarse)');
+  let touchDevice = $state(coarsePointer.matches);
+  $effect(() => {
+    const onchange = () => (touchDevice = coarsePointer.matches);
+    coarsePointer.addEventListener('change', onchange);
+    return () => coarsePointer.removeEventListener('change', onchange);
+  });
 
   function draw(video: Uint32Array) {
     if (ctx === null || image === null || image32 === null) return;
@@ -66,7 +85,7 @@
   }
 
   function sendInput() {
-    let bits = keyBits;
+    let bits = keyBits | deckLeftBits | deckRightBits;
     // Optional-chained: iOS Safari omits the Gamepad API on insecure
     // origins (plain-HTTP LAN is a supported deployment, D70).
     for (const pad of navigator.getGamepads?.() ?? []) {
@@ -275,7 +294,12 @@
       <p class="line">sound starts with your first input</p>
     {/if}
     {#if width > 0}
-      <div class="stage">
+      <!-- Touch deck (D86): never overlays the pointer screen — the
+           clusters own the space letterboxing wastes (below the
+           screens in portrait, the side gutters in landscape), so the
+           bottom screen stays a pure stylus surface and buttons +
+           stylus work simultaneously. -->
+      <div class="stage" class:deck={touchDevice}>
         <canvas
           bind:this={canvas}
           {width}
@@ -287,6 +311,28 @@
           onpointerup={(e) => pointer(e, false)}
           onpointercancel={(e) => pointer(e, false)}
         ></canvas>
+        {#if touchDevice && descriptor !== null}
+          <div class="pad pad--l">
+            <TouchCluster
+              side="left"
+              {descriptor}
+              onbits={(bits) => {
+                deckLeftBits = bits;
+                sendInput();
+              }}
+            />
+          </div>
+          <div class="pad pad--r">
+            <TouchCluster
+              side="right"
+              {descriptor}
+              onbits={(bits) => {
+                deckRightBits = bits;
+                sendInput();
+              }}
+            />
+          </div>
+        {/if}
       </div>
     {/if}
   {/if}
@@ -347,5 +393,52 @@
     object-fit: contain;
     touch-action: none;
     background: #000;
+  }
+
+  /* ---- touch deck layout (D86) ---- */
+  /* The canvas shrinks before the deck does: playable beats big.
+     Portrait: screens on top, clusters side by side below. */
+  .stage.deck {
+    display: grid;
+    gap: 10px;
+    grid-template:
+      'cnv cnv' minmax(0, 1fr)
+      'padl padr' clamp(150px, 30dvh, 240px) / minmax(0, 1fr) minmax(0, 1fr);
+    align-items: stretch;
+    justify-content: stretch;
+  }
+
+  .stage.deck canvas {
+    grid-area: cnv;
+    width: 100%;
+    height: 100%;
+    justify-self: center;
+  }
+
+  .pad {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .pad--l {
+    grid-area: padl;
+  }
+
+  .pad--r {
+    grid-area: padr;
+  }
+
+  /* Landscape: the stacked dual screen is height-bound, so the deck
+     takes the gutters letterboxing would have left black. */
+  @media (orientation: landscape) {
+    .stage.deck {
+      grid-template: 'padl cnv padr' minmax(0, 1fr) / minmax(110px, 1fr) auto minmax(110px, 1fr);
+    }
+
+    .stage.deck canvas {
+      width: auto;
+      max-width: 100%;
+    }
   }
 </style>

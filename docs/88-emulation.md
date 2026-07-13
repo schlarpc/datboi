@@ -137,6 +137,21 @@ ruling against D78 when it arrives — per-device config is arguably
 not a preference toggle, but that argument gets made in a D entry,
 not assumed).
 
+**Touch deck (D86, shipped post-spike)**: coarse-pointer devices get
+CSS-drawn control clusters that never overlay the pointer screen —
+they own the space letterboxing wastes (below the stacked screens in
+portrait, the side gutters in landscape), so the DS bottom screen
+stays a pure stylus surface and buttons + stylus work at once. Press
+semantics live in `lib/emu/touch.ts` (pure, unit-tested):
+intent-of-press on pointerdown, per-pointer role latch (a d-pad
+pointer steers from the pad center for its whole life, 8-way 45°
+sectors, no outer bound), slide-to-roll face buttons, hit zones
+larger than visuals, haptic tick on rising edges. Cluster layouts
+are declared in an abstract unit space and filtered by the
+descriptor's button set — the NES core will reuse them unchanged.
+Fullscreen rides alongside (D87): one immersive flag, CSS takeover
+everywhere, `requestFullscreen()` where the platform has it.
+
 ## ROM and BIOS i/o
 
 **ROM**: the browser fetches decoded payload bytes from the existing

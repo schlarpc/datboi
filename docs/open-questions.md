@@ -173,10 +173,15 @@ Design passes R1–R8 complete; decisions ratified through D73. Docs
   above, history for free. D-entry before code: ownership
   (per-user?), round-trip timing (periodic? on dispose?), and how a
   save finds its game again.
-  (5) Touch button overlay — no longer hypothetical: a phone can
-  tap MKDS menus but cannot press A to drive. CSS-drawn controls
-  feeding the same absolute-input bitmask; 87-web-ui rules apply.
-  (Gamepad shipped with M3.) (6) Second core —
+  (5) ~~Touch button overlay~~ SHIPPED as the touch deck (D86 —
+  deliberately not an overlay): CSS-drawn clusters that never cover
+  the pointer screen, owning the letterbox space instead, feeding
+  the same absolute-input bitmask; per-pointer role latch, 8-way
+  d-pad sectors, slide-to-roll buttons, `(pointer: coarse)`
+  capability gate. Pure math in lib/emu/touch.ts, unit-tested.
+  Fullscreen landed with it (D87: CSS takeover + native API where
+  present). Original note: a phone can tap MKDS menus but cannot
+  press A to drive. (Gamepad shipped with M3.) (6) Second core —
   tetanes-core (NES, MIT/Apache, headless) is the cheap test that
   the host contract generalizes; the contract stays unfrozen until
   it passes. (7) dust upstream watch — bus-factor-one; if it stalls
