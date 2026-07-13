@@ -259,6 +259,53 @@
         DATBOI_COMPONENTS_DIR = "${transformsFor system}/lib";
       };
 
+      # ---- browser emulator cores (crates/datboi-emu-*, D84) ----
+      #
+      # The third wasm lane (docs/88-emulation.md): built like the
+      # components (standalone workspace, own lockfile, wasm32 target) but
+      # consumed like the web dist (a lazy-loaded static asset) — no WIT,
+      # no componentization, no stamping, no determinism gate. dust-core
+      # is nightly-only (core_intrinsics, portable_simd, ...), so the lane
+      # carries its own pinned toolchain; the date tracks what dust's own
+      # CI was green on around the pinned rev, and moves only deliberately.
+      emuToolchainFor = system:
+        let pkgs = pkgsFor system;
+        in pkgs.rust-bin.nightly."2025-12-20".minimal.override {
+          targets = [ "wasm32-unknown-unknown" ];
+        };
+
+      emuCraneLibFor = system:
+        (crane.mkLib (pkgsFor system)).overrideToolchain (emuToolchainFor system);
+
+      # wasm + JS glue via wasm-bindgen-cli (whose version the crate's
+      # wasm-bindgen dep pins exactly — the glue is version-locked to the
+      # CLI), plus the crate's bare test page at the output root:
+      # `python3 -m http.server -d result/` and go.
+      emuDsFor = system:
+        let
+          craneLib = emuCraneLibFor system;
+          pkgs = pkgsFor system;
+          args = {
+            src = ./crates/datboi-emu-ds;
+            strictDeps = true;
+            pname = "datboi-emu-ds";
+            version = "0.1.0";
+            cargoLock = ./crates/datboi-emu-ds/Cargo.lock;
+            CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
+            doCheck = false;
+          };
+        in
+        craneLib.buildPackage (args // {
+          cargoArtifacts = craneLib.buildDepsOnly args;
+          nativeBuildInputs = [ pkgs.wasm-bindgen-cli ];
+          installPhaseCommand = ''
+            mkdir -p $out
+            wasm-bindgen --target web --no-typescript --out-dir $out/pkg \
+              target/wasm32-unknown-unknown/release/datboi_emu_ds.wasm
+            cp -r test-page/. $out/
+          '';
+        });
+
       # ---- web UI (web/, D67) ----
       #
       # web/ is a standalone npm project with its own package-lock.json —
@@ -424,6 +471,8 @@
 
           transforms = transformsFor system;
 
+          emu-ds = emuDsFor system;
+
           web = webFor system;
 
           magicdb = magicDbFor system;
@@ -440,6 +489,10 @@
         {
           build = self.packages.${system}.default;
           transforms = self.packages.${system}.transforms;
+          # The emu lane (D84) has no host-side consumer yet (that's
+          # spike milestones 2–3); building it in CI is what keeps the
+          # nightly pin + upstream rev honest in the meantime.
+          emu-ds = self.packages.${system}.emu-ds;
           web = self.packages.${system}.web;
 
           # svelte-check + vitest over the same fileset source. Generated

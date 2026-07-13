@@ -1,6 +1,12 @@
 # datboi — in-browser emulation
 
-*Status: design ratified 2026-07-12 as D84; nothing shipped yet. This
+*Status: design ratified 2026-07-12 as D84; spike milestone 1 shipped
+the same day — `nix build .#emu-ds` (nightly pinned 2025-12-20; the
+2026-02 nightlies already break dust's portable_simd usage, proving
+the pin-by-last-green rule below) produces the wasm + glue, and the
+bare test page boots devkitPro homebrew with both screens rendering,
+headless-verified. Watch item logged: dust's homebrew heuristic
+(open-questions). This
 doc is the design record for the emulator lane; [87-web-ui.md]
 (87-web-ui.md) governs the Play surface it produces. The vision line
 it serves: "in-browser emulator cores for direct play"

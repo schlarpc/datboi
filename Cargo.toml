@@ -21,6 +21,9 @@ exclude = [
   "crates/datboi-xf-reference",
   "crates/datboi-xf-reference-stream",
   "crates/datboi-ex-unrar",
+  # The emu lane (D84) is standalone AND nightly-only (dust-core);
+  # it builds via `nix build .#emu-ds`, never with the workspace.
+  "crates/datboi-emu-ds",
 ]
 
 [workspace.package]

@@ -156,7 +156,16 @@ Design passes R1–R8 complete; decisions ratified through D73. Docs
   the host contract generalizes; the contract stays unfrozen until
   it passes. (7) dust upstream watch — bus-factor-one; if it stalls
   hard, plan B is wrapping melonDS via emscripten (FreeBIOS
-  included) at the cost of a C++ glue layer.
+  included) at the cost of a C++ glue layer. (8) dust's homebrew
+  heuristic (observed at milestone 1): `is_homebrew` = arm9 ROM
+  offset outside [4000h, 8000h), but modern ndstool places homebrew
+  ARM9 at exactly 4000h (hbmenu's BOOT.NDS, ftpd), so dust
+  misclassifies those as encrypted commercial carts and demands
+  KEY1 key material — the clean error path fires, but wrongly.
+  Commercial decrypted dumps carry the E7FFDEFFh dumper marker and
+  boot fine (argvTest-era homebrew at 200h too). Fix candidates:
+  BIOS-from-CAS (item 1 — real keys make it moot) or a small
+  upstream-able patch (melonDS-style homebrew detection).
 - **Rank-7 CDC over decomposed pieces (observed 2026-07-12, D83
   session)**: D59 gates chunking to route-less literals, so pieces
   minted by decomposition are never CDC'd — correct for
@@ -414,6 +423,26 @@ two things were seen and deliberately deferred:
   deep-linking; another CAS-debugger surface is the failure mode.
 
 ## Next sessions (pick up here)
+
+**Position as of 2026-07-12 (emulation session)**: D84 ruled +
+88-emulation.md written, and **spike milestone 1 shipped**:
+`nix build .#emu-ds` builds dust (rev-pinned git deps, nightly
+2025-12-20 — 2026-02 nightlies break dust's portable_simd use, so
+the pin tracks upstream's last-green, not latest) into
+wasm-bindgen wasm + glue with a synchronous in-instance 3D renderer
+(no atomics/SAB/build-std — dust-web's threaded renderer replaced
+by an eager rasterize in `start_rendering`), and the crate's bare
+test page direct-boots homebrew with both screens rendering,
+verified headless (chromium `--virtual-time-budget` + `?bench=` /
+`?stress=` page modes; real-time headless throttles hidden pages —
+don't chase that again). Emu lane rides `checks.emu-ds` in CI.
+NEXT: milestone 2 (worker protocol around the wasm surface —
+`create_emu_state` / `run_frame` / `update_input` / `update_touch`
+already speak it), milestone 3 (web `lib/emu/` host: worker, canvas
+compositor, audio backend to replace DummyBackend, input, Play
+route), milestone 4 (COEP + `'wasm-unsafe-eval'` headers, dev
+parity). Watch item (8) under the emulation deferred entry: dust's
+homebrew heuristic misclassifies arm9@4000h homebrew as encrypted.
 
 **Position as of 2026-07-11 (GC session, after the M5 web sessions)**:
 **D71–D73 SHIPPED IN FULL.** Analysis, licensing, and eviction are

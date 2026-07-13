@@ -1,0 +1,126 @@
+<!doctype html>
+<!-- D84 milestone-1 bare test page: NOT part of the datboi web UI (that
+     integration is milestones 2–3, docs/88-emulation.md). Serve the
+     nix build output directory and open /?rom=<url> or pick a file.
+     Everything here is throwaway scaffolding for proving the core. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>datboi-emu-ds test page</title>
+<style>
+  body { background: #111; color: #ddd; font: 14px monospace; text-align: center; }
+  canvas { image-rendering: pixelated; width: 512px; height: 768px; margin-top: 8px; }
+  #status { margin: 8px; }
+</style>
+</head>
+<body>
+<div id="status">pick a .nds file or pass ?rom=&lt;same-origin url&gt;</div>
+<input type="file" id="rom" accept=".nds">
+<br>
+<canvas id="screen" width="256" height="384"></canvas>
+<script type="module">
+import init, { create_emu_state } from "./pkg/datboi_emu_ds.js";
+
+const W = 256, H = 384; // both screens stacked, top then bottom
+const status = document.getElementById("status");
+const canvas = document.getElementById("screen");
+const ctx = canvas.getContext("2d");
+const image = ctx.createImageData(W, H);
+const image32 = new Uint32Array(image.data.buffer);
+
+// dust_core::emu::input::Keys bit encoding (see lib.rs).
+const KEYMAP = {
+  KeyX: 1 << 0,        // A
+  KeyZ: 1 << 1,        // B
+  Backspace: 1 << 2,   // Select
+  Enter: 1 << 3,       // Start
+  ArrowRight: 1 << 4,
+  ArrowLeft: 1 << 5,
+  ArrowUp: 1 << 6,
+  ArrowDown: 1 << 7,
+  KeyW: 1 << 8,        // R
+  KeyQ: 1 << 9,        // L
+  KeyS: 1 << 16,       // X
+  KeyA: 1 << 17,       // Y
+};
+
+let emu;
+
+function start(romBytes) {
+  emu = create_emu_state(romBytes, undefined, undefined, undefined);
+  status.textContent = "running";
+
+  let frames = 0;
+  let lastTick = performance.now();
+  setInterval(() => {
+    const buf = emu.run_frame();
+    for (let i = 0; i < buf.length; i++) image32[i] = buf[i] | 0xff000000;
+    ctx.putImageData(image, 0, 0);
+    frames++;
+    const now = performance.now();
+    if (now - lastTick >= 1000) {
+      status.textContent = `running — ${frames} fps`;
+      console.log(`emu fps: ${frames}`); // headless runs read this
+      frames = 0;
+      lastTick = now;
+    }
+  }, 1000 / 60);
+
+  addEventListener("keydown", (e) => {
+    if (KEYMAP[e.code]) { emu.update_input(KEYMAP[e.code], 0); e.preventDefault(); }
+  });
+  addEventListener("keyup", (e) => {
+    if (KEYMAP[e.code]) { emu.update_input(0, KEYMAP[e.code]); e.preventDefault(); }
+  });
+
+  // Mouse as stylus on the bottom half of the canvas.
+  const touch = (e, down) => {
+    const r = canvas.getBoundingClientRect();
+    const x = Math.floor((e.clientX - r.left) * (W / r.width));
+    const y = Math.floor((e.clientY - r.top) * (H / r.height)) - 192;
+    if (down && x >= 0 && x < 256 && y >= 0 && y < 192) emu.update_touch(x, y);
+    else emu.update_touch(undefined, undefined);
+  };
+  canvas.addEventListener("pointerdown", (e) => { canvas.setPointerCapture(e.pointerId); touch(e, true); });
+  canvas.addEventListener("pointermove", (e) => { if (e.buttons) touch(e, true); });
+  canvas.addEventListener("pointerup", (e) => touch(e, false));
+}
+
+await init();
+
+document.getElementById("rom").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (file) start(new Uint8Array(await file.arrayBuffer()));
+});
+
+const params = new URLSearchParams(location.search);
+const romUrl = params.get("rom");
+if (romUrl) {
+  status.textContent = `fetching ${romUrl}…`;
+  const resp = await fetch(romUrl);
+  if (!resp.ok) {
+    status.textContent = `fetch failed: ${resp.status}`;
+  } else {
+    start(new Uint8Array(await resp.arrayBuffer()));
+    // ?bench=<seconds>: hold the module's top-level await (and so the
+    // window load event) open while the emulator runs, so a headless
+    // `--screenshot` fires after the run and captures the fps line.
+    const bench = Number(params.get("bench"));
+    if (bench > 0) await new Promise((r) => setTimeout(r, bench * 1000));
+    // ?stress=<frames>: synchronous flat-out run — immune to headless
+    // timer throttling — reporting emulation throughput, not pacing.
+    const stress = Number(params.get("stress"));
+    if (stress > 0) {
+      const t0 = performance.now();
+      let buf;
+      for (let i = 0; i < stress; i++) buf = emu.run_frame();
+      const dt = (performance.now() - t0) / 1000;
+      for (let i = 0; i < buf.length; i++) image32[i] = buf[i] | 0xff000000;
+      ctx.putImageData(image, 0, 0);
+      status.textContent = `stress: ${stress} frames in ${dt.toFixed(2)}s = ${(stress / dt).toFixed(0)} fps throughput`;
+    }
+  }
+}
+</script>
+</body>
+</html>

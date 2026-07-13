@@ -1,0 +1,53 @@
+[package]
+name = "datboi-emu-ds"
+description = "Nintendo DS browser core (D84): dust-core behind a minimal wasm-bindgen surface — ROM bytes in, RGBA frames + key/touch input across a worker boundary. A web-bundle asset, not a CAS component."
+version = "0.1.0"
+edition = "2024"
+authors = ["Chaz Schlarp"]
+# dust is GPL-3.0 (plain license text, no or-later grant), so this wrapper
+# and its wasm+glue output are too — accepted and scoped per-crate in D84
+# (the LicenseRef-unRAR precedent). Source offer: the git pin below plus
+# this repo.
+license = "GPL-3.0-only"
+repository = "https://github.com/schlarpc/datboi"
+
+[lib]
+crate-type = ["cdylib"]
+
+# Upstream pinned by exact rev (bus-factor-one upstream, vendored-snapshot
+# posture per D84); dust's transitive git deps (emu-utils, arm-decoder) pin
+# through this crate's own Cargo.lock. NOTE dust-core is nightly-only
+# (core_intrinsics, portable_simd, ...) — dev builds go through
+# `nix build .#emu-ds`, which carries the pinned nightly; the workspace
+# toolchain cannot compile this crate.
+[dependencies]
+dust-core = { git = "https://github.com/kelpsyberry/dust", rev = "76d79f25e4ea3ce355c4ac868f5ac9a233e64b89" }
+dust-soft-2d = { git = "https://github.com/kelpsyberry/dust", rev = "76d79f25e4ea3ce355c4ac868f5ac9a233e64b89" }
+dust-soft-3d = { git = "https://github.com/kelpsyberry/dust", rev = "76d79f25e4ea3ce355c4ac868f5ac9a233e64b89" }
+# Pinned exactly: the generated glue only works with the same-version CLI,
+# and nixpkgs provides wasm-bindgen-cli 0.2.121 (flake.nix emu lane).
+wasm-bindgen = "=0.2.121"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+
+# Standalone workspace ON PURPOSE (D54 lockfile boundary, D84): the emu
+# lane resolves against its own lockfile so host-side dependency churn
+# never rebuilds or perturbs the shipped core.
+[workspace]
+
+[lints.rust]
+# renderer_3d.rs shares one UnsafeCell'd static between the emulator and
+# the 3D rasterizer — sound single-threaded, see the module comment.
+unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+# A lazy-loaded browser asset running an interpreter: speed first, then
+# size (strip + abort keep the blob lean; the interpreter needs opt-level 3).
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
