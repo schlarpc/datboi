@@ -164,25 +164,36 @@ Design passes R1–R8 complete; decisions ratified through D73. Docs
   rights (the ▶ sits beside the download anchor and fetches the same
   granted /view bytes — no new surface); reopens only if play ever
   grants more than bytes (server-side saves, netplay).
-  (4) Save persistence — in-session save RAM evaporates on
-  close (UI says so, once); the datboi-shaped answer joins the
-  "writes are ingests" overlay design above, not a new mechanism.
-  (5) Touch button overlay + gamepad — stretch, not gating;
-  pointer-as-stylus proves the input path. (6) Second core —
+  (4) Save persistence — NOW THE LOUDEST GAP (post-spike: games
+  have their save chips, so MKDS re-asks first-run setup every
+  session as the in-memory save evaporates). dust already exposes
+  export_save/load_save and the worker protocol can carry the bytes;
+  the design owed is storage-side — saves as ordinary ingested blobs
+  keyed by (game, user), the "writes are ingests" overlay design
+  above, history for free. D-entry before code: ownership
+  (per-user?), round-trip timing (periodic? on dispose?), and how a
+  save finds its game again.
+  (5) Touch button overlay — no longer hypothetical: a phone can
+  tap MKDS menus but cannot press A to drive. CSS-drawn controls
+  feeding the same absolute-input bitmask; 87-web-ui rules apply.
+  (Gamepad shipped with M3.) (6) Second core —
   tetanes-core (NES, MIT/Apache, headless) is the cheap test that
   the host contract generalizes; the contract stays unfrozen until
   it passes. (7) dust upstream watch — bus-factor-one; if it stalls
   hard, plan B is wrapping melonDS via emscripten (FreeBIOS
   included) at the cost of a C++ glue layer. (8) dust's homebrew
-  heuristic (observed at milestone 1): `is_homebrew` = arm9 ROM
-  offset outside [4000h, 8000h), but modern ndstool places homebrew
-  ARM9 at exactly 4000h (hbmenu's BOOT.NDS, ftpd), so dust
-  misclassifies those as encrypted commercial carts and demands
-  KEY1 key material — the clean error path fires, but wrongly.
-  Commercial decrypted dumps carry the E7FFDEFFh dumper marker and
-  boot fine (argvTest-era homebrew at 200h too). Fix candidates:
-  BIOS-from-CAS (item 1 — real keys make it moot) or a small
-  upstream-able patch (melonDS-style homebrew detection).
+  heuristic — WORSE since BIOS shipped: with key material present,
+  dust now KEY1-"decrypts" the UNENCRYPTED secure area of modern
+  homebrew (corrupting real code — a crash or wrong behavior, where
+  it used to be a clean error). A small local patch to dust's
+  detection (melonDS-style) is now the right move, and would be the
+  vendored-snapshot posture's first exercise. Original finding
+  (milestone 1): `is_homebrew` = arm9 ROM offset outside
+  [4000h, 8000h), but modern ndstool places homebrew ARM9 at exactly
+  4000h (hbmenu's BOOT.NDS, ftpd), so dust misclassifies those as
+  encrypted commercial carts. Commercial decrypted dumps carry the
+  E7FFDEFFh dumper marker and boot fine (argvTest-era homebrew at
+  200h too).
 - **Rank-7 CDC over decomposed pieces (observed 2026-07-12, D83
   session)**: D59 gates chunking to route-less literals, so pieces
   minted by decomposition are never CDC'd — correct for
@@ -474,12 +485,24 @@ live daemon + CDP click-through (dat minted for the homebrew,
 `view define/eval`, shelf → panel → ▶ → pixels). **M4 shipped too**:
 COEP require-corp in the D70 set + vite dev parity, verified
 `crossOriginIsolated === true` with the emulator running — the
-whole D84 spike is code-complete. REMAINING: spike acceptance is a
-human check (a commercial 2D title at full speed, interactively —
-agent-side headless can't hear audio or feel input latency), and
-the dust-upstream items ride the deferred list. Watch item (8) under the
-emulation deferred entry: dust's homebrew heuristic misclassifies
-arm9@4000h homebrew as encrypted.
+whole D84 spike is code-complete. THE POST-SPIKE TAIL (same
+session, live iPhone testing driving each fix): save chips
+(gamecode-keyed in-memory devices from dust's game_db — games hang
+at boot probing for them), BIOS-from-CAS shipped (deferred item 1;
+`GET /v1/blobs/{hash}/bytes`; MKDS boots), touch fixed twice
+(pixel→ADC ×16 for dust's TSC — pixel units put every tap in the
+top-left corner — plus letterbox-aware mapping for narrow screens),
+firmware nickname = session username (CRC-verified patch of both
+user-settings blocks; loopback owners are "datboi"), and iOS audio
+survives app switches (every gesture re-asserts unlockAudio; audio
+promise rejections are expected answers, not banners). REMAINING:
+spike acceptance is a human check (a commercial title at full
+speed with sound, interactively); the deferred-items entry above is
+the ordered backlog (saves persistence now loudest, touch overlay
+now concrete, friend BIOS, heuristic patch — see items 1/2/4/5/8);
+AND one hygiene debt: flake/build.rs/API all changed this session
+— `nix build .#datboi` (hermetic proof) + a clippy pass have NOT
+been run over the final state; do that first next session.
 
 **Position as of 2026-07-11 (GC session, after the M5 web sessions)**:
 **D71–D73 SHIPPED IN FULL.** Analysis, licensing, and eviction are

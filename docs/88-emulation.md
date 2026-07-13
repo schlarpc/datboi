@@ -46,7 +46,8 @@ depends on their byte-exactness. So they are a third lane:
   via nix, wasm32 target.
 - **Consumed like the web dist** (D66/D67 lane): flake package →
   `DATBOI_*` env var → embedded in datboi-server, served as a static
-  asset with a hashed filename (cache-forever), **lazy-loaded** —
+  asset, **lazy-loaded** — (hashed-filename cache-forever serving is
+  still owed; today the names are stable and the files revalidate) —
   a DS core is multiple MB and must not ride the initial bundle.
 - **Not like a transform**: no WIT world, no wasmtime, no recipe
   pinning, no determinism gate, no attribution stamping requirement.
@@ -211,5 +212,9 @@ Saves persistence (in-session save RAM lives in emulator memory and
 evaporates on close — the UI says so honestly, once; the eventual
 answer ties into the "writes are ingests" overlay design, not a
 novel mechanism), save states, control rebinding, video filters,
-fast-forward/rewind, cheats, netplay, BIOS-from-CAS, mobile
-performance promises.
+fast-forward/rewind, cheats, netplay, mobile performance promises.
+(BIOS-from-CAS was on this list and shipped anyway — see above.)
+Future quality items recorded for when filters arrive: dust's
+wgpu-3d hi-res renderer is the natural first one (WebGPU-in-worker
+caveats apply), and the AudioWorklet + SAB audio ring is the
+latency endgame the shipped COEP headers keep available.
