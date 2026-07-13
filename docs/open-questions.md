@@ -85,8 +85,10 @@ Design passes R1–R8 complete; decisions ratified through D73. Docs
   content-derived dirtiness, no flags; mint extracted to
   datboi-catalog::statesnap, `datboi snapshot` stays as the manual
   trigger.
-- Browser-side wasm lane in the web UI: deferred until a concrete need
-  (M5 at the earliest, post-D50).
+- ~~Browser-side wasm lane in the web UI~~ the concrete need arrived
+  and was **ruled 2026-07-12 as D84**: emulator cores are the third
+  wasm lane (web-bundle assets, not CAS components); design record
+  in 88-emulation.md.
 - Auto-fill-gaps-from-peers policy (beyond the manual fetch action):
   later, per-view opt-in, after M6 holdings channels exist (post-D50).
 - peer_have bitmap representation: deferred until mirror-scale peers are
@@ -135,6 +137,26 @@ Design passes R1–R8 complete; decisions ratified through D73. Docs
   needs no wasm (same FNT/FAT format, IMG-relative offsets) but is
   policy-gated on recipe volume — a max FAT is 61440 files and
   NARCs multiply that.
+- **Emulation deferred items (split out of the D84 ratification,
+  see 88-emulation.md)**: each is real design work owed after the
+  spike, none gates it. (1) BIOS slots from CAS — core descriptors
+  carry named slots with hard-coded accepted content hashes; at
+  launch the host asks which exist in CAS and fetches; BIOS dumps
+  stay ordinary ingested blobs, the hash list IS the verification.
+  (2) Control rebinding — out of v1 AND in tension with D78
+  zero-toggles; when it arrives it needs a ruling arguing per-device
+  config ≠ preference toggle. (3) Friend-facing play ACL — spike is
+  owner-only; who may launch games in a shared view is a D34/D68
+  question. (4) Save persistence — in-session save RAM evaporates on
+  close (UI says so, once); the datboi-shaped answer joins the
+  "writes are ingests" overlay design above, not a new mechanism.
+  (5) Touch button overlay + gamepad — stretch, not gating;
+  pointer-as-stylus proves the input path. (6) Second core —
+  tetanes-core (NES, MIT/Apache, headless) is the cheap test that
+  the host contract generalizes; the contract stays unfrozen until
+  it passes. (7) dust upstream watch — bus-factor-one; if it stalls
+  hard, plan B is wrapping melonDS via emscripten (FreeBIOS
+  included) at the cost of a C++ glue layer.
 - **Rank-7 CDC over decomposed pieces (observed 2026-07-12, D83
   session)**: D59 gates chunking to route-less literals, so pieces
   minted by decomposition are never CDC'd — correct for
@@ -309,7 +331,8 @@ strict mode + retool clonelist consumption are M4 work items).
   download UI is the truth); desktop-only
   layout for now (all comps are 1160px; responsive is design work);
   `▶ Play` (browser emulator cores) and box-art metadata provider
-  stay explicitly-future per the comps, UI reserves their slots.
+  stay explicitly-future per the comps, UI reserves their slots
+  (Play since ruled 2026-07-12 as D84, see 88-emulation.md).
 - **Dat import graduated from CLI-only** (2026-07-11, post-ship):
   the M5 "mutating actions stay CLI-only" ruling was really about
   long-running pipeline work wanting live progress and a job

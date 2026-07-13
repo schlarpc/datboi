@@ -1608,3 +1608,41 @@ and an opaque seek class); trusting the header trim size
 unconditionally (known fake-size ROMs trim to 512 bytes); storing
 trimmed variants as blobs (trim is a view-time slice over the same
 pieces).
+
+## D84 — Browser emulator cores are web-bundle assets, not CAS components; DS first via dust-core (2026-07-12)
+
+Emulator cores are a **third wasm lane**: built like unrar (D58 —
+standalone `datboi-emu-*` crate, own lockfile, upstream fetched +
+pinned + patched via nix, wasm32 target) but consumed like the web
+dist (D66/D67 — flake package → `DATBOI_*` env var → served as a
+lazy-loaded static asset), and exempt from the component doctrine
+entirely: no WIT world, no wasmtime, no recipe pinning, no
+determinism gate — `wasm32-unknown-unknown` + wasm-bindgen, because
+they run in the *browser* and nothing downstream depends on their
+byte-exactness. Design record: [88-emulation.md](88-emulation.md)
+(pulled forward from the 90-roadmap M7+ frontier; the M5 web surface
+reserved the ▶ Play slot). First console is DS via `dust-core` — the
+only accuracy-credible library-shaped Rust DS core, browser-proven
+(worker + transferable frames + scheduled AudioContext, no
+SharedArrayBuffer needed), HLE-BIOS direct boot so no Nintendo files
+ship or are required. Its costs are accepted and named: nightly +
+`-Zbuild-std` + git deps (pin and vendor — spike milestone 1),
+bus-factor-one upstream (vendored-snapshot posture, as unrar), and
+GPL-3.0 in an MIT workspace (per-crate license, the
+`LicenseRef-unRAR` precedent; source-offer satisfied by the in-repo
+fetch recipe + patches). The host contract (core descriptor + worker
+protocol) is codified but deliberately unfrozen until a second core
+(tetanes-core) exercises it. Headers ride along: COEP `require-corp`
+joins the D70 set now while it is free, and CSP script-src gains
+`'wasm-unsafe-eval'` (Chromium blocks `WebAssembly.compile` without
+it). *Rejected:* cores as CAS components in the transform/extractor
+lane (the determinism contract is wrong on every clause);
+wasmtime-side execution with streamed frames (a remote-play product,
+not an embedded emulator); libretro as the host ABI (a C ABI built
+on process-global callback statics — prior art for wrapping cores,
+an anti-pattern to adopt); melonDS or DeSmuME first (no
+library-shaped wasm path: emscripten fork or dormant port); NES
+first (proves nothing DS doesn't — single screen, no pointer, no
+perf pressure); shipping or requiring Nintendo BIOS/firmware (HLE
+direct-boot covers v1; the later BIOS story is
+known-hashes-from-CAS, see 88-emulation.md).
