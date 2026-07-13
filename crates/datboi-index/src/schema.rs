@@ -17,7 +17,9 @@
 /// v2: seek_quarantine (D49), analysis + sweep_queue (D45/D48).
 /// v3: sweep_queue.leased_until (D71 in-daemon refinement leases).
 /// v4: gc_guard + orphan_candidate (D72/D73 background GC).
-pub const CACHE_SCHEMA_VERSION: u32 = 4;
+/// v5: sf_by_blob + analyzer-first sweep_by_priority (query-shaped
+/// indexes; no table changes).
+pub const CACHE_SCHEMA_VERSION: u32 = 5;
 
 /// cache.db migration ladder, same shape and rules as
 /// [`STATE_MIGRATIONS`]: `CACHE_MIGRATIONS[i]` migrates version `i + 1`
@@ -83,6 +85,18 @@ CREATE TABLE orphan_candidate (
   blob_id   INTEGER PRIMARY KEY REFERENCES blob(blob_id),
   marked_at INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
+",
+    // v4 → v5: query-shaped indexes, no table changes. sf_by_blob
+    // serves the blob-detail surfaces (routes, paths, provenance) that
+    // look up source_file by blob_id — full scans of a table that grows
+    // with every scanned file until now. sweep_by_priority gains the
+    // analyzer prefix and blob_id tiebreak so claim_sweep_items becomes
+    // an ordered index walk that stops at LIMIT, instead of
+    // scan-and-sorting a queue sized blobs × analyzers.
+    "
+CREATE INDEX sf_by_blob ON source_file(blob_id);
+DROP INDEX sweep_by_priority;
+CREATE INDEX sweep_by_priority ON sweep_queue(analyzer, priority DESC, enqueued_at, blob_id);
 ",
 ];
 
@@ -201,6 +215,7 @@ CREATE TABLE source_file (
   blob_id    INTEGER REFERENCES blob(blob_id),
   scanned_at INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
+CREATE INDEX sf_by_blob ON source_file(blob_id);
 
 CREATE TABLE detector (
   detector_id INTEGER PRIMARY KEY,
@@ -366,7 +381,7 @@ CREATE TABLE sweep_queue (
   leased_until INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (blob_id, analyzer)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX sweep_by_priority ON sweep_queue(priority DESC, enqueued_at);
+CREATE INDEX sweep_by_priority ON sweep_queue(analyzer, priority DESC, enqueued_at, blob_id);
 
 -- D72: the eviction singleton guard — the one lease that IS a
 -- correctness gate (two concurrent grounding computations can jointly

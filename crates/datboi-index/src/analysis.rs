@@ -269,6 +269,10 @@ impl Db {
     ) -> Result<Vec<SweepItem>, IndexError> {
         let tx = self.cache.transaction()?;
         let rows = {
+            // Predicate + ORDER BY mirror sweep_by_priority (analyzer,
+            // priority DESC, enqueued_at, blob_id): the claim is an
+            // ordered index walk that stops at LIMIT, not a sort of the
+            // whole blobs × analyzers queue. Keep them in lockstep.
             let mut stmt = tx.prepare_cached(
                 "SELECT q.blob_id, b.hash, b.size, q.priority
                  FROM sweep_queue q JOIN blob b ON b.blob_id = q.blob_id

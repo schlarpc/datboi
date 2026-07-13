@@ -132,13 +132,14 @@ fn version_skew_recreates_cache_and_protects_state() {
             .expect("state row");
     }
 
-    // A v1 cache (the shipped ladder's floor): drop the v2 tables and
-    // rewind the stamp, exactly what a real v1 file looks like.
+    // A v1 cache (the shipped ladder's floor): drop the v2+ tables and
+    // the v5 index, rewind the stamp — exactly what a real v1 file
+    // looks like.
     {
         let conn = rusqlite::Connection::open(dir.path().join("cache.db")).expect("raw open");
         conn.execute_batch(
             "DROP TABLE sweep_queue; DROP TABLE analysis; DROP TABLE seek_quarantine;
-             DROP TABLE gc_guard; DROP TABLE orphan_candidate;",
+             DROP TABLE gc_guard; DROP TABLE orphan_candidate; DROP INDEX sf_by_blob;",
         )
         .expect("devolve");
         conn.pragma_update(None, "user_version", 1).expect("rewind");
@@ -229,8 +230,8 @@ fn migrated_cache_equals_fresh_schema() {
     };
     let fresh_shapes = shapes(fresh.cache());
 
-    // Devolve a copy to v1 (drop everything the v1→v2 step creates),
-    // then let open() migrate it back up.
+    // Devolve a copy to v1 (drop everything the ladder creates on a v1
+    // table set), then let open() migrate it back up.
     let migrated_dir = tempfile::tempdir().expect("tempdir");
     drop(Db::open(migrated_dir.path()).expect("open"));
     {
@@ -238,7 +239,7 @@ fn migrated_cache_equals_fresh_schema() {
             rusqlite::Connection::open(migrated_dir.path().join("cache.db")).expect("raw open");
         conn.execute_batch(
             "DROP TABLE sweep_queue; DROP TABLE analysis; DROP TABLE seek_quarantine;
-             DROP TABLE gc_guard; DROP TABLE orphan_candidate;",
+             DROP TABLE gc_guard; DROP TABLE orphan_candidate; DROP INDEX sf_by_blob;",
         )
         .expect("devolve");
         conn.pragma_update(None, "user_version", 1).expect("rewind");
