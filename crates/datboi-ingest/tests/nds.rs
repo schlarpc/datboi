@@ -301,7 +301,10 @@ fn round_trip_is_bit_faithful_and_members_are_claimed() {
     assert_eq!(b_recipe[0].outputs[0].name.as_deref(), Some("sub/b.bin"));
     let sig_hash = Blake3::compute(&rom[ntr_size as usize..(ntr_size + 0x88) as usize]);
     let sig_recipe = recipes_for(&store, &db, &sig_hash);
-    assert_eq!(sig_recipe[0].outputs[0].name.as_deref(), Some("rsa_sig.bin"));
+    assert_eq!(
+        sig_recipe[0].outputs[0].name.as_deref(),
+        Some("rsa_sig.bin")
+    );
 
     // Pieces are CLAIMS: nothing but the ROM literal is stored.
     assert!(!store.has(StoreNs::Data, &Blake3::compute(&b_data)));
@@ -481,7 +484,11 @@ fn overlapping_fat_entries_refuse_the_whole_rom() {
 #[test]
 fn non_nds_blobs_conclude_negative() {
     let (_dir, store, mut db) = world();
-    put(&store, &db, b"just some loose rom bytes, nothing nds about them");
+    put(
+        &store,
+        &db,
+        b"just some loose rom bytes, nothing nds about them",
+    );
     let report = sweep(&mut db, &store);
     assert_eq!(report.errors, vec![]);
     assert_eq!((report.positive, report.negative), (0, 1));

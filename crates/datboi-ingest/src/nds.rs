@@ -159,8 +159,7 @@ pub fn looks_like_nds(head: &[u8]) -> bool {
     if head.len() < 0x160 {
         return false;
     }
-    crc16(&head[0xC0..0x15C]) == u16_at(head, 0x15C)
-        && crc16(&head[..0x15E]) == u16_at(head, 0x15E)
+    crc16(&head[0xC0..0x15C]) == u16_at(head, 0x15C) && crc16(&head[..0x15E]) == u16_at(head, 0x15E)
 }
 
 /// Parse the full layout. `rom` is any seekable byte source (the stored
@@ -330,7 +329,9 @@ pub fn parse_layout<R: Read + Seek>(rom: &mut R) -> Result<Layout, NdsError> {
     let mut has_rsa_sig = false;
     if !is_dsi
         && ntr_size + 2 <= rom_len
-        && ntr_size.checked_add(RSA_SIG_LEN).is_some_and(|e| e <= rom_len)
+        && ntr_size
+            .checked_add(RSA_SIG_LEN)
+            .is_some_and(|e| e <= rom_len)
         && u16_at(&read_at(rom, ntr_size, 2)?, 0) == RSA_SIG_MAGIC
     {
         let sig = Piece {
@@ -515,7 +516,9 @@ fn overlay_names(
         let overlay_id = u32_at(entry, 0);
         let file_id = u32_at(entry, 0x18);
         if file_id >= fat_count {
-            return Err(Refusal::Overlay(format!("file id {file_id} not in the FAT")));
+            return Err(Refusal::Overlay(format!(
+                "file id {file_id} not in the FAT"
+            )));
         }
         names
             .entry(u16::try_from(file_id).expect("bounded by the FAT cap"))

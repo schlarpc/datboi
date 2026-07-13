@@ -87,7 +87,8 @@ pub(crate) async fn import(
         // request.
         tracing::info!(
             "dat import: {provider}/{system} rev {} ({} entries)",
-            report.revision_id, report.entries
+            report.revision_id,
+            report.entries
         );
         Ok(json_response(
             StatusCode::OK,

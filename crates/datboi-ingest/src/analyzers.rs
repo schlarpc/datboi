@@ -1061,10 +1061,7 @@ impl Analyzer for NdsAnalyzer {
         else {
             return Err(heal_not_resident(db, item));
         };
-        let mut rom = TickRandom {
-            inner: file,
-            pulse,
-        };
+        let mut rom = TickRandom { inner: file, pulse };
 
         let layout = match crate::nds::parse_layout(&mut rom) {
             Ok(layout) => layout,

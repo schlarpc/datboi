@@ -194,7 +194,9 @@ pub(crate) async fn apply(
         app.jobs.finish(job, now_unix());
         tracing::info!(
             "gc apply: {} deleted, {} byte(s), {} skipped",
-            response.deleted, response.bytes_reclaimed, response.skipped
+            response.deleted,
+            response.bytes_reclaimed,
+            response.skipped
         );
         Ok(json_response(StatusCode::OK, &response))
     })

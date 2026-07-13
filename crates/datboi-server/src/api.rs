@@ -1522,10 +1522,10 @@ fn verify_one(app: &App, job: i64, blob_id: i64, ns: Namespace, hash: &Blake3) {
         Ok((VerifyOutcome::Valid, aliases)) => {
             {
                 let db = lock_db(app);
-                if let Some(aliases) = &aliases {
-                    if let Err(e) = db.insert_aliases(blob_id, aliases) {
-                        tracing::warn!("verify {}: alias back-fill failed: {e}", hash.to_hex());
-                    }
+                if let Some(aliases) = &aliases
+                    && let Err(e) = db.insert_aliases(blob_id, aliases)
+                {
+                    tracing::warn!("verify {}: alias back-fill failed: {e}", hash.to_hex());
                 }
                 if let Err(e) = db.set_verified(blob_id, now) {
                     app.jobs
