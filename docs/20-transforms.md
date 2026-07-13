@@ -40,7 +40,12 @@ verify-without-materializing.
 | TorrentZip/RVZSTD write | both | yes (by spec) | yes | no | pin zlib behavior exactly; vendor as wasm |
 | Header strip/add (iNES, FDS, Lynx, A7800, SMC…) | both | yes | yes | no | fixed-offset concat recipe; skipper XMLs |
 | N64 byte-order (z64/v64/n64) | both | yes | yes | no | trivial |
-| GBA/NDS trim/re-pad | both | yes | yes | no | pad byte + length in recipe |
+| GBA trim/re-pad | both | yes | yes | no | pad byte + length in recipe |
+| NDS NitroFS decomposition | in | yes | yes | no | pure concat → all assemble@1, native parser, no wasm (D83); rebuild/derive/trim all affine |
+| NDS trim | out | yes | see notes | no | header-derived prefix slice; DSi at 210h, NTR at 80h + 88h "ac" RSA block (Download Play); tail-must-be-pad gate (D83). Trimmed-*in* can't recover the full dump if the sig was already stripped |
+| NDS secure-area KEY1 normalize | in | yes | yes | **BIOS key table** | collapses encrypted/decrypted dumps onto one ARM9 blob; future wasm (D83) |
+| DSi modcrypt strip | both | yes | yes | **console keys** | ARM9i/ARM7i AES-CTR; joins the NSZ/3DS key-policy question; future wasm (D83) |
+| NDS interior decompress (LZ overlays, NARC/SDAT) | in | yes | yes | no | preflate-shaped corrections lane; future wasm (D83); overlay +1Ch flag bits are tool lore, verify before building |
 | SRAM/save-type patch (GBA) | out | yes | one-way | no | original stays in CAS |
 | IPS/BPS/xdelta apply | out | yes | patch separate | no | |
 | **ECM strip (CD EDC/ECC)** | in | yes | yes (recomputable) | no | ~12% of raw sectors; **ideal first wasm transform** |
@@ -62,7 +67,8 @@ verify-without-materializing.
    redundancy, then variants chunk-dedupe.
 3. **Uncompressed-interior storage** — containers (zip/CHD/CSO/RVZ) become
    recipes; interiors dedupe, compressed containers never do.
-4. **Disc decomposition** — shared partitions + per-file granularity.
+4. **Disc decomposition** — shared partitions + per-file granularity
+   (Xbox video partition, NDS NitroFS files across regional variants).
 5. **Junk/padding elimination** (Wii junk regen, GBA/NDS pad, Xbox gaps) —
    bytes that are functions of position need zero storage.
 6. **Header strip** — small bytes, big *identity* win (collapses

@@ -119,6 +119,32 @@ Design passes R1–R8 complete; decisions ratified through D73. Docs
   affine-only + verified inputs; wasm never qualifies;
   seek-equivalence gate extends to synthesized recipes; optional
   blessing pass promotes to full D49).
+- **NDS wasm lanes (deferred from D83)**: v1 decomposes .nds with
+  builtins only; three future verbs each need a wasm component and
+  a ruling. (1) Secure-area KEY1 normalization — the first 800h
+  bytes of ARM9 differ between encrypted-cart and decrypted-scene
+  dumps of the same game; Blowfish keyed from a BIOS-derived table,
+  so it inherits the console-key-material policy question already
+  open for the NSZ/3DS/WiiU/PS3 decrypt row. (2) DSi modcrypt —
+  AES-CTR over ARM9i/ARM7i; rank-1 store-decrypted win, console
+  keys again. (3) Interior decompression — LZ overlays and
+  NARC/SDAT interiors, preflate-shaped (plaintext + corrections
+  blob); before building, verify the overlay-table +1Ch
+  compressed-size/flag convention against real ROMs (tool
+  convention, not documented in GBATEK). NARC recursion itself
+  needs no wasm (same FNT/FAT format, IMG-relative offsets) but is
+  policy-gated on recipe volume — a max FAT is 61440 files and
+  NARCs multiply that.
+- **Rank-7 CDC over decomposed pieces (observed 2026-07-12, D83
+  session)**: D59 gates chunking to route-less literals, so pieces
+  minted by decomposition are never CDC'd — correct for
+  evictability, but it leaves near-miss cross-variant dedupe on the
+  table (MKDS USA↔EUR: 8 of 564 pieces differ, ~1.3 MiB — the
+  localized archives CDC exists for). Small today (most differing
+  pieces sit under the 4 MiB chunk threshold); if big near-miss
+  pieces show up (region-variant movies, large localized archives),
+  amend D59 to admit resident pieces whose only route derives from
+  an evicted container, rather than building anything new.
 
 ## Flagged for ruling (raised 2026-07-09, M4 serving session)
 

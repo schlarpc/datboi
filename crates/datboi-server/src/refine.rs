@@ -39,7 +39,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use datboi_index::Db;
-use datboi_ingest::analyzers::{ChunkAnalyzer, EcmAnalyzer, PreflateZipAnalyzer};
+use datboi_ingest::analyzers::{ChunkAnalyzer, EcmAnalyzer, NdsAnalyzer, PreflateZipAnalyzer};
 use datboi_ingest::refine::{
     Analyzer, SweepObserver, analyzer_enabled, process_round, refresh_queue,
 };
@@ -117,6 +117,9 @@ fn families() -> Vec<Box<dyn Analyzer>> {
     vec![
         Box::new(PreflateZipAnalyzer::new()),
         Box::new(EcmAnalyzer::new()),
+        // nds-split before chunk: it mints the covering rebuild route
+        // that lets the D59 gate skip chunking the same ROM.
+        Box::new(NdsAnalyzer),
         Box::new(ChunkAnalyzer),
     ]
 }

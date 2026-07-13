@@ -857,8 +857,9 @@ pub fn sweep(
             Box::new(datboi_ingest::analyzers::PreflateZipAnalyzer::new())
         }
         "ecm" => Box::new(datboi_ingest::analyzers::EcmAnalyzer::new()),
+        "nds" | "nds-split" => Box::new(datboi_ingest::analyzers::NdsAnalyzer),
         other => {
-            anyhow::bail!("unknown analyzer {other:?} (available: noop, chunk, preflate, ecm)")
+            anyhow::bail!("unknown analyzer {other:?} (available: noop, chunk, preflate, ecm, nds)")
         }
     };
     let report =
@@ -913,7 +914,7 @@ pub fn sweep(
 
 /// The shipped analyzer families (D60 config keys). Adding an analyzer
 /// is adding a row here + a `family()` on its impl.
-const ANALYZER_FAMILIES: &[&str] = &["noop", "chunk", "preflate", "ecm"];
+const ANALYZER_FAMILIES: &[&str] = &["noop", "chunk", "preflate", "ecm", "nds"];
 
 fn require_family(name: &str) -> anyhow::Result<&str> {
     ANALYZER_FAMILIES

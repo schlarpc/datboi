@@ -1009,3 +1009,301 @@ impl Analyzer for EcmAnalyzer {
         })
     }
 }
+
+/// NDS NitroFS decomposition (D83): an NTR ROM is a pure concatenation,
+/// so the whole lane is builtins — no component, no sandbox, every
+/// recipe `assemble@1` and affine (the D63 carve-out serves rebuilt
+/// ROMs, members, and trimmed views without materializing). Per ROM:
+///
+/// - each piece (binaries, tables, every NitroFS file, residual gaps)
+///   becomes a CLAIM (absent blob + ROM→piece slice recipe) — pieces
+///   dedupe across regional variants at the resource boundary, which is
+///   the whole point (dedupe ladder rank 4);
+/// - one rebuild recipe reassembles the ROM from the pieces in PHYSICAL
+///   order (header inlined, pad runs as Fill — rank 5), making the
+///   literal evictable once pieces are materialized;
+/// - when the trim rules validate, the trimmed view's identity is
+///   claimed with a FULL alias tuple (trimmed dumps circulate — dat
+///   aliases must hit it) plus its prefix-slice recipe.
+///
+/// Parse refusals are conclusions (D81 Negative, settled); a wrong
+/// coverage map can only waste a mint — replay verification (D4) is
+/// what bit-faithfulness rests on, never this parser.
+pub struct NdsAnalyzer;
+
+impl NdsAnalyzer {
+    const VERSIONED_NAME: &'static str = "nds-split/1";
+}
+
+impl Analyzer for NdsAnalyzer {
+    fn name(&self) -> &'static str {
+        Self::VERSIONED_NAME
+    }
+
+    fn family(&self) -> &'static str {
+        "nds"
+    }
+
+    fn id(&self) -> Blake3 {
+        analyzer_tag(Self::VERSIONED_NAME)
+    }
+
+    fn analyze(
+        &mut self,
+        item: &SweepItem,
+        store: &Store,
+        db: &mut Db,
+        pulse: &mut dyn Pulse,
+    ) -> Result<AnalysisResult, String> {
+        let Some(file) = store
+            .get(StoreNs::Data, &item.hash)
+            .map_err(|e| e.to_string())?
+        else {
+            return Err(heal_not_resident(db, item));
+        };
+        let mut rom = TickRandom {
+            inner: file,
+            pulse,
+        };
+
+        let layout = match crate::nds::parse_layout(&mut rom) {
+            Ok(layout) => layout,
+            Err(crate::nds::NdsError::Refused(refusal)) => {
+                return Ok(AnalysisResult {
+                    outcome: AnalysisOutcome::Negative,
+                    detail: Some(refusal.to_string()),
+                });
+            }
+            Err(crate::nds::NdsError::Io(e)) => return Err(format!("reading rom: {e}")),
+        };
+
+        // Claim every piece: hash by streaming its range out of the
+        // stored ROM, then an absent row + a ROM→piece slice recipe.
+        // Residency is looked up first, never blind-upserted: a piece
+        // whose bytes already live resident (a loose file ingested
+        // earlier — the dedupe hit working) must not be demoted.
+        let mut piece_hashes: Vec<Blake3> = Vec::with_capacity(layout.pieces.len());
+        for piece in &layout.pieces {
+            let hash = hash_range(&mut rom, piece.start, piece.len).map_err(|e| e.to_string())?;
+            if db.blob_by_hash(&hash).map_err(|e| e.to_string())?.is_none() {
+                db.upsert_blob(&hash, Some(piece.len), IndexNs::Data, Residency::Absent)
+                    .map_err(|e| e.to_string())?;
+            }
+            let recipe = Recipe {
+                op: Op::Builtin {
+                    name: "assemble".into(),
+                    major: 1,
+                },
+                inputs: vec![InputRef {
+                    hash: item.hash,
+                    role: None,
+                }],
+                outputs: vec![OutputRef {
+                    hash,
+                    size: piece.len,
+                    name: Some(piece.name.clone()),
+                }],
+                params: AssembleParams {
+                    segments: vec![Segment::BlobRange {
+                        input_ix: 0,
+                        offset: piece.start,
+                        len: piece.len,
+                    }],
+                }
+                .encode()
+                .map_err(|e| e.to_string())?,
+            };
+            crate::mint_recipe(store, db, &recipe, SeekClass::Affine).map_err(|e| e.to_string())?;
+            piece_hashes.push(hash);
+        }
+
+        // Zero-length FAT entries: their identity is the empty blob —
+        // ground it (no recipe; assemble rejects empty outputs by
+        // design, the zip precedent).
+        if layout.empty_files > 0 {
+            let empty = Blake3::compute(b"");
+            store
+                .put(StoreNs::Data, empty, std::io::empty())
+                .map_err(|e| e.to_string())?;
+            db.upsert_blob(&empty, Some(0), IndexNs::Data, Residency::Resident)
+                .map_err(|e| e.to_string())?;
+        }
+
+        // The rebuild: the coverage map verbatim, one segment per
+        // region, inputs deduped by hash (identical pieces at different
+        // offsets are one blob).
+        let mut inputs: Vec<InputRef> = Vec::new();
+        let mut input_ix: std::collections::HashMap<Blake3, u32> = std::collections::HashMap::new();
+        let mut segments: Vec<Segment> = Vec::with_capacity(layout.regions.len());
+        for region in &layout.regions {
+            segments.push(match region {
+                crate::nds::Region::Piece(ix) => {
+                    let hash = piece_hashes[*ix];
+                    let input_ix = *input_ix.entry(hash).or_insert_with(|| {
+                        inputs.push(InputRef { hash, role: None });
+                        u32::try_from(inputs.len() - 1).expect("piece count fits u32")
+                    });
+                    Segment::BlobRange {
+                        input_ix,
+                        offset: 0,
+                        len: layout.pieces[*ix].len,
+                    }
+                }
+                crate::nds::Region::Fill { byte, len } => Segment::Fill {
+                    byte: *byte,
+                    len: *len,
+                },
+                crate::nds::Region::Literal { start, len } => Segment::Literal {
+                    bytes: read_range(&mut rom, *start, *len).map_err(|e| e.to_string())?,
+                },
+            });
+        }
+        let rebuild = Recipe {
+            op: Op::Builtin {
+                name: "assemble".into(),
+                major: 1,
+            },
+            inputs,
+            outputs: vec![OutputRef {
+                hash: item.hash,
+                size: layout.rom_len,
+                name: None,
+            }],
+            params: AssembleParams { segments }
+                .encode()
+                .map_err(|e| e.to_string())?,
+        };
+        crate::mint_recipe(store, db, &rebuild, SeekClass::Affine).map_err(|e| e.to_string())?;
+
+        // The trimmed view's identity: a prefix slice, claimed with the
+        // full alias tuple so trimmed dumps in the wild dat-match it.
+        if let Some(trim_len) = layout.trim_len {
+            let tuple = alias_range(&mut rom, trim_len).map_err(|e| e.to_string())?;
+            let id = match db.blob_by_hash(&tuple.blake3).map_err(|e| e.to_string())? {
+                Some(row) => row.blob_id,
+                None => db
+                    .upsert_blob(
+                        &tuple.blake3,
+                        Some(trim_len),
+                        IndexNs::Data,
+                        Residency::Absent,
+                    )
+                    .map_err(|e| e.to_string())?,
+            };
+            db.insert_aliases(id, &tuple).map_err(|e| e.to_string())?;
+            let trim = Recipe {
+                op: Op::Builtin {
+                    name: "assemble".into(),
+                    major: 1,
+                },
+                inputs: vec![InputRef {
+                    hash: item.hash,
+                    role: Some("nds:trim".into()),
+                }],
+                outputs: vec![OutputRef {
+                    hash: tuple.blake3,
+                    size: trim_len,
+                    name: None,
+                }],
+                params: AssembleParams {
+                    segments: vec![Segment::BlobRange {
+                        input_ix: 0,
+                        offset: 0,
+                        len: trim_len,
+                    }],
+                }
+                .encode()
+                .map_err(|e| e.to_string())?,
+            };
+            crate::mint_recipe(store, db, &trim, SeekClass::Affine).map_err(|e| e.to_string())?;
+        }
+
+        Ok(AnalysisResult {
+            outcome: AnalysisOutcome::Positive,
+            detail: Some(format!(
+                "split into {} piece(s) ({} nitrofs file(s), {} residual byte(s)); trim {}",
+                layout.pieces.len(),
+                layout.file_count,
+                layout.residual_bytes,
+                layout.trim_len.map_or_else(
+                    || "not offered".to_owned(),
+                    |t| format!("{t} of {} bytes", layout.rom_len)
+                ),
+            )),
+        })
+    }
+}
+
+/// `Read + Seek` over the stored blob that pulses per read — piece
+/// hashing and gap classification are the long loops here, and bytes
+/// moving is the lease heartbeat (D71).
+struct TickRandom<'p> {
+    inner: std::fs::File,
+    pulse: &'p mut dyn Pulse,
+}
+
+impl std::io::Read for TickRandom<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            self.pulse.tick(n as u64);
+        }
+        Ok(n)
+    }
+}
+
+impl std::io::Seek for TickRandom<'_> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+/// blake3 of `[start, start+len)` of a seekable source, streamed.
+fn hash_range<R: std::io::Read + std::io::Seek>(
+    rom: &mut R,
+    start: u64,
+    len: u64,
+) -> std::io::Result<Blake3> {
+    rom.seek(std::io::SeekFrom::Start(start))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut remaining = len;
+    while remaining > 0 {
+        let want = usize::try_from(remaining.min(buf.len() as u64)).expect("bounded");
+        rom.read_exact(&mut buf[..want])?;
+        hasher.update(&buf[..want]);
+        remaining -= want as u64;
+    }
+    Ok(Blake3(*hasher.finalize().as_bytes()))
+}
+
+/// Full alias tuple of the `[0, len)` prefix, streamed.
+fn alias_range<R: std::io::Read + std::io::Seek>(
+    rom: &mut R,
+    len: u64,
+) -> std::io::Result<datboi_core::alias::AliasTuple> {
+    rom.seek(std::io::SeekFrom::Start(0))?;
+    let mut hasher = datboi_core::alias::AliasHasher::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut remaining = len;
+    while remaining > 0 {
+        let want = usize::try_from(remaining.min(buf.len() as u64)).expect("bounded");
+        rom.read_exact(&mut buf[..want])?;
+        hasher.update(&buf[..want]);
+        remaining -= want as u64;
+    }
+    Ok(hasher.finalize())
+}
+
+/// Raw bytes of `[start, start+len)` — inline-literal segments only
+/// (bounded by assemble's cap).
+fn read_range<R: std::io::Read + std::io::Seek>(
+    rom: &mut R,
+    start: u64,
+    len: u64,
+) -> std::io::Result<Vec<u8>> {
+    rom.seek(std::io::SeekFrom::Start(start))?;
+    let mut buf = vec![0u8; usize::try_from(len).expect("literal segments are capped")];
+    rom.read_exact(&mut buf)?;
+    Ok(buf)
+}

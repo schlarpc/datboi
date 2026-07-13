@@ -1563,3 +1563,48 @@ object — a persistent tray put non-ambient information in ambient
 chrome, wrapped badly at every width, and threw away timestamps and
 error detail the API already served. *Rejected:* keeping the tray
 (all of the above); SSE now (poll cadence is fine at this scale).
+
+## D83 — NDS: NitroFS decomposition + trim ride assemble@1; wasm deferred to three named lanes (2026-07-12)
+
+An NTR-era .nds ROM is a pure concatenation — header, ARM9/ARM7,
+FNT/FAT/overlay tables/banner, then NitroFS files at absolute FAT
+offsets, pad bytes in the gaps, nothing compressed or encrypted at
+the container level. So the whole lane is builtins: `nds-split/1`
+is a native analyzer in datboi-ingest (zip precedent; D81 verdict
+rules) that parses header + FAT into a coverage map over [0, len),
+claims piece identities (binaries, tables, each FAT file,
+non-uniform gap residue — absent rows, never member copies) and
+three recipe shapes, every one assemble@1. Rebuild = segment walk
+in physical storage order (Literal header, Fill pads, BlobRange
+pieces — files are not guaranteed FAT-ID order, the recipe records
+actual order); derive = one BlobRange slice per member; trim = a
+prefix slice whose identity is claimed at analysis time WITH a
+full alias tuple (trimmed dumps circulate; dat aliases must hit
+the claimed identity — serving stays view-time). All-affine
+means the D63 carve-out serves rebuilt ROMs, members, and trimmed
+views without materializing, and bit-faithfulness is enforced by D4
+replay, not parser perfection — a wrong coverage map fails
+verification and the ROM stays literal. Trim rules bake in at
+analysis time: DSi/hybrid (unitcode != 0) trims at [210h], never
+[80h] (cuts the TWL region, hangs the game); NTR trims at [80h]
+plus 88h bytes when the "ac" magic sits at that offset (the DS
+Download Play / cloneboot RSA signature naive trimmers strip); trim
+is offered only when the size clears every declared section and FAT
+entry AND the discarded tail is uniform pad (fake-header ROMs;
+translation patches append data past header size). Trimmed-in is
+lossy: a ROM someone else already trimmed may lack the RSA block,
+so the full dump is unrecoverable — store as-is, identify via dat
+aliases. Anomalies (overlapping FAT entries, unparseable tables,
+excess residue) → Negative, settled. Wasm enters later on three
+named lanes, carried as catalog rows + an open-questions item:
+secure-area KEY1 normalization (BIOS-derived key material), DSi
+modcrypt (console keys — joins the existing key-policy question),
+and interior/overlay decompression (preflate-shaped). NARC
+recursion is not one of them (same FNT/FAT format, IMG-relative
+offsets — still pure assemble) but is policy-gated on recipe
+volume. *Rejected:* an ex-nds extractor component (nothing to
+sandbox — no container compression; builtins beat component pinning
+and an opaque seek class); trusting the header trim size
+unconditionally (known fake-size ROMs trim to 512 bytes); storing
+trimmed variants as blobs (trim is a view-time slice over the same
+pieces).
