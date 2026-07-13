@@ -62,7 +62,9 @@
 
   function sendInput() {
     let bits = keyBits;
-    for (const pad of navigator.getGamepads()) {
+    // Optional-chained: iOS Safari omits the Gamepad API on insecure
+    // origins (plain-HTTP LAN is a supported deployment, D70).
+    for (const pad of navigator.getGamepads?.() ?? []) {
       if (pad !== null && descriptor !== null) bits |= gamepadBits(descriptor, pad);
     }
     session?.setInput(bits, touch);

@@ -87,7 +87,14 @@ export class EmuSession {
    * also the moment a player demonstrably wants sound.
    */
   unlockAudio(): void {
-    if (this.audio === null) this.audio = new AudioContext();
+    if (this.audio === null) {
+      // Older iOS Safari only has the webkit-prefixed constructor.
+      const Ctor =
+        globalThis.AudioContext ??
+        (globalThis as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (Ctor === undefined) return; // no audio is better than no game
+      this.audio = new Ctor();
+    }
     if (this.audio.state === 'suspended') void this.audio.resume();
   }
 
