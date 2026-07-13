@@ -47,6 +47,22 @@ describe('matchPath', () => {
     expect(matchPath('/shelf/a%20b')).toEqual({ screen: 'browse', view: 'a b' });
   });
 
+  test('play carries the view and the multi-segment file path, decoded per segment', () => {
+    expect(matchPath('/play/gba-everdrive/Games/Alpha%20%28USA%29.nds')).toEqual({
+      screen: 'play',
+      view: 'gba-everdrive',
+      path: 'Games/Alpha (USA).nds',
+    });
+    expect(matchPath('/play/v/one.nds')).toEqual({ screen: 'play', view: 'v', path: 'one.nds' });
+  });
+
+  test('play round-trips the registry playUrl encoding', async () => {
+    const { playUrl } = await import('./emu/registry');
+    const view = 'shelf one';
+    const path = 'Games/Ålpha (USA)/rom #1.nds';
+    expect(matchPath(playUrl(view, path))).toEqual({ screen: 'play', view, path });
+  });
+
   test.each([
     '/bogus',
     '/library',
@@ -56,6 +72,8 @@ describe('matchPath', () => {
     '/shelf/x/y',
     '/storage/blob',
     '/storage/blob/x/y',
+    '/play',
+    '/play/onlyview',
   ])(
     'unknown path %s is notfound',
     (path) => {
@@ -68,6 +86,7 @@ describe('matchPath', () => {
     '/library/%zz',
     '/shelf/abc%',
     '/storage/blob/ab%',
+    '/play/v/a%zz.nds',
   ])(
     'malformed percent-sequence %s is notfound, not a throw',
     (path) => {

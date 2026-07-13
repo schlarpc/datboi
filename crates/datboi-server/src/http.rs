@@ -177,6 +177,9 @@ pub(crate) fn router(app: Arc<App>) -> Router {
         .route("/snap/{hash}", get(snap_bare))
         .route("/snap/{hash}/", get(snap_root))
         .route("/snap/{hash}/{*path}", get(snap_path))
+        // Browser emulator core assets (D84): static, embedded like the
+        // web dist. The /play/* SPA route stays with the fallback below.
+        .route("/emu/{core}/{*path}", get(crate::emu::emu_path))
         // `/` and every path the API didn't claim belong to the web UI
         // (D67): embedded dist with an SPA fallback. The old plaintext
         // root listing died with it — its content is `/v1/views`.

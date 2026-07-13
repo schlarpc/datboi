@@ -16,7 +16,7 @@ static WEB_DIST: include_dir::Dir<'static> = include_dir::include_dir!("$DATBOI_
 /// axum routes claim everything real under these; whatever still lands
 /// in the fallback is a genuine miss and must say so — serving the SPA
 /// shell for `/v1/nope` would turn API typos into confusing 200s.
-const RESERVED_PREFIXES: &[&str] = &["v1", "view", "snap", "dav"];
+const RESERVED_PREFIXES: &[&str] = &["v1", "view", "snap", "dav", "emu"];
 
 /// Router fallback: everything the API routes didn't claim is the UI's
 /// URL space. Real dist files serve as themselves; anything else gets
@@ -71,9 +71,10 @@ fn file_response(path: &str, bytes: &'static [u8], method: &Method) -> Response 
         .expect("static headers")
 }
 
-/// Extension → media type for what a vite dist actually contains. A
-/// full mime database would be dead weight for a closed set of files.
-fn content_type(path: &str) -> &'static str {
+/// Extension → media type for what a vite dist actually contains (and
+/// the emu-core assets, src/emu.rs — js/json/wasm/html, same closed
+/// set). A full mime database would be dead weight for a closed set.
+pub(crate) fn content_type(path: &str) -> &'static str {
     match path.rsplit_once('.').map(|(_, ext)| ext) {
         Some("html") => "text/html; charset=utf-8",
         Some("js") => "text/javascript; charset=utf-8",

@@ -97,6 +97,7 @@ msgstr "something went wrong — {0}"
 #: src/screens/Blob.svelte
 #: src/screens/Browse.svelte
 #: src/screens/Library.svelte
+#: src/screens/Play.svelte
 #: src/screens/Shelves.svelte
 #: src/screens/Storage.svelte
 #: src/screens/Storage.svelte
@@ -227,8 +228,9 @@ msgstr "not in library"
 #~ msgid "in-browser emulator — future"
 #~ msgstr "in-browser emulator — future"
 
-#~ msgid "▶ Play"
-#~ msgstr "▶ Play"
+#: src/screens/Browse.svelte
+msgid "▶ Play"
+msgstr "▶ Play"
 
 #~ msgid "play: in-browser core over verified ranges — future"
 #~ msgstr "play: in-browser core over verified ranges — future"
@@ -1594,3 +1596,19 @@ msgstr "never verified — verify now"
 #: src/screens/Audit.svelte
 msgid "couldn't load rows — {0}"
 msgstr "couldn't load rows — {0}"
+
+#: src/App.svelte
+msgid "play"
+msgstr "play"
+
+#: src/screens/Play.svelte
+msgid "no core plays this file"
+msgstr "no core plays this file"
+
+#: src/screens/Play.svelte
+msgid "starting…"
+msgstr "starting…"
+
+#: src/screens/Play.svelte
+msgid "sound starts with your first input"
+msgstr "sound starts with your first input"

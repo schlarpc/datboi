@@ -373,6 +373,12 @@
           '';
         };
 
+      # D84: the daemon embeds the emu core the same way (served under
+      # /emu/nds/ by src/emu.rs) — same placement rules as webEnvFor.
+      emuEnvFor = system: {
+        DATBOI_EMU_DS = "${emuDsFor system}";
+      };
+
       # D67: the datboi binary embeds the nix-built web dist —
       # datboi-server's build.rs re-exports this for `include_dir!` (and
       # falls back to invoking `nix build .#web` itself in a dev
@@ -467,7 +473,7 @@
           hostArgs = hostArgsFor system;
         in
         {
-          default = craneLib.buildPackage (hostArgs // componentsEnvFor system // webEnvFor system // magicEnvFor system // {
+          default = craneLib.buildPackage (hostArgs // componentsEnvFor system // webEnvFor system // magicEnvFor system // emuEnvFor system // {
             cargoArtifacts = hostDepsFor system;
             doCheck = false;
           });
@@ -528,7 +534,7 @@
               installPhase = "touch $out";
             };
 
-          clippy = craneLib.cargoClippy (hostArgs // componentsEnvFor system // webEnvFor system // magicEnvFor system // {
+          clippy = craneLib.cargoClippy (hostArgs // componentsEnvFor system // webEnvFor system // magicEnvFor system // emuEnvFor system // {
             cargoArtifacts = hostArtifacts;
             # --workspace: default-members is just `cargo run` ergonomics
             # (root Cargo.toml); lints must cover every member.
@@ -539,7 +545,7 @@
             src = hostArgs.src;
           };
 
-          test = craneLib.cargoNextest (hostArgs // componentsEnvFor system // webEnvFor system // magicEnvFor system // {
+          test = craneLib.cargoNextest (hostArgs // componentsEnvFor system // webEnvFor system // magicEnvFor system // emuEnvFor system // {
             cargoArtifacts = hostArtifacts;
             partitions = 1;
             partitionType = "count";

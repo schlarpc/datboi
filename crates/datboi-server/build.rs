@@ -30,6 +30,9 @@ const WEB_INPUTS: &[&str] = &[
     "tsconfig.json",
 ];
 
+/// The emu-lane inputs (D84) that shape `packages.emu-ds`.
+const EMU_INPUTS: &[&str] = &["src", "asset", "test-page", "Cargo.toml", "Cargo.lock"];
+
 fn repo_root() -> PathBuf {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets this");
     Path::new(&manifest)
@@ -83,4 +86,16 @@ fn main() {
     // external artifact — no source watches; the flake pin moves it).
     let magic = env_or_flake("DATBOI_MAGIC_DB", ".#magicdb");
     println!("cargo:rustc-env=DATBOI_MAGIC_DB={magic}");
+
+    // D84: the DS browser core, served under /emu/nds/ (src/emu.rs).
+    if std::env::var("DATBOI_EMU_DS").is_err() {
+        for input in EMU_INPUTS {
+            println!(
+                "cargo:rerun-if-changed={}",
+                repo.join("crates/datboi-emu-ds").join(input).display()
+            );
+        }
+    }
+    let emu = env_or_flake("DATBOI_EMU_DS", ".#emu-ds");
+    println!("cargo:rustc-env=DATBOI_EMU_DS={emu}");
 }

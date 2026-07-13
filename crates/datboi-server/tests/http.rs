@@ -694,8 +694,10 @@ fn d78_compression_for_text_surfaces_only() {
 fn d70_security_headers_and_csrf() {
     // No hash-source: the theme-flash inline script died with the
     // theme toggle (D78) — the dist ships zero inline scripts.
+    // 'wasm-unsafe-eval' admits the D84 emulator cores' wasm compile
+    // and nothing else (no eval(), no inline script).
     const CSP: &str = "default-src 'self'; \
-         script-src 'self'; \
+         script-src 'self' 'wasm-unsafe-eval'; \
          style-src 'self'; img-src 'self' data:; font-src 'self'; \
          connect-src 'self'; object-src 'none'; frame-ancestors 'none'; \
          base-uri 'none'; form-action 'self'";

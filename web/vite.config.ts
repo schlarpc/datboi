@@ -21,6 +21,8 @@ export default defineConfig({
     // owner (D68), so local dev needs no auth setup.
     proxy: {
       '/v1': 'http://127.0.0.1:2352',
+      // Emulator core assets (D84) — served by the daemon's /emu route.
+      '/emu': 'http://127.0.0.1:2352',
       // Trailing slash on purpose: content lives at `/view/{name}/{path}`,
       // so match `/view/` — a bare `/view` prefix also swallows the
       // `/views` SPA route, blanking it on hard-refresh (the app never

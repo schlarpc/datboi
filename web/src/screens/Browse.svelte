@@ -19,6 +19,8 @@
    */
   import { viewDetail, viewFiles, viewFileUrl, viewImageUrl } from '../lib/api/client';
   import type { ViewDetail, ViewFileRow } from '../lib/api/types';
+  import Link from '../lib/components/Link.svelte';
+  import { coreForPath, playUrl } from '../lib/emu/registry';
   import { fmtAge, fmtSize, parseRegion, shortHash, snapShort } from '../lib/format';
   import { debounced } from '../lib/debounced.svelte';
   import { errorText, loading, ready, settle, type Remote } from '../lib/remote';
@@ -278,6 +280,12 @@
             <span class="meaning">hash-checked as it streams</span>
           </div>
           <div class="actions">
+            {#if coreForPath(selected.path) !== null}
+              <!-- Ungated on purpose (D84 amendment): whoever can see
+                   this row already has the download anchor below, and
+                   play grants nothing a download doesn't. -->
+              <Link class="download" href={playUrl(view, selected.path)}>▶ Play</Link>
+            {/if}
             <a
               class="download"
               href={viewFileUrl(view, selected.path)}
@@ -285,8 +293,6 @@
             >
               ⬇ Download
             </a>
-            <!-- `▶ Play` ships when playing ships — no disabled
-                 future-feature buttons (87-web-ui.md). -->
           </div>
         </aside>
       {/if}

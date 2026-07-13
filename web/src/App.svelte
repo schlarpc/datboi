@@ -16,6 +16,7 @@
   import Invite from './screens/Invite.svelte';
   import Library from './screens/Library.svelte';
   import Login from './screens/Login.svelte';
+  import Play from './screens/Play.svelte';
   import Shelves from './screens/Shelves.svelte';
   import Storage from './screens/Storage.svelte';
   import Views from './screens/Views.svelte';
@@ -54,8 +55,17 @@
   // every owner route (and any miss) refuses by bouncing home, so the
   // owner screens never even mount for a friend.
   const friend = $derived(session.status === 'authenticated' && session.role === 'friend');
+  // Play is friend-reachable by design (D84 amendment): play rights
+  // are download rights, and the ROM bytes come from the same granted
+  // /view surface the download anchor uses.
   $effect(() => {
-    if (friend && !open && route.screen !== 'library' && route.screen !== 'browse') {
+    if (
+      friend &&
+      !open &&
+      route.screen !== 'library' &&
+      route.screen !== 'browse' &&
+      route.screen !== 'play'
+    ) {
       router.replace('/');
     }
   });
@@ -86,6 +96,8 @@
   // @wc-include
   const titleBrowse = () => 'browse';
   // @wc-include
+  const titlePlay = () => 'play';
+  // @wc-include
   const titleNotfound = () => 'not found';
   const TITLES: Record<Route['screen'], () => string> = {
     library: titleLibrary,
@@ -99,6 +111,7 @@
     login: titleLogin,
     invite: titleInvite,
     browse: titleBrowse,
+    play: titlePlay,
     notfound: titleNotfound,
   };
   /** Read by the polite live region below: SPA navigation is silent to
@@ -130,11 +143,17 @@
     <!-- Friend surface (spec §4): no nav tabs, no health chip, no jobs
          tray, no owner screens. The trust bar lives inside Browse. -->
     <div class="shell">
-      <FriendHeader view={route.screen === 'browse' ? route.view : null} />
+      <FriendHeader
+        view={route.screen === 'browse' || route.screen === 'play' ? route.view : null}
+      />
       {#if route.screen === 'browse'}
         <!-- key: a different shelf remounts the browse screen clean. -->
         {#key route.view}
           <Browse view={route.view} />
+        {/key}
+      {:else if route.screen === 'play'}
+        {#key `${route.view}/${route.path}`}
+          <Play view={route.view} path={route.path} />
         {/key}
       {:else}
         <Shelves />
@@ -165,6 +184,17 @@
         <Activity />
       {:else if route.screen === 'admin'}
         <Admin />
+      {:else if route.screen === 'browse'}
+        <!-- Owner-reachable deep link since Play shipped (D84): the ▶
+             lives in this screen's entry panel. Deliberately not a nav
+             tab — the taxonomy naming pass (open-questions) owns that. -->
+        {#key route.view}
+          <Browse view={route.view} />
+        {/key}
+      {:else if route.screen === 'play'}
+        {#key `${route.view}/${route.path}`}
+          <Play view={route.view} path={route.path} />
+        {/key}
       {:else}
         <main class="notfound">
           <p>nothing lives at this address</p>

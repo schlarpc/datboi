@@ -145,9 +145,12 @@ Design passes R1–R8 complete; decisions ratified through D73. Docs
   stay ordinary ingested blobs, the hash list IS the verification.
   (2) Control rebinding — out of v1 AND in tension with D78
   zero-toggles; when it arrives it needs a ruling arguing per-device
-  config ≠ preference toggle. (3) Friend-facing play ACL — spike is
-  owner-only; who may launch games in a shared view is a D34/D68
-  question. (4) Save persistence — in-session save RAM evaporates on
+  config ≠ preference toggle. (3) ~~Friend-facing play ACL~~
+  resolved for v1 by the D84 amendment: play rights ARE download
+  rights (the ▶ sits beside the download anchor and fetches the same
+  granted /view bytes — no new surface); reopens only if play ever
+  grants more than bytes (server-side saves, netplay).
+  (4) Save persistence — in-session save RAM evaporates on
   close (UI says so, once); the datboi-shaped answer joins the
   "writes are ingests" overlay design above, not a new mechanism.
   (5) Touch button overlay + gamepad — stretch, not gating;
@@ -448,11 +451,16 @@ worker clocks. The working harness is CDP: attach, navigate, wait
 real seconds, `Page.captureScreenshot` (forces a compositor frame)
 + Runtime console capture — the page counts as active under CDP so
 nothing throttles (script shape: /tmp-era cdp-verify.mjs, trivially
-rewritable). Emu lane rides `checks.emu-ds` in CI. NEXT: milestone
-3 (web `lib/emu/` host: worker client, canvas compositor, real
-AudioContext scheduling with drift correction, input incl. gamepad,
-Play route + ▶ gating, wuchale strings), milestone 4 (COEP +
-`'wasm-unsafe-eval'` headers, dev parity). Watch item (8) under the
+rewritable). Emu lane rides `checks.emu-ds` in CI. **M3 shipped the
+same session**: /emu/nds served from the daemon (D66 embed),
+`'wasm-unsafe-eval'` in CSP, web lib/emu host + /play route + ▶ in
+the Browse entry panel (ungated — play≡download, D84 amendment;
+/shelf became an owner-reachable deep link), e2e-verified with a
+live daemon + CDP click-through (dat minted for the homebrew,
+`view define/eval`, shelf → panel → ▶ → pixels). NEXT: milestone 4
+(COEP require-corp + vite dev-server header parity — the CSP half
+already shipped with M3), then spike acceptance: a commercial 2D
+title at full speed, interactively. Watch item (8) under the
 emulation deferred entry: dust's homebrew heuristic misclassifies
 arm9@4000h homebrew as encrypted.
 

@@ -1,7 +1,16 @@
 # datboi — in-browser emulation
 
-*Status: design ratified 2026-07-12 as D84; spike milestones 1 AND 2
-shipped the same day. M1: `nix build .#emu-ds` (nightly pinned
+*Status: design ratified 2026-07-12 as D84; spike milestones 1–3
+shipped the same day, e2e-verified against a live daemon (shelf →
+entry panel → ▶ → running homebrew). M3: datboi-server embeds the
+core asset (D66 pattern, `DATBOI_EMU_DS`) and serves it at
+`/emu/nds/`; CSP script-src gains `'wasm-unsafe-eval'` (the one M4
+piece M3 cannot run without); `web/src/lib/emu/` is the host
+(worker client + AudioContext drift scheduling + keyboard/gamepad/
+stylus input), `/play/{view}/{path}` renders in both chromes, and
+the ▶ sits in the Browse entry panel UNGATED — play rights are
+download rights (D84 amendment), which also made `/shelf/{view}`
+an owner-reachable deep link. M1: `nix build .#emu-ds` (nightly pinned
 2025-12-20; the 2026-02 nightlies already break dust's portable_simd
 usage, proving the pin-by-last-green rule below) produces the wasm +
 glue, and the bare test page boots devkitPro homebrew with both
@@ -168,8 +177,8 @@ every response (D70, hardening.rs). Two additions ride the spike:
 Deliverable: **an owner clicks ▶ Play on a .nds library entry and
 plays a commercial 2D DS game at full speed in desktop
 Chrome/Firefox, with sound, keyboard controls, and mouse-as-stylus
-on the bottom screen.** Owner-only; the friend-facing play ACL is a
-deferred design item.
+on the bottom screen.** (Amended: not owner-only — play rights are
+download rights, so the ▶ shows wherever the download anchor does.)
 
 Milestones, in order:
 

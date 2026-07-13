@@ -16,6 +16,7 @@ pub mod auth;
 mod compress;
 mod dats;
 mod dav;
+mod emu;
 mod gc;
 mod hardening;
 mod http;

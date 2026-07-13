@@ -1646,3 +1646,19 @@ first (proves nothing DS doesn't — single screen, no pointer, no
 perf pressure); shipping or requiring Nintendo BIOS/firmware (HLE
 direct-boot covers v1; the later BIOS story is
 known-hashes-from-CAS, see 88-emulation.md).
+
+*Amendment (same day):* the spike shipped through milestone 3 and
+two details moved under it. (1) Play is NOT owner-only: play rights
+are download rights. The ▶ lives in the Browse entry panel beside
+the download anchor, the ROM bytes come from the same granted
+`/view` surface, so a session that can download can play and one
+that can't gets the same 404 — the deferred friend-play-ACL
+question collapses for v1 with zero new surface (it reopens only if
+play ever grants more than bytes, e.g. server-side saves). (2)
+`/shelf/{view}` and `/play/…` became owner-reachable deep links so
+the owner has the same entry panel — NOT nav tabs; the screen-
+taxonomy naming pass (open-questions) keeps ownership of any bigger
+move. Also locked in by M2's testing: audio crosses the worker
+boundary as a pull (take_audio riding the frame message), never a
+wasm-held JS callback — a Function passed into the instance hangs
+create inside a Worker on Chromium 148 headless.

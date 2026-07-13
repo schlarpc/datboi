@@ -27,8 +27,11 @@ use axum::response::Response;
 /// `setAttribute("style")`, so `'unsafe-inline'` is not needed.
 /// `object-src 'none'` closes the legacy plugin surface that would
 /// otherwise inherit `'self'` from default-src.
+// 'wasm-unsafe-eval' admits WebAssembly.compile of same-origin-fetched
+// bytes (the D84 emulator cores; Chromium blocks wasm under a bare
+// 'self') — it does NOT admit eval() or inline script, which stay out.
 pub(crate) const CSP: &str = "default-src 'self'; \
-     script-src 'self'; \
+     script-src 'self' 'wasm-unsafe-eval'; \
      style-src 'self'; img-src 'self' data:; font-src 'self'; \
      connect-src 'self'; object-src 'none'; frame-ancestors 'none'; \
      base-uri 'none'; form-action 'self'";
@@ -387,7 +390,7 @@ mod tests {
         assert_eq!(
             CSP,
             "default-src 'self'; \
-             script-src 'self'; \
+             script-src 'self' 'wasm-unsafe-eval'; \
              style-src 'self'; img-src 'self' data:; font-src 'self'; \
              connect-src 'self'; object-src 'none'; frame-ancestors 'none'; \
              base-uri 'none'; form-action 'self'"

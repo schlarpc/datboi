@@ -33,7 +33,8 @@
     admin: '/admin',
     login: null,
     invite: null,
-    browse: null, // friend chrome owns it
+    browse: null, // a deep link in both chromes, not a tab (D84)
+    play: null, // reached from browse's entry panel, same story
     notfound: null,
   };
 

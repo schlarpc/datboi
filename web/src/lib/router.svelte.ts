@@ -22,8 +22,13 @@ export type Route =
   | { screen: 'admin' }
   | { screen: 'login' }
   | { screen: 'invite' }
-  /** Friend browse (spec §4.3); owners have `/view/{name}/` instead. */
+  /** Friend browse (spec §4.3); also owner-reachable as a deep link
+   * since Play shipped (D84 amendment) — owners need the same entry
+   * panel the ▶ lives in. Not a nav tab; the taxonomy naming pass
+   * (open-questions) owns any bigger move. */
   | { screen: 'browse'; view: string }
+  /** A view file running in a browser emulator core (D84). */
+  | { screen: 'play'; view: string; path: string }
   | { screen: 'notfound' };
 
 /**
@@ -80,6 +85,16 @@ export function matchPath(pathname: string): Route {
       if (blob) {
         const hash = safeDecode(blob[1]);
         if (hash !== null) return { screen: 'blob', hash };
+      }
+      const play = pathname.match(/^\/play\/([^/]+)\/(.+)$/);
+      if (play) {
+        const view = safeDecode(play[1]);
+        // The file path keeps its real `/` separators in the URL; each
+        // segment decodes independently (mirrors viewFileUrl encoding).
+        const segments = play[2].split('/').map(safeDecode);
+        if (view !== null && segments.every((s) => s !== null)) {
+          return { screen: 'play', view, path: segments.join('/') };
+        }
       }
       return { screen: 'notfound' };
     }
