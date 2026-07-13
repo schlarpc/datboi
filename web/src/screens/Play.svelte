@@ -397,6 +397,13 @@
     flex-direction: column;
     min-height: 0;
     padding: 12px var(--pad-x);
+    /* A game surface, not a document: touch play (mashing near the
+       title, dragging off the stylus screen) keeps triggering text
+       selection and the iOS long-press callout. Nothing here is
+       worth selecting. */
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
   }
 
   .head {
