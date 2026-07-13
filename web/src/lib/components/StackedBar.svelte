@@ -1,23 +1,36 @@
 <script lang="ts">
   /**
    * Stacked completeness bar (spec §1.4): verified green, claimed hatch,
-   * empty remainder = missing + no-dump. Segments size against the FULL
-   * total (lib/state.ts barSegments), unlike the headline percent.
+   * empty remainder = missing. Segments size against the obtainable
+   * total (lib/state.ts barSegments — no-dump excluded, same
+   * denominator as the headline percent).
    *
    * Two registers (spec §8 ruling): `shelf` = home cards, 12px with a
    * 2px ink frame; `bench` = audit header, 8px frameless on --panel2.
    */
   import { barSegments, type StateCounts } from '../state';
+  import { plural } from '../plural';
 
   let { counts, register = 'bench' }: { counts: StateCounts; register?: 'shelf' | 'bench' } =
     $props();
 
   const seg = $derived(barSegments(counts));
+
+  // Hover text: the numbers behind each band (87-web-ui.md: color is
+  // never the only legend).
+  const verifiedTitle = $derived(plural(counts.verified, ['# verified', '# verified']));
+  const claimedTitle = $derived(plural(counts.claimed, ['# claimed', '# claimed']));
+  const missingTitle = $derived(plural(counts.missing, ['# missing', '# missing']));
 </script>
 
-<div class="bar {register}">
-  <div class="fill ok" style:width="{seg.verified}%"></div>
-  <div class="fill claimed" style:width="{seg.claimed}%"></div>
+<div
+  class="bar {register}"
+  role="img"
+  aria-label="{verifiedTitle} · {claimedTitle} · {missingTitle}"
+>
+  <div class="fill ok" style:width="{seg.verified}%" title={verifiedTitle}></div>
+  <div class="fill claimed" style:width="{seg.claimed}%" title={claimedTitle}></div>
+  <div class="fill rest" title={missingTitle}></div>
 </div>
 
 <style>
@@ -49,5 +62,10 @@
 
   .fill.claimed {
     background: var(--hatch-claimed);
+  }
+
+  .fill.rest {
+    flex: 1;
+    background: transparent;
   }
 </style>

@@ -14,13 +14,9 @@ export const ENTRY_STATES = ['verified', 'claimed', 'missing', 'nodump'] as cons
  */
 export type EntryState = (typeof ENTRY_STATES)[number];
 
-/** Row glyphs (bench register). Symbols, not copy — never translated. */
-export const STATE_GLYPHS: Record<EntryState, string> = {
-  verified: '●',
-  claimed: '◐',
-  missing: '○',
-  nodump: '–',
-};
+// The unicode row glyphs (●◐○–) are dead: state marks are CSS-drawn
+// (`.dot` in tokens.css) so their metrics can't depend on font
+// fallback (87-web-ui.md: structure over glyph).
 
 export type StateCounts = Record<EntryState, number>;
 
@@ -50,13 +46,15 @@ export interface BarSegments {
 }
 
 /**
- * Stacked-bar segment widths. Unlike {@link completenessPct}, segments size
- * against the FULL total (no-dump included), so the empty remainder of the
- * track reads as missing + no-dump. An empty set renders an empty track.
+ * Stacked-bar segment widths. Same denominator as
+ * {@link completenessPct}: no-dump excluded — the old full-total
+ * denominator made a set heavy with no-dumps look emptier than its
+ * own headline percent claimed. The empty remainder of the track now
+ * reads as exactly `missing`. An empty set renders an empty track.
  */
 export function barSegments(counts: StateCounts): BarSegments {
-  const total = totalEntries(counts);
-  if (total === 0) {
+  const total = totalEntries(counts) - counts.nodump;
+  if (total <= 0) {
     return { verified: 0, claimed: 0 };
   }
   return {

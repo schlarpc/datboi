@@ -80,6 +80,7 @@ fn v1() -> V1Routes {
         .get("/v1/storage/breakdown", api::storage_breakdown)
         .get("/v1/blobs", api::blobs)
         .get("/v1/blobs/{hash}", api::blob_detail)
+        .post("/v1/blobs/{hash}/verify", api::blob_verify)
         .get("/v1/jobs", api::jobs)
         .get("/v1/jobs/{id}", api::job_detail)
         .get("/v1/gc/orphans", crate::gc::orphans)

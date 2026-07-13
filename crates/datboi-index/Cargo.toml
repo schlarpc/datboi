@@ -12,6 +12,8 @@ datboi-core.workspace = true
 rusqlite.workspace = true
 rustix.workspace = true
 thiserror.workspace = true
+# D81 daemon logging: events only; no subscriber in library code.
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

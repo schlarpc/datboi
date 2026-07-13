@@ -104,11 +104,27 @@
     importing = null;
   }
 
+  // Drop lands anywhere on the screen — the dashed card is the visual
+  // affordance, but aiming a drag at one small strip is pointless
+  // precision. Gated to the loaded state so files can't upload behind
+  // a load error where the import log isn't rendered.
+  function dropReady(): boolean {
+    return importing === null && error === null && systems !== null;
+  }
+
   function onDrop(e: DragEvent): void {
     e.preventDefault();
     dragOver = false;
-    if (importing === null && e.dataTransfer && e.dataTransfer.files.length > 0) {
+    if (dropReady() && e.dataTransfer && e.dataTransfer.files.length > 0) {
       void importFiles(e.dataTransfer.files);
+    }
+  }
+
+  function onDragLeave(e: DragEvent): void {
+    // Only a real exit clears the highlight — dragleave also fires on
+    // every hop between children, with the entered child as relatedTarget.
+    if (!(e.currentTarget as Node).contains(e.relatedTarget as Node | null)) {
+      dragOver = false;
     }
   }
 
@@ -133,7 +149,14 @@
     if (importing !== null) e.preventDefault();
   }}
 />
-<main>
+<main
+  ondragover={(e) => {
+    e.preventDefault();
+    if (dropReady()) dragOver = true;
+  }}
+  ondragleave={onDragLeave}
+  ondrop={onDrop}
+>
   <div class="title-row">
     <h2>The shelf</h2>
     {#if systems !== null}
@@ -226,17 +249,11 @@
       class:drag={dragOver}
       disabled={importing !== null}
       onclick={() => fileInput?.click()}
-      ondragover={(e) => {
-        e.preventDefault();
-        dragOver = true;
-      }}
-      ondragleave={() => (dragOver = false)}
-      ondrop={onDrop}
     >
       {#if importing !== null}
         <span>importing {importing}…</span>
       {:else}
-        <span>+ import a dat (zipped is fine) to start a new system — drop files here or click to pick</span>
+        <span>+ import a dat (zipped is fine) to start a new system — drop files anywhere or click to pick</span>
       {/if}
     </button>
     {#if imports.length > 0}

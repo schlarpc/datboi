@@ -41,6 +41,7 @@ use datboi_catalog::{ImportOptions, import_dat};
 use datboi_index::Db;
 use datboi_ingest::{Ingester, zip};
 use futures_core::Stream as _;
+use tracing::{info, warn};
 
 use crate::App;
 use crate::api::{err, parse_query, require_owner};
@@ -242,12 +243,8 @@ pub(crate) async fn start(
 /// only, not the whole batch) and progress moves at file boundaries —
 /// the honest granularity, since the pipeline reports nothing finer.
 fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
-    // These stderr lines are the operator log until the durable job
-    // table exists (the recorded open question) — a restart erases the
-    // registry, and a 40-minute job deserves a trace outside it. Plain
-    // eprintln by ruling: a logging framework stays a non-goal until a
-    // real need shows up.
-    eprintln!(
+    // Job boundaries log at INFO per D81 (tracing replaced eprintln).
+    info!(
         "ingest job {id}: {} files, {} bytes",
         staged.len(),
         staged.iter().map(|f| f.bytes).sum::<u64>()
@@ -267,7 +264,7 @@ fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
                     let _ = std::fs::remove_file(&upload.path);
                 }
                 let error = format!("matched baseline: {e}");
-                eprintln!("ingest job {id}: FAILED — {error}");
+                warn!("ingest job {id}: FAILED — {error}");
                 app.jobs.fail(id, &error, auth::now_unix());
                 return;
             }
@@ -284,7 +281,7 @@ fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
         // A dat sliding in on the ROM surface is worth its own line —
         // it changes what the catalog wants, not just what's stored.
         for dat in &per_file.dats_imported {
-            eprintln!(
+            info!(
                 "ingest job {id}: imported dat {}/{} ({} entries)",
                 dat.provider, dat.system, dat.entries
             );
@@ -312,7 +309,7 @@ fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
             Ok((matched, total)) => app.jobs.set_matched(id, matched, total),
             Err(e) => {
                 let error = format!("catalog refresh: {e}");
-                eprintln!("ingest job {id}: FAILED — {error}");
+                warn!("ingest job {id}: FAILED — {error}");
                 app.jobs.fail(id, &error, auth::now_unix());
                 return;
             }
@@ -331,7 +328,7 @@ fn run_job(app: &App, id: i64, staged: Vec<StagedUpload>) {
     // errors + member skips + skipper-capped files.
     if let Some(d) = app.jobs.detail(id) {
         let r = &d.report;
-        eprintln!(
+        info!(
             "ingest job {id}: done — {} stored, {} dupes, {} members, {} refused, {} matched",
             r.files_stored,
             r.files_already_present + r.files_unchanged,

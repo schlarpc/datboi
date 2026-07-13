@@ -80,8 +80,22 @@
             },
             "type": "array"
           },
+          "provenance_via": {
+            "description": "Source paths carried by recipe-CONNECTED blobs (D79 viral\nprovenance display): where these bytes actually arrived, for\nderived/member blobs whose own `provenance` is empty. Capped\nat 10.",
+            "items": {
+              "$ref": "#/components/schemas/ProvenanceViaRow"
+            },
+            "type": "array"
+          },
           "residency": {
             "$ref": "#/components/schemas/ResidencyState"
+          },
+          "roots": {
+            "description": "Claimed blobs this blob is connected to through the recipe DAG\n(D79): the display identity when `claims` is empty. Capped at\n20; empty for a truly unattached blob.",
+            "items": {
+              "$ref": "#/components/schemas/RootRef"
+            },
+            "type": "array"
           },
           "routes_in": {
             "description": "Recipes whose OUTPUT is this blob — ways to make it.",
@@ -100,6 +114,10 @@
           "size": {
             "$ref": "#/components/schemas/Nullable_i64"
           },
+          "sniff": {
+            "$ref": "#/components/schemas/Nullable_String",
+            "description": "Magic-byte sniff of resident bytes (\"zip archive\", …) — a\ndisplay hint, never identity (D18: type lives in the edges).\nNull when absent from disk or unrecognized."
+          },
           "verified_at": {
             "$ref": "#/components/schemas/Nullable_i64"
           }
@@ -112,10 +130,13 @@
           "verified_at",
           "digests",
           "provenance",
+          "provenance_via",
           "routes_in",
           "routes_out",
           "claims",
           "claims_total",
+          "roots",
+          "sniff",
           "pins"
         ],
         "type": "object"
@@ -1041,8 +1062,12 @@
         "type": "object"
       },
       "Job": {
-        "description": "One row of the in-memory job registry (the jobs tray render). The\nregistry does not survive a daemon restart — durable job reports\nare a recorded open question, not implied here.",
+        "description": "One row of the job registry (running + D74 ledger history — the\nactivity page render, D82).",
         "properties": {
+          "finished_at": {
+            "$ref": "#/components/schemas/Nullable_i64",
+            "description": "Unix seconds; null while running."
+          },
           "id": {
             "format": "int64",
             "type": "integer"
@@ -1060,6 +1085,11 @@
             "minimum": 0,
             "type": "integer"
           },
+          "started_at": {
+            "description": "Unix seconds. On the LIST row, not just the detail, because the\nactivity page renders relative timestamps for every row and\nmust not need N+1 detail fetches to do it (D82).",
+            "format": "int64",
+            "type": "integer"
+          },
           "state": {
             "$ref": "#/components/schemas/JobRunState"
           }
@@ -1069,7 +1099,9 @@
           "name",
           "progress",
           "kind",
-          "state"
+          "state",
+          "started_at",
+          "finished_at"
         ],
         "type": "object"
       },
@@ -1111,10 +1143,6 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "finished_at": {
-                "$ref": "#/components/schemas/Nullable_i64",
-                "description": "Unix seconds; null while running."
-              },
               "matched": {
                 "description": "Entries this job's content NEWLY satisfied (the shelf lights).\nCapped at 200 rows; `matched_total` is the uncapped count.",
                 "items": {
@@ -1130,11 +1158,6 @@
               "report": {
                 "$ref": "#/components/schemas/IngestReportBody",
                 "description": "Cumulative across completed files — grows while running, final\nwhen done."
-              },
-              "started_at": {
-                "description": "Unix seconds.",
-                "format": "int64",
-                "type": "integer"
               }
             },
             "required": [
@@ -1142,8 +1165,6 @@
               "files_done",
               "bytes_total",
               "bytes_done",
-              "started_at",
-              "finished_at",
               "report",
               "matched",
               "matched_total",
@@ -1476,6 +1497,28 @@
         ],
         "type": "object"
       },
+      "ProvenanceViaRow": {
+        "description": "One viral-provenance row (D79): a source path recorded on a\nrecipe-connected blob, shown on blobs that have none of their own.",
+        "properties": {
+          "ingested_at": {
+            "$ref": "#/components/schemas/Nullable_i64",
+            "description": "When the path was last scanned/ingested, unix seconds."
+          },
+          "path": {
+            "type": "string"
+          },
+          "via": {
+            "description": "The connected blob (blake3 hex) actually carrying the path.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "ingested_at",
+          "via"
+        ],
+        "type": "object"
+      },
       "Quarantine": {
         "description": "D49 rule 3: components whose seek path produced bad bytes.",
         "properties": {
@@ -1656,6 +1699,42 @@
           }
         },
         "type": "object"
+      },
+      "RootRef": {
+        "description": "A claimed root reachable from a blob through recipe edges (D79).",
+        "properties": {
+          "entry": {
+            "description": "Best claim name on the root.",
+            "type": "string"
+          },
+          "hash": {
+            "description": "The root blob (blake3 hex) — links into its own inspector.",
+            "type": "string"
+          },
+          "relation": {
+            "$ref": "#/components/schemas/RootRelation"
+          },
+          "source": {
+            "description": "provider/system of that claim.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "hash",
+          "entry",
+          "source",
+          "relation"
+        ],
+        "type": "object"
+      },
+      "RootRelation": {
+        "description": "How the inspected blob relates to a claimed root, following\nDIRECTED recipe edges (input → output = \"helps make\").",
+        "enum": [
+          "makes",
+          "derived_from",
+          "related"
+        ],
+        "type": "string"
       },
       "RouteEdge": {
         "description": "One recipe edge of the DAG neighborhood, navigable — every\n[`HashRef`] resolves at `GET /v1/blobs/{hash}`. Poisoned (`failed`)\nrecipes never surface (D25 terminal).",
@@ -1968,6 +2047,19 @@
           "created_at",
           "grants",
           "sessions"
+        ],
+        "type": "object"
+      },
+      "VerifyStartResponse": {
+        "properties": {
+          "job": {
+            "description": "Poll `GET /v1/jobs/{id}`; done stamps `verified_at`, failed\ncarries the corruption evidence in `error`.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "job"
         ],
         "type": "object"
       },
@@ -2859,6 +2951,76 @@
           }
         ],
         "summary": "One blob, fully explained: digests, provenance, the one-hop recipe\nDAG around it, the dat claims it satisfies, and the views pinning\nit.",
+        "tags": [
+          "storage"
+        ]
+      }
+    },
+    "/v1/blobs/{hash}/verify": {
+      "post": {
+        "operationId": "blob_verify",
+        "parameters": [
+          {
+            "description": "blake3, 64 hex chars (case-insensitive)",
+            "in": "path",
+            "name": "hash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyStartResponse"
+                }
+              }
+            },
+            "description": "Verify job started; poll GET /v1/jobs/{id}"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Not a blake3 hex hash / blob not on disk"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "No such blob"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Verify one blob right now (D80): re-hash the resident bytes,\nstamp `verified_at` on match, fail the job with evidence on\nmismatch. The second pipeline verb to graduate from CLI-only —\nverification is the product's core promise, and \"when was this\nlast checked?\" is exactly when the user must be able to act.\nResident literals only: a rebuildable blob verifies by replay,\nwhich stays CLI.",
         "tags": [
           "storage"
         ]

@@ -17,6 +17,8 @@ export type Route =
   | { screen: 'storage' }
   /** Blob inspector, the storage drill-down (hash = blake3 hex). */
   | { screen: 'blob'; hash: string }
+  /** Job history over the D74 ledger (D82) — the header indicator's home. */
+  | { screen: 'activity' }
   | { screen: 'admin' }
   | { screen: 'login' }
   | { screen: 'invite' }
@@ -53,6 +55,8 @@ export function matchPath(pathname: string): Route {
       return { screen: 'ingest' };
     case '/storage':
       return { screen: 'storage' };
+    case '/activity':
+      return { screen: 'activity' };
     case '/admin':
       return { screen: 'admin' };
     case '/login':

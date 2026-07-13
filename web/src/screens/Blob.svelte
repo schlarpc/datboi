@@ -8,19 +8,28 @@
    * the views pinning it (D33). Owner-only server-side like the rest
    * of the storage surface; the friend shell never routes here.
    */
-  import { blobDetail } from '../lib/api/client';
+  import { blobDetail, blobVerify } from '../lib/api/client';
   import type { BlobDetail, RouteEdge } from '../lib/api/types';
   import { copyText } from '../lib/clipboard';
   import Link from '../lib/components/Link.svelte';
   import { fmtDate, fmtSize, shortHash } from '../lib/format';
+  import { followJob, jobsSignal } from '../lib/jobs.svelte';
   import { residencyLabel } from '../lib/residency.svelte';
-  import { loading, settle, type Remote } from '../lib/remote';
+  import { errorText, loading, settle, type Remote } from '../lib/remote';
   import LoadError from '../lib/components/LoadError.svelte';
 
   let { hash }: { hash: string } = $props();
 
   let detail = $state<Remote<BlobDetail>>(loading());
   let copied = $state<'idle' | 'done' | 'failed'>('idle');
+  /** Which digest row just copied — brief ✓ feedback per row. */
+  let copiedDigest = $state<string | null>(null);
+  /** Per-edge "…and N more" expansion, keyed `${direction}-${index}`. */
+  let expanded = $state<Record<string, boolean>>({});
+
+  /** Aggregates before enumerations (87-web-ui.md): a 74-chunk
+   * assemble is "74 inputs" first, rows on demand. */
+  const REF_CAP = 5;
 
   // The recipe DAG links land here with a NEW hash on the same mounted
   // screen: reset to loading and generation-guard both arms so a slow
@@ -32,6 +41,7 @@
     void attempt;
     const gen = ++generation;
     detail = loading();
+    expanded = {};
     settle(
       blobDetail(hash),
       (value) => (detail = value),
@@ -47,6 +57,49 @@
     copied = (await copyText(detail.data.hash)) ? 'done' : 'failed';
     setTimeout(() => (copied = 'idle'), 1400);
   }
+
+  // Verify-now (D80): the "never verified" badge is the button — the
+  // moment of doubt is when the user must be able to act in place.
+  let verifying = $state(false);
+  let verifyError = $state<string | null>(null);
+  let destroyed = false;
+  $effect(() => () => {
+    destroyed = true;
+  });
+
+  async function verifyNow() {
+    if (verifying || detail.st !== 'ready') return;
+    verifying = true;
+    verifyError = null;
+    try {
+      const { job } = await blobVerify(detail.data.hash);
+      jobsSignal.bump(); // the header indicator lights immediately
+      const done = await followJob(job, { alive: () => !destroyed });
+      if (done === null) return; // unmounted mid-poll
+      if (done.state === 'failed') {
+        verifyError = done.error ?? 'verify failed';
+      }
+      attempt += 1; // refetch — verified_at (or the demotion) lands
+    } catch (e) {
+      verifyError = errorText(e);
+    } finally {
+      verifying = false;
+    }
+  }
+
+  /** Digest rows copy on click — sha1/md5 are what gets pasted into
+   * dat tools, and they're plain text (not nav links like ref hashes,
+   * which stay links per 87-web-ui.md). */
+  async function copyDigest(algo: string, hex: string) {
+    if (await copyText(hex)) {
+      copiedDigest = algo;
+      setTimeout(() => (copiedDigest = null), 1400);
+    }
+  }
+
+  // Lowercase attribute copy, forced at statement level.
+  // @wc-include
+  const copyDigestTitle = 'click to copy';
 
   /** Declared digest rows, in strength order (absent algos omitted —
    * the wire shape). */
@@ -65,33 +118,49 @@
   );
 </script>
 
-{#snippet refList(refs: RouteEdge['inputs'])}
-  {#each refs as ref, i (i)}
+{#snippet refList(refs: RouteEdge['inputs'], key: string)}
+  {@const showAll = expanded[key] === true || refs.length <= REF_CAP}
+  {#each showAll ? refs : refs.slice(0, REF_CAP) as ref, i (i)}
     <div class="ref">
-      <Link class="ref-hash" href={`/storage/blob/${ref.hash}`}>{shortHash(ref.hash)}</Link>
+      {#if ref.hash === hash}
+        <!-- A link to the page you're on isn't navigation — walking
+             assemble inputs used to LOOK like a loop because only the
+             headline hash changed (87-web-ui.md). -->
+        <span class="ref-self">this blob</span>
+      {:else}
+        <Link class="ref-hash" href={`/storage/blob/${ref.hash}`}>{shortHash(ref.hash)}</Link>
+      {/if}
       {#if ref.name !== null}
         <span class="ref-name">{ref.name}</span>
       {/if}
       <span class="ref-size">{ref.size === null ? '' : fmtSize(ref.size)}</span>
     </div>
   {/each}
+  {#if !showAll}
+    <button class="more" onclick={() => (expanded[key] = true)}>
+      …and {(refs.length - REF_CAP).toLocaleString()} more
+    </button>
+  {/if}
 {/snippet}
 
-{#snippet edgeList(edges: RouteEdge[])}
+{#snippet edgeList(edges: RouteEdge[], dir: string)}
   {#each edges as edge, i (i)}
     <div class="edge">
       <div class="edge-head">
         <span class="op">{edge.op}</span>
+        {#if edge.inputs.length > REF_CAP}
+          <span class="edge-count">{edge.inputs.length.toLocaleString()} inputs</span>
+        {/if}
         <span class="verify">{edge.verify}</span>
       </div>
       <div class="edge-cols">
         <div class="refs">
           <span class="refs-label">inputs</span>
-          {@render refList(edge.inputs)}
+          {@render refList(edge.inputs, `${dir}-${i}-in`)}
         </div>
         <div class="refs">
           <span class="refs-label">outputs</span>
-          {@render refList(edge.outputs)}
+          {@render refList(edge.outputs, `${dir}-${i}-out`)}
         </div>
       </div>
     </div>
@@ -110,8 +179,41 @@
     <p class="undesigned">loading…</p>
   {:else}
     {@const d = detail.data}
+    <!-- The headline is the blob's MEANING, computed from the edges
+         (D79): claim name, else relation to a claimed root, else a
+         byte sniff. The hash demotes to metadata below — a collector
+         reads "what is this", not 64 hex chars. -->
+    {#if d.claims.length > 0}
+      <h2 class="title">{d.claims[0].entry}</h2>
+      <div class="title-sub">
+        {d.claims[0].source}{#if d.claims_total > 1}
+          {' · '}+{(d.claims_total - 1).toLocaleString()} more claims{/if}
+      </div>
+    {:else if d.roots.length > 0}
+      {@const root = d.roots[0]}
+      <h2 class="title">
+        {#if root.relation === 'makes'}
+          helps rebuild
+        {:else if root.relation === 'derived_from'}
+          derived from
+        {:else}
+          related to
+        {/if}
+        <Link class="title-link" href={`/storage/blob/${root.hash}`}>{root.entry}</Link>
+      </h2>
+      <div class="title-sub">
+        {root.source}{#if d.roots.length > 1}
+          {' · '}+{(d.roots.length - 1).toLocaleString()} more{/if}
+      </div>
+    {:else if d.sniff !== null}
+      <h2 class="title">{d.sniff}</h2>
+      <div class="title-sub">unattached — nothing claimed connects to it</div>
+    {:else}
+      <h2 class="title">unattached blob</h2>
+      <div class="title-sub">nothing claimed connects to it</div>
+    {/if}
     <div class="head">
-      <h2 class="hash">{d.hash}</h2>
+      <span class="hash">{d.hash}</span>
       <button class="pill" onclick={copyHash}>
         {#if copied === 'done'}copied ✓{:else if copied === 'failed'}couldn't copy{:else}⎘ copy{/if}
       </button>
@@ -122,8 +224,16 @@
       <span class="badge">{d.size === null ? '—' : fmtSize(d.size)}</span>
       {#if d.verified_at !== null}
         <span class="badge ok">verified {fmtDate(d.verified_at)}</span>
+      {:else if d.residency === 'resident'}
+        <button class="badge dim verify" disabled={verifying} onclick={verifyNow}>
+          {#if verifying}verifying…{:else}never verified — verify now{/if}
+        </button>
       {:else}
+        <!-- Not on disk: verification means replay, which stays CLI. -->
         <span class="badge dim">never verified</span>
+      {/if}
+      {#if verifyError !== null}
+        <span class="badge bad-badge">{verifyError}</span>
       {/if}
     </div>
 
@@ -133,16 +243,17 @@
         <div class="kv">
           {#each digestRows as [algo, hex] (algo)}
             <span class="k">{algo}</span>
-            <span class="v">{hex}</span>
+            <button class="v copyable" title={copyDigestTitle} onclick={() => copyDigest(algo, hex)}>
+              {hex}{#if copiedDigest === algo}
+                <span class="copied-tick">✓</span>{/if}
+            </button>
           {/each}
         </div>
       </section>
 
       <section class="card">
         <div class="card-title">provenance</div>
-        {#if d.provenance.length === 0}
-          <p class="none">no recorded source paths</p>
-        {:else}
+        {#if d.provenance.length > 0}
           {#each d.provenance as row (row.path)}
             <div class="prov-row">
               <span class="prov-path">{row.path}</span>
@@ -151,6 +262,24 @@
               </span>
             </div>
           {/each}
+        {:else if d.provenance_via.length > 0}
+          <!-- Viral display (D79): a derived blob's bytes arrived as
+               somebody's file — that path lives on a CONNECTED blob. -->
+          {#each d.provenance_via as row (row.path)}
+            <div class="prov-row">
+              <span class="prov-path">
+                {row.path}
+                <Link class="prov-via" href={`/storage/blob/${row.via}`}
+                  >via {shortHash(row.via)}</Link
+                >
+              </span>
+              <span class="prov-when">
+                {row.ingested_at === null ? '' : fmtDate(row.ingested_at)}
+              </span>
+            </div>
+          {/each}
+        {:else}
+          <p class="none">no recorded source paths</p>
         {/if}
       </section>
 
@@ -159,7 +288,7 @@
         {#if d.routes_in.length === 0}
           <p class="none">no recipe produces this blob — a literal</p>
         {:else}
-          {@render edgeList(d.routes_in)}
+          {@render edgeList(d.routes_in, 'in')}
         {/if}
       </section>
 
@@ -168,7 +297,7 @@
         {#if d.routes_out.length === 0}
           <p class="none">no recipe consumes this blob</p>
         {:else}
-          {@render edgeList(d.routes_out)}
+          {@render edgeList(d.routes_out, 'out')}
         {/if}
       </section>
 
@@ -179,7 +308,7 @@
         {:else}
           {#each d.claims as claim (claim.source + claim.entry)}
             <div class="claim-row">
-              <span class="claim-entry">{claim.entry}</span>
+              <span class="claim-entry" title={claim.entry}>{claim.entry}</span>
               <span class="claim-source">{claim.source}</span>
             </div>
           {/each}
@@ -233,6 +362,26 @@
     color: var(--faint);
   }
 
+  .title {
+    margin: 0;
+    font: 800 1.25rem var(--font-display);
+    letter-spacing: -0.02em;
+    overflow-wrap: anywhere;
+  }
+
+  .title :global(a.title-link) {
+    color: var(--text);
+    text-decoration: underline;
+    text-decoration-color: var(--dim);
+    text-underline-offset: 3px;
+  }
+
+  .title-sub {
+    font: 400 0.78125rem var(--font-data);
+    color: var(--faint);
+    margin: 2px 0 10px;
+  }
+
   .head {
     display: flex;
     align-items: center;
@@ -241,8 +390,8 @@
   }
 
   .hash {
-    margin: 0;
-    font: 600 0.9375rem var(--font-data);
+    font: 500 0.78125rem var(--font-data);
+    color: var(--mut);
     letter-spacing: 0.01em;
     overflow-wrap: anywhere;
     min-width: 0;
@@ -284,9 +433,36 @@
     border-style: dashed;
   }
 
+  button.badge.verify {
+    all: unset;
+    font: 500 0.71875rem var(--font-data);
+    border: 1.5px dashed var(--hair);
+    border-radius: var(--r-pill);
+    padding: 2px 10px;
+    color: var(--faint);
+    cursor: pointer;
+  }
+
+  button.badge.verify:hover:not(:disabled) {
+    color: var(--text);
+    border-color: var(--edge);
+  }
+
+  button.badge.verify:disabled {
+    cursor: progress;
+  }
+
+  .badge.bad-badge {
+    color: var(--bad);
+    border-color: var(--bad);
+  }
+
   .cards {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    /* minmax(0, …): a plain 1fr track's MIN size is its content's
+       min-content width, so one card holding a wide recipe silently
+       broke the 50/50 on exactly the blobs with big assembles. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px;
     align-items: start;
   }
@@ -327,6 +503,25 @@
     overflow-wrap: anywhere;
   }
 
+  .copyable {
+    all: unset;
+    color: var(--text);
+    overflow-wrap: anywhere;
+    min-width: 0;
+    cursor: copy;
+    text-align: left;
+  }
+
+  .copyable:hover {
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 2px;
+  }
+
+  .copied-tick {
+    color: var(--okT);
+  }
+
   .prov-row {
     display: flex;
     gap: 12px;
@@ -344,6 +539,14 @@
 
   .prov-when {
     color: var(--faint);
+  }
+
+  .prov-row :global(a.prov-via) {
+    color: var(--faint);
+    text-decoration: underline;
+    text-decoration-color: var(--dim);
+    text-underline-offset: 2px;
+    margin-left: 6px;
   }
 
   .edge {
@@ -371,8 +574,25 @@
 
   .edge-cols {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 14px;
+  }
+
+  .edge-count {
+    font: 400 0.6875rem var(--font-data);
+    color: var(--mut);
+  }
+
+  .more {
+    all: unset;
+    cursor: pointer;
+    font: 500 0.71875rem var(--font-data);
+    color: var(--faint);
+    padding: 2px 0;
+  }
+
+  .more:hover {
+    color: var(--text);
   }
 
   .refs {
@@ -403,6 +623,13 @@
     text-underline-offset: 2px;
   }
 
+  /* Self-reference: same slot as a ref hash, deliberately not a link. */
+  .ref-self {
+    color: var(--accent, var(--mut));
+    font-style: italic;
+    flex: none;
+  }
+
   .ref-name {
     flex: 1;
     min-width: 0;
@@ -426,10 +653,15 @@
     line-height: 1.8;
   }
 
+  /* Ellipsis, not `overflow-wrap: anywhere` — anywhere-wrapping a NAME
+     squeezed by an unshrinkable source chip degenerates to one char per
+     line at narrow widths. Anywhere is for hashes (87-web-ui.md). */
   .claim-entry {
     flex: 1;
     min-width: 0;
-    overflow-wrap: anywhere;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .claim-source {

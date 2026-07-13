@@ -14,6 +14,8 @@ const running: Job = {
   progress: 50,
   kind: 'ingest',
   state: 'running',
+  started_at: 1000,
+  finished_at: null,
 };
 
 function detailOf(over: Partial<JobDetailBody> = {}): JobDetailBody {

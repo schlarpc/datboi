@@ -49,7 +49,7 @@ test('grid renders users, owner rows inert, pending invite row dashed', async ()
   // Friend row: exactly one toggleable cell for the one view.
   expect(document.querySelectorAll('.cell-btn').length).toBe(1);
   // Pending invite: greyed row + dashed inert cell.
-  expect(screen.getByText(/invite ab12a…12 · pending friend/)).toBeTruthy();
+  expect(screen.getByText(/invite ab12ab12 · pending friend/)).toBeTruthy();
   expect(document.querySelectorAll('.pending-cell').length).toBe(1);
   expect(
     screen.getByText('friends see only ✓ views · dashboard/audit stay owner-only'),

@@ -22,6 +22,7 @@ use datboi_api::{
 use datboi_index::jobs::{JobRow, LEDGER_KEEP};
 use datboi_index::{Db, JobKind as LedgerKind, JobState as LedgerState};
 use datboi_ingest::IngestReport;
+use tracing::warn;
 
 /// Finished jobs kept IN MEMORY for the tray after they complete;
 /// running jobs are never pruned.
@@ -107,6 +108,8 @@ impl JobState {
             progress: self.progress(),
             kind: self.kind,
             state: self.state,
+            started_at: self.started_at,
+            finished_at: self.finished_at.into(),
         }
     }
 }
@@ -148,7 +151,7 @@ impl Registry {
     pub(crate) fn durable(db: Db, now: i64) -> Result<Self, datboi_index::IndexError> {
         let interrupted = db.interrupt_running_jobs(now)?;
         if interrupted > 0 {
-            eprintln!(
+            warn!(
                 "jobs: {interrupted} job(s) were running when the last daemon died — marked interrupted"
             );
         }
@@ -195,7 +198,7 @@ impl Registry {
         let ledger_id = self.ledger.as_ref().and_then(|db| {
             lock(db)
                 .insert_job(to_ledger(kind), &name, now)
-                .map_err(|e| eprintln!("jobs: ledger insert failed ({e}); job runs unrecorded"))
+                .map_err(|e| warn!("jobs: ledger insert failed ({e}); job runs unrecorded"))
                 .ok()
         });
         let mut inner = lock(&self.jobs);
@@ -256,6 +259,11 @@ impl Registry {
     /// refine.
     pub(crate) fn create_gc(&self, name: &str, items: u64, now: i64) -> i64 {
         self.push_job(JobKind::Gc, name.to_owned(), items, items, now)
+    }
+
+    /// A verify-one job (D80): scrub kind, item-counted like refine.
+    pub(crate) fn create_scrub(&self, name: &str, items: u64, now: i64) -> i64 {
+        self.push_job(JobKind::Scrub, name.to_owned(), items, items, now)
     }
 
     /// Refine drain progress: `done` items finished, `total` = done +
@@ -374,10 +382,10 @@ impl Registry {
         let detail = self.detail(id).and_then(|d| serde_json::to_vec(&d).ok());
         let db = lock(db);
         if let Err(e) = db.finalize_job(id, state, now, detail.as_deref()) {
-            eprintln!("jobs: ledger finalize failed for job {id}: {e}");
+            warn!("jobs: ledger finalize failed for job {id}: {e}");
         }
         if let Err(e) = db.prune_jobs(LEDGER_KEEP) {
-            eprintln!("jobs: ledger prune failed: {e}");
+            warn!("jobs: ledger prune failed: {e}");
         }
     }
 
@@ -425,8 +433,6 @@ fn detail_of(j: &JobState) -> JobDetail {
         bytes_total: j.bytes_total,
         bytes_done: j.bytes_done,
         current: j.current.clone(),
-        started_at: j.started_at,
-        finished_at: j.finished_at.into(),
         report: j.report.clone(),
         matched: j.matched.clone(),
         matched_total: j.matched_total,
@@ -590,7 +596,7 @@ mod tests {
         let detail = second.detail(done_id).expect("history survived");
         assert_eq!(detail.job.state, JobRunState::Done);
         assert_eq!(detail.report.files_stored, 1, "frozen report hydrated");
-        assert_eq!(*detail.finished_at, Some(1_500));
+        assert_eq!(*detail.job.finished_at, Some(1_500));
         let crashed = second.detail(crashed_id).expect("tombstone exists");
         assert_eq!(crashed.job.state, JobRunState::Failed);
         assert!(
@@ -639,7 +645,7 @@ mod tests {
         assert!(rows[0].id > rows[1].id, "newest first");
         let detail = reg.detail(cli_id).expect("detail from ledger fallback");
         assert_eq!(detail.job.name, "cli: scrub — 100% sample");
-        assert_eq!(*detail.finished_at, Some(1_300));
+        assert_eq!(*detail.job.finished_at, Some(1_300));
     }
 
     #[test]
@@ -683,7 +689,7 @@ mod tests {
         let row = &reg.list()[0];
         assert_eq!((row.progress, row.state), (100, JobRunState::Done));
         let detail = reg.detail(id).expect("detail");
-        assert_eq!(*detail.finished_at, Some(2_000));
+        assert_eq!(*detail.job.finished_at, Some(2_000));
         // Matched rides the detail; the total may exceed the capped list.
         assert_eq!(detail.matched[0].name, "Mario Kart DS (USA)");
         assert_eq!(detail.matched_total, 201);

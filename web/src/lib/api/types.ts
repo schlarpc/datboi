@@ -96,6 +96,8 @@ export type HashRef = Schemas['HashRef'];
 export type RouteEdge = Schemas['RouteEdge'];
 export type ClaimRef = Schemas['ClaimRef'];
 export type BlobDetail = Schemas['BlobDetail'];
+/** POST /v1/blobs/{hash}/verify (D80). */
+export type VerifyStarted = Schemas['VerifyStartResponse'];
 
 // ---- GET /v1/gc/orphans (+ keep / apply) ----
 
@@ -117,6 +119,8 @@ export type DatImportedItem = Schemas['DatImportedItem'];
 // ---- GET /v1/jobs (+ /{id}) ----
 
 export type Job = Schemas['Job'];
+export type JobKind = Schemas['JobKind'];
+export type JobRunState = Schemas['JobRunState'];
 export type JobsBody = Schemas['JobsResponse'];
 export type JobDetailBody = Schemas['JobDetail'];
 export type MatchedEntry = Schemas['MatchedEntry'];

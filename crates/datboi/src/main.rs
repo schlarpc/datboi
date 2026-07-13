@@ -598,6 +598,17 @@ fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
             nfs_listen,
             no_refine,
         } => {
+            // D81: the daemon logs through `tracing`; the subscriber is
+            // installed here — the one place a daemon starts — never in
+            // library code. Default level is info; RUST_LOG overrides
+            // (RUST_LOG=debug surfaces per-item verdicts).
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                )
+                .with_writer(std::io::stderr)
+                .init();
             let Some(store_root) = cli.global.store.clone() else {
                 anyhow::bail!("store root not set: pass --store or set DATBOI_STORE");
             };

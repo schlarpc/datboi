@@ -94,8 +94,8 @@ pub fn load_or_create_identity(db_dir: &Path) -> Result<Identity, CatalogError> 
     }
     #[cfg(not(unix))]
     std::fs::write(&path, identity.to_seed())?;
-    eprintln!(
-        "note: generated instance identity at {} — back this file up out-of-band (D15)",
+    tracing::info!(
+        "generated instance identity at {} — back this file up out-of-band (D15)",
         path.display()
     );
     Ok(identity)

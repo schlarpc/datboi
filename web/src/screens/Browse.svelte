@@ -166,8 +166,6 @@
   // @wc-include
   const searchLabel = 'search';
   // @wc-include
-  const playTitle = 'in-browser emulator — future';
-  // @wc-include
   const closeLabel = 'close';
   // @wc-include
   const quickDownloadLabel = 'download';
@@ -264,8 +262,10 @@
               ✕
             </button>
           </div>
-          <!-- Box-art metadata provider is explicitly future (spec §8). -->
-          <div class="art">box art — metadata provider, later</div>
+          <!-- Box-art metadata provider is explicitly future (spec §8).
+               The slot is visual-only: no roadmap captions in the render
+               tree (87-web-ui.md). -->
+          <div class="art"></div>
           <div class="name">{basename(selected.path)}</div>
           <div class="sub">
             {#if region !== null}{region}{' · '}{/if}{fmtSize(selected.size)}{' · '}{shortHash(
@@ -285,15 +285,8 @@
             >
               ⬇ Download
             </a>
-            <button class="play" disabled title={playTitle}>▶ Play</button>
-          </div>
-          <div class="hint">play: in-browser core over verified ranges — future</div>
-          <div class="section">
-            <!-- Footnote only: no metadata provider yet, so no fake
-                 released/publisher/genre rows (the owner-drawer ruling). -->
-            <div class="hint">
-              metadata provider, later — the dat name stays the source of truth
-            </div>
+            <!-- `▶ Play` ships when playing ships — no disabled
+                 future-feature buttons (87-web-ui.md). -->
           </div>
         </aside>
       {/if}
@@ -514,12 +507,6 @@
     border: 1.5px dashed var(--hair);
     border-radius: var(--r-sub);
     background: var(--hatch-placeholder);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    font: 400 0.65625rem var(--font-data);
-    color: var(--dim);
     margin: 12px 0 14px;
   }
 
@@ -560,28 +547,6 @@
     padding: 7px 16px;
     font: 600 0.8125rem var(--font-display);
     text-decoration: none;
-  }
-
-  .play {
-    all: unset;
-    border: 2px solid var(--hair);
-    color: var(--faint);
-    border-radius: var(--r-pill);
-    padding: 5px 14px;
-    font: 600 0.75rem var(--font-data);
-    cursor: not-allowed;
-  }
-
-  .hint {
-    font: 400 0.65625rem var(--font-data);
-    color: var(--dim);
-    line-height: 1.5;
-  }
-
-  .section {
-    border-top: 1px dashed var(--hair);
-    margin-top: 14px;
-    padding-top: 12px;
   }
 
   /* ---- trust bar (replaces the jobs tray, spec §4.3) ---- */

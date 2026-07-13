@@ -1,8 +1,9 @@
 /**
  * "A job just started" signal: a screen bumps the version after
- * POST /v1/ingest and the JobsTray refetches immediately instead of
- * waiting for its own cadence — without the screen importing the tray
- * (or vice versa).
+ * POST /v1/ingest and the shared registry poll (activity.svelte.ts,
+ * run by the Header) refetches immediately instead of waiting for its
+ * own cadence — without the screen importing the header (or vice
+ * versa).
  */
 
 import { jobDetail } from './api/client';

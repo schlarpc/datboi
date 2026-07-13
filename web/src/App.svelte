@@ -5,9 +5,9 @@
   import './locales/main.loader.svelte.js';
   import FriendHeader from './lib/components/FriendHeader.svelte';
   import Header from './lib/components/Header.svelte';
-  import JobsTray from './lib/components/JobsTray.svelte';
   import { loginReturn, router, type Route } from './lib/router.svelte';
   import { session } from './lib/session.svelte';
+  import Activity from './screens/Activity.svelte';
   import Admin from './screens/Admin.svelte';
   import Audit from './screens/Audit.svelte';
   import Blob from './screens/Blob.svelte';
@@ -76,6 +76,8 @@
   // @wc-include
   const titleBlob = () => 'blob inspector';
   // @wc-include
+  const titleActivity = () => 'activity';
+  // @wc-include
   const titleAdmin = () => 'admin';
   // @wc-include
   const titleLogin = () => 'sign in';
@@ -92,6 +94,7 @@
     ingest: titleIngest,
     storage: titleStorage,
     blob: titleBlob,
+    activity: titleActivity,
     admin: titleAdmin,
     login: titleLogin,
     invite: titleInvite,
@@ -158,6 +161,8 @@
         {#key route.hash}
           <Blob hash={route.hash} />
         {/key}
+      {:else if route.screen === 'activity'}
+        <Activity />
       {:else if route.screen === 'admin'}
         <Admin />
       {:else}
@@ -165,7 +170,8 @@
           <p>nothing lives at this address</p>
         </main>
       {/if}
-      <JobsTray />
+      <!-- The jobs tray is dead (D82): the header's activity indicator
+           + the /activity page replaced it. -->
     </div>
   {/if}
 {/await}

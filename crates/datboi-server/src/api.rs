@@ -26,10 +26,11 @@ use axum::response::Response;
 use datboi_api::{
     BlobDetail, BlobDigests, BlobInfo, BlobRow, BlobsPage, ClaimRef, ClaimState, ClassBytes,
     Counts, Definition, Endpoints, EntriesPage, EntryDetail, EntryRow, EntryState, ErrorCode,
-    FileRow, HashRef, ImageStatus, JobsResponse, Nullable, ProvenanceRow, Quarantine,
-    QuarantineItem, ResidencyState, Revision, RomClaim, RomHashes, RouteEdge, RouteInfo,
-    RouteVerify, SourceBytes, StorageBreakdown, StorageResponse, System, SystemsResponse,
-    ViewDetail, ViewFilesPage, ViewSummary, ViewsResponse,
+    FileRow, HashRef, ImageStatus, JobsResponse, Nullable, ProvenanceRow, ProvenanceViaRow,
+    Quarantine, QuarantineItem, ResidencyState, Revision, RomClaim, RomHashes, RootRef,
+    RootRelation, RouteEdge, RouteInfo, RouteVerify, SourceBytes, StorageBreakdown,
+    StorageResponse, System, SystemsResponse, ViewDetail, ViewFilesPage, ViewSummary,
+    ViewsResponse,
 };
 use datboi_catalog::ViewDef;
 use datboi_core::hash::Blake3;
@@ -1102,25 +1103,52 @@ fn residency_state(code: i64) -> Result<ResidencyState, Response> {
     })
 }
 
-/// The by_source attribution: identity_blob → rom_claim → entry → the
-/// source's CURRENT revision → dat_source, deduped per (source, blob)
-/// so a many-claim blob counts once per source. A blob claimed by
-/// several sources counts in EACH — the column does not sum to the
-/// store. Links of any evidence grade attribute: this is explanation,
-/// not holdings math (the D39 rollup owns that).
-const BY_SOURCE_SQL: &str = "SELECT source, COUNT(*), COALESCE(SUM(size), 0)
-     FROM (SELECT DISTINCT ds.provider || '/' || ds.system AS source,
-                  b.blob_id, b.size
-           FROM blob b
-           JOIN identity_blob ib ON ib.blob_id = b.blob_id
-           JOIN rom_claim rc ON rc.identity_id = ib.identity_id
-           JOIN entry e ON e.entry_id = rc.entry_id
-           JOIN dat_revision dr ON dr.revision_id = e.revision_id
-           JOIN dat_source ds ON ds.source_id = dr.source_id
-                             AND ds.current_revision_id = dr.revision_id
-           WHERE b.namespace = 0)
-     GROUP BY source
-     ORDER BY 3 DESC, source";
+/// The recipe DAG as an undirected edge list, poisoned recipes
+/// excluded (D25). Shared prefix of every D79 attribution query.
+const DAG_EDGES_CTE: &str = "edges(a, b) AS (
+       SELECT ri.blob_id, ro.blob_id
+       FROM recipe_input ri
+       JOIN recipe_output ro ON ro.recipe_id = ri.recipe_id
+       JOIN recipe r ON r.recipe_id = ri.recipe_id
+       WHERE r.verify <> 2)";
+
+/// Every (claimed root, connected blob) pair: seed each claimed blob
+/// as its own root, then flood the recipe DAG UNDIRECTEDLY — a chunk,
+/// a container, and a preflate stream all serve the rom they connect
+/// to (D79). The UNION dedupes pairs, so the recursion converges.
+const REACH_CTE: &str = "reach(root, id) AS (
+       SELECT DISTINCT ib.blob_id, ib.blob_id
+       FROM identity_blob ib
+       JOIN rom_claim rc ON rc.identity_id = ib.identity_id
+       UNION
+       SELECT rch.root, CASE WHEN e.a = rch.id THEN e.b ELSE e.a END
+       FROM reach rch JOIN edges e ON e.a = rch.id OR e.b = rch.id)";
+
+/// The by_source attribution (D79): a blob belongs to every source
+/// whose claimed content it is recipe-connected to — the two roms AND
+/// their containers, chunks, and streams, not just the claimed blobs
+/// themselves. Deduped per (source, blob); a blob serving several
+/// sources counts in EACH, so the column does not sum to the store.
+/// Links of any evidence grade attribute: this is explanation, not
+/// holdings math (the D39 rollup owns that).
+fn by_source_sql() -> String {
+    format!(
+        "WITH RECURSIVE {DAG_EDGES_CTE}, {REACH_CTE}
+         SELECT source, COUNT(*), COALESCE(SUM(size), 0)
+         FROM (SELECT DISTINCT ds.provider || '/' || ds.system AS source,
+                      b.blob_id, b.size
+               FROM reach rch
+               JOIN blob b ON b.blob_id = rch.id AND b.namespace = 0
+               JOIN identity_blob ib ON ib.blob_id = rch.root
+               JOIN rom_claim rc ON rc.identity_id = ib.identity_id
+               JOIN entry e ON e.entry_id = rc.entry_id
+               JOIN dat_revision dr ON dr.revision_id = e.revision_id
+               JOIN dat_source ds ON ds.source_id = dr.source_id
+                                 AND ds.current_revision_id = dr.revision_id)
+         GROUP BY source
+         ORDER BY 3 DESC, source"
+    )
+}
 
 fn breakdown_body(app: &App) -> Result<StorageBreakdown, Response> {
     let db = lock_db(app);
@@ -1160,7 +1188,7 @@ fn breakdown_body(app: &App) -> Result<StorageBreakdown, Response> {
         });
     }
 
-    let mut stmt = conn.prepare(BY_SOURCE_SQL).map_err(internal)?;
+    let mut stmt = conn.prepare(&by_source_sql()).map_err(internal)?;
     let mut by_source = stmt
         .query_map([], |row| {
             Ok(SourceBytes {
@@ -1172,20 +1200,26 @@ fn breakdown_body(app: &App) -> Result<StorageBreakdown, Response> {
         .map_err(internal)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(internal)?;
-    // Data blobs with no identity link at all — dat files, containers,
-    // never-claimed uploads.
+    // Truly UNATTACHED blobs (D79): connected to nothing claimed, not
+    // even through the recipe DAG — dat files, never-matched uploads.
+    // This bucket is actionable (junk you could delete), where the old
+    // no-direct-claim "(unattributed)" swept every chunk and container
+    // into an alarming mystery pile.
     let (blobs, bytes): (i64, i64) = conn
         .query_row(
-            "SELECT COUNT(*), COALESCE(SUM(b.size), 0) FROM blob b
-             WHERE b.namespace = 0 AND NOT EXISTS (
-               SELECT 1 FROM identity_blob ib WHERE ib.blob_id = b.blob_id)",
+            &format!(
+                "WITH RECURSIVE {DAG_EDGES_CTE}, {REACH_CTE}
+                 SELECT COUNT(*), COALESCE(SUM(b.size), 0) FROM blob b
+                 WHERE b.namespace = 0
+                   AND b.blob_id NOT IN (SELECT id FROM reach)"
+            ),
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(internal)?;
     if blobs > 0 {
         by_source.push(SourceBytes {
-            source: "(unattributed)".to_owned(),
+            source: "(unattached)".to_owned(),
             blobs,
             bytes,
         });
@@ -1388,6 +1422,110 @@ pub(crate) async fn blob_detail(
     .await
 }
 
+/// POST /v1/blobs/{hash}/verify (D80): verify one blob right now —
+/// re-hash the resident bytes on a background thread, stamp
+/// `verified_at` on match, fail the job with evidence on mismatch.
+/// Resident literals only: a rebuildable blob verifies by replay,
+/// which stays CLI.
+pub(crate) async fn blob_verify(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+    UrlPath(hash): UrlPath<String>,
+) -> Response {
+    run_blocking(move || {
+        require_owner(&caller)?;
+        let hash: Blake3 = hash
+            .to_lowercase()
+            .parse()
+            .map_err(|_| err(ErrorCode::BadRequest, "not a blake3 hex hash"))?;
+        let (blob_id, ns) = {
+            let db = lock_db(&app);
+            let row = db
+                .blob_by_hash(&hash)
+                .map_err(internal)?
+                .ok_or_else(|| err(ErrorCode::NotFound, "no such blob"))?;
+            if row.residency != Residency::Resident {
+                return Err(err(
+                    ErrorCode::BadRequest,
+                    "blob is not on disk — rebuildable blobs verify by replay (datboi scrub)",
+                ));
+            }
+            (row.blob_id, row.namespace)
+        };
+        let now = crate::auth::now_unix();
+        let job = app
+            .jobs
+            .create_scrub(&format!("verify — {}", &hash.to_hex()[..8]), 1, now);
+        let app = Arc::clone(&app);
+        std::thread::spawn(move || verify_one(&app, job, blob_id, ns, &hash));
+        Ok(json_response(
+            StatusCode::ACCEPTED,
+            &datboi_api::VerifyStartResponse { job },
+        ))
+    })
+    .await
+}
+
+/// The verify-one worker. Rides the scrub primitive
+/// (`verify_with_aliases`) so a pass also back-fills the alias tuple,
+/// exactly like a CLI scrub read would.
+fn verify_one(app: &App, job: i64, blob_id: i64, ns: Namespace, hash: &Blake3) {
+    use datboi_store_fs::VerifyOutcome;
+    let store_ns = match ns {
+        Namespace::Data => datboi_store_fs::Namespace::Data,
+        Namespace::Meta => datboi_store_fs::Namespace::Meta,
+    };
+    let now = crate::auth::now_unix();
+    match app.store.verify_with_aliases(store_ns, hash) {
+        Ok((VerifyOutcome::Valid, aliases)) => {
+            {
+                let db = lock_db(app);
+                if let Some(aliases) = &aliases {
+                    if let Err(e) = db.insert_aliases(blob_id, aliases) {
+                        tracing::warn!("verify {}: alias back-fill failed: {e}", hash.to_hex());
+                    }
+                }
+                if let Err(e) = db.set_verified(blob_id, now) {
+                    app.jobs
+                        .fail(job, &format!("verified, but the stamp failed: {e}"), now);
+                    return;
+                }
+            }
+            app.jobs.refine_progress(job, 1, 1);
+            app.jobs.finish(job, crate::auth::now_unix());
+        }
+        Ok((VerifyOutcome::Corrupt { actual }, _)) => {
+            app.jobs.fail(
+                job,
+                &format!(
+                    "CORRUPT: bytes on disk hash to {}, not {}",
+                    actual.to_hex(),
+                    hash.to_hex()
+                ),
+                crate::auth::now_unix(),
+            );
+        }
+        Ok((VerifyOutcome::Missing, _)) => {
+            // Index said resident, store had no bytes — self-heal by
+            // demoting the row (D81) so the lie can't repeat.
+            {
+                let db = lock_db(app);
+                if let Err(e) = db.set_residency(blob_id, Residency::Absent) {
+                    tracing::warn!("verify {}: demote failed: {e}", hash.to_hex());
+                }
+            }
+            app.jobs.fail(
+                job,
+                "no bytes on disk — index said resident and has been demoted to absent (D81)",
+                crate::auth::now_unix(),
+            );
+        }
+        Err(e) => {
+            app.jobs.fail(job, &e.to_string(), crate::auth::now_unix());
+        }
+    }
+}
+
 /// The claims a blob satisfies: identity links of any evidence grade
 /// (explanation, not the D39 holdings rollup) → rom_claim → entry,
 /// restricted to each source's CURRENT revision. DISTINCT because an
@@ -1402,6 +1540,60 @@ const CLAIMS_SQL: &str =
      JOIN dat_source ds ON ds.source_id = dr.source_id
                        AND ds.current_revision_id = dr.revision_id
      WHERE ib.blob_id = ?1";
+
+/// The compiled magic database (nixpkgs' file(1) magic.mgc), embedded
+/// at build time so the binary stays self-contained (D66; wired by
+/// build.rs like the web dist).
+const MAGIC_DB: &[u8] = include_bytes!(env!("DATBOI_MAGIC_DB"));
+
+std::thread_local! {
+    /// One libmagic cookie per blocking-pool thread: the cookie wraps
+    /// a raw pointer (!Send), and loading the database costs a few ms
+    /// — paid once per thread, never per request. `None` if libmagic
+    /// refuses the embedded db; the sniff just goes quiet.
+    static MAGIC: Option<magic::cookie::Cookie<magic::cookie::Load>> =
+        match magic::cookie::Cookie::open(magic::cookie::Flags::empty()) {
+            Err(e) => {
+                tracing::warn!("libmagic open failed — sniff disabled: {e}");
+                None
+            }
+            Ok(open) => match open.load_buffers(&[MAGIC_DB]) {
+                Ok(cookie) => Some(cookie),
+                Err(e) => {
+                    tracing::warn!(
+                        "libmagic rejected the embedded magic.mgc — sniff disabled: {e}"
+                    );
+                    None
+                }
+            },
+        };
+}
+
+/// Magic-byte display sniff (D79 headline fallback): libmagic over the
+/// first 64 KiB of the resident bytes. A hint, never identity — D18
+/// keeps blobs untyped. Note the trade-off, eyes open: libmagic is a
+/// native C parser of wild bytes, which D58 normally banishes to wasm;
+/// it is admitted here because the surface is owner-only display over
+/// bytes the OWNER ingested, on a bounded head — not peer input.
+/// Dats keep their own label first: libmagic would answer "XML
+/// document", and we know better.
+fn sniff_blob(app: &App, hash: &Blake3) -> Option<String> {
+    use std::io::Read as _;
+    let file = app
+        .store
+        .get(datboi_store_fs::Namespace::Data, hash)
+        .ok()??;
+    let mut head = Vec::with_capacity(64 * 1024);
+    file.take(64 * 1024).read_to_end(&mut head).ok()?;
+    if datboi_formats::detect(&head).is_some() {
+        return Some("dat file".to_owned());
+    }
+    MAGIC.with(|cookie| {
+        let desc = cookie.as_ref()?.buffer(&head).ok()?;
+        // "data" is libmagic's shrug — an empty answer, not a label.
+        if desc == "data" { None } else { Some(desc) }
+    })
+}
 
 fn blob_detail_body(app: &App, hash: &Blake3) -> Result<BlobDetail, Response> {
     let mut detail = {
@@ -1510,6 +1702,159 @@ fn blob_detail_body(app: &App, hash: &Blake3) -> Result<BlobDetail, Response> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(internal)?;
 
+        // D79: meaning from the edges. One UNDIRECTED walk collects
+        // this blob's recipe-connected component (capped — a runaway
+        // component truncates instead of hanging the request); two
+        // DIRECTED walks classify each claimed root found in it.
+        let walk = |sql: &str| -> Result<Vec<i64>, Response> {
+            let mut stmt = conn.prepare(sql).map_err(internal)?;
+            let ids = stmt
+                .query_map([blob_id], |row| row.get::<_, i64>(0))
+                .map_err(internal)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(internal)?;
+            Ok(ids)
+        };
+        let comp = walk(&format!(
+            "WITH RECURSIVE {DAG_EDGES_CTE},
+             comp(id) AS (
+               VALUES(?1)
+               UNION
+               SELECT CASE WHEN e.a = c.id THEN e.b ELSE e.a END
+               FROM comp c JOIN edges e ON e.a = c.id OR e.b = c.id)
+             SELECT id FROM comp LIMIT 10000"
+        ))?;
+        let down: std::collections::HashSet<i64> = walk(&format!(
+            "WITH RECURSIVE {DAG_EDGES_CTE},
+             down(id) AS (
+               VALUES(?1)
+               UNION
+               SELECT e.b FROM down d JOIN edges e ON e.a = d.id)
+             SELECT id FROM down LIMIT 10000"
+        ))?
+        .into_iter()
+        .collect();
+        let up: std::collections::HashSet<i64> = walk(&format!(
+            "WITH RECURSIVE {DAG_EDGES_CTE},
+             up(id) AS (
+               VALUES(?1)
+               UNION
+               SELECT e.a FROM up u JOIN edges e ON e.b = u.id)
+             SELECT id FROM up LIMIT 10000"
+        ))?
+        .into_iter()
+        .collect();
+
+        let in_list = |ids: &[i64]| {
+            ids.iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        // Claimed roots in the component (self excluded — a direct
+        // claim already renders as `claims`).
+        let others: Vec<i64> = comp.iter().copied().filter(|id| *id != blob_id).collect();
+        let mut roots = Vec::new();
+        if !others.is_empty() {
+            let root_ids = {
+                let mut stmt = conn
+                    .prepare(&format!(
+                        "SELECT DISTINCT ib.blob_id
+                         FROM identity_blob ib
+                         JOIN rom_claim rc ON rc.identity_id = ib.identity_id
+                         WHERE ib.blob_id IN ({})
+                         ORDER BY ib.blob_id LIMIT 20",
+                        in_list(&others)
+                    ))
+                    .map_err(internal)?;
+                stmt.query_map([], |row| row.get::<_, i64>(0))
+                    .map_err(internal)?
+                    .collect::<Result<Vec<i64>, _>>()
+                    .map_err(internal)?
+            };
+            for root_id in root_ids {
+                // Direction classifies the relation: the root sits
+                // downstream of an ingredient, upstream of a product.
+                let relation = if down.contains(&root_id) {
+                    RootRelation::Makes
+                } else if up.contains(&root_id) {
+                    RootRelation::DerivedFrom
+                } else {
+                    RootRelation::Related
+                };
+                let row = conn
+                    .query_row(
+                        &format!(
+                            "SELECT b.hash, x.entry, x.source
+                             FROM blob b,
+                                  ({CLAIMS_SQL} ORDER BY source, entry LIMIT 1) x
+                             WHERE b.blob_id = ?1"
+                        ),
+                        [root_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, [u8; 32]>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(internal)?;
+                if let Some((root_hash, entry, source)) = row {
+                    roots.push(RootRef {
+                        hash: Blake3(root_hash).to_hex(),
+                        entry,
+                        source,
+                        relation,
+                    });
+                }
+            }
+        }
+
+        // Viral provenance display (D79): source paths carried by
+        // CONNECTED blobs — a chunk's bytes arrived as somebody's
+        // zip, and that path lives on the container literal.
+        let provenance_via = if others.is_empty() {
+            Vec::new()
+        } else {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT sf.path, sf.scanned_at, b.hash
+                     FROM source_file sf
+                     JOIN blob b ON b.blob_id = sf.blob_id
+                     WHERE sf.blob_id IN ({})
+                     ORDER BY sf.path LIMIT 10",
+                    in_list(&others)
+                ))
+                .map_err(internal)?;
+            stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, [u8; 32]>(2)?,
+                ))
+            })
+            .map_err(internal)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(internal)?
+            .into_iter()
+            .map(|(path, at, via)| ProvenanceViaRow {
+                path,
+                ingested_at: at.into(),
+                via: Blake3(via).to_hex(),
+            })
+            .collect()
+        };
+
+        // Magic-byte sniff of resident bytes: a display hint for the
+        // headline fallback, never identity (D18).
+        let sniff = if Residency::from_code(residency).map_err(internal)? == Residency::Resident {
+            sniff_blob(app, hash)
+        } else {
+            None
+        };
+
         BlobDetail {
             hash: hash.to_hex(),
             size: size.into(),
@@ -1521,10 +1866,13 @@ fn blob_detail_body(app: &App, hash: &Blake3) -> Result<BlobDetail, Response> {
                 aliases,
             },
             provenance,
+            provenance_via,
             routes_in,
             routes_out,
             claims,
             claims_total: u64::try_from(claims_total).expect("COUNT(*) is non-negative"),
+            roots,
+            sniff: sniff.into(),
             pins: Vec::new(), // filled below, after the lock drops
         }
     };

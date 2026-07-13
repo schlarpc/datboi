@@ -40,22 +40,26 @@ describe('completenessPct', () => {
 });
 
 describe('barSegments', () => {
-  test('sizes segments against the FULL total, no-dump included', () => {
-    // Same shelf as the 50% case above: the bar tells a different story
-    // than the percentage, by design (spec §1.4).
+  test('sizes segments against the OBTAINABLE total — the same denominator as the percent', () => {
+    // 3 verified / (8 − 2 no-dump) = 50%: the bar now agrees with the
+    // headline percentage instead of quietly telling a smaller story.
     const seg = barSegments(counts(3, 2, 1, 2));
-    expect(seg.verified).toBeCloseTo(37.5);
-    expect(seg.claimed).toBeCloseTo(25);
+    expect(seg.verified).toBeCloseTo(50);
+    expect(seg.claimed).toBeCloseTo(100 / 3);
   });
 
-  test('missing + no-dump are the empty remainder of the track', () => {
+  test('missing alone is the empty remainder of the track', () => {
     const c = counts(1, 1, 1, 1);
     const seg = barSegments(c);
-    expect(seg.verified + seg.claimed).toBeCloseTo(50);
+    expect(seg.verified + seg.claimed).toBeCloseTo(100 - 100 / 3);
   });
 
   test('an empty set renders an empty track (no division by zero)', () => {
     expect(barSegments(counts(0, 0, 0, 0))).toEqual({ verified: 0, claimed: 0 });
+  });
+
+  test('an all-no-dump set renders an empty track (no division by zero)', () => {
+    expect(barSegments(counts(0, 0, 0, 5))).toEqual({ verified: 0, claimed: 0 });
   });
 });
 

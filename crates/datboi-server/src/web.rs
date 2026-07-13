@@ -100,56 +100,20 @@ mod tests {
         assert!(html.contains("<div id=\"app\""), "{html}");
     }
 
-    /// The ONE inline script (the theme-flash guard) is admitted into
-    /// the CSP by hash-source. Recompute the hash from the embedded
-    /// dist: edit the script without re-pinning hardening.rs and this
-    /// goes red instead of the browser silently refusing to run it.
+    /// D78 killed the theme toggle and with it the ONE inline script
+    /// (the flash guard), so the dist must carry ZERO inline scripts
+    /// and the CSP must carry no hash-source. A reintroduced inline
+    /// script goes red here instead of the browser silently refusing
+    /// to run it (script-src is 'self' only).
     #[test]
-    fn csp_hash_matches_the_dist_inline_script() {
+    fn dist_has_no_inline_scripts_and_csp_admits_none() {
         let index = WEB_DIST.get_file("index.html").expect("index.html");
         let html = std::str::from_utf8(index.contents()).expect("utf8");
-        let start = html.find("<script>").expect("inline theme script") + "<script>".len();
-        let end = start + html[start..].find("</script>").expect("script close");
-        let script = &html[start..end];
-
-        use sha2::Digest as _;
-        let digest = sha2::Sha256::digest(script.as_bytes());
-        let hash = base64(&digest);
+        assert_eq!(html.matches("<script>").count(), 0, "{html}");
         assert!(
-            crate::hardening::CSP.contains(&format!("'sha256-{hash}'")),
-            "CSP does not admit the dist's inline script (sha256-{hash})"
+            !crate::hardening::CSP.contains("sha256-"),
+            "CSP still carries a stale inline-script hash-source"
         );
-        // ...and it really is the only one.
-        assert_eq!(html.matches("<script>").count(), 1);
-    }
-
-    /// Standard base64 (RFC 4648), enough for one 32-byte digest —
-    /// hand-rolled so the test needs no extra dependency.
-    fn base64(bytes: &[u8]) -> String {
-        const TABLE: &[u8; 64] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::new();
-        for chunk in bytes.chunks(3) {
-            let b = [
-                chunk[0],
-                *chunk.get(1).unwrap_or(&0),
-                *chunk.get(2).unwrap_or(&0),
-            ];
-            let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-            out.push(TABLE[(n >> 18) as usize & 63] as char);
-            out.push(TABLE[(n >> 12) as usize & 63] as char);
-            out.push(if chunk.len() > 1 {
-                TABLE[(n >> 6) as usize & 63] as char
-            } else {
-                '='
-            });
-            out.push(if chunk.len() > 2 {
-                TABLE[n as usize & 63] as char
-            } else {
-                '='
-            });
-        }
-        out
     }
 
     #[test]

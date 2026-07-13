@@ -20,6 +20,7 @@
 use datboi_exec::{Executor, policy};
 use datboi_index::{Db, GuardHolder};
 use datboi_store_fs::Store;
+use tracing::{debug, info, warn};
 
 use crate::auth::now_unix;
 use crate::jobs::Registry;
@@ -76,12 +77,12 @@ impl Maintainer {
     /// waits on an operator remembering `datboi snapshot`.
     fn snapshot_if_dirty(&self, db: &mut Db, store: &Store) {
         match datboi_catalog::statesnap::maybe_mint(store, db, &self.identity, now_unix()) {
-            Ok(Some(report)) => eprintln!(
+            Ok(Some(report)) => info!(
                 "maintenance: state snapshot {} (seq {}) — authoritative state moved",
                 report.hash, report.sequence
             ),
             Ok(None) => {}
-            Err(e) => eprintln!("maintenance: auto-snapshot: {e}"),
+            Err(e) => warn!("maintenance: auto-snapshot: {e}"),
         }
     }
 
@@ -92,7 +93,7 @@ impl Maintainer {
         let pending = match self.exec.license_pending(db) {
             Ok(n) => n,
             Err(e) => {
-                eprintln!("maintenance: license pool: {e}");
+                warn!("maintenance: license pool: {e}");
                 return;
             }
         };
@@ -104,7 +105,7 @@ impl Maintainer {
         match self.exec.license_covered(db, LICENSE_BATCH) {
             Ok(report) => {
                 for (hash, error) in &report.failed {
-                    eprintln!("maintenance job {job}: license {hash}: {error}");
+                    debug!("maintenance job {job}: license {hash}: {error}");
                 }
                 let done = report.replayed as u64;
                 jobs.refine_progress(job, done, done + report.failed.len() as u64);
@@ -118,13 +119,13 @@ impl Maintainer {
                     ),
                 );
                 jobs.finish(job, now_unix());
-                eprintln!(
+                info!(
                     "maintenance job {job}: licensed {}/{batch} route(s)",
                     report.replayed
                 );
             }
             Err(e) => {
-                eprintln!("maintenance job {job}: FAILED — {e}");
+                warn!("maintenance job {job}: FAILED — {e}");
                 jobs.fail(job, &e.to_string(), now_unix());
             }
         }
@@ -137,16 +138,16 @@ impl Maintainer {
         let roots = match self.exec.orphan_extra_roots(db) {
             Ok(roots) => roots,
             Err(e) => {
-                eprintln!("maintenance: orphan roots: {e}");
+                warn!("maintenance: orphan roots: {e}");
                 return;
             }
         };
         match db.sweep_orphan_marks(&roots, now_unix()) {
             Ok((marked, cleared)) if marked + cleared > 0 => {
-                eprintln!("maintenance: orphan sweep — {marked} newly marked, {cleared} cleared");
+                info!("maintenance: orphan sweep — {marked} newly marked, {cleared} cleared");
             }
             Ok(_) => {}
-            Err(e) => eprintln!("maintenance: orphan sweep: {e}"),
+            Err(e) => warn!("maintenance: orphan sweep: {e}"),
         }
     }
 
@@ -156,7 +157,7 @@ impl Maintainer {
             Ok(Some(pair)) => pair,
             Ok(None) => return, // unanswerable platform: stay additive
             Err(e) => {
-                eprintln!("maintenance: fs usage: {e}");
+                warn!("maintenance: fs usage: {e}");
                 return;
             }
         };
@@ -166,7 +167,7 @@ impl Maintainer {
             Ok(Some(high)) => high,
             Ok(None) => return, // disarmed
             Err(e) => {
-                eprintln!("maintenance: watermark config: {e}");
+                warn!("maintenance: watermark config: {e}");
                 return;
             }
         };
@@ -180,16 +181,16 @@ impl Maintainer {
         let reclaim = used.saturating_sub(low.min(high));
 
         if !claim_guard(db, &self.holder) {
-            eprintln!("maintenance: watermark crossed but gc guard is busy; retrying next cycle");
+            warn!("maintenance: watermark crossed but gc guard is busy; retrying next cycle");
             return;
         }
         let job = jobs.create_gc("evict — watermark", 0, now_unix());
-        eprintln!(
+        info!(
             "maintenance job {job}: watermark crossed (used {used} of {total}); reclaiming ~{reclaim} byte(s)"
         );
         let result = self.exec.evict_reclaim(db, reclaim);
         db.release_gc_guard(&self.holder).unwrap_or_else(|e| {
-            eprintln!("maintenance: guard release: {e}"); // TTL is the backstop
+            warn!("maintenance: guard release: {e}"); // TTL is the backstop
         });
         match result {
             Ok(report) => {
@@ -205,13 +206,13 @@ impl Maintainer {
                     ),
                 );
                 jobs.finish(job, now_unix());
-                eprintln!(
+                info!(
                     "maintenance job {job}: evicted {} blob(s), {} byte(s)",
                     report.evicted, report.bytes_reclaimed
                 );
             }
             Err(e) => {
-                eprintln!("maintenance job {job}: FAILED — {e}");
+                warn!("maintenance job {job}: FAILED — {e}");
                 jobs.fail(job, &e.to_string(), now_unix());
             }
         }

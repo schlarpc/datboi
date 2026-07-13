@@ -37,6 +37,7 @@ use datboi_core::hash::Blake3;
 use datboi_exec::{ExecConfig, Executor};
 use datboi_index::Db;
 use datboi_store_fs::Store;
+use tracing::{error, info, warn};
 
 /// Daemon configuration (resolved from flags/`DATBOI_*` env by the CLI).
 pub struct Config {
@@ -103,13 +104,13 @@ impl App {
         // Best-effort sweep of crash-orphaned temps — including staged
         // uploads a dead daemon left behind (same 24 h the CLI uses).
         if let Err(e) = store.cleanup_temp(std::time::Duration::from_secs(24 * 60 * 60)) {
-            eprintln!("warning: temp sweep: {e}");
+            warn!("temp sweep: {e}");
         }
         let detectors = match &config.detectors_dir {
             Some(dir) => {
                 let (detectors, errors) = datboi_ingest::load_detectors(dir);
                 for (path, err) in errors {
-                    eprintln!("warning: detector {}: {err}", path.display());
+                    warn!("detector {}: {err}", path.display());
                 }
                 detectors
             }
@@ -151,8 +152,8 @@ impl Server {
         // The M4 "NO AUTHENTICATION" warning died with D68: binding
         // wide now means "auth required", not "everyone is owner".
         if !config.listen.ip().is_loopback() {
-            eprintln!(
-                "note: listening on non-loopback {}: auth required — non-loopback requests \
+            info!(
+                "listening on non-loopback {}: auth required — non-loopback requests \
                  need a session or bearer token (D68; mint invites with `datboi user invite`)",
                 config.listen
             );
@@ -162,8 +163,8 @@ impl Server {
         {
             // NFS has no auth story yet (D68 keeps it loopback-only-by-
             // default in M5), so a wide NFS bind stays a loud warning.
-            eprintln!(
-                "warning: NFS listening on non-loopback {addr} with NO AUTHENTICATION; \
+            warn!(
+                "NFS listening on non-loopback {addr} with NO AUTHENTICATION; \
                  anyone who can reach this socket can read every view"
             );
         }
@@ -209,7 +210,7 @@ impl Server {
                 );
                 tokio::spawn(async move {
                     if let Err(e) = nfs_listener.handle_forever().await {
-                        eprintln!("nfs listener died: {e}");
+                        error!("nfs listener died: {e}");
                     }
                 });
             }
@@ -250,13 +251,14 @@ async fn shutdown_signal() {
 }
 
 /// Bind and serve (the `datboi serve` entry point). Logs the bound
-/// address to stdout once the socket is live.
+/// address once the socket is live (INFO — the default filter, so it
+/// reaches the operator even without RUST_LOG).
 ///
 /// # Errors
 /// See [`Server::bind`] and [`Server::serve`].
 pub fn run(config: &Config) -> anyhow::Result<()> {
     let server = Server::bind(config)?;
-    println!(
+    info!(
         "datboi-server listening on http://{} (store {}, db {})",
         server.local_addr()?,
         config.store_root.display(),

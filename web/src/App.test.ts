@@ -31,11 +31,13 @@ test('authenticated boot (loopback owner) lands in the shell', async () => {
   });
   render(App);
 
-  // Shell chrome: nav, wordmark, jobs tray, and the Library home.
+  // Shell chrome: nav, wordmark, the quiet activity link (D82 — the
+  // tray is dead), and the Library home.
   expect(await screen.findByText('The shelf')).toBeTruthy();
   expect(screen.getByText('Library')).toBeTruthy();
   expect(screen.getByText('datboi')).toBeTruthy();
-  expect(await screen.findByText('▸ jobs (0)')).toBeTruthy();
+  const activity = await screen.findByText('activity');
+  expect(activity.closest('a')?.getAttribute('href')).toBe('/activity');
 });
 
 test('a named session shows the avatar initial', async () => {
@@ -75,14 +77,15 @@ test('a friend session gets friend chrome — no owner surfaces leak', async () 
   });
   render(App);
 
-  // Shelves home + account chip; no nav tabs, no jobs tray, no health chip.
+  // Shelves home + account chip; no nav tabs, no activity chrome, no
+  // health chip.
   expect(await screen.findByText('Your shelves')).toBeTruthy();
   expect(screen.getByText('shared with you by the owner')).toBeTruthy();
   expect(screen.getByText('sam')).toBeTruthy();
   expect(screen.queryByText('Library')).toBeNull();
   expect(screen.queryByText('Ingest')).toBeNull();
   expect(screen.queryByText('Admin')).toBeNull();
-  expect(screen.queryByText(/▸ jobs/)).toBeNull();
+  expect(screen.queryByText('activity')).toBeNull();
   expect(screen.queryByText('healthy')).toBeNull();
 });
 

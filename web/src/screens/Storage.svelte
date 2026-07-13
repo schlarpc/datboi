@@ -155,116 +155,138 @@
         {/if}
       </div>
       <div class="tile dashed">
-        <span class="label">LITERAL-ONLY</span>
+        <span class="label">NOT YET OPTIMIZED</span>
         <span class="num">{fmtSize(s.literal_only_bytes)}</span>
-        <span class="tile-sub">shrinkable</span>
       </div>
     </div>
 
-    <div class="cards">
-      <div class="action-card">
-        <div class="card-title">Scrub</div>
-        {#if s.last_scrub !== null}
-          <p class="copy">last: {fmtDate(s.last_scrub.finished_at)} · {s.last_scrub.name}</p>
-        {:else}
-          <p class="copy">no scrub recorded yet — runs land in the job ledger</p>
-        {/if}
+    <!-- Maintenance status (87-web-ui.md: management by exception).
+         One quiet line per subsystem while healthy; quarantine and
+         orphans grow into real cards below ONLY when they need a
+         human. Scrub and eviction never do — they stay lines. -->
+    <div class="maint">
+      <div class="maint-row">
+        <span class="maint-label">Scrub</span>
+        <span class="maint-copy">
+          {#if s.last_scrub !== null}
+            last: {fmtDate(s.last_scrub.finished_at)} · {s.last_scrub.name}
+          {:else}
+            never run
+          {/if}
+        </span>
         <button class="pill" aria-expanded={scrubHint} onclick={() => (scrubHint = !scrubHint)}>run via CLI</button>
-        {#if scrubHint}
-          <CliHint command={'datboi scrub [--sample <pct>]'}>
-            re-hash stored blobs and report corruption:
-          </CliHint>
-        {/if}
       </div>
-
-      <div class="action-card" class:danger={s.quarantine.count > 0}>
-        <div class="card-title">
-          <!-- @wc-context: bad components, not people -->
-          Quarantine · {s.quarantine.count.toLocaleString()}
-        </div>
-        {#if s.quarantine.count === 0}
-          <p class="copy">nothing quarantined</p>
-        {:else}
-          <!-- The `review →` flow was never designed; this inline list
-               IS the M5 review (open-questions § "Quarantine review
-               screen"; M5 scope ruling, open-questions 2026-07-11). -->
-          <div class="q-items">
-            {#each s.quarantine.items as item (item.component)}
-              <div class="q-item">
-                <span class="q-hash">{shortHash(item.component)}</span>
-                <span class="q-reason">{item.reason}</span>
-                <span class="q-when">{fmtDate(item.quarantined_at)}</span>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </div>
-
-      <div class="action-card">
-        <div class="card-title"><!-- @wc-context: storage eviction -->Eviction</div>
+      {#if scrubHint}
+        <CliHint command={'datboi scrub [--sample <pct>]'}>
+          re-hash stored blobs and report corruption:
+        </CliHint>
+      {/if}
+      <div class="maint-row">
+        <span class="maint-label"><!-- @wc-context: storage eviction -->Eviction</span>
         <!-- D72: watermark eviction is automatic and REVERSIBLE by
              construction — every drop has a locally-replayed rebuild
              route. Tune or disarm via `datboi gc config`. -->
-        <p class="copy">rebuildable literals evict automatically at the watermark — nothing unrecoverable is ever dropped</p>
+        <span class="maint-copy">automatic at the watermark — drops only what's rebuildable</span>
         <button class="pill" aria-expanded={evictHint} onclick={() => (evictHint = !evictHint)}>tune via CLI</button>
-        {#if evictHint}
-          <CliHint command={'datboi gc config --high-water 90% --low-water 85%'}>
-            watermarks ("off" disarms); manual pass: datboi evict --dry-run:
-          </CliHint>
-        {/if}
       </div>
-
-      <div class="action-card" class:danger={reviewable.some((o) => !o.kept)}>
-        <div class="card-title">
-          <!-- @wc-context: unreferenced blobs, not people -->
-          Orphans · {reviewable.length.toLocaleString()}
+      {#if evictHint}
+        <CliHint command={'datboi gc config --high-water 90% --low-water 85%'}>
+          watermarks ("off" disarms); manual pass: datboi evict --dry-run:
+        </CliHint>
+      {/if}
+      {#if s.quarantine.count === 0}
+        <div class="maint-row">
+          <span class="maint-label"><!-- @wc-context: bad components, not people -->Quarantine</span>
+          <span class="maint-copy">empty</span>
         </div>
-        {#if orphans.st === 'loading'}
-          <p class="copy">loading…</p>
-        {:else if orphans.st === 'error'}
-          <!-- Card-local failure: stats and breakdown stay rendered. -->
+      {/if}
+      {#if orphans.st === 'loading'}
+        <div class="maint-row">
+          <span class="maint-label"><!-- @wc-context: unreferenced blobs, not people -->Orphans</span>
+          <span class="maint-copy">loading…</span>
+        </div>
+      {:else if orphans.st === 'error'}
+        <div class="maint-row">
+          <span class="maint-label"><!-- @wc-context: unreferenced blobs, not people -->Orphans</span>
+          <!-- Row-local failure: stats and breakdown stay rendered. -->
           <LoadError msg={orphans.msg} onretry={refreshOrphans} />
-        {:else if reviewable.length === 0}
-          <p class="copy">nothing unreferenced — every blob is rooted or still under grace</p>
-        {:else}
-          <!-- D73 review gate: deletion is THIS surface, never ambient.
-               Each row shows ingest provenance; keep excludes it. -->
-          <div class="q-items">
-            {#each reviewable as orphan (orphan.hash)}
-              <div class="q-item">
-                <span class="q-hash">{shortHash(orphan.hash)}</span>
-                <span class="q-reason">
-                  {fmtSize(orphan.size)}{orphan.sources.length > 0
-                    ? ` · ${orphan.sources.join(', ')}`
-                    : ''}
-                </span>
-                <button
-                  class="pill"
-                  aria-pressed={orphan.kept}
-                  disabled={keepBusy[orphan.hash] === true}
-                  onclick={() => toggleKeep(orphan.hash, !orphan.kept)}
-                >
-                  {orphan.kept ? 'kept ✓' : 'keep'}
-                </button>
-              </div>
-            {/each}
+        </div>
+      {:else if reviewable.length === 0}
+        <div class="maint-row">
+          <span class="maint-label"><!-- @wc-context: unreferenced blobs, not people -->Orphans</span>
+          <span class="maint-copy">none</span>
+        </div>
+      {/if}
+    </div>
+
+    {#if s.quarantine.count > 0 || reviewable.length > 0}
+      <div class="cards">
+        {#if s.quarantine.count > 0}
+          <div class="action-card danger">
+            <div class="card-title">
+              <!-- @wc-context: bad components, not people -->
+              Quarantine · {s.quarantine.count.toLocaleString()}
+            </div>
+            <!-- The `review →` flow was never designed; this inline list
+                 IS the M5 review (open-questions § "Quarantine review
+                 screen"; M5 scope ruling, open-questions 2026-07-11). -->
+            <div class="q-items">
+              {#each s.quarantine.items as item (item.component)}
+                <div class="q-item">
+                  <span class="q-hash">{shortHash(item.component)}</span>
+                  <span class="q-reason">{item.reason}</span>
+                  <span class="q-when">{fmtDate(item.quarantined_at)}</span>
+                </div>
+              {/each}
+            </div>
           </div>
-          <p class="copy">
-            {fmtSize(orphans.data.reclaimable_bytes)} reclaimable · every delete re-verifies
-            unreferenced at delete time
-          </p>
-          <button class="pill" class:bad-pill={applyArmed} disabled={applying} onclick={applyAll}>
-            {#if applying}deleting…{:else if applyArmed}confirm: delete non-kept{:else}delete non-kept…{/if}
-          </button>
-          {#if applyError !== null}
-            <p class="copy apply-error">delete failed — {applyError}</p>
-          {/if}
-          {#if keepError !== null}
-            <p class="copy apply-error">keep toggle failed — {keepError}</p>
-          {/if}
+        {/if}
+
+        {#if orphans.st === 'ready' && reviewable.length > 0}
+          <div class="action-card" class:danger={reviewable.some((o) => !o.kept)}>
+            <div class="card-title">
+              <!-- @wc-context: unreferenced blobs, not people -->
+              Orphans · {reviewable.length.toLocaleString()}
+            </div>
+            <!-- D73 review gate: deletion is THIS surface, never ambient.
+                 Each row shows ingest provenance; keep excludes it. -->
+            <div class="q-items">
+              {#each reviewable as orphan (orphan.hash)}
+                <div class="q-item">
+                  <span class="q-hash">{shortHash(orphan.hash)}</span>
+                  <span class="q-reason">
+                    {fmtSize(orphan.size)}{orphan.sources.length > 0
+                      ? ` · ${orphan.sources.join(', ')}`
+                      : ''}
+                  </span>
+                  <button
+                    class="pill"
+                    aria-pressed={orphan.kept}
+                    disabled={keepBusy[orphan.hash] === true}
+                    onclick={() => toggleKeep(orphan.hash, !orphan.kept)}
+                  >
+                    {orphan.kept ? 'kept ✓' : 'keep'}
+                  </button>
+                </div>
+              {/each}
+            </div>
+            <p class="copy">
+              {fmtSize(orphans.data.reclaimable_bytes)} reclaimable · every delete re-verifies
+              unreferenced at delete time
+            </p>
+            <button class="pill" class:bad-pill={applyArmed} disabled={applying} onclick={applyAll}>
+              {#if applying}deleting…{:else if applyArmed}confirm: delete non-kept{:else}delete non-kept…{/if}
+            </button>
+            {#if applyError !== null}
+              <p class="copy apply-error">delete failed — {applyError}</p>
+            {/if}
+            {#if keepError !== null}
+              <p class="copy apply-error">keep toggle failed — {keepError}</p>
+            {/if}
+          </div>
         {/if}
       </div>
-    </div>
+    {/if}
 
     <!-- Debug-grade introspection (open-questions 2026-07-11): the
          /v1/storage/breakdown aggregates, with the largest blobs
@@ -315,7 +337,7 @@
             <div class="grid-table largest">
               <span class="th">hash</span>
               <span class="th num">size</span>
-              <span class="th">residency</span>
+              <span class="th">where</span>
               {#each b.largest as blob (blob.hash)}
                 <Link class="td data blob-link" href={`/storage/blob/${blob.hash}`}>
                   {shortHash(blob.hash)}
@@ -408,9 +430,45 @@
     color: var(--okT);
   }
 
+  .maint {
+    margin-top: 18px;
+    background: var(--panel);
+    border: 1px solid var(--hair);
+    border-radius: var(--r-sub);
+    padding: 10px 20px;
+  }
+
+  .maint-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 6px 0;
+    font: 400 0.78125rem var(--font-data);
+    color: var(--mut);
+  }
+
+  .maint-row + .maint-row {
+    border-top: 1px dashed var(--hair);
+  }
+
+  .maint-label {
+    width: 90px;
+    flex: none;
+    font: 800 0.78125rem var(--font-display);
+    letter-spacing: 0.02em;
+    color: var(--text);
+  }
+
+  .maint-copy {
+    flex: 1;
+    min-width: 0;
+  }
+
   .cards {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    /* Attention cards only render when something needs a human, so the
+       grid sizes to however many fired (one full-width, two split). */
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
     gap: 16px;
     margin-top: 18px;
     align-items: start;
@@ -532,8 +590,8 @@
     color: var(--text);
   }
 
-  /* The JobRow track/fill register — a width-percent fill is enough
-     here (StackedBar is the shelf's multi-state register). */
+  /* The activity-page track/fill register — a width-percent fill is
+     enough here (StackedBar is the shelf's multi-state register). */
   .track {
     flex: 1;
     height: 8px;
@@ -566,7 +624,9 @@
 
   .split {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    /* minmax(0, …): a plain 1fr's min size is the content's min-content
+       width, so one wide row would silently break the 50/50. */
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 24px;
     align-items: start;
   }
@@ -586,11 +646,14 @@
   }
 
   .grid-table.sources {
-    grid-template-columns: 1fr auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
   }
 
+  /* Hash takes the flexible column so size and residency sit at the
+     table's right edge — `auto auto 1fr` left the whole table hugging
+     the left margin with a dead 1fr tail. */
   .grid-table.largest {
-    grid-template-columns: auto auto 1fr;
+    grid-template-columns: minmax(0, 1fr) auto auto;
   }
 
   .th {

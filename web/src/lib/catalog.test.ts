@@ -37,8 +37,10 @@ describe('en.po msgctxt round-trip', () => {
     },
   );
 
-  test.each(['● Verified', '◐ Claimed', '○ Missing', '– No dump'])(
-    'rail label %j (glyph composed in) is a storage state',
+  // Marks are CSS-drawn now (87-web-ui.md) — the rail labels are the
+  // bare words, still disambiguated as storage states.
+  test.each(['Verified', 'Claimed', 'Missing', 'No dump'])(
+    'rail label %j is a storage state',
     (label) => {
       expect(contextsOf(label)).toContain('storage state');
     },
@@ -56,11 +58,11 @@ describe('en.po msgctxt round-trip', () => {
   });
 
   test('unambiguous prose carries no context', () => {
-    expect(contextsOf('bytes rebuildable, not yet re-verified')).toEqual([undefined]);
+    expect(contextsOf('no recipe consumes this blob')).toEqual([undefined]);
   });
 
   test('composed strings keep their glyphs inside the msgid (spec §6)', () => {
-    for (const msgid of ['⬇ missing-list', '▸ jobs ({0})', 'done ✓', '▶ Play', 'activity ▾']) {
+    for (const msgid of ['⬇ missing-list', 'done ✓']) {
       expect(contextsOf(msgid).length, msgid).toBeGreaterThan(0);
     }
   });

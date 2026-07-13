@@ -27,7 +27,7 @@ use crate::{
     IngestRequest, IngestStartResponse, InviteAcceptRequest, InviteMintRequest, InviteMintResponse,
     JobDetail, JobsResponse, LoginRequest, OkResponse, OrphansResponse, ResidencyState,
     SessionResponse, SessionsRevokedResponse, StorageBreakdown, StorageResponse, SystemsResponse,
-    UploadResponse, ViewDetail, ViewFilesPage, ViewsResponse, WhoamiResponse,
+    UploadResponse, VerifyStartResponse, ViewDetail, ViewFilesPage, ViewsResponse, WhoamiResponse,
 };
 
 /// Marker schema for the minted-image download body: raw octets, not
@@ -369,6 +369,28 @@ fn blobs() {}
 )]
 fn blob_detail() {}
 
+/// Verify one blob right now (D80): re-hash the resident bytes,
+/// stamp `verified_at` on match, fail the job with evidence on
+/// mismatch. The second pipeline verb to graduate from CLI-only —
+/// verification is the product's core promise, and "when was this
+/// last checked?" is exactly when the user must be able to act.
+/// Resident literals only: a rebuildable blob verifies by replay,
+/// which stays CLI.
+#[utoipa::path(
+    post,
+    path = "/v1/blobs/{hash}/verify",
+    tag = "storage",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    params(("hash" = String, Path, description = "blake3, 64 hex chars (case-insensitive)")),
+    responses(
+        (status = 202, description = "Verify job started; poll GET /v1/jobs/{id}", body = VerifyStartResponse),
+        (status = 400, description = "Not a blake3 hex hash / blob not on disk", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+        (status = 404, description = "No such blob", body = ApiError),
+    ),
+)]
+fn blob_verify() {}
+
 /// The in-memory job registry: running jobs plus recently finished
 /// ones (the registry keeps a bounded tail; a daemon restart forgets
 /// everything — durable job reports are a recorded open question).
@@ -605,6 +627,7 @@ fn gc_apply() {}
         storage_breakdown,
         blobs,
         blob_detail,
+        blob_verify,
         jobs,
         job_detail,
         admin_users,

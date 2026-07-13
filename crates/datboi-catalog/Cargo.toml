@@ -18,6 +18,8 @@ quick-xml.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# D81 daemon logging: events only; no subscriber in library code.
+tracing.workspace = true
 
 [dev-dependencies]
 datboi-ingest.workspace = true

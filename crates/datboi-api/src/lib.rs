@@ -665,6 +665,11 @@ pub struct BlobDetail {
     pub verified_at: Nullable<i64>,
     pub digests: BlobDigests,
     pub provenance: Vec<ProvenanceRow>,
+    /// Source paths carried by recipe-CONNECTED blobs (D79 viral
+    /// provenance display): where these bytes actually arrived, for
+    /// derived/member blobs whose own `provenance` is empty. Capped
+    /// at 10.
+    pub provenance_via: Vec<ProvenanceViaRow>,
     /// Recipes whose OUTPUT is this blob — ways to make it.
     pub routes_in: Vec<RouteEdge>,
     /// Recipes consuming this blob as an input — things made from it.
@@ -672,9 +677,56 @@ pub struct BlobDetail {
     /// Capped at 100 rows; `claims_total` is the uncapped count.
     pub claims: Vec<ClaimRef>,
     pub claims_total: u64,
+    /// Claimed blobs this blob is connected to through the recipe DAG
+    /// (D79): the display identity when `claims` is empty. Capped at
+    /// 20; empty for a truly unattached blob.
+    pub roots: Vec<RootRef>,
+    /// Magic-byte sniff of resident bytes ("zip archive", …) — a
+    /// display hint, never identity (D18: type lives in the edges).
+    /// Null when absent from disk or unrecognized.
+    pub sniff: Nullable<String>,
     /// Views whose CURRENT snapshot references this blob (D33: the tag
     /// is what pins).
     pub pins: Vec<String>,
+}
+
+/// A claimed root reachable from a blob through recipe edges (D79).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RootRef {
+    /// The root blob (blake3 hex) — links into its own inspector.
+    pub hash: String,
+    /// Best claim name on the root.
+    pub entry: String,
+    /// provider/system of that claim.
+    pub source: String,
+    pub relation: RootRelation,
+}
+
+/// How the inspected blob relates to a claimed root, following
+/// DIRECTED recipe edges (input → output = "helps make").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RootRelation {
+    /// The blob is an upstream ingredient: some recipe chain assembles
+    /// the root FROM it (chunks, containers, preflate streams).
+    Makes,
+    /// The blob is a downstream product of the root (stripped bodies,
+    /// extracted variants).
+    DerivedFrom,
+    /// Connected through the DAG but on a sibling branch (e.g. a chunk
+    /// of rom A reaching rom B through their shared container).
+    Related,
+}
+
+/// One viral-provenance row (D79): a source path recorded on a
+/// recipe-connected blob, shown on blobs that have none of their own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProvenanceViaRow {
+    pub path: String,
+    /// When the path was last scanned/ingested, unix seconds.
+    pub ingested_at: Nullable<i64>,
+    /// The connected blob (blake3 hex) actually carrying the path.
+    pub via: String,
 }
 
 /// Every digest the index holds for the blob's bytes: the blake3 key
@@ -758,6 +810,15 @@ pub struct IngestStartResponse {
     pub job: i64,
 }
 
+// ---- POST /v1/blobs/{hash}/verify (D80) ----
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct VerifyStartResponse {
+    /// Poll `GET /v1/jobs/{id}`; done stamps `verified_at`, failed
+    /// carries the corruption evidence in `error`.
+    pub job: i64,
+}
+
 // ---- GET /v1/jobs (+ /{id}) ----
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -791,9 +852,8 @@ pub enum JobRunState {
     Failed,
 }
 
-/// One row of the in-memory job registry (the jobs tray render). The
-/// registry does not survive a daemon restart — durable job reports
-/// are a recorded open question, not implied here.
+/// One row of the job registry (running + D74 ledger history — the
+/// activity page render, D82).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Job {
     pub id: i64,
@@ -805,6 +865,12 @@ pub struct Job {
     pub progress: u8,
     pub kind: JobKind,
     pub state: JobRunState,
+    /// Unix seconds. On the LIST row, not just the detail, because the
+    /// activity page renders relative timestamps for every row and
+    /// must not need N+1 detail fetches to do it (D82).
+    pub started_at: i64,
+    /// Unix seconds; null while running.
+    pub finished_at: Nullable<i64>,
 }
 
 /// GET /v1/jobs/{id}: the row plus counters and the (growing, then
@@ -822,10 +888,8 @@ pub struct JobDetail {
     /// files and once finished.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current: Option<String>,
-    /// Unix seconds.
-    pub started_at: i64,
-    /// Unix seconds; null while running.
-    pub finished_at: Nullable<i64>,
+    // started_at / finished_at moved onto the flattened `Job` row —
+    // this struct's JSON shape is unchanged.
     /// Cumulative across completed files — grows while running, final
     /// when done.
     pub report: IngestReportBody,
@@ -1223,14 +1287,14 @@ mod tests {
                 progress: 40,
                 kind: JobKind::Ingest,
                 state: JobRunState::Running,
+                started_at: 1_000,
+                finished_at: None.into(),
             },
             files_total: 2,
             files_done: 1,
             bytes_total: 100,
             bytes_done: 40,
             current: None,
-            started_at: 1_000,
-            finished_at: None.into(),
             report: IngestReportBody {
                 dats_imported: vec![DatImportedItem {
                     path: "dats/nds.zip".into(),

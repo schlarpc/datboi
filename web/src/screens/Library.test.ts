@@ -114,14 +114,14 @@ test('bands: known systems get spec tokens deterministically', async () => {
   ]);
 });
 
-test('views chips render; the empty card is the dat drop zone', async () => {
+test('views chips render; the empty card advertises the screen-wide drop', async () => {
   installFetch({ systems: [gba, snes] });
   render(Library);
   await screen.findByText('gba');
 
   expect(screen.getByText('gba-everdrive')).toBeTruthy();
   expect(screen.getByText('gba-flash')).toBeTruthy();
-  expect(screen.getByText(/drop files here or click to pick/)).toBeTruthy();
+  expect(screen.getByText(/drop files anywhere or click to pick/)).toBeTruthy();
 });
 
 test('picking a dat stages it through the ingest job, logs the receipt, and refreshes the shelf', async () => {

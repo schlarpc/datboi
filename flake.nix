@@ -77,6 +77,11 @@
           strictDeps = true;
           pname = "datboi";
           version = "0.1.0";
+          # libmagic (the C library behind file(1)) for the `magic`
+          # crate: the blob inspector's sniff (D79 headline fallback)
+          # asks the real magic database instead of a hand-rolled
+          # four-entry table.
+          buildInputs = [ (pkgsFor system).file ];
         };
 
       hostDepsFor = system:
@@ -327,6 +332,21 @@
         DATBOI_WEB_DIST = "${webFor system}";
       };
 
+      # D79: the compiled magic database (file(1)'s magic.mgc) the blob
+      # sniff embeds — copied out of nixpkgs' `file` so the output IS
+      # the one file datboi-server's build.rs include_bytes!-es. Wired
+      # like DATBOI_COMPONENTS_DIR / DATBOI_WEB_DIST; unlike those it
+      # has no tree inputs, so only a nixpkgs bump moves it.
+      magicDbFor = system:
+        let pkgs = pkgsFor system;
+        in pkgs.runCommand "datboi-magic-mgc" { } ''
+          cp ${pkgs.file}/share/misc/magic.mgc $out
+        '';
+
+      magicEnvFor = system: {
+        DATBOI_MAGIC_DB = "${magicDbFor system}";
+      };
+
       # ---- container image (nix2container-turbo) ----
       #
       # `docker run` starts the daemon (web UI on :2352); busybox rides
@@ -395,7 +415,7 @@
           hostArgs = hostArgsFor system;
         in
         {
-          default = craneLib.buildPackage (hostArgs // componentsEnvFor system // webEnvFor system // {
+          default = craneLib.buildPackage (hostArgs // componentsEnvFor system // webEnvFor system // magicEnvFor system // {
             cargoArtifacts = hostDepsFor system;
             doCheck = false;
           });
@@ -405,6 +425,8 @@
           transforms = transformsFor system;
 
           web = webFor system;
+
+          magicdb = magicDbFor system;
         } // nixpkgs.lib.optionalAttrs (nixpkgs.lib.hasSuffix "-linux" system) {
           container = containerFor system;
         });
@@ -448,7 +470,7 @@
               installPhase = "touch $out";
             };
 
-          clippy = craneLib.cargoClippy (hostArgs // componentsEnvFor system // webEnvFor system // {
+          clippy = craneLib.cargoClippy (hostArgs // componentsEnvFor system // webEnvFor system // magicEnvFor system // {
             cargoArtifacts = hostArtifacts;
             # --workspace: default-members is just `cargo run` ergonomics
             # (root Cargo.toml); lints must cover every member.
@@ -459,7 +481,7 @@
             src = hostArgs.src;
           };
 
-          test = craneLib.cargoNextest (hostArgs // componentsEnvFor system // webEnvFor system // {
+          test = craneLib.cargoNextest (hostArgs // componentsEnvFor system // webEnvFor system // magicEnvFor system // {
             cargoArtifacts = hostArtifacts;
             partitions = 1;
             partitionType = "count";

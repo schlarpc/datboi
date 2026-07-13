@@ -42,6 +42,23 @@ pub const XF_PREFLATE_WASM: &[u8] = include_bytes!(concat!(
 /// recipe.
 const SPLIT_WINDOW: usize = 4 * 1024 * 1024;
 
+/// The claim query only hands out blobs the index calls Resident
+/// (analysis.rs `claim_sweep_items`), so an empty store read here
+/// means THE INDEX IS WRONG — a wiped or swapped store dir, not a
+/// racing evict. Self-heal by demoting the row to Absent (D81): the
+/// item then drops out of every future claim, where "stay queued and
+/// retry" re-errored on every ambient sweep forever. A later
+/// rematerialization or re-ingest flips it back to Resident.
+fn heal_not_resident(db: &Db, item: &SweepItem) -> String {
+    match db.set_residency(item.blob_id, Residency::Absent) {
+        Ok(()) => {
+            "blob not resident — index said resident, store had no bytes; demoted to absent (D81)"
+                .into()
+        }
+        Err(e) => format!("blob not resident (and the index demote failed: {e})"),
+    }
+}
+
 /// Per-frame plaintext ceiling handed to preflate (bounds rebuild memory;
 /// comfortably under the guest's 64 MiB MAX_FRAME guard).
 const SPLIT_PLAINTEXT_LIMIT: usize = 32 * 1024 * 1024;
@@ -267,7 +284,7 @@ impl Analyzer for PreflateZipAnalyzer {
             .get(StoreNs::Data, &item.hash)
             .map_err(|e| e.to_string())?
         else {
-            return Err("blob not resident".into());
+            return Err(heal_not_resident(db, item));
         };
         let container_size = item
             .size
@@ -281,7 +298,19 @@ impl Analyzer for PreflateZipAnalyzer {
                 detail: Some("not a zip container".into()),
             });
         }
-        let parsed = crate::zip::parse_members(&mut file).map_err(|e| e.to_string())?;
+        // A parse failure is a CONCLUSION about the bytes — they will
+        // never change — so it settles as Negative (D81). This used to
+        // `Err`, and one zip-magic blob with no end-of-central-directory
+        // record re-errored on every 30-minute ambient sweep forever.
+        let parsed = match crate::zip::parse_members(&mut file) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                return Ok(AnalysisResult {
+                    outcome: AnalysisOutcome::Negative,
+                    detail: Some(format!("zip parse failed: {e}; container stays literal")),
+                });
+            }
+        };
         if !parsed.skipped.is_empty() {
             return Ok(AnalysisResult {
                 outcome: AnalysisOutcome::Negative,
@@ -644,9 +673,7 @@ impl Analyzer for ChunkAnalyzer {
             .get(StoreNs::Data, &item.hash)
             .map_err(|e| e.to_string())?
         else {
-            // Evicted or absent: nothing to chunk right now; the item
-            // stays queued for a sweep after rematerialization.
-            return Err("blob not resident".into());
+            return Err(heal_not_resident(db, item));
         };
 
         // One streaming pass: chunk, store each chunk, build segments.
@@ -878,7 +905,7 @@ impl Analyzer for EcmAnalyzer {
             .get(StoreNs::Data, &item.hash)
             .map_err(|e| e.to_string())?
         else {
-            return Err("blob not resident".into());
+            return Err(heal_not_resident(db, item));
         };
         let size = item
             .size

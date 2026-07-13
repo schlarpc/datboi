@@ -692,8 +692,10 @@ fn d78_compression_for_text_surfaces_only() {
 /// class, and the Fetch-Metadata CSRF gate on state-changing methods.
 #[test]
 fn d70_security_headers_and_csrf() {
+    // No hash-source: the theme-flash inline script died with the
+    // theme toggle (D78) — the dist ships zero inline scripts.
     const CSP: &str = "default-src 'self'; \
-         script-src 'self' 'sha256-pnaQEsw/4KBowEnxrUJ/BFlYdqDITsx3rR7Al/PEju4='; \
+         script-src 'self'; \
          style-src 'self'; img-src 'self' data:; font-src 'self'; \
          connect-src 'self'; object-src 'none'; frame-ancestors 'none'; \
          base-uri 'none'; form-action 'self'";

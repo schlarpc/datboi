@@ -7,12 +7,14 @@
    * - System header data comes from GET /v1/systems (there is no
    *   single-system endpoint; the list is tiny). Rail counts are the
    *   system's UNFILTERED totals per spec §5.1.
-   * - Rows PAGINATE against the API's offset/limit with a "load more"
-   *   row (ruling: the server caps pages at 1000 and already does
-   *   filter+search, so client-side windowing over a full mirror would
-   *   duplicate the query engine; a page of 500 keeps the DOM shallow
-   *   without virtualization machinery. Filter and search go to the
-   *   server; both compose there exactly like the prototype, §5.1).
+   * - Rows VIRTUALIZE (87-web-ui.md; the "load more" button died with
+   *   it): the first response carries the filtered total, a spacer
+   *   sizes the scrollbar to the whole collection from the first
+   *   paint, and only the visible window (± a buffer) renders — pages
+   *   fetch on demand as the window moves. Fixed row height makes the
+   *   math exact (D78 killed the density pref). Filter and search
+   *   still go to the server; both compose there exactly like the
+   *   prototype, §5.1.
    */
   import { entryDetail, systemEntries, systems as fetchSystems } from '../lib/api/client';
   import type { EntryDetail, EntryRow, System } from '../lib/api/types';
@@ -20,26 +22,35 @@
   import EntryDrawer from '../lib/components/EntryDrawer.svelte';
   import StackedBar from '../lib/components/StackedBar.svelte';
   import { fmtSize } from '../lib/format';
-  import { prefs } from '../lib/prefs.svelte';
   import { debounced } from '../lib/debounced.svelte';
   import { errorText, failed, loading, ready, settle, type Remote } from '../lib/remote';
+  import { plural } from '../lib/plural';
   import { completenessPct, ENTRY_STATES, type EntryState } from '../lib/state';
   import LoadError from '../lib/components/LoadError.svelte';
 
   let { systemId }: { systemId: string } = $props();
 
-  const PAGE = 500;
-
-  /** The paged rows plus the server's unfiltered-match total. */
-  type EntryPage = { rows: EntryRow[]; total: number };
+  /** Fetch unit — the server's page cap. */
+  const PAGE = 1000;
+  /** Fixed row height in px (padding + line + rule); the scroll math. */
+  const ROW_H = 38;
+  /** Rows rendered/fetched beyond the viewport, each direction. */
+  const BUFFER = 10;
 
   // Header and table are independent resources: each gets its own
   // Remote, so a failed page never blanks a rendered header (or vice
   // versa) and the filter rail stays usable through a fetch error.
   let system = $state<Remote<System>>(loading());
-  let entries = $state<Remote<EntryPage>>(loading());
-  /** A failed "load more" keeps the rows it has; this line says why. */
-  let moreError = $state<string | null>(null);
+  /** The filtered total (first response); rows fill in sparsely. */
+  let list = $state<Remote<{ total: number }>>(loading());
+  let rows = $state<(EntryRow | undefined)[]>([]);
+  /** Pages requested this generation — loaded or in flight. A failed
+   * page leaves the set so scrolling asks again. */
+  let requested = new Set<number>();
+  /** A failed page fetch keeps everything loaded; this line says why. */
+  let pageError = $state<string | null>(null);
+  let scrollTop = $state(0);
+  let viewportH = $state(0);
   let filter = $state<'all' | EntryState>('all');
   let q = $state('');
   /** The fetch effects read this trailing view of `q` — a typing burst
@@ -47,6 +58,11 @@
   const dq = debounced(() => q);
   let selected = $state<string | null>(null);
   let detail = $state<Remote<EntryDetail>>(loading());
+  /** The last READY detail: the drawer keeps rendering it while the
+   * next selection loads (stale-while-loading, 87-web-ui.md item —
+   * the old close-and-reopen flicker was the drawer unmounting per
+   * selection). Cleared on close so a reopen never flashes old data. */
+  let lastDetail = $state<EntryDetail | null>(null);
   let exporting = $state(false);
   /** A failed export must say so — the button silently re-enabling
    * reads as "maybe it worked". */
@@ -76,44 +92,68 @@
       state: filter === 'all' ? undefined : filter,
     };
     const gen = ++generation;
-    moreError = null;
-    settle(
-      systemEntries(systemId, { ...params, offset: 0, limit: PAGE }).then((body) => ({
-        rows: body.entries,
-        total: body.total,
-      })),
-      (value) => (entries = value),
-      () => gen === generation,
+    requested = new Set([0]);
+    pageError = null;
+    list = loading();
+    rows = [];
+    systemEntries(systemId, { ...params, offset: 0, limit: PAGE }).then(
+      (body) => {
+        if (gen !== generation) return;
+        const next = new Array<EntryRow | undefined>(body.total);
+        body.entries.forEach((row, i) => (next[i] = row));
+        rows = next;
+        list = ready({ total: body.total });
+      },
+      (e: unknown) => {
+        if (gen === generation) list = failed(errorText(e));
+      },
     );
   });
 
-  function loadMore() {
-    if (entries.st !== 'ready') return;
-    const prior = entries.data;
+  function fetchPage(page: number) {
     const gen = generation;
-    moreError = null;
+    requested.add(page);
     systemEntries(systemId, {
       q: dq() || undefined,
       state: filter === 'all' ? undefined : filter,
-      offset: prior.rows.length,
+      offset: page * PAGE,
       limit: PAGE,
     }).then(
       (body) => {
-        if (gen === generation) {
-          entries = ready({ rows: [...prior.rows, ...body.entries], total: body.total });
-        }
+        if (gen !== generation) return;
+        const next = rows.slice();
+        body.entries.forEach((row, i) => (next[page * PAGE + i] = row));
+        rows = next;
       },
       (e: unknown) => {
-        // Keep the rows we have — only the append failed.
-        if (gen === generation) moreError = errorText(e);
+        // Keep everything loaded — only this page failed. Retriable:
+        // dropping it from `requested` means scrolling asks again.
+        if (gen !== generation) return;
+        requested.delete(page);
+        pageError = errorText(e);
       },
     );
   }
 
+  /** The rendered window: viewport rows ± BUFFER, in row indices. */
+  const winStart = $derived(Math.max(0, Math.floor(scrollTop / ROW_H) - BUFFER));
+  const winEnd = $derived(
+    list.st !== 'ready'
+      ? -1
+      : Math.min(list.data.total - 1, Math.ceil((scrollTop + viewportH) / ROW_H) + BUFFER),
+  );
+
+  // Any page the window touches that hasn't been asked for yet.
+  $effect(() => {
+    if (list.st !== 'ready' || winEnd < 0) return;
+    for (let page = Math.floor(winStart / PAGE); page <= Math.floor(winEnd / PAGE); page += 1) {
+      if (!requested.has(page)) fetchPage(page);
+    }
+  });
+
   function select(name: string) {
     if (selected === name) {
-      selected = null;
-      detail = loading();
+      close();
       return;
     }
     selected = name;
@@ -123,7 +163,10 @@
     // slow success could (the settle() rule, remote.ts).
     settle(
       entryDetail(systemId, name),
-      (value) => (detail = value),
+      (value) => {
+        detail = value;
+        if (value.st === 'ready') lastDetail = value.data;
+      },
       () => selected === name,
     );
   }
@@ -131,6 +174,7 @@
   function close() {
     selected = null;
     detail = loading();
+    lastDetail = null;
   }
 
   function onkeydown(event: KeyboardEvent) {
@@ -243,11 +287,14 @@
       <div class="row2">
         <span class="pct">{pct}%</span>
         <div class="bar-wrap"><StackedBar counts={sys.counts} register="bench" /></div>
+        <!-- Numbers travel with their words (87-web-ui.md: color is
+             never the only legend — bare color-coded counts read as a
+             puzzle). -->
         <span class="counts">
-          <span class="c-ok">{sys.counts.verified.toLocaleString()}</span> ·
-          <span class="c-warn">{sys.counts.claimed.toLocaleString()}</span> ·
-          <span class="c-bad">{sys.counts.missing.toLocaleString()}</span> ·
-          <span class="c-faint">{sys.counts.nodump.toLocaleString()}</span>
+          <span class="c-ok">{plural(sys.counts.verified, ['# verified', '# verified'])}</span> ·
+          <span class="c-warn">{plural(sys.counts.claimed, ['# claimed', '# claimed'])}</span> ·
+          <span class="c-bad">{plural(sys.counts.missing, ['# missing', '# missing'])}</span> ·
+          <span class="c-faint">{plural(sys.counts.nodump, ['# no dump', '# no dump'])}</span>
         </span>
       </div>
     </div>
@@ -265,15 +312,19 @@
             class:nodump={st === 'nodump'}
             onclick={() => (filter = st)}
           >
-            <span>
+            <!-- CSS-drawn marks, not unicode glyphs (87-web-ui.md:
+                 structure over glyph — ●◐○– rendered at inconsistent
+                 widths through font fallback on some OSes). -->
+            <span class="rail-label">
+              <span class="dot dot--{st}"></span>
               {#if st === 'verified'}
-                <!-- @wc-context: storage state -->● Verified
+                <!-- @wc-context: storage state -->Verified
               {:else if st === 'claimed'}
-                <!-- @wc-context: storage state -->◐ Claimed
+                <!-- @wc-context: storage state -->Claimed
               {:else if st === 'missing'}
-                <!-- @wc-context: storage state -->○ Missing
+                <!-- @wc-context: storage state -->Missing
               {:else}
-                <!-- @wc-context: storage state -->– No dump
+                <!-- @wc-context: storage state -->No dump
               {/if}
             </span>
             <span class="count">{railCounts[st].toLocaleString()}</span>
@@ -283,78 +334,76 @@
         <div class="rail-search">
           <input type="search" aria-label={searchLabel} placeholder={searchPlaceholder} bind:value={q} />
         </div>
-        <!-- Density pref (spec §1.3): specced as a user preference but
-             never given a home in the comps — parked at the rail foot. -->
-        <div class="rail-density">
-          <button
-            class="density-seg"
-            class:active={prefs.density === 'comfortable'}
-            aria-pressed={prefs.density === 'comfortable'}
-            onclick={() => prefs.setDensity('comfortable')}
-          >
-            comfortable
-          </button>
-          <button
-            class="density-seg"
-            class:active={prefs.density === 'compact'}
-            aria-pressed={prefs.density === 'compact'}
-            onclick={() => prefs.setDensity('compact')}
-          >
-            compact
-          </button>
-        </div>
+        <!-- Density pref deleted per D78: rows ship comfortable, one
+             fixed height (which is also what virtualization wants). -->
       </div>
 
-      <div class="rows" style:--rowpad={prefs.density === 'compact' ? '4px 20px' : '9px 20px'}>
-        {#if entries.st === 'error'}
+      <div
+        class="rows"
+        bind:clientHeight={viewportH}
+        onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}
+      >
+        {#if list.st === 'error'}
           <!-- Rows-only failure: the rail and search stay usable, so a
                changed filter or query can recover the screen. -->
-          <div class="empty"><LoadError msg={entries.msg} onretry={() => (attempt += 1)} /></div>
-        {:else if entries.st === 'loading'}
+          <div class="empty"><LoadError msg={list.msg} onretry={() => (attempt += 1)} /></div>
+        {:else if list.st === 'loading'}
           <p class="empty">loading…</p>
-        {:else if entries.data.rows.length === 0}
+        {:else if list.data.total === 0}
           <p class="empty">nothing matches — clear the filter or search</p>
         {:else}
-          {#each entries.data.rows as entry (entry.name)}
-            {@const isSel = selected === entry.name}
-            <button
-              class="row"
-              class:sel={isSel}
-              style:--state-color={stateColor[entry.state]}
-              onclick={() => select(entry.name)}
-            >
-              <span class="dot dot--{entry.state}"></span>
-              <span class="row-name name--{entry.state}" class:bold={isSel}>{entry.name}</span>
-              <span class="state-word state-text--{entry.state}">
-                {#if entry.state === 'verified'}
-                  <!-- @wc-context: storage state -->verified
-                {:else if entry.state === 'claimed'}
-                  <!-- @wc-context: storage state -->claimed
-                {:else if entry.state === 'missing'}
-                  <!-- @wc-context: storage state -->missing
+          {#if pageError !== null}
+            <p class="page-error">couldn't load rows — {pageError}</p>
+          {/if}
+          <!-- The scrollbar tells the truth about collection size from
+               the first paint: a spacer the height of EVERY row, with
+               only the window rendered inside it (87-web-ui.md). -->
+          <div class="spacer" style:height="{list.data.total * ROW_H}px">
+            <div class="window" style:transform="translateY({winStart * ROW_H}px)">
+              {#each rows.slice(winStart, winEnd + 1) as entry, i (winStart + i)}
+                {#if entry !== undefined}
+                  {@const isSel = selected === entry.name}
+                  <button
+                    class="row"
+                    class:sel={isSel}
+                    style:--state-color={stateColor[entry.state]}
+                    onclick={() => select(entry.name)}
+                  >
+                    <span class="dot dot--{entry.state}"></span>
+                    <span class="row-name name--{entry.state}" class:bold={isSel}>
+                      {entry.name}
+                    </span>
+                    <span class="state-word state-text--{entry.state}">
+                      {#if entry.state === 'verified'}
+                        <!-- @wc-context: storage state -->verified
+                      {:else if entry.state === 'claimed'}
+                        <!-- @wc-context: storage state -->claimed
+                      {:else if entry.state === 'missing'}
+                        <!-- @wc-context: storage state -->missing
+                      {:else}
+                        <!-- @wc-context: storage state -->no dump
+                      {/if}
+                    </span>
+                    <span class="size">{entry.size === null ? '—' : fmtSize(entry.size)}</span>
+                  </button>
                 {:else}
-                  <!-- @wc-context: storage state -->no dump
+                  <!-- The page under this row is still in flight. -->
+                  <div class="row skeleton"><span class="skeleton-bar"></span></div>
                 {/if}
-              </span>
-              <span class="size">{entry.size === null ? '—' : fmtSize(entry.size)}</span>
-            </button>
-          {/each}
-          {#if entries.data.rows.length < entries.data.total}
-            <button class="load-more" onclick={loadMore}>
-              load more ({entries.data.rows.length.toLocaleString()} / {entries.data.total.toLocaleString()})
-            </button>
-          {/if}
-          {#if moreError !== null}
-            <p class="empty">couldn't load more — {moreError}</p>
-          {/if}
+              {/each}
+            </div>
+          </div>
         {/if}
       </div>
 
       {#if selected !== null}
-        {#if detail.st === 'ready'}
-          <EntryDrawer detail={detail.data} onclose={close} />
-        {:else if detail.st === 'error'}
+        {#if detail.st === 'error'}
           <p class="drawer-fallback">something went wrong — {detail.msg}</p>
+        {:else if lastDetail !== null}
+          <!-- The drawer STAYS MOUNTED across selection changes and
+               swaps content in place — previous entry shown dimmed
+               while the next one loads, no close-and-reopen flicker. -->
+          <EntryDrawer detail={lastDetail} onclose={close} stale={detail.st === 'loading'} />
         {:else}
           <p class="drawer-fallback">loading…</p>
         {/if}
@@ -496,6 +545,12 @@
     color: var(--faint);
   }
 
+  .rail-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+
   .rail-item.sel {
     background: var(--panel2);
     box-shadow: inset 3px 0 0 var(--ink);
@@ -535,35 +590,23 @@
     color: var(--faint);
   }
 
-  .rail-density {
-    margin: auto 20px 0;
-    padding-top: 14px;
-    display: flex;
-    border: 1.5px solid var(--hair);
-    border-radius: var(--r-pill);
-    overflow: hidden;
-    align-self: flex-start;
-    margin-left: 20px;
-  }
-
-  .density-seg {
-    all: unset;
-    padding: 2px 8px;
-    font: 500 0.65625rem var(--font-data);
-    color: var(--faint);
-    cursor: pointer;
-  }
-
-  .density-seg.active {
-    background: var(--ink);
-    color: var(--bg);
-    font-weight: 600;
-  }
-
   .rows {
     flex: 1;
     overflow-y: auto;
     min-width: 0;
+    /* Themed scrollbar (87-web-ui.md): tokens, not UA chrome. */
+    scrollbar-color: var(--hair) transparent;
+  }
+
+  .spacer {
+    position: relative;
+  }
+
+  .window {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
   }
 
   .row {
@@ -571,11 +614,36 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: var(--rowpad);
+    /* EXACT height (must equal ROW_H in the script — the virtual
+       scroll math depends on it); vertical padding becomes centering. */
+    height: 38px;
+    padding: 0 20px;
     border-bottom: 1px solid var(--rule);
     cursor: pointer;
     width: 100%;
     box-sizing: border-box;
+  }
+
+  .row.skeleton {
+    cursor: default;
+  }
+
+  .skeleton-bar {
+    width: 40%;
+    height: 10px;
+    border-radius: var(--r-fill);
+    background: var(--panel2);
+  }
+
+  .page-error {
+    margin: 0;
+    padding: 8px 20px;
+    font: 400 0.71875rem var(--font-data);
+    color: var(--bad);
+    position: sticky;
+    top: 0;
+    background: var(--panel);
+    z-index: 1;
   }
 
   .row:hover {
@@ -625,22 +693,6 @@
     color: var(--faint);
     padding: 28px 20px;
     margin: 0;
-  }
-
-  .load-more {
-    all: unset;
-    display: block;
-    width: 100%;
-    box-sizing: border-box;
-    padding: 10px 20px;
-    text-align: center;
-    font: 500 0.75rem var(--font-data);
-    color: var(--faint);
-    cursor: pointer;
-  }
-
-  .load-more:hover {
-    color: var(--text);
   }
 
   /* Mobile: the side rail can't be a 180px column next to the list on a
@@ -702,23 +754,6 @@
       order: -1;
       flex-basis: 100%;
       padding: 0;
-    }
-
-    .export-error {
-    font: 400 0.71875rem var(--font-data);
-    color: var(--bad);
-  }
-
-  .drawer-fallback {
-    margin: 0;
-    padding: 12px 16px;
-    font: 400 0.78125rem var(--font-data);
-    color: var(--faint);
-  }
-
-  .rail-density {
-      flex-basis: 100%;
-      margin: 4px 0 0;
     }
   }
 </style>

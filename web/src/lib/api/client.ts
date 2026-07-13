@@ -45,6 +45,7 @@ import type {
   SystemsBody,
   UploadParams,
   UploadReceipt,
+  VerifyStarted,
   ViewDetail,
   ViewFilesBody,
   ViewFilesParams,
@@ -262,6 +263,10 @@ export const blobs = async (params: BlobsParams = {}): Promise<BlobsBody> =>
 
 export const blobDetail = async (hash: string): Promise<BlobDetail> =>
   unwrap(await client.GET('/v1/blobs/{hash}', { params: { path: { hash } } }));
+
+/** D80: verify one blob right now; poll the returned job. */
+export const blobVerify = async (hash: string): Promise<VerifyStarted> =>
+  unwrap(await client.POST('/v1/blobs/{hash}/verify', { params: { path: { hash } } }));
 
 // ---- gc (D73 review/apply) ----
 

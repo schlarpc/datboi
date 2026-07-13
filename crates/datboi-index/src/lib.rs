@@ -277,8 +277,8 @@ fn open_file(
                                 Ok(()) | Err(_) => {} // -wal/-shm may not exist
                             }
                         }
-                        eprintln!(
-                            "note: {label} was schema v{found} and could not migrate in \
+                        tracing::warn!(
+                            "{label} was schema v{found} and could not migrate in \
                              place ({e}); recreated empty at v{version} — run `datboi \
                              recover` or re-ingest to repopulate"
                         );

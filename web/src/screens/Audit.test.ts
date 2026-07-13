@@ -3,7 +3,6 @@ import { loadLocale } from 'wuchale/load-utils';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import '../locales/main.loader.svelte.js';
 import type { EntryDetail, EntryRow, System } from '../lib/api/types';
-import { prefs } from '../lib/prefs.svelte';
 import { calledPath, installFetch, type MockUniverse } from '../test/mock-api';
 import Audit from './Audit.svelte';
 
@@ -65,7 +64,6 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  prefs.setDensity('comfortable');
 });
 
 test('rows render with state words and sizes; rail counts are unfiltered', async () => {
@@ -79,8 +77,8 @@ test('rows render with state words and sizes; rail counts are unfiltered', async
   // header: completeness excludes nodump → 1 / (4-1) = 33%
   expect(screen.getByText('33%')).toBeTruthy();
   // rail items carry unfiltered totals
-  expect(screen.getByText('● Verified')).toBeTruthy();
-  expect(screen.getByText('– No dump')).toBeTruthy();
+  expect(screen.getByText('Verified')).toBeTruthy();
+  expect(screen.getByText('No dump')).toBeTruthy();
   expect(screen.getByText('All')).toBeTruthy();
 });
 
@@ -89,7 +87,7 @@ test('filter and search compose (both applied together, spec §5.1)', async () =
   await screen.findByText('Alpha (USA)');
 
   // state filter alone
-  await fireEvent.click(screen.getByText('○ Missing'));
+  await fireEvent.click(screen.getByText('Missing'));
   expect(await screen.findByText('Beta (Japan)')).toBeTruthy();
   expect(screen.queryByText('Alpha (USA)')).toBeNull();
 
@@ -99,7 +97,7 @@ test('filter and search compose (both applied together, spec §5.1)', async () =
   expect(await screen.findByText('nothing matches — clear the filter or search')).toBeTruthy();
 
   // swap the state to claimed: search still applied
-  await fireEvent.click(screen.getByText('◐ Claimed'));
+  await fireEvent.click(screen.getByText('Claimed'));
   expect(await screen.findByText('Alpha II (USA)')).toBeTruthy();
   expect(screen.queryByText('Alpha (USA)')).toBeNull();
 });
@@ -141,14 +139,15 @@ test('row click opens the drawer; Escape, ✕, and re-click close it', async () 
   // sub line: region from the name parenthetical + size + short hash
   // (composed from several text nodes, so match the element's text)
   const sub = document.querySelector('.drawer .sub');
-  expect(sub?.textContent?.replace(/\s+/g, ' ').trim()).toBe('USA · 4 MB · aabbc…dd');
+  expect(sub?.textContent?.replace(/\s+/g, ' ').trim()).toBe('USA · 4 MB · aabbccdd');
 
-  // storage internals fold renders the REAL route/pins/residency data
-  await fireEvent.click(screen.getByText(/storage internals/));
-  expect(screen.getByText(/blob deadb…ef · resident/)).toBeTruthy();
+  // The drawer summarizes and links out — the blob line is a link into
+  // the inspector, which owns the internals (87-web-ui.md; the old
+  // storage-internals fold is dead).
+  const blobLink = screen.getByText('deadbeef').closest('a');
+  expect(blobLink?.getAttribute('href')).toBe(`/storage/blob/${BLOB_HASH}`);
+  expect(screen.getByText(/on disk/)).toBeTruthy();
   expect(screen.getByText(/verified 2026-05-28/)).toBeTruthy();
-  expect(screen.getByText(/route\s?deflate ← roms-gba\.zip ●/)).toBeTruthy();
-  expect(screen.getByText(/pinned gba-everdrive/)).toBeTruthy();
 
   // Escape closes (spec §5.2)
   await fireEvent.keyDown(window, { key: 'Escape' });
@@ -196,37 +195,51 @@ test('a failed entries fetch errors only the rows — the filter rail stays usab
   expect(await screen.findByText(/induced entries failure/)).toBeTruthy();
   // …while the header and the recovery controls (rail + search) stand.
   expect(screen.getByText('33%')).toBeTruthy();
-  expect(screen.getByText('● Verified')).toBeTruthy();
+  expect(screen.getByText('Verified')).toBeTruthy();
   expect(screen.getByPlaceholderText('filter names…')).toBeTruthy();
 });
 
-test('a failed load-more keeps the rows it has and says why', async () => {
-  // 520 entries: the 500-row first page renders, the append page 500s.
-  const big: EntryRow[] = Array.from({ length: 520 }, (_, i) => ({
-    name: `Entry ${String(i).padStart(3, '0')}`,
+const bigCorpus = (n: number): EntryRow[] =>
+  Array.from({ length: n }, (_, i) => ({
+    name: `Entry ${String(i).padStart(4, '0')}`,
     state: 'verified',
     size: MB,
     wanted_hash: ALPHA_HASH,
     wanted_hash_algo: 'sha1',
   }));
-  installFetch({ systems: [system], entries: big, entriesFailFromOffset: 500 });
+
+test('the list virtualizes: honest scrollbar, pages fetch as the window moves', async () => {
+  installFetch({ systems: [system], entries: bigCorpus(2500) });
   render(Audit, { systemId: '3' });
 
-  await fireEvent.click(await screen.findByText(/load more \(500/));
-  expect(await screen.findByText(/couldn't load more — induced entries failure/)).toBeTruthy();
-  // The first page survives the failed append; the button stays.
-  expect(screen.getByText('Entry 000')).toBeTruthy();
-  expect(screen.getByText(/load more \(500/)).toBeTruthy();
+  // First page in, the spacer is sized for ALL 2500 rows — the
+  // scrollbar tells the truth about collection size from paint one.
+  expect(await screen.findByText('Entry 0000')).toBeTruthy();
+  const spacer = document.querySelector<HTMLElement>('.spacer');
+  expect(spacer?.style.height).toBe(`${2500 * 38}px`);
+  // Row 1200 is on page 1 — not fetched, not rendered.
+  expect(screen.queryByText('Entry 1200')).toBeNull();
+
+  // Scroll the window into page 1: the covering page fetches and the
+  // rows land in place.
+  const rows = document.querySelector<HTMLElement>('.rows')!;
+  rows.scrollTop = 1200 * 38;
+  await fireEvent.scroll(rows);
+  expect(await screen.findByText('Entry 1200')).toBeTruthy();
+  expect(screen.queryByText('Entry 0000')).toBeNull(); // out the window
 });
 
-test('density toggle switches row padding and persists', async () => {
+test('a failed page fetch keeps everything loaded and says why', async () => {
+  installFetch({ systems: [system], entries: bigCorpus(2500), entriesFailFromOffset: 1000 });
   render(Audit, { systemId: '3' });
-  await screen.findByText('Alpha (USA)');
+  expect(await screen.findByText('Entry 0000')).toBeTruthy();
 
-  const rows = document.querySelector<HTMLElement>('.rows');
-  expect(rows?.style.getPropertyValue('--rowpad')).toBe('9px 20px');
-
-  await fireEvent.click(screen.getByText('compact'));
-  expect(rows?.style.getPropertyValue('--rowpad')).toBe('4px 20px');
-  expect(window.localStorage.getItem('datboi-density')).toBe('compact');
+  const rows = document.querySelector<HTMLElement>('.rows')!;
+  rows.scrollTop = 1200 * 38;
+  await fireEvent.scroll(rows);
+  expect(await screen.findByText(/couldn't load rows — induced entries failure/)).toBeTruthy();
+  // The unloaded window renders skeletons, not a blank or an unmount.
+  expect(document.querySelector('.row.skeleton')).toBeTruthy();
 });
+
+// Density pref deleted per D78 — rows ship at one fixed height.

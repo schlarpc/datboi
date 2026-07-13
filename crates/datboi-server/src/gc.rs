@@ -192,7 +192,7 @@ pub(crate) async fn apply(
             ),
         );
         app.jobs.finish(job, now_unix());
-        eprintln!(
+        tracing::info!(
             "gc apply: {} deleted, {} byte(s), {} skipped",
             response.deleted, response.bytes_reclaimed, response.skipped
         );

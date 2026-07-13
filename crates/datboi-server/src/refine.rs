@@ -44,6 +44,7 @@ use datboi_ingest::refine::{
     Analyzer, SweepObserver, analyzer_enabled, process_round, refresh_queue,
 };
 use datboi_store_fs::Store;
+use tracing::{debug, error, info, warn};
 
 use crate::auth::now_unix;
 use crate::jobs::Registry;
@@ -124,12 +125,12 @@ fn worker(db_dir: &std::path::Path, store: &'static Store, jobs: &Registry, shar
     // Lowest CPU priority for THIS thread (Linux niceness is per-task,
     // so the request path is untouched). Best-effort everywhere else.
     if let Err(e) = rustix::process::nice(19) {
-        eprintln!("refine worker: nice(19) failed ({e}); running at normal priority");
+        warn!("refine worker: nice(19) failed ({e}); running at normal priority");
     }
     let mut db = match Db::open(db_dir) {
         Ok(db) => db,
         Err(e) => {
-            eprintln!("refine worker: cannot open databases: {e} — ambient refinement is OFF");
+            error!("refine worker: cannot open databases: {e} — ambient refinement is OFF");
             return;
         }
     };
@@ -137,7 +138,7 @@ fn worker(db_dir: &std::path::Path, store: &'static Store, jobs: &Registry, shar
     // process (one daemon per db-dir); waiting them out would stall
     // the fresh path for nothing.
     if let Err(e) = db.clear_sweep_leases() {
-        eprintln!("refine worker: clearing stale leases: {e}");
+        warn!("refine worker: clearing stale leases: {e}");
     }
     let mut analyzers = families();
     // The D72/D73 maintenance phases ride this same thread (one
@@ -145,7 +146,7 @@ fn worker(db_dir: &std::path::Path, store: &'static Store, jobs: &Registry, shar
     let maintainer = match crate::maintain::Maintainer::new(store, db_dir) {
         Ok(m) => Some(m),
         Err(e) => {
-            eprintln!("refine worker: maintenance disabled (executor: {e})");
+            warn!("refine worker: maintenance disabled (executor: {e})");
             None
         }
     };
@@ -164,7 +165,7 @@ fn worker(db_dir: &std::path::Path, store: &'static Store, jobs: &Registry, shar
             continue;
         }
         if let Err(e) = enqueue(&mut db, &mut analyzers, &fresh, ambient_due) {
-            eprintln!("refine worker: enqueue: {e}");
+            warn!("refine worker: enqueue: {e}");
             std::thread::sleep(ERROR_BACKOFF);
             continue;
         }
@@ -235,12 +236,12 @@ fn drain_family(
         (Ok(false), _) | (_, Ok(0)) => return,
         (Ok(true), Ok(n)) => n,
         (Err(e), _) | (_, Err(e)) => {
-            eprintln!("refine worker: {}: {e}", analyzer.family());
+            warn!("refine worker: {}: {e}", analyzer.family());
             return;
         }
     };
     let job = jobs.create_refine(analyzer.family(), queued, now_unix());
-    eprintln!(
+    info!(
         "refine job {job}: {} — {queued} item(s) queued",
         analyzer.name()
     );
@@ -254,13 +255,13 @@ fn drain_family(
         {
             // Re-stage for the outer loop rather than losing them.
             lock(&shared.pending).extend(fresh);
-            eprintln!("refine worker: fresh enqueue: {e}");
+            warn!("refine worker: fresh enqueue: {e}");
         }
         let mut observer = TrayObserver { jobs, job };
         let report = match process_round(db, store, analyzer, ROUND, &mut observer) {
             Ok(report) => report,
             Err(e) => {
-                eprintln!("refine job {job}: FAILED — {e}");
+                warn!("refine job {job}: FAILED — {e}");
                 jobs.fail(job, &e.to_string(), now_unix());
                 return;
             }
@@ -273,7 +274,7 @@ fn drain_family(
         negative += report.negative as u64;
         for (hash, error) in &report.errors {
             failed += 1;
-            eprintln!("refine job {job}: {hash}: {error}");
+            debug!("refine job {job}: {hash}: {error}");
             jobs.refine_error(job, &hash.to_hex(), error);
         }
         let remaining = db.sweep_queue_len(&id).unwrap_or(0);
@@ -288,7 +289,7 @@ fn drain_family(
     );
     jobs.refine_progress(job, done, done);
     jobs.finish(job, now_unix());
-    eprintln!(
+    info!(
         "refine job {job}: done — {done} analyzed ({positive} positive, {negative} negative, {failed} error(s))"
     );
 }

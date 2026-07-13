@@ -7,14 +7,14 @@
 
 
 /**
- * Hash rendering per spec §3.2: 5 hex chars, ellipsis, last 2 —
- * `3f9a4c2…c2`-style truncation (`3f9a4…c2`). Short inputs pass through.
+ * Hash short form (87-web-ui.md vocabulary): the first 8 hex chars, no
+ * ellipsis — the git-short-SHA mental model. One implementation for
+ * every truncated hash; the spec §3.2 middle-ellipsis form is dead
+ * (proving both ends match is a CAS author's instinct, not a need).
+ * Short inputs pass through.
  */
 export function shortHash(hash: string): string {
-  if (hash.length <= 7) {
-    return hash;
-  }
-  return `${hash.slice(0, 5)}…${hash.slice(-2)}`;
+  return hash.slice(0, 8);
 }
 
 /**
@@ -71,6 +71,22 @@ export function fmtAge(unixSecs: number, nowMs: number = Date.now()): string {
     return `${Math.floor(secs / 3600)}h`;
   }
   return `${Math.floor(secs / 86400)}d`;
+}
+
+/**
+ * Elapsed span in the fmtAge register: seconds under a minute, then
+ * minutes, then hours. For "took 40s" on finished jobs — unit letters
+ * are data (spec §6 note). Negative spans clamp to 0s.
+ */
+export function fmtDuration(secs: number): string {
+  const s = Math.max(0, Math.floor(secs));
+  if (s < 60) {
+    return `${s}s`;
+  }
+  if (s < 3600) {
+    return `${Math.floor(s / 60)}m`;
+  }
+  return `${Math.floor(s / 3600)}h`;
 }
 
 /** Snapshot id chip (spec §6 `snap #a41f`): `#` + first 4 hex chars. */

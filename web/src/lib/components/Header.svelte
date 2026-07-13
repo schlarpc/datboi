@@ -1,18 +1,19 @@
 <script lang="ts">
   /**
    * Owner chrome header (spec §2.1): logo disc (frog slot), wordmark,
-   * nav pills, then theme toggle · health chip · avatar. Nav set per
-   * the recorded ruling: Library · Views · Ingest · Storage · Admin,
-   * with audit highlighting Library (it is the Library drill-down).
+   * nav pills, then health chip · avatar. Nav set per the recorded
+   * ruling: Library · Views · Ingest · Storage · Admin, with audit
+   * highlighting Library (it is the Library drill-down). No theme
+   * toggle — color follows the system, D78.
    */
   import { storage } from '../api/client';
-  import { prefs } from '../prefs.svelte';
+  import { registry, runningCount, trackRegistry } from '../activity.svelte';
   import { router, type Route } from '../router.svelte';
   import { session } from '../session.svelte';
   import Link from './Link.svelte';
-  import ThemeToggle from './ThemeToggle.svelte';
   import logoUrl from '../assets/logo.svg';
   import { jobsSignal } from '../jobs.svelte';
+  import { plural } from '../plural';
 
   /**
    * Every screen classifies into an owner-nav section — EXHAUSTIVE over
@@ -28,6 +29,7 @@
     ingest: '/ingest',
     storage: '/storage',
     blob: '/storage', // the Storage drill-down
+    activity: null, // header-chrome drill-down, no nav pill of its own
     admin: '/admin',
     login: null,
     invite: null,
@@ -53,6 +55,12 @@
 
   // Avatar shows only for named users; loopback callers have no user row.
   const initial = $derived(session.username?.slice(0, 1) ?? null);
+
+  // The ONE registry poll loop (D82) lives with the header because the
+  // header is mounted on every owner screen — including /activity,
+  // which reads the same snapshot.
+  trackRegistry();
+  const running = $derived(runningCount());
 </script>
 
 <header>
@@ -78,7 +86,19 @@
     <Link href="/admin" class="nav-item {active === '/admin' ? 'nav-active' : ''}">Admin</Link>
   </nav>
   <div class="right">
-    <ThemeToggle />
+    <!-- Activity indicator (D82): loud only while something runs —
+         management by exception — but always a way into the history. -->
+    <Link href="/activity" class="activity {running > 0 ? 'activity-live' : ''}">
+      {#if running > 0}
+        <span class="pulse"></span>
+        <span>{plural(running, ['# job', '# jobs'])}</span>
+        {#if registry.unreachable}
+          <span class="activity-warn">?</span>
+        {/if}
+      {:else}
+        activity
+      {/if}
+    </Link>
     {#if warnCount !== null}
       <Link href="/storage" class="health">
         <span class="health-dot"></span>
@@ -166,6 +186,44 @@
     font: 600 0.71875rem var(--font-data);
     color: var(--mut);
     text-decoration: none;
+  }
+
+  /* Idle: a quiet way into the history. Live: pulse + count. */
+  .right :global(a.activity) {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 600 0.71875rem var(--font-data);
+    color: var(--faint);
+    text-decoration: none;
+  }
+
+  .right :global(a.activity-live) {
+    color: var(--text);
+  }
+
+  .pulse {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--ok);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    50% {
+      opacity: 0.35;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pulse {
+      animation: none;
+    }
+  }
+
+  .activity-warn {
+    color: var(--warnT);
   }
 
   .health-dot {

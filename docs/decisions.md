@@ -1456,3 +1456,110 @@ minified inline script in index.html applies the forced theme before
 first paint, admitted into script-src by sha256 hash-source; a server
 test recomputes the hash from the embedded dist so the pin and the
 script cannot drift.
+
+## D78 — Web UI ships zero preferences: system theme, one density (2026-07-12)
+
+The header's sys/☀/☾ theme toggle and the audit rail's
+comfortable/compact density pill are DELETED — with their
+localStorage keys, the forced-palette `data-theme` blocks in
+tokens.css, and the theme-flash inline script plus its CSP
+hash-source (retiring the D76 amendment; the script existed only to
+serve the toggle). Color follows `prefers-color-scheme`, full stop;
+rows ship comfortable, which also hands the library list the fixed
+row height its virtualization math wants. Why: the vision's anti-goal
+is config-screen explosion; pre-alpha software has zero demonstrated
+preference needs, and each toggle was already apologizing for itself
+(the density comment admitted it was "never given a home in the
+comps"; the flash guard was a whole inline-script CSP carve-out for
+a control nobody asked for). Preferences return one at a time when a
+real user need forces them. *Rejected:* hiding the toggles behind
+Admin (dead code with extra steps); keeping forced-theme CSS without
+a toggle (unreachable states).
+
+## D79 — Blob meaning is computed from edges at query time, never stored (2026-07-12)
+
+The UI's three hardest questions about a blob — what IS it, whose
+bytes are these, where did they come from — get one answer: walk the
+recipe DAG from the blob to its claimed root(s), then read the
+root's claims and source_file rows. Consumers: (1) the storage
+by-source breakdown attributes derived blobs (containers, preflate
+streams, chunks) to the library content they serve, narrowing
+"(unattributed)" to truly UNATTACHED blobs — connected to nothing
+claimed — which makes that bucket actionable instead of alarming;
+(2) the blob page headline derives identity by priority: direct
+claim name → role relative to a claimed root ("chunk 3/74 of X",
+"container holding X") → ingest-sniff fallback; (3) derived blobs
+display provenance *via* their root ("via roms/pack.zip, ingested
+2026-07-11"). This reaffirms 70-recipes (provenance is history in
+the DB, never in recipes — recipes are timeless) and D18 (blobs
+untyped; type lives in the edges) while closing the display gap they
+left. *Rejected:* copying claims/provenance onto derived blobs at
+mint time (denormalizes history into timeless objects); a mime/type
+column on blob (D18 stands — sniff results are display hints, not
+identity).
+
+*Amendment (same day):* the sniff fallback is libmagic (the `magic`
+crate) over nixpkgs' compiled magic.mgc, embedded at build time
+(`packages.magicdb` → `DATBOI_MAGIC_DB` → `include_bytes!`, the D66
+wiring) so the binary stays self-contained and the database moves
+only with the nixpkgs pin. Eyes open: libmagic is a native C parser
+of wild bytes, the exact species D58 banishes to wasm — admitted
+because this surface is owner-only DISPLAY over bytes the owner
+ingested, bounded to a 64 KiB head, and load-bearing for nothing.
+If a peer-facing consumer ever wants the sniff, it moves behind the
+sandbox first. *Rejected:* the hand-rolled four-entry magic table it
+replaces (a naive user's "what IS this 716-byte blob?" deserves the
+real answer — "Nintendo DS ROM image" beats silence).
+
+## D80 — Per-blob verify graduates to the API (2026-07-12)
+
+`POST /v1/blobs/{hash}/verify` mints a verify-one job (additive D74
+kind), and the blob page's "never verified" badge becomes the button
+that fires it and watches it land. This overturns the M5
+"mutating pipeline actions stay CLI-only" ruling for this one verb,
+by the same graduation test dat import and ROM ingest already
+passed: that ruling's real rationale was long-running work wanting a
+job registry, and D74 built the registry. Why this verb first:
+verification is the product's core promise, and the moment of doubt
+— "when was this last checked?" — is exactly when the user must be
+able to act in place. Scope stays narrow: eviction, GC apply, and
+view eval remain CLI. *Rejected:* keeping all pipeline mutations
+CLI-only (the rationale expired with D74); a verify-everything
+button (that's scrub, which has its own CLI + ledger story).
+
+## D81 — Analyzer verdicts: parse failures are conclusions, Err is environmental, the index heals against the store (2026-07-12)
+
+Rule for every analyzer, present and future: a deterministic
+conclusion about the bytes — INCLUDING parse failures, e.g. a
+zip-magic blob with no end-of-central-directory record — returns
+`Negative` with detail (settled, never retried); `Err` is reserved
+for environmental failures (I/O, not-resident) where a retry can
+succeed. Before this, EOCD failures propagated as `Err`, so one
+truncated zip re-errored on every 30-minute ambient sweep forever.
+Second half: when an analyzer's store read finds nothing for a blob
+the index calls Resident, the index is wrong — demote the row to
+Absent on the spot (warn once) instead of erroring every sweep. A
+`datboi doctor` bulk walk (index ↔ store reconciliation) is the owed
+companion. Logging rides along: `eprintln!` is replaced by `tracing`
+(INFO job boundaries, WARN self-heals, DEBUG per-item verdicts).
+*Rejected:* retry-forever for deterministic failures (a permanent
+noise generator); trusting the residency column over the store (the
+store is the truth — a column that can't be corrected invites
+exactly the split-brain a wiped store dir already demonstrated).
+
+## D82 — The jobs tray dies: ambient indicator + activity page over the D74 ledger (2026-07-12)
+
+The footer tray (strip + overlay panel) is deleted. Replacements: a
+header activity indicator that exists only while jobs run (count +
+spinner, quiet when idle — management by exception), and an
+`/activity` page that finally reads what D74 already persists —
+kind/state filters, relative timestamps from started_at/finished_at,
+expandable per-item `report.errors`. Ingest keeps its inline
+feedback on the screen that started the job: feedback belongs where
+the action happened; the activity page is history. Transport stays
+REST + poll (2 s while running; the SSE upgrade stays deferred per
+open-questions). Why: jobs are system activity, not a primary
+object — a persistent tray put non-ambient information in ambient
+chrome, wrapped badly at every width, and threw away timestamps and
+error detail the API already served. *Rejected:* keeping the tray
+(all of the above); SSE now (poll cadence is fine at this scale).

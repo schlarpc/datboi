@@ -83,6 +83,12 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 # env-var path directly (rust-embed rejected there as the bigger
 # surface for the same job).
 include_dir = "0.7"
+# libmagic bindings for the blob inspector's byte sniff (D79 headline
+# fallback): the compiled magic database rides in from nixpkgs' `file`
+# at build time (DATBOI_MAGIC_DB → include_bytes! → load_buffers), so
+# the binary stays self-contained (D66). Display hint only — never
+# identity (D18).
+magic = "0.16"
 md-5 = "0.10"
 predicates = "3"
 proptest = "1"
@@ -116,6 +122,11 @@ thiserror = "2"
 # Daemon runtime only (see axum note). rt-multi-thread because range
 # execution is blocking work fanned out via spawn_blocking.
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "macros", "signal", "sync", "time"] }
+# Daemon logging (D81): INFO job boundaries, WARN self-heals, ERROR
+# dead subsystems, DEBUG per-item verdicts. Library crates emit via
+# `tracing`; only the `datboi serve` entry installs the subscriber.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Blocking HTTP for `dat fetch` (D16): small, no async runtime in the CLI.
 ureq = "2"
 # OpenAPI 3.1 emission for the /v1 contract (D69). datboi-api only —

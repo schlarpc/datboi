@@ -85,7 +85,7 @@ pub(crate) async fn import(
         // table — see ingest.rs run_job): a dat import rewrites what
         // the catalog wants, and the response body vanishes with the
         // request.
-        eprintln!(
+        tracing::info!(
             "dat import: {provider}/{system} rev {} ({} entries)",
             report.revision_id, report.entries
         );

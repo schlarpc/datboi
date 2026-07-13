@@ -84,18 +84,18 @@ test('row select opens the entry panel: sub-line, trust line, real download', as
   await fireEvent.click(screen.getByText('Games/Alpha (USA).gba'));
   expect(await screen.findByText('ENTRY')).toBeTruthy();
 
-  // region parsed from the parenthetical · size · 5+2 hash
+  // region parsed from the parenthetical · size · 8-char hash
   const sub = document.querySelector('.panel .sub');
-  expect(sub?.textContent?.replace(/\s+/g, ' ').trim()).toBe('USA · 4 MB · aa11b…22');
+  expect(sub?.textContent?.replace(/\s+/g, ' ').trim()).toBe('USA · 4 MB · aa11bb22');
   expect(screen.getByText('● verified')).toBeTruthy();
   expect(screen.getByText('hash-checked as it streams')).toBeTruthy();
 
   const download = screen.getByText('⬇ Download') as HTMLAnchorElement;
   expect(download.getAttribute('href')).toBe('/view/gba-everdrive/Games/Alpha%20(USA).gba');
 
-  // ▶ Play stays a disabled future slot
-  const play = screen.getByText('▶ Play') as HTMLButtonElement;
-  expect(play.disabled).toBe(true);
+  // No disabled future-feature buttons (87-web-ui.md): ▶ Play ships
+  // when playing ships.
+  expect(screen.queryByText('▶ Play')).toBeNull();
 
   // re-click deselects
   await fireEvent.click(screen.getByText('Games/Alpha (USA).gba'));

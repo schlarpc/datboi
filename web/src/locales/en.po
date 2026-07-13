@@ -19,9 +19,8 @@ msgctxt "storage state"
 msgid "verified"
 msgstr "verified"
 
-#: src/lib/components/EntryDrawer.svelte
-msgid "bytes on hand, hash checked against the catalog"
-msgstr "bytes on hand, hash checked against the catalog"
+#~ msgid "bytes on hand, hash checked against the catalog"
+#~ msgstr "bytes on hand, hash checked against the catalog"
 
 #: src/lib/components/EntryDrawer.svelte
 #: src/screens/Audit.svelte
@@ -29,9 +28,8 @@ msgctxt "storage state"
 msgid "claimed"
 msgstr "claimed"
 
-#: src/lib/components/EntryDrawer.svelte
-msgid "bytes rebuildable, not yet re-verified"
-msgstr "bytes rebuildable, not yet re-verified"
+#~ msgid "bytes rebuildable, not yet re-verified"
+#~ msgstr "bytes rebuildable, not yet re-verified"
 
 #: src/lib/components/EntryDrawer.svelte
 #: src/screens/Audit.svelte
@@ -39,9 +37,8 @@ msgctxt "storage state"
 msgid "missing"
 msgstr "missing"
 
-#: src/lib/components/EntryDrawer.svelte
-msgid "no blob or claim names this hash"
-msgstr "no blob or claim names this hash"
+#~ msgid "no blob or claim names this hash"
+#~ msgstr "no blob or claim names this hash"
 
 #: src/lib/components/EntryDrawer.svelte
 #: src/screens/Audit.svelte
@@ -49,9 +46,8 @@ msgctxt "storage state"
 msgid "no dump"
 msgstr "no dump"
 
-#: src/lib/components/EntryDrawer.svelte
-msgid "the catalog marks this entry as never dumped — nothing to have"
-msgstr "the catalog marks this entry as never dumped — nothing to have"
+#~ msgid "the catalog marks this entry as never dumped — nothing to have"
+#~ msgstr "the catalog marks this entry as never dumped — nothing to have"
 
 #: src/screens/Library.svelte
 msgid "The shelf"
@@ -134,45 +130,37 @@ msgstr "⬇ missing-list"
 msgid "All"
 msgstr "All"
 
-#: src/screens/Audit.svelte
-msgctxt "storage state"
-msgid "● Verified"
-msgstr "● Verified"
+#~ msgctxt "storage state"
+#~ msgid "● Verified"
+#~ msgstr "● Verified"
 
-#: src/screens/Audit.svelte
-msgctxt "storage state"
-msgid "◐ Claimed"
-msgstr "◐ Claimed"
+#~ msgctxt "storage state"
+#~ msgid "◐ Claimed"
+#~ msgstr "◐ Claimed"
 
-#: src/screens/Audit.svelte
-msgctxt "storage state"
-msgid "○ Missing"
-msgstr "○ Missing"
+#~ msgctxt "storage state"
+#~ msgid "○ Missing"
+#~ msgstr "○ Missing"
 
-#: src/screens/Audit.svelte
-msgctxt "storage state"
-msgid "– No dump"
-msgstr "– No dump"
+#~ msgctxt "storage state"
+#~ msgid "– No dump"
+#~ msgstr "– No dump"
 
 #: src/screens/Audit.svelte
 msgid "filter names…"
 msgstr "filter names…"
 
-#: src/screens/Audit.svelte
-msgid "comfortable"
-msgstr "comfortable"
+#~ msgid "comfortable"
+#~ msgstr "comfortable"
 
-#: src/screens/Audit.svelte
-msgid "compact"
-msgstr "compact"
+#~ msgid "compact"
+#~ msgstr "compact"
 
 #: src/screens/Audit.svelte
 msgid "nothing matches — clear the filter or search"
 msgstr "nothing matches — clear the filter or search"
 
-#. 0: entries.data.rows.length.toLocaleString(); 1: entries.data.total.toLocaleString()
 #. 0: files.data.rows.length.toLocaleString(); 1: files.data.total.toLocaleString()
-#: src/screens/Audit.svelte
 #: src/screens/Browse.svelte
 msgid "load more ({0} / {1})"
 msgstr "load more ({0} / {1})"
@@ -236,83 +224,57 @@ msgstr "ENTRY"
 msgid "not in library"
 msgstr "not in library"
 
-#: src/lib/components/EntryDrawer.svelte
-#: src/screens/Browse.svelte
-msgid "in-browser emulator — future"
-msgstr "in-browser emulator — future"
+#~ msgid "in-browser emulator — future"
+#~ msgstr "in-browser emulator — future"
 
-#: src/lib/components/EntryDrawer.svelte
-#: src/screens/Browse.svelte
-msgid "▶ Play"
-msgstr "▶ Play"
+#~ msgid "▶ Play"
+#~ msgstr "▶ Play"
 
-#: src/lib/components/EntryDrawer.svelte
-#: src/screens/Browse.svelte
-msgid "play: in-browser core over verified ranges — future"
-msgstr "play: in-browser core over verified ranges — future"
+#~ msgid "play: in-browser core over verified ranges — future"
+#~ msgstr "play: in-browser core over verified ranges — future"
 
-#: src/lib/components/EntryDrawer.svelte
-#: src/screens/Browse.svelte
-msgid "metadata provider, later — the dat name stays the source of truth"
-msgstr "metadata provider, later — the dat name stays the source of truth"
+#~ msgid "metadata provider, later — the dat name stays the source of truth"
+#~ msgstr "metadata provider, later — the dat name stays the source of truth"
 
-#. 0: shortHash(detail.wanted_hash)
-#: src/lib/components/EntryDrawer.svelte
-msgid "wanted {0}"
-msgstr "wanted {0}"
+#~ msgid "wanted {0}"
+#~ msgstr "wanted {0}"
 
-#. 0: detail.revision.version
-#: src/lib/components/EntryDrawer.svelte
-msgid "added in dat rev {0}"
-msgstr "added in dat rev {0}"
+#~ msgid "added in dat rev {0}"
+#~ msgstr "added in dat rev {0}"
 
-#: src/lib/components/EntryDrawer.svelte
-msgid "appears in missing-list export"
-msgstr "appears in missing-list export"
+#~ msgid "appears in missing-list export"
+#~ msgstr "appears in missing-list export"
 
-#: src/lib/components/EntryDrawer.svelte
-msgid "excluded from completeness math"
-msgstr "excluded from completeness math"
+#~ msgid "excluded from completeness math"
+#~ msgstr "excluded from completeness math"
 
-#. 0: fmtDate(rom.blob.verified_at)
+#. 0: fmtDate(blob.verified_at)
 #. 0: fmtDate(d.verified_at)
 #: src/lib/components/EntryDrawer.svelte
 #: src/screens/Blob.svelte
 msgid "verified {0}"
 msgstr "verified {0}"
 
-#. 0: shortHash(rom.blob.hash); 1: residencyLabel(rom.blob.residency)
-#: src/lib/components/EntryDrawer.svelte
-msgid "blob {0} · {1}"
-msgstr "blob {0} · {1}"
+#~ msgid "blob {0} · {1}"
+#~ msgstr "blob {0} · {1}"
 
-#: src/lib/components/EntryDrawer.svelte
-msgid "verify pending replay"
-msgstr "verify pending replay"
+#~ msgid "verify pending replay"
+#~ msgstr "verify pending replay"
 
-#. 0: route.route; 1: route.source_present ? '●' \\: '○'
-#: src/lib/components/EntryDrawer.svelte
-msgid "route {0} {1}"
-msgstr "route {0} {1}"
+#~ msgid "route {0} {1}"
+#~ msgstr "route {0} {1}"
 
-#. 0: rom.pins.join(', ')
-#: src/lib/components/EntryDrawer.svelte
-msgid "pinned {0}"
-msgstr "pinned {0}"
+#~ msgid "pinned {0}"
+#~ msgstr "pinned {0}"
 
-#: src/lib/components/EntryDrawer.svelte
-msgid "pins — none"
-msgstr "pins — none"
+#~ msgid "pins — none"
+#~ msgstr "pins — none"
 
-#. 0: storOpen ? '▾' \\: '▸'
-#: src/lib/components/EntryDrawer.svelte
-msgid "{0} storage internals"
-msgstr "{0} storage internals"
+#~ msgid "{0} storage internals"
+#~ msgstr "{0} storage internals"
 
-#: src/lib/components/EntryDrawer.svelte
-#: src/screens/Browse.svelte
-msgid "box art — metadata provider, later"
-msgstr "box art — metadata provider, later"
+#~ msgid "box art — metadata provider, later"
+#~ msgstr "box art — metadata provider, later"
 
 #~ msgid "logo slot — frog goes here"
 #~ msgstr "logo slot — frog goes here"
@@ -325,26 +287,21 @@ msgstr "Library"
 msgid "healthy"
 msgstr "healthy"
 
-#: src/lib/components/JobRow.svelte
-#: src/lib/components/JobsTray.svelte
+#: src/screens/Activity.svelte
 msgid "done ✓"
 msgstr "done ✓"
 
 #~ msgid "recent activity log — needs a job registry"
 #~ msgstr "recent activity log — needs a job registry"
 
-#. 0: jobs.length
-#: src/lib/components/JobsTray.svelte
-msgid "▸ jobs ({0})"
-msgstr "▸ jobs ({0})"
+#~ msgid "▸ jobs ({0})"
+#~ msgstr "▸ jobs ({0})"
 
-#: src/lib/components/JobsTray.svelte
-msgid "activity ▾"
-msgstr "activity ▾"
+#~ msgid "activity ▾"
+#~ msgstr "activity ▾"
 
-#: src/lib/components/ThemeToggle.svelte
-msgid "sys"
-msgstr "sys"
+#~ msgid "sys"
+#~ msgstr "sys"
 
 #. 0: sys.counts.verified.toLocaleString()
 #: src/screens/Library.svelte
@@ -367,17 +324,14 @@ msgstr "{0} missing"
 #~ msgid "+ import a dat to start a new system"
 #~ msgstr "+ import a dat to start a new system"
 
-#: src/lib/residency.svelte.ts
-msgid "resident"
-msgstr "resident"
+#~ msgid "resident"
+#~ msgstr "resident"
 
-#: src/lib/residency.svelte.ts
-msgid "absent"
-msgstr "absent"
+#~ msgid "absent"
+#~ msgstr "absent"
 
-#: src/lib/residency.svelte.ts
-msgid "evicted (covered)"
-msgstr "evicted (covered)"
+#~ msgid "evicted (covered)"
+#~ msgstr "evicted (covered)"
 
 #: src/lib/components/EntryDrawer.svelte
 #: src/screens/Browse.svelte
@@ -543,13 +497,11 @@ msgstr "−{0}% via recipes"
 msgid "REPRESENTED"
 msgstr "REPRESENTED"
 
-#: src/screens/Storage.svelte
-msgid "LITERAL-ONLY"
-msgstr "LITERAL-ONLY"
+#~ msgid "LITERAL-ONLY"
+#~ msgstr "LITERAL-ONLY"
 
-#: src/screens/Storage.svelte
-msgid "shrinkable"
-msgstr "shrinkable"
+#~ msgid "shrinkable"
+#~ msgstr "shrinkable"
 
 #: src/screens/Storage.svelte
 msgid "re-hash stored blobs and report corruption:"
@@ -571,9 +523,8 @@ msgctxt "bad components, not people"
 msgid "Quarantine ·"
 msgstr "Quarantine ·"
 
-#: src/screens/Storage.svelte
-msgid "nothing quarantined"
-msgstr "nothing quarantined"
+#~ msgid "nothing quarantined"
+#~ msgstr "nothing quarantined"
 
 #: src/screens/Storage.svelte
 msgctxt "storage eviction"
@@ -983,8 +934,10 @@ msgstr "NAS-local ingest runs in the CLI:"
 #~ msgid "recent activity log — needs a durable job table"
 #~ msgstr "recent activity log — needs a durable job table"
 
+#. 0: (refs.length - REF_CAP).toLocaleString()
 #. 0: (d.claims_total - d.claims.length).toLocaleString()
 #. 0: (job.matched_total - job.matched.length).toLocaleString()
+#: src/screens/Blob.svelte
 #: src/screens/Blob.svelte
 #: src/screens/Ingest.svelte
 msgid "…and {0} more"
@@ -1001,20 +954,18 @@ msgstr "drop ROMs, zips, dats, or folders here — or click to pick files"
 #~ msgid "<0/> dats imported"
 #~ msgstr "<0/> dats imported"
 
-#: src/screens/Library.svelte
-msgid "+ import a dat (zipped is fine) to start a new system — drop files here or click to pick"
-msgstr "+ import a dat (zipped is fine) to start a new system — drop files here or click to pick"
+#~ msgid "+ import a dat (zipped is fine) to start a new system — drop files here or click to pick"
+#~ msgstr "+ import a dat (zipped is fine) to start a new system — drop files here or click to pick"
 
-#. 0: jobs.length
-#: src/lib/components/JobsTray.svelte
-msgid "▾ jobs ({0})"
-msgstr "▾ jobs ({0})"
+#~ msgid "▾ jobs ({0})"
+#~ msgstr "▾ jobs ({0})"
 
-#: src/lib/components/JobsTray.svelte
+#: src/screens/Activity.svelte
 msgid "no jobs yet — ingest something"
 msgstr "no jobs yet — ingest something"
 
-#: src/lib/components/JobsTray.svelte
+#: src/screens/Activity.svelte
+#: src/screens/Activity.svelte
 msgctxt "job state"
 msgid "failed"
 msgstr "failed"
@@ -1113,9 +1064,8 @@ msgstr "hash"
 msgid "size"
 msgstr "size"
 
-#: src/screens/Storage.svelte
-msgid "residency"
-msgstr "residency"
+#~ msgid "residency"
+#~ msgstr "residency"
 
 #: src/screens/Storage.svelte
 msgid "largest blobs"
@@ -1135,9 +1085,8 @@ msgstr "WHERE THE BYTES LIVE"
 msgid "watermarks (\"off\" disarms); manual pass: datboi evict --dry-run:"
 msgstr "watermarks (\"off\" disarms); manual pass: datboi evict --dry-run:"
 
-#: src/screens/Storage.svelte
-msgid "rebuildable literals evict automatically at the watermark — nothing unrecoverable is ever dropped"
-msgstr "rebuildable literals evict automatically at the watermark — nothing unrecoverable is ever dropped"
+#~ msgid "rebuildable literals evict automatically at the watermark — nothing unrecoverable is ever dropped"
+#~ msgstr "rebuildable literals evict automatically at the watermark — nothing unrecoverable is ever dropped"
 
 #: src/screens/Storage.svelte
 msgid "tune via CLI"
@@ -1148,9 +1097,8 @@ msgctxt "unreferenced blobs, not people"
 msgid "Orphans ·"
 msgstr "Orphans ·"
 
-#: src/screens/Storage.svelte
-msgid "nothing unreferenced — every blob is rooted or still under grace"
-msgstr "nothing unreferenced — every blob is rooted or still under grace"
+#~ msgid "nothing unreferenced — every blob is rooted or still under grace"
+#~ msgstr "nothing unreferenced — every blob is rooted or still under grace"
 
 #: src/screens/Storage.svelte
 msgid "deleting…"
@@ -1169,18 +1117,16 @@ msgstr "delete non-kept…"
 msgid "{0} reclaimable · every delete re-verifies unreferenced at delete time"
 msgstr "{0} reclaimable · every delete re-verifies unreferenced at delete time"
 
-#: src/lib/components/JobsTray.svelte
-msgid "recent activity log — history is recorded (D74); the feed UI is not designed yet"
-msgstr "recent activity log — history is recorded (D74); the feed UI is not designed yet"
+#~ msgid "recent activity log — history is recorded (D74); the feed UI is not designed yet"
+#~ msgstr "recent activity log — history is recorded (D74); the feed UI is not designed yet"
 
 #. 0: fmtDate(s.last_scrub.finished_at); 1: s.last_scrub.name
 #: src/screens/Storage.svelte
 msgid "last: {0} · {1}"
 msgstr "last: {0} · {1}"
 
-#: src/screens/Storage.svelte
-msgid "no scrub recorded yet — runs land in the job ledger"
-msgstr "no scrub recorded yet — runs land in the job ledger"
+#~ msgid "no scrub recorded yet — runs land in the job ledger"
+#~ msgstr "no scrub recorded yet — runs land in the job ledger"
 
 #. 0: applyError
 #: src/screens/Storage.svelte
@@ -1188,8 +1134,6 @@ msgid "delete failed — {0}"
 msgstr "delete failed — {0}"
 
 #. 0: moreError
-#. 0: moreError
-#: src/screens/Audit.svelte
 #: src/screens/Browse.svelte
 msgid "couldn't load more — {0}"
 msgstr "couldn't load more — {0}"
@@ -1207,8 +1151,7 @@ msgstr "couldn't copy"
 msgid "couldn't copy — select it"
 msgstr "couldn't copy — select it"
 
-#: src/lib/components/JobsTray.svelte
-#: src/lib/components/JobsTray.svelte
+#: src/screens/Activity.svelte
 msgid "can't reach the daemon"
 msgstr "can't reach the daemon"
 
@@ -1273,17 +1216,14 @@ msgstr "toggle grant"
 msgid "search"
 msgstr "search"
 
-#: src/lib/components/ThemeToggle.svelte
-msgid "theme"
-msgstr "theme"
+#~ msgid "theme"
+#~ msgstr "theme"
 
-#: src/lib/components/ThemeToggle.svelte
-msgid "light theme"
-msgstr "light theme"
+#~ msgid "light theme"
+#~ msgstr "light theme"
 
-#: src/lib/components/ThemeToggle.svelte
-msgid "dark theme"
-msgstr "dark theme"
+#~ msgid "dark theme"
+#~ msgstr "dark theme"
 
 #: src/App.svelte
 msgid "library"
@@ -1333,7 +1273,7 @@ msgstr "{0} · datboi"
 #~ msgid "Enter"
 #~ msgstr "Enter"
 
-#: src/lib/components/JobsTray.svelte
+#: src/screens/Activity.svelte
 #: src/screens/Ingest.svelte
 #: src/screens/Shelves.svelte
 #: src/screens/Views.svelte
@@ -1373,20 +1313,20 @@ msgid_plural "# systems"
 msgstr[0] "# system"
 msgstr[1] "# systems"
 
-#: src/lib/components/JobsTray.svelte
+#: src/screens/Activity.svelte
 msgid "# blob"
 msgid_plural "# blobs"
 msgstr[0] "# blob"
 msgstr[1] "# blobs"
 
-#: src/lib/components/JobsTray.svelte
+#: src/screens/Activity.svelte
 msgid "# error"
 msgid_plural "# errors"
 msgstr[0] "# error"
 msgstr[1] "# errors"
 
-#. 0: detail.files_done; 1: plural(detail.files_total, ['# file', '# files']); 2: detail.matched_total; 3: refused(detail)
-#: src/lib/components/JobsTray.svelte
+#. 0: d.files_done; 1: plural(d.files_total, ['# file', '# files']); 2: d.matched_total; 3: refused(d)
+#: src/screens/Activity.svelte
 msgid "{0}/{1} <0/> · {2} matched · {3} refused"
 msgstr "{0}/{1} <0/> · {2} matched · {3} refused"
 
@@ -1412,3 +1352,245 @@ msgstr "export failed — {0}"
 #: src/lib/components/LoadError.svelte
 msgid "something went wrong — {0} <0>retry</0>"
 msgstr "something went wrong — {0} <0>retry</0>"
+
+#: src/screens/Library.svelte
+msgid "+ import a dat (zipped is fine) to start a new system — drop files anywhere or click to pick"
+msgstr "+ import a dat (zipped is fine) to start a new system — drop files anywhere or click to pick"
+
+#: src/screens/Storage.svelte
+msgid "NOT YET OPTIMIZED"
+msgstr "NOT YET OPTIMIZED"
+
+#: src/screens/Storage.svelte
+msgid "never run"
+msgstr "never run"
+
+#: src/screens/Storage.svelte
+msgid "automatic at the watermark — drops only what's rebuildable"
+msgstr "automatic at the watermark — drops only what's rebuildable"
+
+#: src/screens/Storage.svelte
+msgctxt "bad components, not people"
+msgid "Quarantine"
+msgstr "Quarantine"
+
+#: src/screens/Storage.svelte
+msgid "empty"
+msgstr "empty"
+
+#: src/screens/Storage.svelte
+#: src/screens/Storage.svelte
+#: src/screens/Storage.svelte
+msgctxt "unreferenced blobs, not people"
+msgid "Orphans"
+msgstr "Orphans"
+
+#: src/screens/Storage.svelte
+msgid "none"
+msgstr "none"
+
+#: src/screens/Storage.svelte
+msgid "where"
+msgstr "where"
+
+#: src/screens/Blob.svelte
+msgid "click to copy"
+msgstr "click to copy"
+
+#: src/screens/Blob.svelte
+msgid "this blob"
+msgstr "this blob"
+
+#. 0: edge.inputs.length.toLocaleString()
+#: src/screens/Blob.svelte
+msgid "{0} inputs"
+msgstr "{0} inputs"
+
+#. 0: residencyLabel(blob.residency)
+#: src/lib/components/EntryDrawer.svelte
+msgid "blob <0/> · {0}"
+msgstr "blob <0/> · {0}"
+
+#: src/lib/residency.svelte.ts
+msgid "on disk"
+msgstr "on disk"
+
+#: src/lib/residency.svelte.ts
+msgid "rebuildable"
+msgstr "rebuildable"
+
+#: src/lib/residency.svelte.ts
+msgid "not here"
+msgstr "not here"
+
+#: src/App.svelte
+#: src/lib/components/Header.svelte
+msgid "activity"
+msgstr "activity"
+
+#: src/screens/Activity.svelte
+msgid "Activity"
+msgstr "Activity"
+
+#: src/screens/Activity.svelte
+msgid "every job the daemon ran — live and ledgered (D74)"
+msgstr "every job the daemon ran — live and ledgered (D74)"
+
+#: src/screens/Activity.svelte
+msgctxt "job kind filter"
+msgid "all"
+msgstr "all"
+
+#: src/screens/Activity.svelte
+msgctxt "job kind"
+msgid "ingest"
+msgstr "ingest"
+
+#: src/screens/Activity.svelte
+msgctxt "job kind"
+msgid "refine"
+msgstr "refine"
+
+#: src/screens/Activity.svelte
+msgctxt "job kind"
+msgid "gc"
+msgstr "gc"
+
+#: src/screens/Activity.svelte
+msgctxt "job kind"
+msgid "scrub"
+msgstr "scrub"
+
+#: src/screens/Activity.svelte
+msgctxt "job state filter"
+msgid "all"
+msgstr "all"
+
+#: src/screens/Activity.svelte
+msgctxt "job state"
+msgid "running"
+msgstr "running"
+
+#: src/screens/Activity.svelte
+msgctxt "job state"
+msgid "done"
+msgstr "done"
+
+#: src/screens/Activity.svelte
+msgid "nothing matches the filter"
+msgstr "nothing matches the filter"
+
+#. 0: fmtAge(job.started_at, now)
+#: src/screens/Activity.svelte
+msgid "started {0} ago"
+msgstr "started {0} ago"
+
+#. 0: fmtAge(job.finished_at, now); 1: fmtDuration( job.finished_at - job.started_at, )
+#: src/screens/Activity.svelte
+msgid "{0} ago · took {1}"
+msgstr "{0} ago · took {1}"
+
+#: src/lib/components/Header.svelte
+msgid "# job"
+msgid_plural "# jobs"
+msgstr[0] "# job"
+msgstr[1] "# jobs"
+
+#. 0: ' · '; 1: (d.claims_total - 1).toLocaleString()
+#: src/screens/Blob.svelte
+msgid "{0}+{1} more claims"
+msgstr "{0}+{1} more claims"
+
+#: src/screens/Blob.svelte
+msgid "helps rebuild"
+msgstr "helps rebuild"
+
+#: src/screens/Blob.svelte
+msgid "derived from"
+msgstr "derived from"
+
+#: src/screens/Blob.svelte
+msgid "related to"
+msgstr "related to"
+
+#. 0: ' · '; 1: (d.roots.length - 1).toLocaleString()
+#: src/screens/Blob.svelte
+msgid "{0}+{1} more"
+msgstr "{0}+{1} more"
+
+#: src/screens/Blob.svelte
+msgid "unattached — nothing claimed connects to it"
+msgstr "unattached — nothing claimed connects to it"
+
+#: src/screens/Blob.svelte
+msgid "unattached blob"
+msgstr "unattached blob"
+
+#: src/screens/Blob.svelte
+msgid "nothing claimed connects to it"
+msgstr "nothing claimed connects to it"
+
+#. 0: shortHash(row.via)
+#: src/screens/Blob.svelte
+msgid "via {0}"
+msgstr "via {0}"
+
+#: src/lib/components/StackedBar.svelte
+#: src/screens/Audit.svelte
+msgid "# verified"
+msgid_plural "# verified"
+msgstr[0] "# verified"
+msgstr[1] "# verified"
+
+#: src/lib/components/StackedBar.svelte
+#: src/screens/Audit.svelte
+msgid "# claimed"
+msgid_plural "# claimed"
+msgstr[0] "# claimed"
+msgstr[1] "# claimed"
+
+#: src/lib/components/StackedBar.svelte
+#: src/screens/Audit.svelte
+msgid "# missing"
+msgid_plural "# missing"
+msgstr[0] "# missing"
+msgstr[1] "# missing"
+
+#: src/screens/Audit.svelte
+msgid "# no dump"
+msgid_plural "# no dump"
+msgstr[0] "# no dump"
+msgstr[1] "# no dump"
+
+#: src/screens/Audit.svelte
+msgctxt "storage state"
+msgid "Verified"
+msgstr "Verified"
+
+#: src/screens/Audit.svelte
+msgctxt "storage state"
+msgid "Claimed"
+msgstr "Claimed"
+
+#: src/screens/Audit.svelte
+msgctxt "storage state"
+msgid "Missing"
+msgstr "Missing"
+
+#: src/screens/Audit.svelte
+msgctxt "storage state"
+msgid "No dump"
+msgstr "No dump"
+
+#: src/screens/Blob.svelte
+msgid "verifying…"
+msgstr "verifying…"
+
+#: src/screens/Blob.svelte
+msgid "never verified — verify now"
+msgstr "never verified — verify now"
+
+#. 0: pageError
+#: src/screens/Audit.svelte
+msgid "couldn't load rows — {0}"
+msgstr "couldn't load rows — {0}"

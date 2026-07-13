@@ -347,6 +347,23 @@ strict mode + retool clonelist consumption are M4 work items).
   import from either screen; `POST /v1/dats/import` stays as the
   direct-API contract path.
 
+## Flagged (raised 2026-07-12, usability review session)
+
+The review ruled D78–D82 and wrote [87-web-ui.md](87-web-ui.md);
+two things were seen and deliberately deferred:
+
+- **Screen taxonomy naming**: "Audit" is a CAS-author name for what
+  the user experiences as *the library list* — and Library / Browse
+  / Shelves / Views overlap in ways the nav ruling (Library · Views
+  · Ingest · Storage · Admin) papers over at the component level.
+  No user-visible bug today; wants a naming pass when the next
+  screen gets added, not before.
+- **Recipe deep-link page**: long recipes now summarize + expand in
+  place (87-web-ui.md, aggregates-before-enumerations). Recipes are
+  content-addressed meta blobs, so a dedicated page is *possible* —
+  build it only if recipes grow multi-level structure worth
+  deep-linking; another CAS-debugger surface is the failure mode.
+
 ## Next sessions (pick up here)
 
 **Position as of 2026-07-11 (GC session, after the M5 web sessions)**:

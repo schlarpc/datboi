@@ -2,13 +2,13 @@
   /**
    * Friend chrome header (spec §4.1): logo disc + wordmark (→ shelves
    * home), breadcrumb `‹ your shelves / {view}` while browsing, then
-   * theme toggle + account chip. Deliberately NO owner chrome — no nav
-   * tabs, no health chip, no jobs tray (wireframe 3c: "friends land
-   * HERE, not on a dashboard. no admin chrome at all").
+   * the account chip. Deliberately NO owner chrome — no nav tabs, no
+   * health chip, no jobs tray (wireframe 3c: "friends land HERE, not
+   * on a dashboard. no admin chrome at all"). No theme toggle — color
+   * follows the system, D78.
    */
   import { session } from '../session.svelte';
   import Link from './Link.svelte';
-  import ThemeToggle from './ThemeToggle.svelte';
   import logoUrl from '../assets/logo.svg';
 
   /** The view being browsed, or null on the shelves home. */
@@ -36,7 +36,6 @@
     </span>
   {/if}
   <div class="right">
-    <ThemeToggle />
     {#if session.username !== null}
       <span class="account">
         <span class="avatar">{initial}</span>

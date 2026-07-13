@@ -11,13 +11,16 @@
  */
 import type { ResidencyState } from './api/types';
 
-// Lowercase copy, forced into the catalog at statement level.
+// Product words, not engine words (87-web-ui.md vocabulary):
+// "rebuildable" is a brag — space saved, provably reproducible —
+// where "evicted (covered)" read as a malfunction. Lowercase copy,
+// forced into the catalog at statement level.
 // @wc-include
-const resident = () => 'resident';
+const resident = () => 'on disk';
 // @wc-include
-const evictedCovered = () => 'evicted (covered)';
+const evictedCovered = () => 'rebuildable';
 // @wc-include
-const absent = () => 'absent';
+const absent = () => 'not here';
 
 const LABELS: Record<ResidencyState, () => string> = {
   resident,

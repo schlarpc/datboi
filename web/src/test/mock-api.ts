@@ -64,6 +64,8 @@ export interface MockUniverse {
   jobDetailFail?: boolean;
   /** POST /v1/ingest answer; defaults to job 1. */
   ingestJob?: number;
+  /** POST /v1/blobs/{hash}/verify answer (D80); defaults to job 1. */
+  verifyJob?: number;
   /** POST /v1/ingest rejects (unknown token shape). */
   ingestFail?: boolean;
   /** Full detail bodies; the list endpoint serves the same objects
@@ -228,6 +230,11 @@ export function installFetch(universe: MockUniverse) {
           offset,
           limit,
         });
+      }
+      // Before the detail matcher: its greedy (.+) would eat the
+      // /verify suffix and answer 400.
+      if (/^\/v1\/blobs\/[0-9a-f]{64}\/verify$/i.test(path) && method === 'POST') {
+        return json(202, { job: universe.verifyJob ?? 1 });
       }
       const blobMatch = path.match(/^\/v1\/blobs\/(.+)$/);
       if (blobMatch) {

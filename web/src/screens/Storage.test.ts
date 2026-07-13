@@ -28,7 +28,7 @@ const breakdown: StorageBreakdownBody = {
   ],
   by_source: [
     { source: 'no-intro/gba', blobs: 1200, bytes: 90 * GB },
-    { source: '(unattributed)', blobs: 4, bytes: 2 * GB },
+    { source: '(unattached)', blobs: 4, bytes: 2 * GB },
   ],
   largest: [
     {
@@ -56,7 +56,8 @@ test('tiles render the four stats; savings % is computed client-side', async () 
   expect(screen.getByText('3891.2 GB')).toBeTruthy();
   // 100 × (1 − 1.2/3.8) = 68.4… → 68
   expect(screen.getByText('−68% via recipes')).toBeTruthy();
-  expect(screen.getByText('shrinkable')).toBeTruthy();
+  // "LITERAL-ONLY … shrinkable" became a name that needs no footnote.
+  expect(screen.getByText('NOT YET OPTIMIZED')).toBeTruthy();
 });
 
 test('zero represented bytes: no savings claim', async () => {
@@ -66,14 +67,17 @@ test('zero represented bytes: no savings claim', async () => {
   expect(screen.queryByText(/via recipes/)).toBeNull();
 });
 
-test('quarantine empty state: zero count, no danger tint', async () => {
+test('quarantine empty state: one quiet maintenance line, no card', async () => {
   installFetch({ storage: stats });
   render(Storage);
   await screen.findByText('BLOBS');
 
-  const title = screen.getByText(/Quarantine · 0/);
-  expect(title.closest('.action-card')?.classList.contains('danger')).toBe(false);
-  expect(screen.getByText('nothing quarantined')).toBeTruthy();
+  // Management by exception (87-web-ui.md): healthy quarantine is a
+  // status line in the maintenance strip, not a card.
+  const label = screen.getByText('Quarantine');
+  expect(label.closest('.maint-row')).toBeTruthy();
+  expect(label.closest('.action-card')).toBeNull();
+  expect(screen.getByText('empty')).toBeTruthy();
 });
 
 test('quarantine items render inline (that IS the M5 review) with danger tint', async () => {
@@ -103,7 +107,7 @@ test('quarantine items render inline (that IS the M5 review) with danger tint', 
   expect(title.closest('.action-card')?.classList.contains('danger')).toBe(true);
   expect(screen.getByText('seek path produced bad bytes')).toBeTruthy();
   expect(screen.getByText('crc mismatch in archive')).toBeTruthy();
-  expect(screen.getByText('deadb…ef')).toBeTruthy();
+  expect(screen.getByText('deadbeef')).toBeTruthy();
 });
 
 test('breakdown renders class bars, the source table, and largest blobs', async () => {
@@ -111,21 +115,22 @@ test('breakdown renders class bars, the source table, and largest blobs', async 
   render(Storage);
 
   expect(await screen.findByText('WHERE THE BYTES LIVE')).toBeTruthy();
-  // by_class rows: namespace · residency labels, wire underscore
-  // rendered as a space, bytes + sizeless surfaced.
-  expect(screen.getByText('data · resident')).toBeTruthy();
-  expect(screen.getByText('data · evicted (covered)')).toBeTruthy();
-  expect(screen.getByText('meta · resident')).toBeTruthy();
+  // by_class rows: namespace · residency in product words (87-web-ui.md
+  // vocabulary), bytes + sizeless surfaced.
+  expect(screen.getByText('data · on disk')).toBeTruthy();
+  expect(screen.getByText('data · rebuildable')).toBeTruthy();
+  expect(screen.getByText('meta · on disk')).toBeTruthy();
   expect(screen.getByText('500.0 GB')).toBeTruthy();
   expect(screen.getByText(/3 sizeless/)).toBeTruthy();
 
-  // by_source table
+  // by_source table — attribution is viral through the recipe DAG
+  // (D79); the residual bucket is truly UNATTACHED blobs.
   expect(screen.getByText('no-intro/gba')).toBeTruthy();
   expect(screen.getByText('90.0 GB')).toBeTruthy();
-  expect(screen.getByText('(unattributed)')).toBeTruthy();
+  expect(screen.getByText('(unattached)')).toBeTruthy();
 
   // largest blobs link into the inspector
-  const link = screen.getByText('ababa…ab').closest('a');
+  const link = screen.getByText('abababab').closest('a');
   expect(link?.getAttribute('href')).toBe(`/storage/blob/${'ab'.repeat(32)}`);
   expect(screen.getByText('4.0 GB')).toBeTruthy();
 });
@@ -138,26 +143,29 @@ test('empty breakdown renders no tables but keeps the tiles', async () => {
   expect(screen.queryByText('no-intro/gba')).toBeNull();
 });
 
-test('scrub and eviction cards reveal verified CLI hints', async () => {
+test('scrub and eviction maintenance rows reveal verified CLI hints', async () => {
   installFetch({ storage: stats });
   render(Storage);
   await screen.findByText('BLOBS');
 
   await fireEvent.click(screen.getByText('run via CLI'));
   expect(screen.getByText(/datboi scrub/)).toBeTruthy();
-  expect(screen.getByText(/no scrub recorded yet/)).toBeTruthy();
+  expect(screen.getByText('never run')).toBeTruthy();
 
-  // D72: eviction is automatic and reversible; the card tunes, not plans.
-  expect(screen.getByText(/rebuildable literals evict automatically/)).toBeTruthy();
+  // D72: eviction is automatic and reversible; the row tunes, not plans.
+  expect(screen.getByText(/automatic at the watermark/)).toBeTruthy();
   await fireEvent.click(screen.getByText('tune via CLI'));
   expect(screen.getByText(/datboi gc config --high-water/)).toBeTruthy();
 });
 
-test('orphan review card: empty state, then keep + two-click apply (D73)', async () => {
+test('orphans empty state: one quiet maintenance line, no card', async () => {
   installFetch({ storage: stats });
   render(Storage);
   await screen.findByText('BLOBS');
-  expect(await screen.findByText(/nothing unreferenced/)).toBeTruthy();
+  // Management by exception: healthy orphans is a status line.
+  const label = await screen.findByText('Orphans');
+  expect(label.closest('.maint-row')).toBeTruthy();
+  expect(screen.getByText('none')).toBeTruthy();
 });
 
 test('orphan review card lists candidates with provenance and arms the delete', async () => {

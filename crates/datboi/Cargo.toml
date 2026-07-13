@@ -24,6 +24,9 @@ datboi-server.workspace = true
 datboi-store-fs.workspace = true
 flate2.workspace = true
 serde_json.workspace = true
+# The D81 subscriber lives in the `serve` handler — the one place a
+# daemon starts; client subcommands keep their user-facing stderr.
+tracing-subscriber.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]

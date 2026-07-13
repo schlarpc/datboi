@@ -425,8 +425,9 @@ fn storage_breakdown_and_blob_inspector() {
         "the snapshot blob is meta/resident: {v}"
     );
 
-    // by_source: ALPHA attributes to no-intro/gba through its identity
-    // link; the dat blob has none and folds into (unattributed).
+    // by_source (D79: attribution is viral through the recipe DAG):
+    // ALPHA attributes to no-intro/gba through its identity link; the
+    // dat blob connects to nothing claimed and is truly (unattached).
     let by_source = v["by_source"].as_array().expect("by_source");
     assert_eq!(by_source.len(), 2, "{v}");
     let source_row = |source: &str| {
@@ -438,9 +439,9 @@ fn storage_breakdown_and_blob_inspector() {
     let gba = source_row("no-intro/gba");
     assert_eq!(gba["blobs"], 1);
     assert_eq!(gba["bytes"], ALPHA.len() as u64);
-    let unattributed = source_row("(unattributed)");
-    assert_eq!(unattributed["blobs"], 1, "the dat blob");
-    assert!(unattributed["bytes"].as_i64().expect("bytes") > 0);
+    let unattached = source_row("(unattached)");
+    assert_eq!(unattached["blobs"], 1, "the dat blob");
+    assert!(unattached["bytes"].as_i64().expect("bytes") > 0);
 
     // largest: data blobs only, size DESC — the dat outweighs ALPHA.
     let largest = v["largest"].as_array().expect("largest");

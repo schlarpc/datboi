@@ -16,19 +16,19 @@ use axum::http::{HeaderMap, Method, header};
 use axum::middleware::Next;
 use axum::response::Response;
 
-/// The exact D70 policy, tightened by D76. The one inline `<script>`
-/// is the theme-flash guard in index.html, admitted by hash-source —
-/// web.rs's tests recompute the hash from the embedded dist so the
-/// pin and the script cannot drift apart. Everything else is external:
-/// the SPA's dynamic styles are Svelte `style:` directives, which
-/// compile to CSSOM writes (`el.style.setProperty`/`cssText`) — CSP
-/// governs parsed `style=` attributes and `<style>` blocks, not CSSOM,
-/// and the built bundle contains zero `style=` attributes and no
+/// The exact D70 policy, tightened by D76. No inline scripts at all —
+/// the theme-flash guard died with the theme toggle (D78), so
+/// script-src carries no hash-source and web.rs's test now pins the
+/// dist to ZERO inline scripts. Everything is external: the SPA's
+/// dynamic styles are Svelte `style:` directives, which compile to
+/// CSSOM writes (`el.style.setProperty`/`cssText`) — CSP governs
+/// parsed `style=` attributes and `<style>` blocks, not CSSOM, and
+/// the built bundle contains zero `style=` attributes and no
 /// `setAttribute("style")`, so `'unsafe-inline'` is not needed.
 /// `object-src 'none'` closes the legacy plugin surface that would
 /// otherwise inherit `'self'` from default-src.
 pub(crate) const CSP: &str = "default-src 'self'; \
-     script-src 'self' 'sha256-pnaQEsw/4KBowEnxrUJ/BFlYdqDITsx3rR7Al/PEju4='; \
+     script-src 'self'; \
      style-src 'self'; img-src 'self' data:; font-src 'self'; \
      connect-src 'self'; object-src 'none'; frame-ancestors 'none'; \
      base-uri 'none'; form-action 'self'";
@@ -387,7 +387,7 @@ mod tests {
         assert_eq!(
             CSP,
             "default-src 'self'; \
-             script-src 'self' 'sha256-pnaQEsw/4KBowEnxrUJ/BFlYdqDITsx3rR7Al/PEju4='; \
+             script-src 'self'; \
              style-src 'self'; img-src 'self' data:; font-src 'self'; \
              connect-src 'self'; object-src 'none'; frame-ancestors 'none'; \
              base-uri 'none'; form-action 'self'"
