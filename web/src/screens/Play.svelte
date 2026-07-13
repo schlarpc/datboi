@@ -150,6 +150,19 @@
     return () => document.removeEventListener('visibilitychange', onvisibility);
   });
 
+  // Autoplay unlock belongs to the WHOLE screen, not just the canvas:
+  // any first gesture anywhere is the player asking for sound, and on
+  // a phone the canvas tap path must not be the only unlock route.
+  $effect(() => {
+    const gesture = () => unlock();
+    window.addEventListener('pointerdown', gesture);
+    window.addEventListener('keydown', gesture);
+    return () => {
+      window.removeEventListener('pointerdown', gesture);
+      window.removeEventListener('keydown', gesture);
+    };
+  });
+
   /** First gesture unlocks audio (browser autoplay policy). */
   function unlock() {
     if (session === null || audioUnlocked) return;
@@ -175,15 +188,38 @@
     sendInput();
   }
 
-  /** Pointer → stylus on the pointer screen's native coordinates. */
+  /**
+   * Pointer → stylus on the pointer screen's native coordinates.
+   * Pen state is tracked here rather than read from `event.buttons`:
+   * WebKit reports buttons=0 for touch-driven pointermove, which
+   * silently eats stylus drags on iOS.
+   */
+  let penDown = false;
+
   function pointer(event: PointerEvent, down: boolean) {
     if (canvas === null || descriptor === null || descriptor.pointerScreen === null) return;
-    unlock();
+    penDown = down;
     const rect = canvas.getBoundingClientRect();
     const x = Math.floor((event.clientX - rect.left) * (width / rect.width));
     const y = Math.floor((event.clientY - rect.top) * (height / rect.height)) - pointerTop;
     touch = down && x >= 0 && x < width && y >= 0 && y < pointerHeight ? { x, y } : null;
     sendInput();
+  }
+
+  function onpointerdown(event: PointerEvent) {
+    // Keep the browser from synthesizing mouse events / tap gestures
+    // out of the same touch; the canvas is pure game surface.
+    event.preventDefault();
+    unlock();
+    // Touch pointers are implicitly captured, and iOS Safari has
+    // thrown on redundant capture calls — never let capture failure
+    // take the input path down with it.
+    try {
+      canvas?.setPointerCapture(event.pointerId);
+    } catch {
+      // implicit capture is enough
+    }
+    pointer(event, true);
   }
 </script>
 
@@ -215,12 +251,9 @@
           bind:this={canvas}
           {width}
           {height}
-          onpointerdown={(e) => {
-            canvas?.setPointerCapture(e.pointerId);
-            pointer(e, true);
-          }}
+          {onpointerdown}
           onpointermove={(e) => {
-            if (e.buttons !== 0) pointer(e, true);
+            if (penDown) pointer(e, true);
           }}
           onpointerup={(e) => pointer(e, false)}
           onpointercancel={(e) => pointer(e, false)}

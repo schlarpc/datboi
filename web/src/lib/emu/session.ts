@@ -111,7 +111,9 @@ export class EmuSession {
       if (Ctor === undefined) return; // no audio is better than no game
       this.audio = new Ctor();
     }
-    if (this.audio.state === 'suspended') void this.audio.resume();
+    // Not just 'suspended': iOS reports a nonstandard 'interrupted'
+    // after calls/backgrounding, and resume() is the answer to both.
+    if (this.audio.state !== 'running') void this.audio.resume();
   }
 
   dispose(): void {
