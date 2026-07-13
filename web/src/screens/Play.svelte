@@ -523,6 +523,12 @@
     width: 100%;
     height: 100%;
     justify-self: center;
+    /* Grid items' automatic minimum floors a replaced element at its
+       intrinsic size (384px tall here) — on a phone the 1fr row is
+       smaller than that, so without this the canvas bleeds into the
+       deck band below. */
+    min-width: 0;
+    min-height: 0;
   }
 
   .pad {
