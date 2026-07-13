@@ -51,7 +51,15 @@ impl EmuState {
     /// Bottom-screen touch in native 256×192 coordinates; None = pen up.
     pub fn update_touch(&mut self, x: Option<u16>, y: Option<u16>) {
         if let Some((x, y)) = x.zip(y) {
-            self.emu.set_touch_pos([x, y]);
+            // dust's TSC wants raw 12-bit ADC values matching the
+            // default firmware calibration — x full-scale 4096 over
+            // 256 px, y 3072 over 192 px, both ×16 (+8 centers within
+            // the pixel). Sending pixels put every touch in the
+            // top-left corner: enough to dismiss MKDS's attract mode,
+            // never enough to hit a menu button.
+            let adc_x = (u32::from(x) * 16 + 8).min(4095) as u16;
+            let adc_y = (u32::from(y) * 16 + 8).min(3071) as u16;
+            self.emu.set_touch_pos([adc_x, adc_y]);
         } else {
             self.emu.end_touch();
         }

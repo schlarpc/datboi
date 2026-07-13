@@ -199,9 +199,15 @@
   function pointer(event: PointerEvent, down: boolean) {
     if (canvas === null || descriptor === null || descriptor.pointerScreen === null) return;
     penDown = down;
+    // object-fit: contain letterboxes the pixels inside the element
+    // box when the CSS constraints break the aspect ratio (narrow
+    // phones) — map against the rendered content rect, not the box.
     const rect = canvas.getBoundingClientRect();
-    const x = Math.floor((event.clientX - rect.left) * (width / rect.width));
-    const y = Math.floor((event.clientY - rect.top) * (height / rect.height)) - pointerTop;
+    const scale = Math.min(rect.width / width, rect.height / height);
+    const ox = rect.left + (rect.width - width * scale) / 2;
+    const oy = rect.top + (rect.height - height * scale) / 2;
+    const x = Math.floor((event.clientX - ox) / scale);
+    const y = Math.floor((event.clientY - oy) / scale) - pointerTop;
     touch = down && x >= 0 && x < width && y >= 0 && y < pointerHeight ? { x, y } : null;
     sendInput();
   }
