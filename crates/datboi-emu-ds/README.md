@@ -16,3 +16,7 @@ not a CAS component: no WIT, no wasmtime, no determinism contract.
   Upstream is pinned by exact rev in Cargo.toml; patches, when they
   become necessary, follow the ex-unrar posture (fetched + patched,
   provenance in-tree).
+- **asset/game_db.json** is dust's game database (gamecode → save
+  type), copied verbatim from the pinned rev — the worker uses it to
+  give each game its expected in-memory save chip (games hang at boot
+  without one). Refresh it when the dust pin moves.

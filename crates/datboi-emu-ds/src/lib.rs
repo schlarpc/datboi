@@ -79,16 +79,54 @@ impl EmuState {
     }
 }
 
+/// The in-memory save device for a dust game_db save-type string. A
+/// game without its expected save chip can hang at boot probing for it
+/// (MKDS sat on white screens forever) — so this is emulation
+/// completeness, NOT the out-of-scope persistence story: contents are
+/// fresh zeroes every session and evaporate on close. `has_ir` marks
+/// the infrared cart family (gamecode 'I…'), which gates the flash
+/// wiring the same way dust-web does. Unknown/nand types fall back to
+/// Empty (dust has no NAND save support yet either).
+fn ds_slot_spi(save_type: Option<&str>, has_ir: bool) -> Result<ds_slot::spi::Spi, JsError> {
+    use ds_slot::spi;
+    let eeprom_fram = |len: usize| {
+        spi::eeprom_fram::EepromFram::new(SaveContents::New(len), None)
+            .map(Into::into)
+            .map_err(|_| JsError::new("couldn't create EEPROM/FRAM save device"))
+    };
+    let flash = |len: usize| {
+        spi::flash::Flash::new(SaveContents::New(len), [0; 20], has_ir)
+            .map(Into::into)
+            .map_err(|_| JsError::new("couldn't create FLASH save device"))
+    };
+    match save_type {
+        Some("eeprom-4k") => spi::eeprom_4k::Eeprom4k::new(SaveContents::New(0x200), None)
+            .map(Into::into)
+            .map_err(|_| JsError::new("couldn't create EEPROM save device")),
+        Some("eeprom-fram-64k") => eeprom_fram(0x2000),
+        Some("eeprom-fram-512k") => eeprom_fram(0x1_0000),
+        Some("eeprom-fram-1m") => eeprom_fram(0x2_0000),
+        Some("flash-2m") => flash(0x4_0000),
+        Some("flash-4m") => flash(0x8_0000),
+        Some("flash-8m") => flash(0x10_0000),
+        _ => Ok(spi::Empty::new().into()),
+    }
+}
+
 /// BIOS/firmware are optional (docs/88-emulation.md: v1 ships no BIOS
 /// story) — dust's HLE BIOS direct-boots decrypted dumps with nothing.
 /// KEY1-encrypted secure-area dumps are the one case that genuinely needs
 /// real BIOS bytes; dust reports that as a build error we surface below.
+/// `save_type` speaks the dust game_db vocabulary; the worker looks it
+/// up by gamecode (asset/game_db.json) before calling in.
 #[wasm_bindgen]
 pub fn create_emu_state(
     rom_arr: Uint8Array,
     arm7_bios_arr: Option<Uint8Array>,
     arm9_bios_arr: Option<Uint8Array>,
     firmware_arr: Option<Uint8Array>,
+    save_type: Option<String>,
+    has_ir: bool,
 ) -> Result<EmuState, JsError> {
     console_error_panic_hook::set_once();
 
@@ -131,10 +169,7 @@ pub fn create_emu_state(
         )
         .map_err(|_| JsError::new("invalid firmware contents"))?,
         Some(Box::new(rom)),
-        // v1: no save device (docs/88-emulation.md "explicitly out").
-        // Games see an empty SPI bus; in-session saving lands with the
-        // worker protocol.
-        ds_slot::spi::Empty::new().into(),
+        ds_slot_spi(save_type.as_deref(), has_ir)?,
         Box::new(audio::Backend::new(audio_buffer.clone())),
         None,
         Box::new(rtc::DummyBackend),

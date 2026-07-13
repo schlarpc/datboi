@@ -143,6 +143,12 @@ Design passes R1–R8 complete; decisions ratified through D73. Docs
   carry named slots with hard-coded accepted content hashes; at
   launch the host asks which exist in CAS and fetches; BIOS dumps
   stay ordinary ingested blobs, the hash list IS the verification.
+  UPGRADED from nicety to unblock (observed post-M3): dust's HLE
+  BIOS does not carry Mario Kart DS through boot — stuck pre-display
+  in OUR harness and in dust's own web frontend alike, save chip
+  correctly wired — so real BIOS bytes are what commercial coverage
+  actually needs. Note /snap/{hash} already serves any blob to an
+  owner session: the fetch half may need zero new API.
   (2) Control rebinding — out of v1 AND in tension with D78
   zero-toggles; when it arrives it needs a ruling arguing per-device
   config ≠ preference toggle. (3) ~~Friend-facing play ACL~~

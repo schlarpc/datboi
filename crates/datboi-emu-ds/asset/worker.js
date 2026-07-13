@@ -27,6 +27,19 @@ import init, { create_emu_state } from "./pkg/datboi_emu_ds.js";
 
 const FRAME_INTERVAL = 1000 / 59.8261; // DS refresh; descriptor.frameRate
 
+// dust's game database (gamecode → save type): a game without its
+// expected save chip can hang at boot probing for it, so the right
+// in-memory device is a boot requirement, not a persistence feature.
+// Fetched lazily and once; a miss (homebrew, unlisted) means no device.
+let gameDbPromise = null;
+async function saveTypeFor(code) {
+  gameDbPromise ??= fetch(new URL("game_db.json", import.meta.url)).then((r) =>
+    r.ok ? r.json() : [],
+  );
+  const entry = (await gameDbPromise).find((e) => e.code === code);
+  return entry?.["save-type"] ?? null;
+}
+
 let emu = null;
 let timer = null;
 let expected = 0;
@@ -84,11 +97,17 @@ self.onmessage = async (e) => {
     switch (msg.type) {
       case "load": {
         await init();
+        // Gamecode: 4 ASCII bytes at header offset 0xC, read LE to
+        // match the db encoding; 'I…' marks the infrared cart family.
+        const code = new DataView(msg.rom).getUint32(0xc, true);
+        const saveType = await saveTypeFor(code);
         emu = create_emu_state(
           new Uint8Array(msg.rom),
           msg.bios7 && new Uint8Array(msg.bios7),
           msg.bios9 && new Uint8Array(msg.bios9),
           msg.firmware && new Uint8Array(msg.firmware),
+          saveType ?? undefined,
+          (code & 0xff) === 0x49,
         );
         postMessage({ type: "loaded" });
         resume();
