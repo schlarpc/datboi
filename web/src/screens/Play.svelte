@@ -512,6 +512,10 @@
     grid-template-areas:
       'cnv cnv'
       'padl padr';
+    /* Two declarations on purpose: if an engine rejects clamp()/dvh
+       as a track size, the plain-pixel row above survives instead of
+       the rows collapsing wholesale. */
+    grid-template-rows: minmax(0, 1fr) 200px;
     grid-template-rows: minmax(0, 1fr) clamp(150px, 30dvh, 240px);
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     align-items: stretch;
@@ -526,9 +530,12 @@
     /* Grid items' automatic minimum floors a replaced element at its
        intrinsic size (384px tall here) — on a phone the 1fr row is
        smaller than that, so without this the canvas bleeds into the
-       deck band below. */
+       deck band below. overflow: hidden is the spec-guaranteed kill
+       switch for the same rule (auto minimums only apply to
+       overflow: visible items), belt to min-height's braces. */
     min-width: 0;
     min-height: 0;
+    overflow: hidden;
   }
 
   .pad {
