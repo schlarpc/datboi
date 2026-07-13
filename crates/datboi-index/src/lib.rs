@@ -147,6 +147,28 @@ impl Db {
     pub fn cache_path(&self) -> &Path {
         &self.cache_path
     }
+
+    /// `PRAGMA optimize=0x10002` on both files: the SQLite-recommended
+    /// first call for a long-lived connection — additionally ANALYZEs
+    /// tables that have never been analyzed (bounded scan), seeding
+    /// planner stats a fresh db-dir otherwise never gets. Stats live in
+    /// the database file, so every connection benefits, not just this
+    /// one.
+    pub fn optimize_at_open(&self) -> Result<(), IndexError> {
+        self.cache.execute_batch("PRAGMA optimize=0x10002;")?;
+        self.state.execute_batch("PRAGMA optimize=0x10002;")?;
+        Ok(())
+    }
+
+    /// Periodic `PRAGMA optimize` on both files: re-ANALYZEs only
+    /// tables whose content drifted far from their recorded stats —
+    /// near-free when nothing changed, so a background clock may call
+    /// it liberally.
+    pub fn optimize(&self) -> Result<(), IndexError> {
+        self.cache.execute_batch("PRAGMA optimize;")?;
+        self.state.execute_batch("PRAGMA optimize;")?;
+        Ok(())
+    }
 }
 
 /// statfs `f_type` magics of network filesystems the embedded databases

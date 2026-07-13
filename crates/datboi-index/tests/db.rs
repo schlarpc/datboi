@@ -110,6 +110,33 @@ fn schema_and_pragmas() {
     Db::open(dir.path()).expect("reopen");
 }
 
+/// The planner-stats upkeep the serve daemon runs in the background:
+/// the at-open form must seed sqlite_stat1 (ANALYZE of never-analyzed
+/// tables), and the periodic form must be callable repeatedly.
+#[test]
+fn optimize_seeds_planner_stats() {
+    let (_dir, db) = open_db();
+    db.upsert_blob(
+        &Blake3::compute(b"stats"),
+        Some(1),
+        Namespace::Data,
+        Residency::Resident,
+    )
+    .expect("row");
+    db.optimize_at_open().expect("optimize at open");
+    let stats: i64 = db
+        .cache()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'sqlite_stat1'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("q");
+    assert_eq!(stats, 1, "0x10002 form ANALYZEs unanalyzed tables");
+    db.optimize().expect("periodic optimize");
+    db.optimize().expect("periodic optimize is repeatable");
+}
+
 /// D37's split, made mechanical: an older cache.db migrates in place
 /// when a ladder step exists (rows survive), falls back to
 /// drop-and-recreate when it can't; state.db (authoritative) is never

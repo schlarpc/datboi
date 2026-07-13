@@ -143,6 +143,12 @@ fn worker(db_dir: &std::path::Path, store: &'static Store, jobs: &Registry, shar
     if let Err(e) = db.clear_sweep_leases() {
         warn!("refine worker: clearing stale leases: {e}");
     }
+    // Planner-stats seed (SQLite's long-lived-connection guidance):
+    // ANALYZE whatever has never been analyzed, bounded. The ambient
+    // tick keeps stats current from here on.
+    if let Err(e) = db.optimize_at_open() {
+        warn!("refine worker: pragma optimize at open: {e}");
+    }
     let mut analyzers = families();
     // The D72/D73 maintenance phases ride this same thread (one
     // background writer). Losing them degrades to refine-only, loudly.
@@ -182,6 +188,12 @@ fn worker(db_dir: &std::path::Path, store: &'static Store, jobs: &Registry, shar
         // drains just minted (the "drop a zip → evictable" motion).
         if let Some(maintainer) = &maintainer {
             maintainer.cycle(&mut db, store, jobs, ambient_due);
+        }
+        // Last, so a tick's own churn (drains, licensing, eviction) is
+        // what the stats refresh sees. Near-free when content hasn't
+        // drifted, hence every ambient tick rather than its own clock.
+        if ambient_due && let Err(e) = db.optimize() {
+            warn!("refine worker: pragma optimize: {e}");
         }
     }
 }
