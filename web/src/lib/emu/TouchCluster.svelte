@@ -51,10 +51,34 @@
   let pressed = $state<ReadonlySet<string>>(new Set());
   let prevBits = 0;
 
-  let el = $state<HTMLElement | null>(null);
+  /** The whole slot (receives pointer events, so slop presses just
+   * outside the drawn box still land). */
+  let slot = $state<HTMLElement | null>(null);
+  /** The aspect-true box the controls draw in. */
+  let box = $state<HTMLElement | null>(null);
 
-  /** Client → unit coordinates. CSS aspect-ratio pins the element to
-   * the unit box's shape, so this is one proportional scale. */
+  // Measured fit: the largest 160:230 box the slot can hold. Sized in
+  // JS on purpose — the CSS-only version (aspect-ratio + max
+  // constraints on a box whose children are all absolutely
+  // positioned, i.e. zero content size) collapsed to 0×0 on iOS
+  // Safari, stacking every control on one point.
+  let fitW = $state(0);
+  let fitH = $state(0);
+  $effect(() => {
+    if (slot === null) return;
+    const observer = new ResizeObserver((entries) => {
+      const size = entries[entries.length - 1].contentBoxSize[0];
+      const scale = Math.min(size.inlineSize / CLUSTER_W, size.blockSize / CLUSTER_H);
+      fitW = Math.floor(CLUSTER_W * scale);
+      fitH = Math.floor(CLUSTER_H * scale);
+    });
+    observer.observe(slot);
+    return () => observer.disconnect();
+  });
+
+  /** Client → unit coordinates, proportional to the measured box.
+   * Out-of-box points map to out-of-range units, which the geometry
+   * handles (slop hit or miss) — no clamping. */
   function unitPoint(event: PointerEvent, rect: DOMRect): { x: number; y: number } {
     return {
       x: ((event.clientX - rect.left) / rect.width) * CLUSTER_W,
@@ -86,15 +110,15 @@
     // The deck is pure game input: no synthesized mouse events, no
     // scroll, no long-press callout.
     event.preventDefault();
-    if (el === null) return;
+    if (slot === null || box === null) return;
     // Same posture as the Play canvas: implicit touch capture is
     // enough when the explicit call throws (iOS Safari has).
     try {
-      el.setPointerCapture(event.pointerId);
+      slot.setPointerCapture(event.pointerId);
     } catch {
       // implicit capture is enough
     }
-    const { x, y } = unitPoint(event, el.getBoundingClientRect());
+    const { x, y } = unitPoint(event, box.getBoundingClientRect());
     const control = controlAt(controls, x, y);
     const role: Role = control === null ? 'none' : control.name === 'dpad' ? 'dpad' : 'buttons';
     pointers.set(event.pointerId, { role, x, y });
@@ -103,8 +127,8 @@
 
   function onpointermove(event: PointerEvent) {
     const p = pointers.get(event.pointerId);
-    if (p === undefined || el === null) return;
-    const { x, y } = unitPoint(event, el.getBoundingClientRect());
+    if (p === undefined || box === null) return;
+    const { x, y } = unitPoint(event, box.getBoundingClientRect());
     p.x = x;
     p.y = y;
     recompute();
@@ -129,15 +153,16 @@
 </script>
 
 <div
-  class="cluster"
-  bind:this={el}
+  class="slot"
+  bind:this={slot}
   aria-hidden="true"
   {onpointerdown}
   {onpointermove}
   {onpointerup}
   onpointercancel={onpointerup}
 >
-  {#each controls as control (control.name)}
+  <div class="box" bind:this={box} style="width:{fitW}px;height:{fitH}px">
+    {#each controls as control (control.name)}
     {#if control.name === 'dpad'}
       <!-- Four CSS-drawn arms in a plus (87-web-ui: structure over
            glyph); diagonals read as two arms lit at once. -->
@@ -158,22 +183,27 @@
         {control.name.toUpperCase()}
       </div>
     {/if}
-  {/each}
+    {/each}
+  </div>
 </div>
 
 <style>
-  .cluster {
-    /* The unit box's shape, so unit math never letterboxes. Sized by
-       whichever constraint binds; auto margins center in the cell. */
-    aspect-ratio: 160 / 230;
-    max-width: 100%;
-    max-height: 100%;
-    margin: auto;
-    position: relative;
+  .slot {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     touch-action: none;
     user-select: none;
     -webkit-user-select: none;
     -webkit-touch-callout: none;
+  }
+
+  /* Pixel-sized by the ResizeObserver above (the measured largest
+     160:230 fit), so unit math never distorts. */
+  .box {
+    position: relative;
   }
 
   .btn {

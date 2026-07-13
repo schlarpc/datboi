@@ -502,13 +502,18 @@
 
   /* ---- touch deck layout (D86) ---- */
   /* The canvas shrinks before the deck does: playable beats big.
-     Portrait: screens on top, clusters side by side below. */
+     Portrait: screens on top, clusters side by side below.
+     Longhands, not the grid-template shorthand — the shorthand with
+     clamp() track sizes silently failed to apply on iOS Safari,
+     collapsing the rows and floating the deck over the canvas. */
   .stage.deck {
     display: grid;
     gap: 10px;
-    grid-template:
-      'cnv cnv' minmax(0, 1fr)
-      'padl padr' clamp(150px, 30dvh, 240px) / minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      'cnv cnv'
+      'padl padr';
+    grid-template-rows: minmax(0, 1fr) clamp(150px, 30dvh, 240px);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     align-items: stretch;
     justify-content: stretch;
   }
@@ -538,7 +543,9 @@
      takes the gutters letterboxing would have left black. */
   @media (orientation: landscape) {
     .stage.deck {
-      grid-template: 'padl cnv padr' minmax(0, 1fr) / minmax(110px, 1fr) auto minmax(110px, 1fr);
+      grid-template-areas: 'padl cnv padr';
+      grid-template-rows: minmax(0, 1fr);
+      grid-template-columns: minmax(110px, 1fr) auto minmax(110px, 1fr);
     }
 
     .stage.deck canvas {
