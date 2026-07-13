@@ -1662,3 +1662,81 @@ move. Also locked in by M2's testing: audio crosses the worker
 boundary as a pull (take_audio riding the frame message), never a
 wasm-held JS callback — a Function passed into the instance hangs
 create inside a Worker on Chromium 148 headless.
+
+## D85 — The library plays: audit-drawer ▶ via raw blob bytes (2026-07-13)
+
+The entry drawer under Library (the audit drill-down) gains the ▶
+Play the M5 comps reserved: for each rom claim satisfied by a local
+blob whose filename a shipped core claims, the drawer links to
+`/play/blob/{hash}/{rom-name}` — a second Play source alongside
+`/play/{view}/{path}`, fetching ROM bytes from
+`GET /v1/blobs/{hash}/bytes` (the endpoint BIOS-from-CAS already
+added; the URL is the content hash, serving rides the same verified
+windows). Zero new API. Rights stay coherent with the D84 amendment
+(play rights are byte rights): the audit surface and the raw-blob
+surface are both owner-only, so the drawer ▶ is exactly as reachable
+as the bytes behind it, and friends keep the view-path route — a
+friend deep-linking a blob-play URL bounces home like any other
+owner route. The rom name rides the URL tail so core gating stays
+extension-based (registry) and the screen keeps an honest title.
+*Rejected:* resolving an entry to a view path via pins (a playable
+blob may be pinned by zero views, and pins don't carry paths); the
+"playable payload resolver" endpoint 88-emulation.md reserved (the
+blob route makes it unnecessary); gating ▶ on verified-only (claimed
+bytes serve and play the same; the state line already tells the
+truth about trust).
+
+## D86 — Touch controls: spatial separation, capability-gated, press-intent semantics (2026-07-13)
+
+Phones get CSS-drawn touch controls on the Play screen
+(open-questions emulation item 5: a phone could tap MKDS menus but
+never press A to drive). Three rulings. **(1) The deck never
+overlays the pointer screen.** A DS bottom screen is itself a touch
+input; an overlay would force a buttons-vs-stylus mode switch.
+Instead the controls own the space letterboxing wastes — below the
+stacked screens in portrait, flanking gutters in landscape — so the
+bottom screen stays a pure stylus surface and buttons + stylus work
+simultaneously (Mario 64 DS needs both at once). When space is tight
+the canvas shrinks, the deck doesn't: playable beats big.
+**(2) Gate on capability, never preference (D78-safe).** The deck
+renders while `(pointer: coarse)` matches — the primary input is a
+finger — and follows the media query live. Touchscreen laptops keep
+the desktop layout (their primary pointer is fine;
+`any-pointer: coarse` would catch them). Nothing persisted, no
+toggle. **(3) Press semantics from the virtual-gamepad state of the
+art**, in a pure unit-tested module (`lib/emu/touch.ts`): press on
+pointerdown, never click (intent-of-press — no synthesized-click
+latency); per-pointer role latch — a pointer that lands on the d-pad
+IS the d-pad until it lifts, steering by vector from the pad center
+(8-way, 45° sectors, center dead zone) even after sliding past the
+pad edge; button pointers re-hit-test as they move, so rolling B→A
+never needs a lift; hit zones are larger than the visuals
+(nearest-within-slop); a rising press edge ticks the vibration motor
+where the platform has one. Layouts are declared per side in an
+abstract unit space and filtered by the descriptor's button set, so
+a second core (NES: no X/Y/L/R) reuses everything unchanged. The
+deck is aria-hidden: it duplicates the keyboard map, which remains
+the accessible input. *Rejected:* overlay + mode toggle (modal input
+breaks simultaneity and is a toggle); overlaying only the top screen
+(thumbs live at the bottom); gating by user-agent sniff or viewport
+width (capability is what matters, and the media query is the
+capability).
+
+## D87 — Fullscreen play: one immersive flag, native API where the platform has it (2026-07-13)
+
+The Play screen gains fullscreen: one `immersive` flag with two
+mechanisms. The flag always applies a CSS takeover (fixed, inset 0,
+app chrome gone, safe-area padded); where element fullscreen exists,
+`requestFullscreen()` rides along for true browser-chrome removal —
+iPhone Safari has no element fullscreen, so the takeover IS the
+fallback and the flag never lies about state. Exit: a small ✕ (the
+only chrome immersive keeps), Escape in the takeover, and the
+`fullscreenchange` event keeps the flag honest when the browser
+exits natively on its own. Touch controls are deliberately NOT
+coupled to fullscreen — a phone without the deck is unplayable, so
+the deck follows the D86 pointer gate in both modes; fullscreen just
+buys the canvas more pixels. *Rejected:* touch-controls-only-in-
+fullscreen (couples playability to a mode switch); auto-immersive on
+touch devices (stealing the browser UI on arrival is hostile — one
+tap opts in); orientation locking (the stacked DS layout is
+portrait-native; nothing to force).

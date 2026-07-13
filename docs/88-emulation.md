@@ -145,7 +145,12 @@ whole-file into a `Uint8Array`, transferred into the worker. Typical
 DS ROMs are 8–128 MB; the 512 MB ceiling is fine in wasm32. Likely
 zero new `/v1` endpoints; if entry metadata can't resolve "the
 playable payload hash for this entry," that one resolver endpoint is
-the only API addition (full D69 ceremony).
+the only API addition (full D69 ceremony). *Resolved by D85: no
+resolver endpoint. The library's audit drawer plays the blob that
+satisfies a rom claim directly — `/play/blob/{hash}/{name}` fetching
+`GET /v1/blobs/{hash}/bytes` (the endpoint BIOS already added) — so
+both Play sources (view path for shelves and friends, raw blob for
+the owner's library) ship with zero new API.*
 
 **BIOS**: shipped ahead of schedule, because reality demanded it —
 dust's HLE BIOS cannot boot MKDS-class commercial titles (verified
