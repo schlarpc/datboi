@@ -546,7 +546,11 @@
     gap: 10px;
   }
 
-  .download {
+  /* :global-scoped under .actions — the ▶ Play pill is an anchor
+     inside <Link>, outside this component's scope hash, and the bare
+     scoped selector silently missed it (the Download anchor is
+     native, so it matched and hid the gap). */
+  .actions :global(.download) {
     background: var(--ink);
     color: var(--bg);
     border-radius: var(--r-pill);

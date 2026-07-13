@@ -5,7 +5,7 @@
   import './locales/main.loader.svelte.js';
   import FriendHeader from './lib/components/FriendHeader.svelte';
   import Header from './lib/components/Header.svelte';
-  import { loginReturn, router, type Route } from './lib/router.svelte';
+  import { loginReturn, router, type PlaySrc, type Route } from './lib/router.svelte';
   import { session } from './lib/session.svelte';
   import Activity from './screens/Activity.svelte';
   import Admin from './screens/Admin.svelte';
@@ -57,18 +57,25 @@
   const friend = $derived(session.status === 'authenticated' && session.role === 'friend');
   // Play is friend-reachable by design (D84 amendment): play rights
   // are download rights, and the ROM bytes come from the same granted
-  // /view surface the download anchor uses.
+  // /view surface the download anchor uses. Blob-sourced play (D85)
+  // is the owner-only exception — its bytes surface is owner-only, so
+  // a friend deep link bounces home like any other owner route.
   $effect(() => {
     if (
       friend &&
       !open &&
       route.screen !== 'library' &&
       route.screen !== 'browse' &&
-      route.screen !== 'play'
+      (route.screen !== 'play' || route.src.kind === 'blob')
     ) {
       router.replace('/');
     }
   });
+
+  /** Remount key for the Play screen: a different source reboots the
+   * emulator clean, same as the view/path key did pre-D85. */
+  const playKey = (src: PlaySrc) =>
+    src.kind === 'view' ? `view/${src.view}/${src.path}` : `blob/${src.hash}`;
 
   // Route → tab title + screen-reader announcement. A Record over the
   // closed screen union: a new screen fails typecheck until it names
@@ -144,7 +151,11 @@
          tray, no owner screens. The trust bar lives inside Browse. -->
     <div class="shell">
       <FriendHeader
-        view={route.screen === 'browse' || route.screen === 'play' ? route.view : null}
+        view={route.screen === 'browse'
+          ? route.view
+          : route.screen === 'play' && route.src.kind === 'view'
+            ? route.src.view
+            : null}
       />
       {#if route.screen === 'browse'}
         <!-- key: a different shelf remounts the browse screen clean. -->
@@ -152,8 +163,8 @@
           <Browse view={route.view} />
         {/key}
       {:else if route.screen === 'play'}
-        {#key `${route.view}/${route.path}`}
-          <Play view={route.view} path={route.path} />
+        {#key playKey(route.src)}
+          <Play src={route.src} />
         {/key}
       {:else}
         <Shelves />
@@ -192,8 +203,8 @@
           <Browse view={route.view} />
         {/key}
       {:else if route.screen === 'play'}
-        {#key `${route.view}/${route.path}`}
-          <Play view={route.view} path={route.path} />
+        {#key playKey(route.src)}
+          <Play src={route.src} />
         {/key}
       {:else}
         <main class="notfound">

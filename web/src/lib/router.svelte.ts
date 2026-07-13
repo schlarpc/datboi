@@ -9,6 +9,16 @@
  * as the system drill-down under Library (`/library/{systemId}`).
  */
 
+/**
+ * Where the Play screen gets ROM bytes (D84/D85): a view file (the
+ * granted /view surface — friend-reachable) or a raw blob by hash
+ * (owner-only /v1 bytes; the name tail carries the extension that
+ * picks the core and titles the screen).
+ */
+export type PlaySrc =
+  | { kind: 'view'; view: string; path: string }
+  | { kind: 'blob'; hash: string; name: string };
+
 export type Route =
   | { screen: 'library' }
   | { screen: 'audit'; systemId: string }
@@ -27,8 +37,8 @@ export type Route =
    * panel the ▶ lives in. Not a nav tab; the taxonomy naming pass
    * (open-questions) owns any bigger move. */
   | { screen: 'browse'; view: string }
-  /** A view file running in a browser emulator core (D84). */
-  | { screen: 'play'; view: string; path: string }
+  /** Something running in a browser emulator core (D84, D85). */
+  | { screen: 'play'; src: PlaySrc }
   | { screen: 'notfound' };
 
 /**
@@ -86,6 +96,16 @@ export function matchPath(pathname: string): Route {
         const hash = safeDecode(blob[1]);
         if (hash !== null) return { screen: 'blob', hash };
       }
+      // Blob-sourced play (D85) matches first, pinned to a full
+      // 64-hex blake3 so a view literally named "blob" only loses
+      // this URL shape when a path segment is itself a 64-hex name.
+      const playBlob = pathname.match(/^\/play\/blob\/([0-9a-f]{64})\/([^/]+)$/);
+      if (playBlob) {
+        const name = safeDecode(playBlob[2]);
+        if (name !== null) {
+          return { screen: 'play', src: { kind: 'blob', hash: playBlob[1], name } };
+        }
+      }
       const play = pathname.match(/^\/play\/([^/]+)\/(.+)$/);
       if (play) {
         const view = safeDecode(play[1]);
@@ -93,7 +113,7 @@ export function matchPath(pathname: string): Route {
         // segment decodes independently (mirrors viewFileUrl encoding).
         const segments = play[2].split('/').map(safeDecode);
         if (view !== null && segments.every((s) => s !== null)) {
-          return { screen: 'play', view, path: segments.join('/') };
+          return { screen: 'play', src: { kind: 'view', view, path: segments.join('/') } };
         }
       }
       return { screen: 'notfound' };

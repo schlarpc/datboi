@@ -253,6 +253,12 @@ const VIEW_IMAGE_PATH = '/v1/views/{name}/image' satisfies keyof paths;
 export const viewImageUrl = (name: string): string =>
   VIEW_IMAGE_PATH.replace('{name}', encodeURIComponent(name));
 
+/** `/v1/blobs/{hash}/bytes` — raw verified blob bytes, owner-only.
+ * The Play screen fetches BIOS slots and blob-sourced ROMs (D85)
+ * through it; the URL is the content hash. */
+const BLOB_BYTES_PATH = '/v1/blobs/{hash}/bytes' satisfies keyof paths;
+export const blobBytesUrl = (hash: string): string => BLOB_BYTES_PATH.replace('{hash}', hash);
+
 export const storage = async (): Promise<StorageBody> => unwrap(await client.GET('/v1/storage'));
 
 export const storageBreakdown = async (): Promise<StorageBreakdownBody> =>

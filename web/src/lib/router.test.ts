@@ -50,17 +50,47 @@ describe('matchPath', () => {
   test('play carries the view and the multi-segment file path, decoded per segment', () => {
     expect(matchPath('/play/gba-everdrive/Games/Alpha%20%28USA%29.nds')).toEqual({
       screen: 'play',
-      view: 'gba-everdrive',
-      path: 'Games/Alpha (USA).nds',
+      src: { kind: 'view', view: 'gba-everdrive', path: 'Games/Alpha (USA).nds' },
     });
-    expect(matchPath('/play/v/one.nds')).toEqual({ screen: 'play', view: 'v', path: 'one.nds' });
+    expect(matchPath('/play/v/one.nds')).toEqual({
+      screen: 'play',
+      src: { kind: 'view', view: 'v', path: 'one.nds' },
+    });
   });
 
   test('play round-trips the registry playUrl encoding', async () => {
     const { playUrl } = await import('./emu/registry');
     const view = 'shelf one';
     const path = 'Games/Ålpha (USA)/rom #1.nds';
-    expect(matchPath(playUrl(view, path))).toEqual({ screen: 'play', view, path });
+    expect(matchPath(playUrl(view, path))).toEqual({
+      screen: 'play',
+      src: { kind: 'view', view, path },
+    });
+  });
+
+  test('blob play carries the hash and the decoded rom name (D85)', () => {
+    const hash = 'ab'.repeat(32);
+    expect(matchPath(`/play/blob/${hash}/Alpha%20%28USA%29.nds`)).toEqual({
+      screen: 'play',
+      src: { kind: 'blob', hash, name: 'Alpha (USA).nds' },
+    });
+  });
+
+  test('blob play round-trips the registry playBlobUrl encoding', async () => {
+    const { playBlobUrl } = await import('./emu/registry');
+    const hash = 'c0'.repeat(32);
+    const name = 'rom #1 (USA).nds';
+    expect(matchPath(playBlobUrl(hash, name))).toEqual({
+      screen: 'play',
+      src: { kind: 'blob', hash, name },
+    });
+  });
+
+  test('a view actually named "blob" keeps its play URLs when the shape is not a full hash', () => {
+    expect(matchPath('/play/blob/not-a-hash/one.nds')).toEqual({
+      screen: 'play',
+      src: { kind: 'view', view: 'blob', path: 'not-a-hash/one.nds' },
+    });
   });
 
   test.each([

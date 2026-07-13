@@ -1612,3 +1612,11 @@ msgstr "starting…"
 #: src/screens/Play.svelte
 msgid "sound starts with your first input"
 msgstr "sound starts with your first input"
+
+#: src/screens/Play.svelte
+msgid "← library"
+msgstr "← library"
+
+#: src/lib/components/EntryDrawer.svelte
+msgid "▶ Play<0/>"
+msgstr "▶ Play<0/>"

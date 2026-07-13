@@ -1,30 +1,34 @@
 <script lang="ts">
   /**
-   * Play (D84, docs/88-emulation.md): a view file running in a browser
-   * emulator core. Reached from the Browse entry panel's ▶; play
-   * rights are exactly download rights — the ROM bytes come from the
-   * same verified /view/{name}/{path} surface the download anchor
-   * uses, so a view a session can't download from 404s here too (D68,
-   * D84 amendment).
+   * Play (D84, docs/88-emulation.md): something running in a browser
+   * emulator core. Two byte sources (PlaySrc): a view file — reached
+   * from the Browse entry panel's ▶, play rights are exactly download
+   * rights, the ROM comes from the same verified /view/{name}/{path}
+   * surface the download anchor uses, so a view a session can't
+   * download from 404s here too (D68, D84 amendment) — or a raw blob
+   * by hash, reached from the audit drawer's ▶ over the owner-only
+   * /v1 bytes surface (D85).
    *
    * This screen owns presentation and input collection; the worker
    * lifecycle, audio scheduling, and protocol live in lib/emu/session.
    */
-  import { viewFileUrl } from '../lib/api/client';
+  import { blobBytesUrl, viewFileUrl } from '../lib/api/client';
   import Link from '../lib/components/Link.svelte';
   import LoadError from '../lib/components/LoadError.svelte';
+  import type { PlaySrc } from '../lib/router.svelte';
   import { session as auth } from '../lib/session.svelte';
   import { keyBit, gamepadBits } from '../lib/emu/input';
   import type { Descriptor, Touch } from '../lib/emu/protocol';
   import { coreForPath } from '../lib/emu/registry';
   import { EmuSession } from '../lib/emu/session';
 
-  let { view, path }: { view: string; path: string } = $props();
+  let { src }: { src: PlaySrc } = $props();
 
-  // App keys this screen on view/path, so props never change in-place —
-  // $derived anyway so the compiler agrees.
-  const core = $derived(coreForPath(path));
-  const basename = $derived(path.split('/').at(-1) ?? path);
+  // App keys this screen on the source, so props never change
+  // in-place — $derived anyway so the compiler agrees.
+  const filename = $derived(src.kind === 'view' ? src.path : src.name);
+  const core = $derived(coreForPath(filename));
+  const basename = $derived(filename.split('/').at(-1) ?? filename);
 
   type Phase =
     | { st: 'loading' }
@@ -77,9 +81,10 @@
     session = null;
     const load = async () => {
       if (core === null) throw new Error('no core plays this file');
+      const romUrl = src.kind === 'view' ? viewFileUrl(src.view, src.path) : blobBytesUrl(src.hash);
       const [descResp, romResp] = await Promise.all([
         fetch(`${core.base}/descriptor.json`),
-        fetch(viewFileUrl(view, path)),
+        fetch(romUrl),
       ]);
       if (!descResp.ok) throw new Error(`emulator core missing (${descResp.status})`);
       if (!romResp.ok) throw new Error((await romResp.text()) || `rom fetch failed (${romResp.status})`);
@@ -92,7 +97,7 @@
       await Promise.all(
         desc.biosSlots.map(async (slot) => {
           for (const hash of slot.hashes) {
-            const resp = await fetch(`/v1/blobs/${hash}/bytes`);
+            const resp = await fetch(blobBytesUrl(hash));
             if (resp.ok) {
               sysFiles[slot.name] = await resp.arrayBuffer();
               return;
@@ -244,7 +249,14 @@
 
 <main>
   <div class="head">
-    <Link class="back" href={`/shelf/${encodeURIComponent(view)}`}>← {view}</Link>
+    {#if src.kind === 'view'}
+      <Link class="back" href={`/shelf/${encodeURIComponent(src.view)}`}>← {src.view}</Link>
+    {:else}
+      <!-- Blob play arrives from an audit drawer; the route doesn't
+           know which system, so ← lands on the library home (the
+           browser's Back still returns to the exact list). -->
+      <Link class="back" href="/">← library</Link>
+    {/if}
     <span class="title">{basename}</span>
   </div>
 

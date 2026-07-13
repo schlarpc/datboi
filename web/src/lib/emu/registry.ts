@@ -24,3 +24,8 @@ export function coreForPath(path: string): Core | null {
 /** SPA route to play a view file (the /play/{view}/{path} screen). */
 export const playUrl = (view: string, path: string): string =>
   `/play/${encodeURIComponent(view)}/${path.split('/').map(encodeURIComponent).join('/')}`;
+
+/** SPA route to play a raw blob by hash (D85: the audit drawer's ▶).
+ * The rom name tail carries the extension that picks the core. */
+export const playBlobUrl = (hash: string, name: string): string =>
+  `/play/blob/${hash}/${encodeURIComponent(name)}`;

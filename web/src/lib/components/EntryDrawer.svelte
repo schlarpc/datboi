@@ -12,12 +12,14 @@
    *   outside views in the M5 API (only /view/... serves bytes), so a
    *   download button would 404. The slot returns when an
    *   entry-serving route exists.
-   * - No `▶ Play` placeholder and no roadmap captions: dev-facing
-   *   scaffolding is not UI (87-web-ui.md) — the button ships when
-   *   playing ships. The artwork slot stays visual-only for the same
-   *   reason.
+   * - `▶ Play` (D85): one per rom claim that a local blob satisfies
+   *   AND a shipped core claims by extension — blob-sourced play over
+   *   the owner-only /v1 bytes surface. No placeholder ever rendered
+   *   for the rest (dev-facing scaffolding is not UI, 87-web-ui.md);
+   *   the artwork slot stays visual-only for the same reason.
    */
   import type { EntryDetail } from '../api/types';
+  import { coreForPath, playBlobUrl } from '../emu/registry';
   import { residencyLabel } from '../residency.svelte';
   import { fmtDate, fmtSize, parseRegion, shortHash } from '../format';
   import Link from './Link.svelte';
@@ -36,6 +38,16 @@
   } = $props();
 
   const region = $derived(parseRegion(detail.name));
+
+  // The playable roms (D85): satisfied by a local blob and claimed by
+  // a core. Flattened here so the template needs no non-null dances.
+  const playable = $derived(
+    detail.roms.flatMap((rom) =>
+      rom.blob != null && coreForPath(rom.name) !== null
+        ? [{ name: rom.name, hash: rom.blob.hash }]
+        : [],
+    ),
+  );
 
   // Lowercase attribute copy, forced at statement level (an element
   // directive would sweep class names into the catalog too).
@@ -92,6 +104,18 @@
       <!-- @wc-context: storage state -->no dump
     {/if}
   </div>
+
+  {#if playable.length > 0}
+    <div class="actions">
+      {#each playable as rom (rom.name)}
+        <Link class="play" href={playBlobUrl(rom.hash, rom.name)}>
+          <!-- The rom name disambiguates only when the entry has more
+               than one — the single-rom case stays a clean verb. -->
+          ▶ Play{#if detail.roms.length > 1}{' · '}{rom.name}{/if}
+        </Link>
+      {/each}
+    </div>
+  {/if}
 
   {#if detail.roms.some((rom) => rom.blob)}
     <div class="section stor">
@@ -176,6 +200,25 @@
     display: flex;
     align-items: center;
     gap: 7px;
+  }
+
+  .actions {
+    margin-top: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+
+  /* :global — the pill lives on the anchor inside <Link>, outside
+     this component's scope hash. Same shape as Browse's actions. */
+  .actions :global(.play) {
+    background: var(--ink);
+    color: var(--bg);
+    border-radius: var(--r-pill);
+    padding: 7px 16px;
+    font: 600 0.8125rem var(--font-display);
+    text-decoration: none;
   }
 
   .section {
