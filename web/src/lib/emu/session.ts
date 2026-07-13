@@ -41,6 +41,8 @@ export class EmuSession {
     rom: ArrayBuffer,
     /** Resolved BIOS-slot bytes, keyed by slot name (empty = HLE). */
     sysFiles: Record<string, ArrayBuffer>,
+    /** Firmware user-settings name; the session username in practice. */
+    nickname: string | undefined,
     cb: SessionCallbacks,
   ) {
     this.descriptor = descriptor;
@@ -70,6 +72,7 @@ export class EmuSession {
         bios7: sysFiles['bios7'],
         bios9: sysFiles['bios9'],
         firmware: sysFiles['firmware'],
+        nickname,
       },
       [rom, ...Object.values(sysFiles)],
     );
@@ -89,12 +92,15 @@ export class EmuSession {
 
   pause(): void {
     this.post({ type: 'pause' });
-    void this.audio?.suspend();
+    this.audio?.suspend().catch(() => {});
   }
 
   resume(): void {
     this.post({ type: 'resume' });
-    void this.audio?.resume();
+    // May reject while the page is still backgrounded (iOS rejects
+    // resume outside a gesture after an interruption) — harmless: the
+    // next gesture's unlockAudio() is the real recovery path.
+    this.audio?.resume().catch(() => {});
   }
 
   /**
@@ -113,7 +119,9 @@ export class EmuSession {
     }
     // Not just 'suspended': iOS reports a nonstandard 'interrupted'
     // after calls/backgrounding, and resume() is the answer to both.
-    if (this.audio.state !== 'running') void this.audio.resume();
+    // Rejections surface as the red banner otherwise ("failed to
+    // start the audio device") and mean only "not this gesture".
+    if (this.audio.state !== 'running') this.audio.resume().catch(() => {});
   }
 
   dispose(): void {
@@ -123,7 +131,7 @@ export class EmuSession {
     // dispose asks the worker to close itself; terminate is the
     // backstop that also covers a worker wedged mid-frame.
     this.worker.terminate();
-    void this.audio?.close();
+    this.audio?.close().catch(() => {});
     this.audio = null;
   }
 

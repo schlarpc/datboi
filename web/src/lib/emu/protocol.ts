@@ -39,7 +39,16 @@ export type Descriptor = {
 export type Touch = { x: number; y: number } | null;
 
 export type HostToWorker =
-  | { type: 'load'; rom: ArrayBuffer; bios7?: ArrayBuffer; bios9?: ArrayBuffer; firmware?: ArrayBuffer }
+  | {
+      type: 'load';
+      rom: ArrayBuffer;
+      bios7?: ArrayBuffer;
+      bios9?: ArrayBuffer;
+      firmware?: ArrayBuffer;
+      /** Firmware user-settings name (≤10 chars; the console's, not a
+       * per-game thing) — datboi passes the session username. */
+      nickname?: string;
+    }
   /** ABSOLUTE input state — the worker diffs, so a lost message can
    * never wedge a button down. */
   | { type: 'input'; buttons: number; touch: Touch }

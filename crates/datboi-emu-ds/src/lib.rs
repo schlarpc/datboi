@@ -87,6 +87,57 @@ impl EmuState {
     }
 }
 
+/// GBATEK's firmware CRC-16 (poly 0xA001 reflected, caller-chosen
+/// init) — dust keeps its own private; the user-settings patch below
+/// validates this implementation against the block's STORED checksum
+/// before trusting it to write one.
+fn crc16(init: u16, data: &[u8]) -> u16 {
+    let mut crc = u32::from(init);
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xA001
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    crc as u16
+}
+
+/// Write `nickname` into both firmware user-settings blocks (UTF-16 at
+/// +0x06, length at +0x1A, CRC over 0x00..0x70 at +0x72). Any block
+/// whose existing CRC doesn't verify is left untouched — a firmware we
+/// don't fully understand keeps its own name rather than getting a
+/// corrupt settings block.
+fn patch_nickname(firmware: &mut [u8], nickname: &str) {
+    let units: Vec<u16> = nickname.encode_utf16().take(10).collect();
+    if units.is_empty() {
+        return;
+    }
+    let Some(&lo) = firmware.get(0x20) else { return };
+    let Some(&hi) = firmware.get(0x21) else { return };
+    let offset = (usize::from(lo) | (usize::from(hi) << 8)) << 3;
+    for base in [offset, offset + 0x100] {
+        let Some(block) = firmware.get_mut(base..base + 0x100) else {
+            continue;
+        };
+        let stored = u16::from(block[0x72]) | (u16::from(block[0x73]) << 8);
+        if crc16(0xFFFF, &block[..0x70]) != stored {
+            continue;
+        }
+        for (i, chunk) in block[0x06..0x1A].chunks_exact_mut(2).enumerate() {
+            let unit = units.get(i).copied().unwrap_or(0);
+            chunk.copy_from_slice(&unit.to_le_bytes());
+        }
+        block[0x1A] = units.len() as u8;
+        block[0x1B] = 0;
+        let crc = crc16(0xFFFF, &block[..0x70]);
+        block[0x72..0x74].copy_from_slice(&crc.to_le_bytes());
+    }
+}
+
 /// The in-memory save device for a dust game_db save-type string. A
 /// game without its expected save chip can hang at boot probing for it
 /// (MKDS sat on white screens forever) — so this is emulation
@@ -135,6 +186,7 @@ pub fn create_emu_state(
     firmware_arr: Option<Uint8Array>,
     save_type: Option<String>,
     has_ir: bool,
+    nickname: Option<String>,
 ) -> Result<EmuState, JsError> {
     console_error_panic_hook::set_once();
 
@@ -151,13 +203,16 @@ pub fn create_emu_state(
         buf
     });
 
-    let firmware = firmware_arr
+    let mut firmware = firmware_arr
         .map(|arr| {
             let mut buf = BoxedByteSlice::new_zeroed(arr.length() as usize);
             arr.copy_to(&mut buf);
             buf
         })
         .unwrap_or_else(|| firmware::default(model));
+    if let Some(nickname) = &nickname {
+        patch_nickname(&mut firmware, nickname);
+    }
 
     // The DS cart bus addresses power-of-two sizes; pad with zeros like
     // every dumper (and dust-web) does.

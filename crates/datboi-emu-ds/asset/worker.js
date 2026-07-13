@@ -6,7 +6,8 @@
 // is datboi.
 //
 // Host → worker:
-//   {type:"load", rom:ArrayBuffer, bios7?, bios9?, firmware?:ArrayBuffer}
+//   {type:"load", rom:ArrayBuffer, bios7?, bios9?, firmware?:ArrayBuffer,
+//    nickname?:string}   // firmware user-settings name (≤10 chars)
 //   {type:"input", buttons:number, touch:{x,y}|null}   // ABSOLUTE state
 //   {type:"pause"} {type:"resume"} {type:"dispose"}
 //   {type:"stress", frames:number}   // flat-out synchronous run, for CI
@@ -108,6 +109,7 @@ self.onmessage = async (e) => {
           msg.firmware && new Uint8Array(msg.firmware),
           saveType ?? undefined,
           (code & 0xff) === 0x49,
+          msg.nickname,
         );
         postMessage({ type: "loaded" });
         resume();

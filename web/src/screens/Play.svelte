@@ -13,6 +13,7 @@
   import { viewFileUrl } from '../lib/api/client';
   import Link from '../lib/components/Link.svelte';
   import LoadError from '../lib/components/LoadError.svelte';
+  import { session as auth } from '../lib/session.svelte';
   import { keyBit, gamepadBits } from '../lib/emu/input';
   import type { Descriptor, Touch } from '../lib/emu/protocol';
   import { coreForPath } from '../lib/emu/registry';
@@ -107,7 +108,11 @@
         pointerHeight = desc.screens[desc.pointerScreen].height;
       }
       phase = { st: 'booting' };
-      session = new EmuSession(core.base, desc, rom, sysFiles, {
+      // The console's firmware nickname is the datboi user (loopback
+      // owners have no username — they're "datboi").
+      // @wc-ignore — a name, not copy.
+      const nickname = auth.username ?? 'datboi';
+      session = new EmuSession(core.base, desc, rom, sysFiles, nickname, {
         onloaded: () => (phase = { st: 'running' }),
         onerror: (msg) => (phase = { st: 'error', msg }),
         onframe: (video) => {
@@ -163,9 +168,15 @@
     };
   });
 
-  /** First gesture unlocks audio (browser autoplay policy). */
+  /**
+   * EVERY gesture re-asserts audio, not just the first: iOS moves the
+   * AudioContext to interrupted/suspended on app switches, and only a
+   * fresh user gesture may resume it — a once-flag here left sound
+   * permanently dead after the first backgrounding. unlockAudio() is
+   * idempotent; the flag only hides the hint line.
+   */
   function unlock() {
-    if (session === null || audioUnlocked) return;
+    if (session === null) return;
     session.unlockAudio();
     audioUnlocked = true;
   }
