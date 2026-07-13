@@ -1,0 +1,28 @@
+{
+  "id": "nds",
+  "name": "Nintendo DS",
+  "worker": "worker.js",
+  "screens": [
+    { "width": 256, "height": 192 },
+    { "width": 256, "height": 192 }
+  ],
+  "pointerScreen": 1,
+  "audioSampleRate": 32768,
+  "frameRate": 59.8261,
+  "buttons": {
+    "a": 1,
+    "b": 2,
+    "select": 4,
+    "start": 8,
+    "right": 16,
+    "left": 32,
+    "up": 64,
+    "down": 128,
+    "r": 256,
+    "l": 512,
+    "x": 65536,
+    "y": 131072
+  },
+  "romExtensions": [".nds"],
+  "biosSlots": []
+}

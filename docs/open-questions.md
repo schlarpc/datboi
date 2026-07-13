@@ -425,24 +425,36 @@ two things were seen and deliberately deferred:
 ## Next sessions (pick up here)
 
 **Position as of 2026-07-12 (emulation session)**: D84 ruled +
-88-emulation.md written, and **spike milestone 1 shipped**:
-`nix build .#emu-ds` builds dust (rev-pinned git deps, nightly
+88-emulation.md written, and **spike milestones 1 + 2 shipped**.
+M1: `nix build .#emu-ds` builds dust (rev-pinned git deps, nightly
 2025-12-20 — 2026-02 nightlies break dust's portable_simd use, so
 the pin tracks upstream's last-green, not latest) into
 wasm-bindgen wasm + glue with a synchronous in-instance 3D renderer
 (no atomics/SAB/build-std — dust-web's threaded renderer replaced
-by an eager rasterize in `start_rendering`), and the crate's bare
-test page direct-boots homebrew with both screens rendering,
-verified headless (chromium `--virtual-time-budget` + `?bench=` /
-`?stress=` page modes; real-time headless throttles hidden pages —
-don't chase that again). Emu lane rides `checks.emu-ds` in CI.
-NEXT: milestone 2 (worker protocol around the wasm surface —
-`create_emu_state` / `run_frame` / `update_input` / `update_touch`
-already speak it), milestone 3 (web `lib/emu/` host: worker, canvas
-compositor, audio backend to replace DummyBackend, input, Play
-route), milestone 4 (COEP + `'wasm-unsafe-eval'` headers, dev
-parity). Watch item (8) under the emulation deferred entry: dust's
-homebrew heuristic misclassifies arm9@4000h homebrew as encrypted.
+by an eager rasterize in `start_rendering`); the bare test page
+direct-boots homebrew with both screens rendering. M2: the worker
+protocol ships inside the core asset (asset/worker.js +
+descriptor.json; postMessage = the GPL boundary), test page rewired
+through it — steady 60 fps + exactly 32768 audio samples/s, 1558
+fps stress throughput. TWO hard-won lessons: (1) a js_sys::Function
+passed into the wasm instance hangs create_emu_state inside a
+Worker on Chromium 148 headless (main thread fine, debugger
+attached fine) — audio became a pull API (take_audio rides the
+frame message) so no JS value crosses into wasm; if a future core
+wants callbacks, don't. (2) Headless verification: plain
+`--screenshot` real-time runs throttle timers AND serve stale
+paints (screenshots lie); `--virtual-time-budget` doesn't drive
+worker clocks. The working harness is CDP: attach, navigate, wait
+real seconds, `Page.captureScreenshot` (forces a compositor frame)
++ Runtime console capture — the page counts as active under CDP so
+nothing throttles (script shape: /tmp-era cdp-verify.mjs, trivially
+rewritable). Emu lane rides `checks.emu-ds` in CI. NEXT: milestone
+3 (web `lib/emu/` host: worker client, canvas compositor, real
+AudioContext scheduling with drift correction, input incl. gamepad,
+Play route + ▶ gating, wuchale strings), milestone 4 (COEP +
+`'wasm-unsafe-eval'` headers, dev parity). Watch item (8) under the
+emulation deferred entry: dust's homebrew heuristic misclassifies
+arm9@4000h homebrew as encrypted.
 
 **Position as of 2026-07-11 (GC session, after the M5 web sessions)**:
 **D71–D73 SHIPPED IN FULL.** Analysis, licensing, and eviction are

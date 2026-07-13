@@ -302,6 +302,11 @@
             mkdir -p $out
             wasm-bindgen --target web --no-typescript --out-dir $out/pkg \
               target/wasm32-unknown-unknown/release/datboi_emu_ds.wasm
+            # The core asset proper: descriptor.json + worker.js next to
+            # pkg/ (the host speaks only postMessage to worker.js — also
+            # the GPL boundary). The test page rides along for the bare
+            # serve-and-poke loop; the web UI won't ship it.
+            cp -r asset/. $out/
             cp -r test-page/. $out/
           '';
         });

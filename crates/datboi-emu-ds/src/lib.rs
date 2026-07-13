@@ -2,15 +2,18 @@
 //! smallest wasm-bindgen surface that can boot and run — create from ROM
 //! bytes, pump frames, feed input. Cribbed from dust's own web frontend
 //! crate (frontend/web/crate) with the v1 exclusions applied: no save
-//! device, no save import/export, no BIOS/firmware persistence, no audio
-//! backend yet (milestone 3 wires the worker protocol; the DS mixer runs
-//! regardless, output is just dropped).
+//! device, no save import/export, no BIOS/firmware persistence. Audio is
+//! a pull API (take_audio drains what run_frame accumulated — see
+//! audio.rs for why it is not dust-web's callback design). The worker
+//! protocol itself lives in asset/worker.js — this crate is just the
+//! compute surface it wraps.
 //!
 //! Threading: none. dust-web renders 3D in a second worker over shared
 //! wasm memory (+atomics, -Zbuild-std); we run the software rasterizer
 //! synchronously in-instance instead (see renderer_3d.rs), so this module
 //! needs no SharedArrayBuffer, no COOP/COEP, and no build-std.
 
+mod audio;
 mod renderer_3d;
 
 use dust_core::{
@@ -24,12 +27,13 @@ use dust_core::{
     utils::{zeroed_box, BoxedByteSlice, Bytes},
     Model, SaveContents,
 };
-use js_sys::{Uint32Array, Uint8Array};
+use js_sys::{Float32Array, Uint32Array, Uint8Array};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
 pub struct EmuState {
     emu: Emu<Interpreter>,
+    audio: audio::SharedBuffer,
 }
 
 #[allow(non_snake_case)]
@@ -63,6 +67,15 @@ impl EmuState {
                 SCREEN_WIDTH * SCREEN_HEIGHT * 2,
             )
         })
+    }
+
+    /// Drains the audio run_frame accumulated: interleaved L/R f32 at
+    /// 32768 Hz (descriptor.audioSampleRate). ~548 pairs per frame.
+    pub fn take_audio(&mut self) -> Float32Array {
+        let mut buf = self.audio.borrow_mut();
+        let arr = Float32Array::from(&buf[..]);
+        buf.clear();
+        arr
     }
 }
 
@@ -109,6 +122,7 @@ pub fn create_emu_state(
     }
 
     let (tx_3d, rx_3d) = renderer_3d::init();
+    let audio_buffer: audio::SharedBuffer = Default::default();
 
     let mut emu_builder = emu::Builder::new(
         Flash::new(
@@ -121,7 +135,7 @@ pub fn create_emu_state(
         // Games see an empty SPI bus; in-session saving lands with the
         // worker protocol.
         ds_slot::spi::Empty::new().into(),
-        Box::new(dust_core::audio::DummyBackend),
+        Box::new(audio::Backend::new(audio_buffer.clone())),
         None,
         Box::new(rtc::DummyBackend),
         Box::new(dust_soft_2d::sync::Renderer::new(Box::new(rx_3d))),
@@ -135,7 +149,10 @@ pub fn create_emu_state(
     emu_builder.direct_boot = true;
 
     match emu_builder.build(Interpreter) {
-        Ok(emu) => Ok(EmuState { emu }),
+        Ok(emu) => Ok(EmuState {
+            emu,
+            audio: audio_buffer,
+        }),
         Err(emu::BuildError::RomNeedsDecryptionButNoBiosProvided) => Err(JsError::new(
             "this dump has an encrypted secure area, which needs real BIOS files — \
              provide them or use a decrypted dump",

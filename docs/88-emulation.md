@@ -1,11 +1,20 @@
 # datboi — in-browser emulation
 
-*Status: design ratified 2026-07-12 as D84; spike milestone 1 shipped
-the same day — `nix build .#emu-ds` (nightly pinned 2025-12-20; the
-2026-02 nightlies already break dust's portable_simd usage, proving
-the pin-by-last-green rule below) produces the wasm + glue, and the
-bare test page boots devkitPro homebrew with both screens rendering,
-headless-verified. Watch item logged: dust's homebrew heuristic
+*Status: design ratified 2026-07-12 as D84; spike milestones 1 AND 2
+shipped the same day. M1: `nix build .#emu-ds` (nightly pinned
+2025-12-20; the 2026-02 nightlies already break dust's portable_simd
+usage, proving the pin-by-last-green rule below) produces the wasm +
+glue, and the bare test page boots devkitPro homebrew with both
+screens rendering, headless-verified. M2: the worker protocol ships
+inside the core asset (asset/worker.js + descriptor.json — the
+postMessage boundary IS the GPL line), verified end-to-end at a
+steady 60 fps / 32768 audio samples per second, 1558 fps flat-out.
+One design delta from the sketch below: audio is a PULL API riding
+the frame message, not a wasm-held JS callback — passing a Function
+into the instance hung create inside a Worker on Chromium 148
+headless (fine on the main thread, fine with a debugger attached; an
+engine heisenbug we design out rather than debug further, see
+src/audio.rs). Watch item logged: dust's homebrew heuristic
 (open-questions). This
 doc is the design record for the emulator lane; [87-web-ui.md]
 (87-web-ui.md) governs the Play surface it produces. The vision line
@@ -97,11 +106,16 @@ reusable host module in `web/src/lib/emu/`:
 - named BIOS slots, each with a hard-coded list of accepted content
   hashes (empty in v1 — see BIOS below).
 
-**Worker protocol** (per session): `load(rom, bios?)` →
-running · frame pump lives *inside* the worker · video frames out as
-transferable ArrayBuffers · audio chunks out, scheduled on the main
-thread with drift correction · `setInput(buttons: bitmask, pointer:
-{x, y, down} | null)` in · pause / resume / dispose. No
+**Worker protocol** (per session, shipped M2 — asset/worker.js is
+the reference): `load(rom, bios?)` → running · frame pump lives
+*inside* the worker, drift-corrected to the DS refresh · each frame
+message carries video (256×384 RGBA, transferred) AND that frame's
+audio (interleaved f32, pulled from the core via `take_audio` — a JS
+callback held inside the wasm instance hangs in a Worker on Chromium
+148, so nothing JS ever crosses into wasm) · input is ABSOLUTE state
+(`{buttons: bitmask, touch: {x,y}|null}`, diffed worker-side so a
+lost message can't wedge a key) · pause / resume / dispose · a
+`stress` message runs N frames flat-out for CI throughput checks. No
 SharedArrayBuffer required for v1 (dust's proven shape); the
 AudioWorklet + SAB ring buffer is the low-latency endgame and the
 headers below keep it available.
