@@ -84,6 +84,21 @@
       if (!romResp.ok) throw new Error((await romResp.text()) || `rom fetch failed (${romResp.status})`);
       const desc = (await descResp.json()) as Descriptor;
       const rom = await romResp.arrayBuffer();
+      // BIOS-from-CAS (88-emulation.md): try each slot's accepted
+      // hashes against the raw-blob surface; any miss (not ingested,
+      // friend's 403) leaves the slot empty and the core on HLE.
+      const sysFiles: Record<string, ArrayBuffer> = {};
+      await Promise.all(
+        desc.biosSlots.map(async (slot) => {
+          for (const hash of slot.hashes) {
+            const resp = await fetch(`/v1/blobs/${hash}/bytes`);
+            if (resp.ok) {
+              sysFiles[slot.name] = await resp.arrayBuffer();
+              return;
+            }
+          }
+        }),
+      );
       descriptor = desc;
       width = Math.max(...desc.screens.map((s) => s.width));
       height = desc.screens.reduce((a, s) => a + s.height, 0);
@@ -92,7 +107,7 @@
         pointerHeight = desc.screens[desc.pointerScreen].height;
       }
       phase = { st: 'booting' };
-      session = new EmuSession(core.base, desc, rom, {
+      session = new EmuSession(core.base, desc, rom, sysFiles, {
         onloaded: () => (phase = { st: 'running' }),
         onerror: (msg) => (phase = { st: 'error', msg }),
         onframe: (video) => {

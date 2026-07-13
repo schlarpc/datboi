@@ -24,5 +24,18 @@
     "y": 131072
   },
   "romExtensions": [".nds"],
-  "biosSlots": []
+  "biosSlots": [
+    {
+      "name": "bios7",
+      "hashes": ["a4b6289f3d8c743115bca91ecb014e0862e1df1fc6cb2fda627233350e33f6f9"]
+    },
+    {
+      "name": "bios9",
+      "hashes": ["dd2d2ccfc5df5a40959fcc644a15a7f4ec8b15580dfd558cf58703281a71f459"]
+    },
+    {
+      "name": "firmware",
+      "hashes": ["1487846ee9548851d28baeb4b1ee76261b5a50bd5e2ce76e711259aa8b21e23a"]
+    }
+  ]
 }

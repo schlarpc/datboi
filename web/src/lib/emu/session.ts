@@ -35,7 +35,14 @@ export class EmuSession {
   private touch: Touch = null;
   private disposed = false;
 
-  constructor(base: string, descriptor: Descriptor, rom: ArrayBuffer, cb: SessionCallbacks) {
+  constructor(
+    base: string,
+    descriptor: Descriptor,
+    rom: ArrayBuffer,
+    /** Resolved BIOS-slot bytes, keyed by slot name (empty = HLE). */
+    sysFiles: Record<string, ArrayBuffer>,
+    cb: SessionCallbacks,
+  ) {
     this.descriptor = descriptor;
     this.worker = new Worker(`${base}/${descriptor.worker}`, { type: 'module' });
     this.worker.onmessage = (e: MessageEvent<WorkerToHost>) => {
@@ -56,7 +63,16 @@ export class EmuSession {
       }
     };
     this.worker.onerror = (e) => cb.onerror(e.message || 'emulator worker failed');
-    this.post({ type: 'load', rom }, [rom]);
+    this.post(
+      {
+        type: 'load',
+        rom,
+        bios7: sysFiles['bios7'],
+        bios9: sysFiles['bios9'],
+        firmware: sysFiles['firmware'],
+      },
+      [rom, ...Object.values(sysFiles)],
+    );
   }
 
   private post(msg: HostToWorker, transfer: Transferable[] = []): void {

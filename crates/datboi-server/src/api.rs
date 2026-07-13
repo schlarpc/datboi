@@ -1401,6 +1401,48 @@ fn blobs_body(app: &App, page: &BlobsQuery) -> Result<BlobsPage, Response> {
 
 // ---- GET /v1/blobs/{hash} ----
 
+/// GET /v1/blobs/{hash}/bytes — raw blob bytes, the D84 BIOS-from-CAS
+/// fetch half (the Play screen asks for each accepted system-file hash
+/// until one answers; a friend's 403 falls back to HLE). Serving goes
+/// through the same verified windows as /view files; immutable caching
+/// is correct because the URL IS the content hash.
+pub(crate) async fn blob_bytes(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+    UrlPath(hash): UrlPath<String>,
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(resp) = require_owner(&caller) {
+        return resp;
+    }
+    let Ok(hash) = hash.to_lowercase().parse::<Blake3>() else {
+        return err(ErrorCode::BadRequest, "not a blake3 hex hash");
+    };
+    let size = {
+        let db = lock_db(&app);
+        db.cache()
+            .query_row(
+                "SELECT size FROM blob WHERE hash = ?1",
+                rusqlite::params![hash.0.as_slice()],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .flatten()
+    };
+    let Some(size) = size else {
+        return err(ErrorCode::NotFound, "no such blob (or no bytes to serve)");
+    };
+    let row = crate::vfs::RowMeta {
+        hash,
+        size: size as u64,
+        seek: 0,
+    };
+    crate::http::file_response(&app, row, &method, &headers, true, None, None)
+}
+
 pub(crate) async fn blob_detail(
     State(app): State<Arc<App>>,
     Extension(caller): Extension<Caller>,

@@ -25,8 +25,14 @@ export type Descriptor = {
   /** Button name → bit in the input bitmask. */
   buttons: Record<string, number>;
   romExtensions: string[];
-  /** Future BIOS-from-CAS story (88-emulation.md); empty in v1. */
-  biosSlots: unknown[];
+  /**
+   * BIOS-from-CAS (88-emulation.md): each slot names a load-message
+   * field (bios7/bios9/firmware) and the blake3 hashes accepted for
+   * it. The host tries GET /v1/blobs/{hash}/bytes per hash; a miss or
+   * a friend's 403 just means the core falls back to HLE. The hash
+   * list IS the verification — the dumps are ordinary ingested blobs.
+   */
+  biosSlots: { name: string; hashes: string[] }[];
 };
 
 /** Pointer state in native pointer-screen coordinates; null = pen up. */

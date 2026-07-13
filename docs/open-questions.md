@@ -139,7 +139,15 @@ Design passes R1–R8 complete; decisions ratified through D73. Docs
   NARCs multiply that.
 - **Emulation deferred items (split out of the D84 ratification,
   see 88-emulation.md)**: each is real design work owed after the
-  spike, none gates it. (1) BIOS slots from CAS — core descriptors
+  spike, none gates it. (1) ~~BIOS slots from CAS~~ SHIPPED same
+  session (see 88-emulation.md §ROM and BIOS i/o): the HLE-BIOS wall
+  below made it the unblock, and it cost one endpoint
+  (`GET /v1/blobs/{hash}/bytes`, owner-only) — MKDS boots to its
+  menus with real BIOS from the store. Still open inside it:
+  friend-facing BIOS access (owner-only today; friends fall back to
+  HLE, which won't boot the same games — view-scoped or
+  grant-scoped blob access is the eventual answer). Original design
+  note: core descriptors
   carry named slots with hard-coded accepted content hashes; at
   launch the host asks which exist in CAS and fetches; BIOS dumps
   stay ordinary ingested blobs, the hash list IS the verification.

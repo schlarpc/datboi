@@ -391,6 +391,28 @@ fn blob_detail() {}
 )]
 fn blob_verify() {}
 
+/// Raw blob bytes by hash — the fetch half of the D84 BIOS-from-CAS
+/// design (emulator cores name accepted system-file hashes; the Play
+/// screen asks for each until one answers). Serves through the same
+/// verified-range machinery as /view files (ETag = the hash, Range
+/// honored). Owner-only like the rest of the blob surface: friends'
+/// byte access stays view-scoped.
+#[utoipa::path(
+    get,
+    path = "/v1/blobs/{hash}/bytes",
+    tag = "storage",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    params(("hash" = String, Path, description = "blake3, 64 hex chars (case-insensitive)")),
+    responses(
+        (status = 200, description = "The blob bytes", body = ImageBytes, content_type = "application/octet-stream"),
+        (status = 206, description = "Requested range of the blob bytes", body = ImageBytes, content_type = "application/octet-stream"),
+        (status = 400, description = "Not a blake3 hex hash", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+        (status = 404, description = "No such blob (or no bytes to serve)", body = ApiError),
+    ),
+)]
+fn blob_bytes() {}
+
 /// The in-memory job registry: running jobs plus recently finished
 /// ones (the registry keeps a bounded tail; a daemon restart forgets
 /// everything — durable job reports are a recorded open question).
@@ -627,6 +649,7 @@ fn gc_apply() {}
         storage_breakdown,
         blobs,
         blob_detail,
+        blob_bytes,
         blob_verify,
         jobs,
         job_detail,

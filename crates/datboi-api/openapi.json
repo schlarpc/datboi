@@ -2956,6 +2956,86 @@
         ]
       }
     },
+    "/v1/blobs/{hash}/bytes": {
+      "get": {
+        "operationId": "blob_bytes",
+        "parameters": [
+          {
+            "description": "blake3, 64 hex chars (case-insensitive)",
+            "in": "path",
+            "name": "hash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageBytes"
+                }
+              }
+            },
+            "description": "The blob bytes"
+          },
+          "206": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageBytes"
+                }
+              }
+            },
+            "description": "Requested range of the blob bytes"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Not a blake3 hex hash"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "No such blob (or no bytes to serve)"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Raw blob bytes by hash — the fetch half of the D84 BIOS-from-CAS\ndesign (emulator cores name accepted system-file hashes; the Play\nscreen asks for each until one answers). Serves through the same\nverified-range machinery as /view files (ETag = the hash, Range\nhonored). Owner-only like the rest of the blob surface: friends'\nbyte access stays view-scoped.",
+        "tags": [
+          "storage"
+        ]
+      }
+    },
     "/v1/blobs/{hash}/verify": {
       "post": {
         "operationId": "blob_verify",

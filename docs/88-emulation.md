@@ -146,7 +146,16 @@ zero new `/v1` endpoints; if entry metadata can't resolve "the
 playable payload hash for this entry," that one resolver endpoint is
 the only API addition (full D69 ceremony).
 
-**BIOS**: v1 ships **no BIOS story at all** — dust's HLE direct-boot
+**BIOS**: shipped ahead of schedule, because reality demanded it —
+dust's HLE BIOS cannot boot MKDS-class commercial titles (verified
+against dust's own web frontend too), so the designed slots-from-CAS
+flow landed the same day: descriptor `biosSlots` name accepted
+blake3 hashes, the Play screen tries `GET /v1/blobs/{hash}/bytes`
+(the one new /v1 endpoint the emu lane ever needed — owner-only, so
+a friend's 403 falls back to HLE cleanly), and the dumps are
+ordinary ingested blobs — the hash list IS the verification. The
+original v1 posture, kept below for the record: v1 ships **no BIOS
+story at all** — dust's HLE direct-boot
 handles commercial ROMs. The documented later design: each core's
 descriptor carries named BIOS slots with accepted content hashes; at
 launch the host asks the server which of those hashes exist in CAS

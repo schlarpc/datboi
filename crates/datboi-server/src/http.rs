@@ -80,6 +80,7 @@ fn v1() -> V1Routes {
         .get("/v1/storage/breakdown", api::storage_breakdown)
         .get("/v1/blobs", api::blobs)
         .get("/v1/blobs/{hash}", api::blob_detail)
+        .get("/v1/blobs/{hash}/bytes", api::blob_bytes)
         .post("/v1/blobs/{hash}/verify", api::blob_verify)
         .get("/v1/jobs", api::jobs)
         .get("/v1/jobs/{id}", api::job_detail)
@@ -522,7 +523,7 @@ fn map_lookup(e: &LookupError, missing: StatusCode) -> Response {
 /// stamps the provenance header when the bytes came out of a snapshot
 /// tree; `disposition` names the download (the image route).
 #[allow(clippy::too_many_arguments)]
-fn file_response(
+pub(crate) fn file_response(
     app: &Arc<App>,
     row: RowMeta,
     method: &Method,
