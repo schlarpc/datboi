@@ -457,6 +457,30 @@ two things were seen and deliberately deferred:
 
 ## Next sessions (pick up here)
 
+**Position as of 2026-07-13 (play-surface session)**: D85–D87 ruled
+and shipped. D85: the audit drawer plays — per-rom ▶ for any claim a
+local blob satisfies and a core claims, over a second Play source
+(`/play/blob/{hash}/{name}` → `GET /v1/blobs/{hash}/bytes`, zero new
+API; friends bounce off it like any owner route). D86: the touch
+deck — clusters that never overlay the pointer screen (portrait:
+below the stacked screens; landscape: the gutters), `(pointer:
+coarse)` capability gate, per-pointer role latch / 8-way sectors /
+slide-to-roll in pure unit-tested `lib/emu/touch.ts` (16 tests), and
+the cluster layout derives from the descriptor's button set so the
+NES core reuses it. D87: fullscreen — one immersive flag, CSS
+takeover everywhere + `requestFullscreen` where present, windowed
+768px canvas cap lifted in immersive. Drive-bys: Browse's ▶ pill was
+silently unstyled (scoped selector can't reach into <Link>; fixed
+with `:global`), and Play's back-hover named a never-defined `--fg`
+token. Verified: 217 vitest + svelte-check + production build green.
+NOT verified — needs the live-device loop the last session used
+(daemon + real phone): deck ergonomics/sizing on an actual iPhone
+(unit geometry is tested, feel is not), haptics on Android, iOS CSS
+takeover with browser chrome, simultaneous stylus + button
+multitouch against a real game, and landscape gutter sizing on short
+screens. That live pass is the natural next step, then saves
+persistence (item 4) stays the loudest backlog gap.
+
 **Position as of 2026-07-12 (emulation session)**: D84 ruled +
 88-emulation.md written, and **spike milestones 1 + 2 shipped**.
 M1: `nix build .#emu-ds` builds dust (rev-pinned git deps, nightly
