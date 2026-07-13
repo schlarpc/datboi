@@ -41,6 +41,7 @@
   let audioUnlocked = $state(false);
 
   let canvas = $state<HTMLCanvasElement | null>(null);
+  let mainEl = $state<HTMLElement | null>(null);
   let session: EmuSession | null = null;
   // $state because the touch deck renders from it (its button table
   // decides which controls each cluster draws).
@@ -192,6 +193,36 @@
     };
   });
 
+  // Fullscreen (D87): one immersive flag, two mechanisms. The CSS
+  // takeover (fixed, inset 0, chrome hidden) always applies; element
+  // fullscreen rides along where the platform has it — iPhone Safari
+  // doesn't, so the takeover IS the fallback and the flag never lies.
+  let immersive = $state(false);
+
+  function enterImmersive() {
+    immersive = true;
+    // Best-effort: a missing API or a rejection leaves the CSS
+    // takeover as the whole feature.
+    mainEl?.requestFullscreen?.().catch(() => {});
+  }
+
+  function exitImmersive() {
+    immersive = false;
+    if (document.fullscreenElement !== null) {
+      document.exitFullscreen().catch(() => {});
+    }
+  }
+
+  // The browser exits native fullscreen on its own (Esc, system UI,
+  // app switch); the flag must follow or the takeover would linger.
+  $effect(() => {
+    const onchange = () => {
+      if (document.fullscreenElement === null && immersive) immersive = false;
+    };
+    document.addEventListener('fullscreenchange', onchange);
+    return () => document.removeEventListener('fullscreenchange', onchange);
+  });
+
   /**
    * EVERY gesture re-asserts audio, not just the first: iOS moves the
    * AudioContext to interrupted/suspended on app switches, and only a
@@ -207,6 +238,13 @@
 
   function onkeydown(event: KeyboardEvent) {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
+    // Native fullscreen already maps Escape; this covers the CSS
+    // takeover (which is all iOS has).
+    // @wc-ignore
+    if (event.key === 'Escape' && immersive) {
+      exitImmersive();
+      return;
+    }
     unlock();
     const bit = descriptor === null ? 0 : keyBit(descriptor, event.code);
     if (bit === 0) return;
@@ -214,6 +252,11 @@
     keyBits |= bit;
     sendInput();
   }
+
+  // Lowercase attribute copy, forced at statement level (house
+  // pattern — the attribute heuristic won't pick it up).
+  // @wc-include
+  const exitFullscreenLabel = 'exit fullscreen';
 
   function onkeyup(event: KeyboardEvent) {
     const bit = descriptor === null ? 0 : keyBit(descriptor, event.code);
@@ -266,7 +309,7 @@
 
 <svelte:window {onkeydown} {onkeyup} />
 
-<main>
+<main bind:this={mainEl} class:immersive>
   <div class="head">
     {#if src.kind === 'view'}
       <Link class="back" href={`/shelf/${encodeURIComponent(src.view)}`}>← {src.view}</Link>
@@ -277,7 +320,16 @@
       <Link class="back" href="/">← library</Link>
     {/if}
     <span class="title">{basename}</span>
+    {#if width > 0}
+      <button class="fs" onclick={enterImmersive}>fullscreen</button>
+    {/if}
   </div>
+
+  {#if immersive}
+    <!-- The one piece of chrome immersive keeps (D87); Escape works
+         too, natively or via the handler above. -->
+    <button class="fs-exit" onclick={exitImmersive} aria-label={exitFullscreenLabel}>✕</button>
+  {/if}
 
   {#if core === null}
     <p class="line">no core plays this file</p>
@@ -361,11 +413,25 @@
   }
 
   .head :global(.back:hover) {
-    color: var(--fg);
+    /* --text, not the never-defined --fg this rule used to name (the
+       hover only worked via the invalid-var inheritance accident). */
+    color: var(--text);
   }
 
   .title {
     font: 600 0.9rem var(--font-data);
+  }
+
+  .fs {
+    all: unset;
+    cursor: pointer;
+    margin-left: auto;
+    font: 400 0.78125rem var(--font-data);
+    color: var(--faint);
+  }
+
+  .fs:hover {
+    color: var(--text);
   }
 
   .line {
@@ -393,6 +459,45 @@
     object-fit: contain;
     touch-action: none;
     background: #000;
+  }
+
+  /* ---- fullscreen takeover (D87) ---- */
+  main.immersive {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: var(--bg);
+    /* Clear notches and the iOS home indicator. */
+    padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right))
+      max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  }
+
+  main.immersive .head {
+    display: none;
+  }
+
+  /* Fullscreen exists to buy pixels: the windowed 768px cap goes.
+     (Deck mode's own canvas rules out-specify this, correctly.) */
+  main.immersive canvas {
+    height: 100%;
+  }
+
+  .fs-exit {
+    all: unset;
+    cursor: pointer;
+    position: absolute;
+    top: max(8px, env(safe-area-inset-top));
+    right: max(10px, env(safe-area-inset-right));
+    z-index: 31;
+    padding: 4px 9px;
+    font-size: 0.9rem;
+    color: var(--faint);
+    background: color-mix(in srgb, var(--bg) 65%, transparent);
+    border-radius: var(--r-pill);
+  }
+
+  .fs-exit:hover {
+    color: var(--text);
   }
 
   /* ---- touch deck layout (D86) ---- */

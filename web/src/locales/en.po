@@ -1620,3 +1620,11 @@ msgstr "← library"
 #: src/lib/components/EntryDrawer.svelte
 msgid "▶ Play<0/>"
 msgstr "▶ Play<0/>"
+
+#: src/screens/Play.svelte
+msgid "exit fullscreen"
+msgstr "exit fullscreen"
+
+#: src/screens/Play.svelte
+msgid "fullscreen"
+msgstr "fullscreen"
