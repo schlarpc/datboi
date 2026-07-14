@@ -67,8 +67,6 @@ pub enum ExecError {
     UnsupportedOp(String),
     #[error("invalid recipe structure: {0}")]
     Malformed(String),
-    #[error("wasm input exceeds whole-buffer cap ({size} > {cap})")]
-    BufferCap { size: u64, cap: u64 },
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
@@ -116,9 +114,6 @@ impl ExecError {
 pub struct ExecConfig {
     /// Per-run wasm resource ceilings.
     pub limits: Limits,
-    /// Whole-buffer cap for @1 inputs/outputs (the profile buffers whole
-    /// blobs by design — D41; anything bigger belongs in @2).
-    pub max_buffer: u64,
     /// Operator-tree depth guard (docs/recipes.md safety).
     pub max_depth: usize,
     /// Where spill files live; defaults to the OS temp dir.
@@ -129,7 +124,6 @@ impl Default for ExecConfig {
     fn default() -> Self {
         Self {
             limits: Limits::default(),
-            max_buffer: 256 << 20,
             max_depth: 1024,
             spill_dir: None,
         }
@@ -1316,7 +1310,7 @@ impl Write for VecSink {
     }
 }
 
-/// Fuel budget for one wasm2 execution, scaled with the recipe's
+/// Fuel budget for one wasm execution, scaled with the recipe's
 /// declared byte sizes. Measured on xf-preflate recreate: ~52
 /// fuel/plaintext byte on ordinary text/binary, but ~875/byte on a
 /// match-dense high-entropy tracker module from a real corpus — the
@@ -1381,7 +1375,7 @@ mod tests {
     use super::*;
 
     /// The classification the replay path applies to a joined guest
-    /// verdict (extractor and Wasm2 alike): traps and guest errors
+    /// verdict (extractor and transform alike): traps and guest errors
     /// indict the claim; fuel exhaustion is a policy outcome and must
     /// stay retryable.
     #[test]

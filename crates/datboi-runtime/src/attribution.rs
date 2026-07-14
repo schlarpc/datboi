@@ -19,8 +19,9 @@ pub struct Attribution {
     pub description: String,
     /// Where the source lives (URL).
     pub source: String,
-    /// Content-scoped source revision (the flake stamps the crate
-    /// source's store hash, so unrelated commits don't churn bytes).
+    /// Content-scoped source revision — the flake stamps the git tree
+    /// hashes of the two source inputs (`tree:<crate>;guest:<guest-crate>`,
+    /// D54/D89), so unrelated commits don't churn bytes.
     pub revision: String,
 }
 

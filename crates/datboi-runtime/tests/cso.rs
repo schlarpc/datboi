@@ -21,7 +21,7 @@ const COMPONENT: &[u8] = include_bytes!(concat!(
 ));
 
 /// blake3 of the fixture — the identity a recipe would pin.
-const COMPONENT_BLAKE3: &str = "2ebc1cbd1c1d24b1b74faa8a4babf09b297b4cff885daba8aa382813de29074d";
+const COMPONENT_BLAKE3: &str = "0b1b524dd214b4a46950206179a861c064c54f31266cb09c8bd7117fb05d20ae";
 
 /// A fake disc image: repetitive spans (compress well), a high-entropy
 /// span (forces stored-raw blocks), and a non-block-aligned tail.

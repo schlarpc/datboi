@@ -29,7 +29,7 @@ use datboi_runtime::{Limits, RuntimeError, SeekClass};
 const COMPONENT: &[u8] = include_bytes!("fixtures/xf_reference.wasm");
 
 /// blake3 of the fixture itself — the identity a recipe would pin (D5/D6).
-const COMPONENT_BLAKE3: &str = "9b9023fb8e5d66f7fdff9f3e7199d5e3172db9bff4c03a779308a6351e65ce94";
+const COMPONENT_BLAKE3: &str = "260739e4d3cfc335e3e7b2b9801bd4bd933736a9e91b6db61f4573153ef0f5fe";
 
 /// blake3 of the `bitswap` output over `pattern()` — the cross-arch
 /// anchor. Byte semantics carried over the D89 break unchanged, so this

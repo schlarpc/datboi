@@ -15,6 +15,10 @@ use std::path::Path;
 use std::process::Command;
 
 const COMPONENT_CRATES: &[&str] = &[
+    // The lanes' pregen-bindings crates first (D89): their source shapes
+    // every component's bytes, so an edit must trigger the rebuild too.
+    "datboi-guest-extractor",
+    "datboi-guest-transform",
     "datboi-xf-cso",
     "datboi-xf-ecm",
     "datboi-xf-preflate",

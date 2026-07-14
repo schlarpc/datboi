@@ -16,7 +16,7 @@ use datboi_runtime::{Limits, RuntimeError, SeekClass};
 const COMPONENT: &[u8] = include_bytes!("fixtures/xf_reference_stream.wasm");
 
 /// blake3 of the fixture — the identity a recipe would pin.
-const COMPONENT_BLAKE3: &str = "71a6577b2b7e9ec4e3e9d0b319933f4341059ebf1f9af270459688f362214a40";
+const COMPONENT_BLAKE3: &str = "34dd6b1d37a20ae422eaf37a2137e4f2d124dd5de12604e522ee019899b8dbd8";
 
 /// blake3 of `run("byteswap")` over [`pattern`]`(1 << 20 | 5)` — the
 /// cross-architecture anchor.

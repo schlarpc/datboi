@@ -248,7 +248,7 @@ fn lying_claim_poisons_the_recipe_and_publishes_nothing() {
 }
 
 #[test]
-fn wasm2_recipe_replays_and_streams() {
+fn transform_recipe_replays_and_streams() {
     let mut w = world();
     let input = pattern(300_000);
     let swapped = byteswap(&input);
