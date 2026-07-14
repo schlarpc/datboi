@@ -68,7 +68,9 @@ jobs:
       - name: Publish WIT packages
         run: nix run .#publish-wit | tee wit-publish.log
 
-      - uses: sigstore/cosign-installer@v4
+      # No floating v4 tag exists upstream (only exact v4.x.y tags), so
+      # this pin is exact by necessity, not preference.
+      - uses: sigstore/cosign-installer@v4.1.2
 
       # Keyless: the run's OIDC identity is the key. Verifiable with
       #   cosign verify --certificate-identity-regexp \
