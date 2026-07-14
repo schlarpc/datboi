@@ -454,15 +454,20 @@
 
       # The publish gate (D89): every published version is immutable
       # forever — an existing tag is skipped (idempotent re-runs), never
-      # overwritten. Auth rides the ambient docker config (the workflow's
-      # login-action); the registry override exists for local smoke runs.
+      # overwritten. Refs follow the wkg OCI convention
+      # (<base>/<package-namespace-derived-path>/<name>:<version>, the
+      # WASI layout): the `datboi` package namespace is the path token,
+      # so datboi:transform@1.0.0 → ghcr.io/schlarpc/datboi/transform:1.0.0,
+      # beside the container image. Auth rides the ambient docker config
+      # (the workflow's login-action); the registry override exists for
+      # local smoke runs.
       publishWitFor = system:
         let pkgs = pkgsFor system;
         in pkgs.writeShellApplication {
           name = "publish-wit";
           runtimeInputs = [ pkgs.wkg pkgs.crane ];
           text = ''
-            repo="''${DATBOI_WIT_REGISTRY:-ghcr.io/schlarpc/wit}"
+            repo="''${DATBOI_WIT_REGISTRY:-ghcr.io/schlarpc/datboi}"
             for pkg in ${witPackagesFor system}/*.wasm; do
               base=$(basename "$pkg" .wasm)   # e.g. datboi:transform@1.0.0
               name=''${base#datboi:}; name=''${name%@*}

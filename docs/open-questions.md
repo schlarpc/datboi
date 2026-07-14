@@ -473,7 +473,7 @@ Deferred, deliberately: crates.io publication of the guest crates
 serves until someone external asks); world-level extractor params
 forwarding (recipe schema grows a forwarded subset when passwords
 become real). Watch item: the FIRST main push after this publishes
-`datboi:{streams,transform,extractor}@1.0.0` to ghcr.io/schlarpc/wit
+`datboi:{streams,transform,extractor}@1.0.0` to ghcr.io/schlarpc/datboi/{streams,transform,extractor}
 — confirm the job goes green and `cosign verify` works as documented
 in the workflow comment.
 
