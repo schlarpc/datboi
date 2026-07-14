@@ -1,12 +1,12 @@
 //! CLI environment resolution: flags > `DATBOI_*` env (12-factor,
-//! docs/50-infra.md).
+//! docs/infra.md).
 //!
 //! The store root is REQUIRED and has no default: it may live on NFS, so
 //! a wrong guess risks a redb-on-NFS-class mistake (D15/D37). The DB dir
 //! defaults to `$XDG_STATE_HOME/datboi` (fallback `~/.local/state/datboi`)
 //! — that's daemon-local disk by construction, which is exactly the
 //! placement D15 requires. The container image overrides it with an
-//! explicit local volume (docs/50-infra.md).
+//! explicit local volume (docs/infra.md).
 
 use std::path::PathBuf;
 

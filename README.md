@@ -5,9 +5,9 @@ recipe-based storage transformations, scripted output views, and (later)
 p2p library sharing between friends.
 
 **Status: M1–M5 shipped; M6 (friends/p2p) is next.** The design record
-lives in [docs/](docs/) — start with [00-vision.md](docs/00-vision.md),
+lives in [docs/](docs/) — start with [vision.md](docs/vision.md),
 [decisions.md](docs/decisions.md), and
-[90-roadmap.md](docs/90-roadmap.md).
+[roadmap.md](docs/roadmap.md).
 
 ## Layout
 

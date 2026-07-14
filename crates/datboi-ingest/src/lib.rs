@@ -1,4 +1,4 @@
-//! The M1 ingest pipeline (docs/90-roadmap.md, D35/D40): walk sources,
+//! The M1 ingest pipeline (docs/roadmap.md, D35/D40): walk sources,
 //! hash everything once, store literals, and mint claims — never member
 //! copies.
 //!
@@ -667,7 +667,7 @@ impl<'a> Ingester<'a> {
 
             // Rebuild: file = header blob + variant. Only for the common
             // prefix-header shape (decision reaches EOF); the header is a
-            // real blob so it dedupes across dumps (docs/70-recipes.md).
+            // real blob so it dedupes across dumps (docs/recipes.md).
             if decision.start > 0 && decision.end == file_len {
                 let header = &bytes[..decision.start as usize];
                 let mut h = AliasHasher::new();

@@ -1,6 +1,6 @@
 # datboi-emu-ds
 
-Nintendo DS browser core (D84, [docs/88-emulation.md](../../docs/88-emulation.md)):
+Nintendo DS browser core (D84, [docs/emulation.md](../../docs/emulation.md)):
 [dust](https://github.com/kelpsyberry/dust)'s `dust-core` behind a
 minimal wasm-bindgen surface. Third wasm lane — a web-bundle asset,
 not a CAS component: no WIT, no wasmtime, no determinism contract.

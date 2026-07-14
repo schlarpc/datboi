@@ -20,7 +20,7 @@
 //! - `file size="PO2"` tests power-of-two size; `operator` is ignored for
 //!   PO2 per spec.
 //!
-//! Recipe mapping (docs/70-recipes.md): a fulfilled decision is exactly
+//! Recipe mapping (docs/recipes.md): a fulfilled decision is exactly
 //! `assemble@1` (one blob-range segment `[start, end)`) when `operation` is
 //! `none`, or that segment fed through `swap@1` with the matching mode
 //! otherwise — so ingest can mint headered↔headerless recipes both
@@ -234,7 +234,7 @@ pub enum SkipperError {
 impl Detector {
     /// Parse a detector XML document.
     ///
-    /// Unknown *attributes* are ignored (60-dats gotcha 8: tolerate and
+    /// Unknown *attributes* are ignored (dats gotcha 8: tolerate and
     /// move on); unknown *elements* are errors — silently skipping a test
     /// we don't understand would change matching semantics.
     pub fn parse(xml: &[u8]) -> Result<Self, SkipperError> {

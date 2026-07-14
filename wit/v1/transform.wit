@@ -24,7 +24,7 @@ package datboi:transform@1.0.0;
 
 interface types {
     /// Seekability class a transform declares for its output
-    /// (docs/80-views.md, D27). Carried as metadata even in the whole-buffer
+    /// (docs/views.md, D27). Carried as metadata even in the whole-buffer
     /// profile so the view planner can classify a transform's random-access
     /// cost without needing a streaming ABI.
     enum seek-class {
@@ -41,7 +41,7 @@ interface types {
         seek: seek-class,
         /// Input positions that require random access — the host must
         /// materialize a non-seekable source before calling
-        /// (docs/70-recipes.md execution model). Empty for whole-buffer
+        /// (docs/recipes.md execution model). Empty for whole-buffer
         /// transforms.
         random-access-inputs: list<u32>,
     }

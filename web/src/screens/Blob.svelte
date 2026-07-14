@@ -27,7 +27,7 @@
   /** Per-edge "…and N more" expansion, keyed `${direction}-${index}`. */
   let expanded = $state<Record<string, boolean>>({});
 
-  /** Aggregates before enumerations (87-web-ui.md): a 74-chunk
+  /** Aggregates before enumerations (web-ui.md): a 74-chunk
    * assemble is "74 inputs" first, rows on demand. */
   const REF_CAP = 5;
 
@@ -89,7 +89,7 @@
 
   /** Digest rows copy on click — sha1/md5 are what gets pasted into
    * dat tools, and they're plain text (not nav links like ref hashes,
-   * which stay links per 87-web-ui.md). */
+   * which stay links per web-ui.md). */
   async function copyDigest(algo: string, hex: string) {
     if (await copyText(hex)) {
       copiedDigest = algo;
@@ -125,7 +125,7 @@
       {#if ref.hash === hash}
         <!-- A link to the page you're on isn't navigation — walking
              assemble inputs used to LOOK like a loop because only the
-             headline hash changed (87-web-ui.md). -->
+             headline hash changed (web-ui.md). -->
         <span class="ref-self">this blob</span>
       {:else}
         <Link class="ref-hash" href={`/storage/blob/${ref.hash}`}>{shortHash(ref.hash)}</Link>
@@ -655,7 +655,7 @@
 
   /* Ellipsis, not `overflow-wrap: anywhere` — anywhere-wrapping a NAME
      squeezed by an unshrinkable source chip degenerates to one char per
-     line at narrow widths. Anywhere is for hashes (87-web-ui.md). */
+     line at narrow widths. Anywhere is for hashes (web-ui.md). */
   .claim-entry {
     flex: 1;
     min-width: 0;

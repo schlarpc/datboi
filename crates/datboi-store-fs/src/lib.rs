@@ -8,7 +8,7 @@
 //!
 //! NOTE: shard fanout in [`layout`] is a placeholder; the M1 NFS benchmark
 //! freezes the real constant before the on-disk format is declared stable
-//! (docs/90-roadmap.md, prototype 1).
+//! (docs/roadmap.md, prototype 1).
 
 mod crash;
 pub mod layout;

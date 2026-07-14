@@ -47,7 +47,7 @@ batch, never whole-store sweeps.
 
 ## Dat model (cache.db)
 
-Per 60-dats.md: `dat_source` (provider, system, current pointer) →
+Per dats.md: `dat_source` (provider, system, current pointer) →
 `dat_revision` (CAS blob ref, format, header JSONB, detector ref,
 **materialized** flag) → `entry` (name, stable_key = No-Intro id,
 parent name+resolved refs, flags, **attrs JSONB** for the long tail:

@@ -1,4 +1,4 @@
-//! DS browser core (D84, docs/88-emulation.md): `dust-core` behind the
+//! DS browser core (D84, docs/emulation.md): `dust-core` behind the
 //! smallest wasm-bindgen surface that can boot and run — create from ROM
 //! bytes, pump frames, feed input. Cribbed from dust's own web frontend
 //! crate (frontend/web/crate) with the v1 exclusions applied: no save
@@ -172,7 +172,7 @@ fn ds_slot_spi(save_type: Option<&str>, has_ir: bool) -> Result<ds_slot::spi::Sp
     }
 }
 
-/// BIOS/firmware are optional (docs/88-emulation.md: v1 ships no BIOS
+/// BIOS/firmware are optional (docs/emulation.md: v1 ships no BIOS
 /// story) — dust's HLE BIOS direct-boots decrypted dumps with nothing.
 /// KEY1-encrypted secure-area dumps are the one case that genuinely needs
 /// real BIOS bytes; dust reports that as a build error we surface below.

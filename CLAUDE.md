@@ -29,9 +29,11 @@ this file points at them and covers what an agent trips over.
   `*Amendment (same day):*` paragraphs under the entry.
 - `docs/open-questions.md` holds deferred items, watch items, and
   per-session position notes ("pick up here").
-- The numbered docs (00-vision … 90-roadmap) are per-subsystem design
-  records; `docs/87-web-ui.md` governs every web surface (persona:
-  someone who wants the best rom manager ever, not a CAS admirer).
+- The subsystem docs are per-subsystem design records —
+  `docs/README.md` is the index and encodes the reading order (D88:
+  filenames are stable names, never positional numbers).
+  `docs/web-ui.md` governs every web surface (persona: someone who
+  wants the best rom manager ever, not a CAS admirer).
   Code comments cite D-numbers and doc sections liberally — keep that up.
 
 ## Build & test
@@ -67,7 +69,7 @@ this file points at them and covers what an agent trips over.
   generated-but-checked-in. Learn the `@wc-context` / `@wc-include` /
   `@wc-ignore` comment patterns from existing call sites before
   writing new strings.
-- Design rules live in `docs/87-web-ui.md` (vocabulary, hash short
+- Design rules live in `docs/web-ui.md` (vocabulary, hash short
   form, CSS-drawn state marks, one-canonical-home-per-concept,
   management by exception). When a change and the old comps disagree,
   the doc wins.

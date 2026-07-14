@@ -72,7 +72,7 @@ test('quarantine empty state: one quiet maintenance line, no card', async () => 
   render(Storage);
   await screen.findByText('BLOBS');
 
-  // Management by exception (87-web-ui.md): healthy quarantine is a
+  // Management by exception (web-ui.md): healthy quarantine is a
   // status line in the maintenance strip, not a card.
   const label = screen.getByText('Quarantine');
   expect(label.closest('.maint-row')).toBeTruthy();
@@ -115,7 +115,7 @@ test('breakdown renders class bars, the source table, and largest blobs', async 
   render(Storage);
 
   expect(await screen.findByText('WHERE THE BYTES LIVE')).toBeTruthy();
-  // by_class rows: namespace · residency in product words (87-web-ui.md
+  // by_class rows: namespace · residency in product words (web-ui.md
   // vocabulary), bytes + sizeless surfaced.
   expect(screen.getByText('data · on disk')).toBeTruthy();
   expect(screen.getByText('data · rebuildable')).toBeTruthy();

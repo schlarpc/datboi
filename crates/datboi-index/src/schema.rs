@@ -1,4 +1,4 @@
-//! DDL for both database files (docs/65-schema.md §1–§4).
+//! DDL for both database files (docs/schema.md §1–§4).
 //!
 //! cache.db tables are derivable caches (D15): any of them may be dropped
 //! and rebuilt from CAS bytes + deterministic re-import. state.db tables

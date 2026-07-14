@@ -1,4 +1,4 @@
-//! Audit rollups (docs/65-schema.md §3): two recomputed stages, never
+//! Audit rollups (docs/schema.md §3): two recomputed stages, never
 //! triggers. Stage 1 `identity_status` scores each identity's best
 //! availability; stage 2 `entry_audit` aggregates per entry.
 //!
@@ -13,7 +13,7 @@ use rusqlite::params;
 
 use crate::CatalogError;
 
-/// identity_status.state codes (65-schema.md §3).
+/// identity_status.state codes (schema.md §3).
 pub const STATE_HAVE_VERIFIED: i64 = 4;
 pub const STATE_HAVE_CLAIMED: i64 = 3;
 pub const STATE_PEER: i64 = 2;

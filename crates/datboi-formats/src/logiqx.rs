@@ -1,6 +1,6 @@
 //! Logiqx XML `datafile` parser — the lingua franca (No-Intro, Redump,
 //! TOSEC, FBNeo, pleasuredome). Verified against the official DTD plus the
-//! wild extensions 60-dats documents: No-Intro P/C `game@id`/`@cloneofid`,
+//! wild extensions dats documents: No-Intro P/C `game@id`/`@cloneofid`,
 //! `rom@sha256`/`@mia`/`@serial`, and `machine` as a synonym for `game`.
 //!
 //! Streaming discipline: quick-xml pull events only, one [`Entry`] built at

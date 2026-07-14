@@ -1,7 +1,8 @@
 # Open questions & active research
 
-Design passes R1–R8 complete; decisions ratified through D73. Docs
-00–90 are the record.
+Design passes R1–R8 complete; decisions ratified through D73. The
+subsystem docs (see [README.md](README.md) for the reading order) are
+the record.
 
 ## Flagged for ruling (raised 2026-07-07, M2/M3 build session)
 
@@ -78,7 +79,7 @@ Design passes R1–R8 complete; decisions ratified through D73. Docs
   deliberately undesigned within D60 until a consumer exists.
 
 - Shard fanout + inline-outboard threshold: frozen by the M1 NFS
-  benchmark (spec in 90-roadmap.md), not by discussion.
+  benchmark (spec in roadmap.md), not by discussion.
 - ~~State snapshot cadence~~ ruled and shipped 2026-07-11 as
   **D75**: the maintenance cycle's ambient tick auto-mints when the
   authoritative triple (sources, tags, config) moved —
@@ -88,7 +89,7 @@ Design passes R1–R8 complete; decisions ratified through D73. Docs
 - ~~Browser-side wasm lane in the web UI~~ the concrete need arrived
   and was **ruled 2026-07-12 as D84**: emulator cores are the third
   wasm lane (web-bundle assets, not CAS components); design record
-  in 88-emulation.md.
+  in emulation.md.
 - Auto-fill-gaps-from-peers policy (beyond the manual fetch action):
   later, per-view opt-in, after M6 holdings channels exist (post-D50).
 - peer_have bitmap representation: deferred until mirror-scale peers are
@@ -138,9 +139,9 @@ Design passes R1–R8 complete; decisions ratified through D73. Docs
   policy-gated on recipe volume — a max FAT is 61440 files and
   NARCs multiply that.
 - **Emulation deferred items (split out of the D84 ratification,
-  see 88-emulation.md)**: each is real design work owed after the
+  see emulation.md)**: each is real design work owed after the
   spike, none gates it. (1) ~~BIOS slots from CAS~~ SHIPPED same
-  session (see 88-emulation.md §ROM and BIOS i/o): the HLE-BIOS wall
+  session (see emulation.md §ROM and BIOS i/o): the HLE-BIOS wall
   below made it the unblock, and it cost one endpoint
   (`GET /v1/blobs/{hash}/bytes`, owner-only) — MKDS boots to its
   menus with real BIOS from the store. Still open inside it:
@@ -374,7 +375,7 @@ strict mode + retool clonelist consumption are M4 work items).
   layout for now (all comps are 1160px; responsive is design work);
   `▶ Play` (browser emulator cores) and box-art metadata provider
   stay explicitly-future per the comps, UI reserves their slots
-  (Play since ruled 2026-07-12 as D84, see 88-emulation.md).
+  (Play since ruled 2026-07-12 as D84, see emulation.md).
 - **Dat import graduated from CLI-only** (2026-07-11, post-ship):
   the M5 "mutating actions stay CLI-only" ruling was really about
   long-running pipeline work wanting live progress and a job
@@ -440,7 +441,7 @@ strict mode + retool clonelist consumption are M4 work items).
 
 ## Flagged (raised 2026-07-12, usability review session)
 
-The review ruled D78–D82 and wrote [87-web-ui.md](87-web-ui.md);
+The review ruled D78–D82 and wrote [web-ui.md](web-ui.md);
 two things were seen and deliberately deferred:
 
 - **Screen taxonomy naming**: "Audit" is a CAS-author name for what
@@ -450,14 +451,14 @@ two things were seen and deliberately deferred:
   No user-visible bug today; wants a naming pass when the next
   screen gets added, not before.
 - **Recipe deep-link page**: long recipes now summarize + expand in
-  place (87-web-ui.md, aggregates-before-enumerations). Recipes are
+  place (web-ui.md, aggregates-before-enumerations). Recipes are
   content-addressed meta blobs, so a dedicated page is *possible* —
   build it only if recipes grow multi-level structure worth
   deep-linking; another CAS-debugger surface is the failure mode.
 
 ## Next sessions (pick up here)
 
-**Position as of 2026-07-13 (saves design pass)**: docs/89-saves.md
+**Position as of 2026-07-13 (saves design pass)**: docs/saves.md
 opened — the design pass D62 reserved ("writable overlays … save
 history for free"), written from the emu-worker end because saves are
 the loudest play-surface gap. The model: a lineage **forest** (append
@@ -506,7 +507,7 @@ multitouch in a real game. Saves persistence (item 4) stays the
 loudest backlog gap.
 
 **Position as of 2026-07-12 (emulation session)**: D84 ruled +
-88-emulation.md written, and **spike milestones 1 + 2 shipped**.
+emulation.md written, and **spike milestones 1 + 2 shipped**.
 M1: `nix build .#emu-ds` builds dust (rev-pinned git deps, nightly
 2025-12-20 — 2026-02 nightlies break dust's portable_simd use, so
 the pin tracks upstream's last-green, not latest) into
@@ -589,7 +590,7 @@ one sweep: D59 (chunking narrowed to route-less literals), D56
 (analyzer config: family() on the trait, enable/params KV rows,
 `datboi analyzer` CLI, sweep gate), D61 (verified already
 implemented), name-fitting pipeline + alpha-bucketing +
-ezflash-omega profile (80-views.md owed work), D57 (strict 1G1R as
+ezflash-omega profile (views.md owed work), D57 (strict 1G1R as
 selection-mode 2 + retool clonelists via `dat clonelist`,
 content-addressed with a config pointer), and MAME merge-mode
 rendering (catalog::mame — non-merged with transitive device_ref
@@ -651,7 +652,7 @@ included now. NEXT (M4 remainder): MAME merge-mode rendering (D31
 deferred set), retool clonelists + strict 1G1R (D57), ruled riders
 (D56 headroom guard, D59 eligibility narrowing, D60 config shape,
 D61 rehabilitate), name-fitting pipeline + dir bucketing
-(80-views.md); then the D58 unrar-wasm lane.
+(views.md); then the D58 unrar-wasm lane.
 
 **Previous position (2026-07-10, decision session)**: **DECISION
 SESSION — every open ruling in the project resolved (D55–D63)**; no
@@ -709,7 +710,7 @@ Priority order:
    retool clonelists + strict 1G1R mode (D57), plus the ruled riders
    (D56 headroom guard, D59 eligibility narrowing, D60 config shape,
    D61 rehabilitate) and the profile name-fitting pipeline +
-   dir-bucketing (80-views.md, recovered 2026-07-10 from the 2021
+   dir-bucketing (views.md, recovered 2026-07-10 from the 2021
    prototype's EZ-Flash Omega mutator; adds an ezflash-omega profile:
    512 files/dir, 99-char names). Then the user's stated post-M4 directions: M6
    iroh, M7 formats/xf-s, ingest policies/background curing, deeper

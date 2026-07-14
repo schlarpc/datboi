@@ -51,7 +51,7 @@ interface types {
         /// Input positions the guest will access via `file` (read-at)
         /// instead of `source` (sequential). The host materializes
         /// non-seekable sources at these positions first (spill rule,
-        /// docs/70-recipes.md).
+        /// docs/recipes.md).
         random-access-inputs: list<u32>,
     }
 

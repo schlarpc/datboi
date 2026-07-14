@@ -193,7 +193,7 @@ a[download]::after {
   height: max(100%, 24px);
 }
 
-/* ---- scrollbars (87-web-ui.md): themed, not UA chrome ---- */
+/* ---- scrollbars (web-ui.md): themed, not UA chrome ---- */
 /* The thumb wears a token, the track disappears into the surface —
  * default UA scrollbars next to themed panels read as unfinished. */
 * {

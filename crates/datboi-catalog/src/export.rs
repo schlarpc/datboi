@@ -4,7 +4,7 @@
 //! entries sorted by name, claims in document (claim_id) order, fixed
 //! formatting, no timestamps except those stored in the dat header.
 //! Semantic (not byte) fidelity against the imported original is the bar
-//! (60-dats losslessness; attribute order and whitespace may differ).
+//! (dats losslessness; attribute order and whitespace may differ).
 //!
 //! Known asymmetry, documented: `optional` is a listxml notion with no
 //! Logiqx DTD attribute; it is emitted as an extension attribute (like

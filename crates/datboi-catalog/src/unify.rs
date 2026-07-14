@@ -1,8 +1,8 @@
-//! Content-identity unification (D2, docs/60-dats.md): many claims → one
+//! Content-identity unification (D2, docs/dats.md): many claims → one
 //! identity → (hopefully) one stored blob.
 //!
 //! Rules: claims unify iff no hash field conflicts AND a strong hash
-//! (md5-or-better, per 60-dats open-question 2's resolution) matches;
+//! (md5-or-better, per dats open-question 2's resolution) matches;
 //! crc32+size-only agreement is `probable` evidence (D39), never
 //! authoritative. Same sha1 with different md5 = two identities (sha1
 //! collisions are legal, D2). A claim carrying hashes that bridge two
@@ -15,7 +15,7 @@ use datboi_index::{AliasAlgo, Db};
 
 use crate::CatalogError;
 
-/// Evidence strength / identity_blob basis codes (65-schema.md §2):
+/// Evidence strength / identity_blob basis codes (schema.md §2):
 /// 3=sha256, 2=sha1, 1=md5, 0=crc32+size (probable).
 pub const BASIS_SHA256: i64 = 3;
 pub const BASIS_SHA1: i64 = 2;
@@ -192,7 +192,7 @@ fn unify_claim(conn: &Connection, tuple: &Tuple) -> Result<Option<i64>, CatalogE
     // hashes must match on a strong hash; crc-only tuples may match on
     // crc+size (probable-grade linkage happens at the blob layer, but for
     // claim↔claim unification crc+size agreement without conflict is the
-    // 60-dats "probable" unification, accepted for identity sharing).
+    // dats "probable" unification, accepted for identity sharing).
     let mut qualifying: Vec<(i64, Tuple)> = candidates
         .into_iter()
         .filter(|(_, t)| tuple.compatible(t) && tuple.match_grade(t).is_some())

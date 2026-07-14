@@ -1,5 +1,5 @@
-//! 1G1R selection (80-views.md; retool's filter model is the
-//! expressiveness floor, docs/20-transforms.md). This is pure policy in
+//! 1G1R selection (views.md; retool's filter model is the
+//! expressiveness floor, docs/transforms.md). This is pure policy in
 //! the D23 sense: it decides which entries a view WANTS; nothing here
 //! touches bytes, and a bad choice costs curation, never data.
 //!

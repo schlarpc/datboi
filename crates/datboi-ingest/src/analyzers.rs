@@ -16,7 +16,7 @@ use crate::refine::{AnalysisResult, Analyzer, Pulse, TickReader, analyzer_tag};
 /// 2, 64 KiB / 256 KiB / 1 MiB — tuned for disc images. The values are
 /// baked into the analyzer identity: retuning mints a NEW analyzer whose
 /// sweep re-covers the corpus, while old recipes stay valid forever
-/// (chunker identity is provenance, not replay input — docs/70-recipes.md).
+/// (chunker identity is provenance, not replay input — docs/recipes.md).
 pub const CHUNK_MIN: usize = 64 * 1024;
 pub const CHUNK_AVG: usize = 256 * 1024;
 pub const CHUNK_MAX: usize = 1024 * 1024;

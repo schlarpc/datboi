@@ -1,4 +1,4 @@
-//! WebDAV surface (docs/80-views.md: dav-server, day one) mounted at
+//! WebDAV surface (docs/views.md: dav-server, day one) mounted at
 //! `/dav`: the collection root lists views, each view is the D33
 //! tag-resolved snapshot tree. Strictly read-only — the method set is
 //! WEBDAV_RO (OPTIONS/GET/HEAD/PROPFIND) and every write-shaped

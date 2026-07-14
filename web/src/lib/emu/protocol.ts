@@ -1,5 +1,5 @@
 /**
- * The emu worker protocol (D84, docs/88-emulation.md § the host
+ * The emu worker protocol (D84, docs/emulation.md § the host
  * contract). Cores are self-contained assets under /emu/{id}/ —
  * descriptor.json (this Descriptor shape) + worker.js (the protocol's
  * other side) + wasm. The host speaks ONLY postMessage to a core;
@@ -26,7 +26,7 @@ export type Descriptor = {
   buttons: Record<string, number>;
   romExtensions: string[];
   /**
-   * BIOS-from-CAS (88-emulation.md): each slot names a load-message
+   * BIOS-from-CAS (emulation.md): each slot names a load-message
    * field (bios7/bios9/firmware) and the blake3 hashes accepted for
    * it. The host tries GET /v1/blobs/{hash}/bytes per hash; a miss or
    * a friend's 403 just means the core falls back to HLE. The hash

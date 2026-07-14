@@ -1,5 +1,5 @@
 //! Reference transform: the swap family (bitswap/byteswap/wordswap), the
-//! wasm twin of the `swap@1` builtin (docs/70-recipes.md).
+//! wasm twin of the `swap@1` builtin (docs/recipes.md).
 //!
 //! Purpose: prove the ABI and the determinism gate (M1 prototype 3), not to
 //! be useful — the native builtin serves production traffic (D6). The pure

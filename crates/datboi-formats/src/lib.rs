@@ -1,6 +1,6 @@
 //! Dat family parsers and the header-skipper (detector) interpreter.
 //!
-//! Design record: docs/60-dats.md, decisions D9/D13. All families parse
+//! Design record: docs/dats.md, decisions D9/D13. All families parse
 //! losslessly into the canonical Entry/RomClaim model; unknown attributes
 //! are preserved in attrs maps.
 

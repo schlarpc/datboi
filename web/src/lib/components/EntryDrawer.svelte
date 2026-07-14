@@ -3,7 +3,7 @@
    * The ENTRY drawer (spec §3.2, wireframe 2c: "same panel works for
    * any blob/file row anywhere — one component, used everywhere").
    * 300px, 2px ink left edge. The drawer SUMMARIZES one entry and
-   * links out; the blob page owns storage internals (87-web-ui.md:
+   * links out; the blob page owns storage internals (web-ui.md:
    * one canonical home per concept — the old fold here was a second,
    * worse rendering of the same truth).
    *
@@ -15,7 +15,7 @@
    * - `▶ Play` (D85): one per rom claim that a local blob satisfies
    *   AND a shipped core claims by extension — blob-sourced play over
    *   the owner-only /v1 bytes surface. No placeholder ever rendered
-   *   for the rest (dev-facing scaffolding is not UI, 87-web-ui.md);
+   *   for the rest (dev-facing scaffolding is not UI, web-ui.md);
    *   the artwork slot stays visual-only for the same reason.
    */
   import type { EntryDetail } from '../api/types';
@@ -92,7 +92,7 @@
   </div>
 
   <div class="state-line state-text--{detail.state}">
-    <!-- CSS-drawn mark (87-web-ui.md: structure over glyph). -->
+    <!-- CSS-drawn mark (web-ui.md: structure over glyph). -->
     <span class="dot dot--{detail.state}"></span>
     {#if detail.state === 'verified'}
       <!-- @wc-context: storage state -->verified

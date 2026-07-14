@@ -3,7 +3,7 @@
 //! atomics → +atomics, -Zbuild-std, SharedArrayBuffer, COOP/COEP); for
 //! v1 we trade that parallelism away and rasterize the whole frame
 //! eagerly inside `start_rendering`, on the emulator thread. Same
-//! Tx/Rx trait pair, no threads anywhere (docs/88-emulation.md).
+//! Tx/Rx trait pair, no threads anywhere (docs/emulation.md).
 //!
 //! The static + UnsafeCell shape mirrors dust-web's: the renderer halves
 //! are handed to dust-core as `Box<dyn ...>` with Send bounds, which an

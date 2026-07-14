@@ -37,7 +37,7 @@ describe('en.po msgctxt round-trip', () => {
     },
   );
 
-  // Marks are CSS-drawn now (87-web-ui.md) — the rail labels are the
+  // Marks are CSS-drawn now (web-ui.md) — the rail labels are the
   // bare words, still disambiguated as storage states.
   test.each(['Verified', 'Claimed', 'Missing', 'No dump'])(
     'rail label %j is a storage state',

@@ -1,4 +1,4 @@
-//! bao outboard machinery (docs/10-cas.md, D49): the blake3 hash tree
+//! bao outboard machinery (docs/cas.md, D49): the blake3 hash tree
 //! that makes every future range read verifiable without
 //! rematerialization.
 //!

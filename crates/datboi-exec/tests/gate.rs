@@ -1,4 +1,4 @@
-//! The M2 exit gate (90-roadmap.md, D50): a multi-GB zip member replays
+//! The M2 exit gate (roadmap.md, D50): a multi-GB zip member replays
 //! in bounded memory, verified, both sequential and seeked — the workload
 //! D46 built the streaming world for (a single-member Redump-scale
 //! DEFLATE stream that whole-buffer @1 could never replay).

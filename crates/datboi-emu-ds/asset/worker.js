@@ -1,5 +1,5 @@
 // The core's side of the datboi emu worker protocol (D84,
-// docs/88-emulation.md §"The host contract"). This file ships INSIDE the
+// docs/emulation.md §"The host contract"). This file ships INSIDE the
 // core asset next to descriptor.json — the web host only ever speaks
 // postMessage to it, which is also the GPL-3 boundary: everything on
 // this side of the Worker is dust-derived, everything on the other side

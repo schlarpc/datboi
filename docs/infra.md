@@ -20,7 +20,7 @@ datboi/
 │   ├── datboi-core/           # CAS, recipes, hashing, typestate domain model
 │   ├── datboi-formats/        # dat parsers (logiqx, clrmamepro, MAME)
 │   ├── datboi-store-{fs,s3,http,iroh}/
-│   ├── datboi-index/          # two-file SQLite layer (65-schema.md) — split
+│   ├── datboi-index/          # two-file SQLite layer (schema.md) — split
 │   │                          # from core to keep core dependency-light
 │   ├── datboi-runtime/        # wasmtime host, limits
 │   ├── datboi-server/         # axum daemon

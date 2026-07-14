@@ -1,5 +1,5 @@
 //! Golden-fixture integration tests for the dat parsers, exercising the
-//! 60-dats gotcha list per format. cmpro fixtures are inline raw strings
+//! dats gotcha list per format. cmpro fixtures are inline raw strings
 //! (non-.xml files don't survive the flake's crane source filter).
 
 use datboi_formats::model::{ClaimKind, ClaimStatus, DatFile, ParseError};

@@ -1,4 +1,4 @@
-//! Command implementations (docs/85-cli.md). Human tables by default,
+//! Command implementations (docs/cli.md). Human tables by default,
 //! `--json` everywhere; audit exit codes: 0 complete / 1 incomplete /
 //! 2 error.
 
@@ -50,7 +50,7 @@ pub fn ingest(mut env: Env, paths: &[PathBuf], mv: bool, json: bool) -> anyhow::
         bail!("--move is not implemented yet; ingest defaults to --copy semantics (D40)");
     }
     warn_detector_errors(&env);
-    // Best-effort sweep of crash-orphaned temp files (docs/10-cas.md).
+    // Best-effort sweep of crash-orphaned temp files (docs/cas.md).
     if let Ok(swept) = env.store.cleanup_temp(Duration::from_secs(24 * 60 * 60))
         && swept > 0
     {
@@ -1001,7 +1001,7 @@ pub fn analyzer_set_params(env: &Env, name: &str, hex: Option<&str>) -> anyhow::
 // ---- recover ----
 
 /// Fast-walk parallelism. Structure is what matters now; the number gets
-/// tuned by the M1 NFS bench (90-roadmap.md) when the bench machine
+/// tuned by the M1 NFS bench (roadmap.md) when the bench machine
 /// exists.
 const RECOVER_WALK_WORKERS: usize = 8;
 
@@ -1343,7 +1343,7 @@ fn index_recovered_recipe(
     recipe_blob_id: i64,
     recipe: &Recipe,
 ) -> anyhow::Result<()> {
-    // Conservative seek inference; docs/80-views.md classes. Unknown
+    // Conservative seek inference; docs/views.md classes. Unknown
     // builtins default to Opaque (never lies toward seekability).
     let seek_class = match &recipe.op {
         Op::Builtin { name, .. } if name == "assemble" || name == "swap" => SeekClass::Affine,
@@ -1805,7 +1805,7 @@ pub fn view_manifest(env: &Env, name: &str, json: bool) -> anyhow::Result<ExitCo
 /// are ours to clean.
 const SYNC_TMP_SUFFIX: &str = ".datboi-tmp";
 
-/// SD sync (80-views.md): materialize a snapshot into a plain directory
+/// SD sync (views.md): materialize a snapshot into a plain directory
 /// for flashcart cards. Incremental by (path, size) — `--verify`
 /// re-hashes matches; `--delete` removes extraneous files. All bytes
 /// flow through the executor's verified range path.

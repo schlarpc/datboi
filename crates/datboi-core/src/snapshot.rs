@@ -1,4 +1,4 @@
-//! State snapshots and alias batches (D15/D22, docs/10-cas.md recovery
+//! State snapshots and alias batches (D15/D22, docs/cas.md recovery
 //! step 3): the signed recovery root that lets `recover` rebuild catalog
 //! typing and the alias table without a full re-derive.
 //!

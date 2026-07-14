@@ -126,7 +126,7 @@ test('route edges link every neighbor hash to its own inspector', async () => {
   const container = screen.getByText('bbbbbbbb').closest('a');
   expect(container?.getAttribute('href')).toBe(`/storage/blob/${CONTAINER}`);
   // …and the output ref (self) is deliberately NOT a link — a link to
-  // the page you're on isn't navigation (87-web-ui.md).
+  // the page you're on isn't navigation (web-ui.md).
   const self = screen.getByText('this blob');
   expect(self.closest('a')).toBeNull();
   expect(screen.getByText('inner.gba')).toBeTruthy();

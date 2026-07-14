@@ -261,7 +261,7 @@
 
       # ---- browser emulator cores (crates/datboi-emu-*, D84) ----
       #
-      # The third wasm lane (docs/88-emulation.md): built like the
+      # The third wasm lane (docs/emulation.md): built like the
       # components (standalone workspace, own lockfile, wasm32 target) but
       # consumed like the web dist (a lazy-loaded static asset) — no WIT,
       # no componentization, no stamping, no determinism gate. dust-core
@@ -337,7 +337,7 @@
       webPackageJson = builtins.fromJSON (builtins.readFile ./web/package.json);
 
       # node_modules built purely from package-lock.json (rof-gui pattern,
-      # docs/50-infra.md) — no npmDepsHash to churn on every lockfile edit.
+      # docs/infra.md) — no npmDepsHash to churn on every lockfile edit.
       webNodeModulesFor = system: (pkgsFor system).importNpmLock.buildNodeModules {
         npmRoot = "${webSrc}/web";
         inherit (pkgsFor system) nodejs;

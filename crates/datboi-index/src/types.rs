@@ -51,7 +51,7 @@ db_enum! {
 }
 
 db_enum! {
-    /// Recipe operation kind (docs/70-recipes.md).
+    /// Recipe operation kind (docs/recipes.md).
     OpKind {
         Builtin = 0,
         Wasm = 1,
@@ -59,7 +59,7 @@ db_enum! {
 }
 
 db_enum! {
-    /// Seekability class (D27, docs/80-views.md).
+    /// Seekability class (D27, docs/views.md).
     SeekClass {
         Affine = 0,
         ManifestSeekable = 1,
@@ -113,7 +113,7 @@ db_enum! {
 }
 
 db_enum! {
-    /// rom_claim kind (60-dats: disk = CHD internal sha1, no size).
+    /// rom_claim kind (dats: disk = CHD internal sha1, no size).
     ClaimKind {
         Rom = 0,
         Disk = 1,
@@ -159,7 +159,7 @@ db_enum! {
 impl VerifyState {
     /// Legal transitions: Pending→{Verified, ReplayedLocal, Failed},
     /// Verified→{ReplayedLocal, Failed}, ReplayedLocal→Failed (late
-    /// nondeterminism found by scrub — alarm-level, docs/70-recipes.md).
+    /// nondeterminism found by scrub — alarm-level, docs/recipes.md).
     /// Failed is terminal; downgrades and self-transitions are illegal.
     #[must_use]
     pub fn can_transition_to(self, next: Self) -> bool {

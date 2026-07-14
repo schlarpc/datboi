@@ -1,4 +1,4 @@
-//! Metadata DB layer (docs/65-schema.md, D37): two SQLite files on
+//! Metadata DB layer (docs/schema.md, D37): two SQLite files on
 //! daemon-local disk, never NFS (D15).
 //!
 //! - `cache.db` — derivable from CAS bytes + deterministic re-import;

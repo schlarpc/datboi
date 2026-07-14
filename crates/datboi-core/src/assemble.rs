@@ -1,8 +1,8 @@
-//! The `assemble@1` builtin (docs/70-recipes.md): ordered segments over
+//! The `assemble@1` builtin (docs/recipes.md): ordered segments over
 //! input blobs, fill bytes, and short inline literals. Covers concat,
 //! slice, header add, pad, zero-fill, splice, and chunk reassembly, and is
 //! fully offset-affine — the seekability spine for filesystem views
-//! (docs/80-views.md).
+//! (docs/views.md).
 //!
 //! Params encoding (strict canonical CBOR): an array of segment maps.
 //! Each variant uses a disjoint key set, so the keys identify the variant:
@@ -20,7 +20,7 @@ use std::ops::Range;
 
 use crate::cbor::{self, Value};
 
-/// Literals above this must be real blobs so they dedupe (docs/70-recipes.md).
+/// Literals above this must be real blobs so they dedupe (docs/recipes.md).
 pub const LITERAL_CAP: usize = 4096;
 
 const SEGKEY_INPUT_IX: u64 = 1;
@@ -411,7 +411,7 @@ mod tests {
     use super::*;
 
     fn ines_params() -> AssembleParams {
-        // Worked example from docs/70-recipes.md: headered = header + body.
+        // Worked example from docs/recipes.md: headered = header + body.
         AssembleParams {
             segments: vec![
                 Segment::BlobRange {

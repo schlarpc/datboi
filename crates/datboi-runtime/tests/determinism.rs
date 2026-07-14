@@ -1,4 +1,4 @@
-//! The M1 determinism gate (docs/90-roadmap.md prototype 3, D5).
+//! The M1 determinism gate (docs/roadmap.md prototype 3, D5).
 //!
 //! Runs the committed `xf-reference` component — fixed bytes, not rebuilt
 //! from source — because that is the production model: recipes pin a

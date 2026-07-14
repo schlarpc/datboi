@@ -1,4 +1,4 @@
-//! wasmtime host for content-addressed transforms (docs/30-runtime.md,
+//! wasmtime host for content-addressed transforms (docs/runtime.md,
 //! decisions D5–D7).
 //!
 //! This crate runs components targeting the frozen `datboi:transform@1`
@@ -49,7 +49,7 @@ pub(crate) fn deterministic_config() -> Config {
     config
 }
 
-/// Seekability class a transform declares (docs/80-views.md, D27). Mirrors
+/// Seekability class a transform declares (docs/views.md, D27). Mirrors
 /// the WIT enum; kept as a hand-written host type so the rest of the daemon
 /// depends on this crate's vocabulary, not on generated bindings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

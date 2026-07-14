@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Play (D84, docs/88-emulation.md): something running in a browser
+   * Play (D84, docs/emulation.md): something running in a browser
    * emulator core. Two byte sources (PlaySrc): a view file — reached
    * from the Browse entry panel's ▶, play rights are exactly download
    * rights, the ROM comes from the same verified /view/{name}/{path}
@@ -110,7 +110,7 @@
       if (!romResp.ok) throw new Error((await romResp.text()) || `rom fetch failed (${romResp.status})`);
       const desc = (await descResp.json()) as Descriptor;
       const rom = await romResp.arrayBuffer();
-      // BIOS-from-CAS (88-emulation.md): try each slot's accepted
+      // BIOS-from-CAS (emulation.md): try each slot's accepted
       // hashes against the raw-blob surface; any miss (not ingested,
       // friend's 403) leaves the slot empty and the core on HLE.
       const sysFiles: Record<string, ArrayBuffer> = {};

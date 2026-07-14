@@ -1,5 +1,5 @@
 //! MAME `-listxml` parser. Machines share the Logiqx claim shape (crc+sha1,
-//! no md5 — 60-dats gotcha 2) with extra audit-relevant structure:
+//! no md5 — dats gotcha 2) with extra audit-relevant structure:
 //! `device_ref` (captured for post-MVP closure queries, D31), bios sets,
 //! `disk` internal sha1s, driver/feature status. Emulation-only elements
 //! (chip/display/input/dipswitch/…) are skipped without buffering.

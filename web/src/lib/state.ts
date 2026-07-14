@@ -16,7 +16,7 @@ export type EntryState = (typeof ENTRY_STATES)[number];
 
 // The unicode row glyphs (●◐○–) are dead: state marks are CSS-drawn
 // (`.dot` in tokens.css) so their metrics can't depend on font
-// fallback (87-web-ui.md: structure over glyph).
+// fallback (web-ui.md: structure over glyph).
 
 export type StateCounts = Record<EntryState, number>;
 

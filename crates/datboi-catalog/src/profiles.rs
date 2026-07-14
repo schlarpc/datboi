@@ -1,4 +1,4 @@
-//! Constraint profiles (80-views.md): curated bundles of target-device
+//! Constraint profiles (views.md): curated bundles of target-device
 //! limits applied at view layout time. Knobs live HERE, not scattered
 //! (the anti-RetroArch clause) — a view names a profile, the evaluator
 //! enforces it, and the report says what the constraints cost.
@@ -49,7 +49,7 @@ pub const PROFILES: &[Profile] = &[
     },
     Profile {
         // FAT32 card + console menu: the UI chokes long before the
-        // filesystem does (80-views.md).
+        // filesystem does (views.md).
         name: "everdrive",
         charset: Charset::Fat,
         max_name_len: 255,
@@ -65,7 +65,7 @@ pub const PROFILES: &[Profile] = &[
         max_dir_entries: Some(10_000),
     },
     Profile {
-        // EZ-Flash Omega (80-views.md, device data from the 2021
+        // EZ-Flash Omega (views.md, device data from the 2021
         // prototype): 99-char names, 512 files per directory.
         name: "ezflash-omega",
         charset: Charset::Fat,
@@ -122,7 +122,7 @@ impl Profile {
     }
 }
 
-// ---- the name-fitting pipeline (80-views.md) ----
+// ---- the name-fitting pipeline (views.md) ----
 //
 // Length caps are enforced by rewriting, not skipping: an ordered,
 // deterministic rule list applied until the name fits, and only then
@@ -344,7 +344,7 @@ mod tests {
         );
     }
 
-    // ---- the name-fitting pipeline (80-views.md) ----
+    // ---- the name-fitting pipeline (views.md) ----
 
     #[test]
     fn fitting_only_runs_when_over_budget() {

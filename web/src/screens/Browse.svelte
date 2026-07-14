@@ -266,7 +266,7 @@
           </div>
           <!-- Box-art metadata provider is explicitly future (spec §8).
                The slot is visual-only: no roadmap captions in the render
-               tree (87-web-ui.md). -->
+               tree (web-ui.md). -->
           <div class="art"></div>
           <div class="name">{basename(selected.path)}</div>
           <div class="sub">

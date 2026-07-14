@@ -93,7 +93,7 @@ test('row select opens the entry panel: sub-line, trust line, real download', as
   const download = screen.getByText('⬇ Download') as HTMLAnchorElement;
   expect(download.getAttribute('href')).toBe('/view/gba-everdrive/Games/Alpha%20(USA).gba');
 
-  // No disabled future-feature buttons (87-web-ui.md): ▶ Play ships
+  // No disabled future-feature buttons (web-ui.md): ▶ Play ships
   // when playing ships.
   expect(screen.queryByText('▶ Play')).toBeNull();
 

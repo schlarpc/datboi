@@ -160,7 +160,7 @@
       </div>
     </div>
 
-    <!-- Maintenance status (87-web-ui.md: management by exception).
+    <!-- Maintenance status (web-ui.md: management by exception).
          One quiet line per subsystem while healthy; quarantine and
          orphans grow into real cards below ONLY when they need a
          human. Scrub and eviction never do — they stay lines. -->

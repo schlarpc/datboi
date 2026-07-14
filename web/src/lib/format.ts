@@ -7,7 +7,7 @@
 
 
 /**
- * Hash short form (87-web-ui.md vocabulary): the first 8 hex chars, no
+ * Hash short form (web-ui.md vocabulary): the first 8 hex chars, no
  * ellipsis — the git-short-SHA mental model. One implementation for
  * every truncated hash; the spec §3.2 middle-ellipsis form is dead
  * (proving both ends match is a CAS author's instinct, not a need).

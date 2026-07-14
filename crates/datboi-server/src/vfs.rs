@@ -1,7 +1,7 @@
 //! The serving-side shape of a view snapshot: decoded manifest rows in a
 //! path-ordered map, plus directory semantics derived from row paths.
 //!
-//! Snapshots are immutable (docs/80-views.md), so a decoded index is
+//! Snapshots are immutable (docs/views.md), so a decoded index is
 //! cacheable forever by snapshot hash; directories exist implicitly as
 //! path prefixes — there are no directory objects to get out of sync.
 

@@ -1,4 +1,4 @@
-//! MAME merge-mode rendering (the D31 deferred set, 60-dats.md §6):
+//! MAME merge-mode rendering (the D31 deferred set, dats.md §6):
 //! merge modes are output transforms, not storage — the schema stores
 //! flat per-machine claims (romof/cloneof surrogates, per-rom
 //! merge_name, is_device/is_bios flags, `@device_refs` in attrs) and

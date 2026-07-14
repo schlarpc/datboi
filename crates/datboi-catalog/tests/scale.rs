@@ -1,4 +1,4 @@
-//! MAME-at-scale parse+import validation (90-roadmap prototype 4): the
+//! MAME-at-scale parse+import validation (roadmap prototype 4): the
 //! schema and import path must swallow a full listxml (~50k machines,
 //! hundreds of thousands of claims) before they're load-bearing.
 //!

@@ -1,4 +1,4 @@
-//! Streaming recipe executor (docs/70-recipes.md Execution, D25/D46/D51).
+//! Streaming recipe executor (docs/recipes.md Execution, D25/D46/D51).
 //!
 //! The executor turns "I want the bytes of X" into a pull-based operator
 //! tree over resident literals: O(chunk) memory per node, spill to a
@@ -119,7 +119,7 @@ pub struct ExecConfig {
     /// Whole-buffer cap for @1 inputs/outputs (the profile buffers whole
     /// blobs by design — D41; anything bigger belongs in @2).
     pub max_buffer: u64,
-    /// Operator-tree depth guard (docs/70-recipes.md safety).
+    /// Operator-tree depth guard (docs/recipes.md safety).
     pub max_depth: usize,
     /// Where spill files live; defaults to the OS temp dir.
     pub spill_dir: Option<PathBuf>,
@@ -348,7 +348,7 @@ impl<'s> Executor<'s> {
 
     /// Materialize `hash` into the store if it isn't already resident:
     /// picks a route and replays the covering recipe (which stores every
-    /// sibling output too — one execution verifies all, docs/70-recipes.md).
+    /// sibling output too — one execution verifies all, docs/recipes.md).
     ///
     /// Guarded by the D56 disk-headroom check: materialize-on-demand
     /// refuses cleanly (nothing written) when the store filesystem

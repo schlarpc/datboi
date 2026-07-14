@@ -1,5 +1,5 @@
 //! Per-op param schemas whose encode and decode live together
-//! (docs/70-recipes.md: the op owns its params schema). The CBOR key
+//! (docs/recipes.md: the op owns its params schema). The CBOR key
 //! numbers exist HERE and nowhere else — ingest encodes at mint, exec
 //! decodes at replay, so a renumber on one side can no longer poison
 //! valid recipes as malformed. (`assemble@1` keeps its schema in
@@ -62,7 +62,7 @@ impl ExtractorParams {
 
 /// `deflate-decompress@1` params: a window into input 0 — one recipe
 /// per zip member instead of a slice-recipe + intermediate blob per
-/// member (docs/70-recipes.md window amendment; at MAME scale the row
+/// member (docs/recipes.md window amendment; at MAME scale the row
 /// economy matters).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeflateWindow {

@@ -1,4 +1,4 @@
-//! The datboi CLI: client subcommands plus `serve` (docs/85-cli.md).
+//! The datboi CLI: client subcommands plus `serve` (docs/cli.md).
 //!
 //! Exit codes: 0 success/complete, 1 incomplete or problems found
 //! (audit/scrub/ingest-with-errors), 2 usage or runtime error.
@@ -137,7 +137,7 @@ enum Command {
         #[command(subcommand)]
         cmd: AnalyzerCommand,
     },
-    /// Filesystem views (M4, 80-views.md): define policies, evaluate
+    /// Filesystem views (M4, views.md): define policies, evaluate
     /// them into immutable snapshots, list what exists.
     View {
         #[command(subcommand)]

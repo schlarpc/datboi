@@ -1,4 +1,4 @@
-//! Revision diffing (docs/85-cli.md `dat diff`, D38): compare a source's
+//! Revision diffing (docs/cli.md `dat diff`, D38): compare a source's
 //! two newest materialized revisions and report added / removed / renamed /
 //! rehashed entries.
 //!

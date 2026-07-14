@@ -9,9 +9,9 @@ SAVES." This doc proposes the model and enumerates the rulings owed;
 nothing here is ratified until it lands as a D-entry. It is written
 from the emulator-worker end (the play surface D85–D87 shipped with no
 persistence — the loudest backlog gap), but the store it designs is
-the same one the overlay/nbd path eventually writes into. [88-emulation.md]
-(88-emulation.md) governs the cores that produce saves; [10-cas.md]
-(10-cas.md) owns the bytes; [80-views.md](80-views.md) owns the overlay
+the same one the overlay/nbd path eventually writes into. [emulation.md]
+(emulation.md) governs the cores that produce saves; [cas.md]
+(cas.md) owns the bytes; [views.md](views.md) owns the overlay
 that is the second producer.*
 
 ## Why saves are categorically new
@@ -203,7 +203,7 @@ Grouping durability: the *anchor* (rom-hash) is immutable and immune to
 dat churn. Only the *grouping/offer* layer consults the dat and must
 tolerate re-import and 1G1R re-canonicalization (D57) — but since it is
 presentation, a stale grouping degrades to "shown separately," never to
-a corrupted save. Coupling to 60-dats.md and D55/D57 lives entirely in
+a corrupted save. Coupling to dats.md and D55/D57 lives entirely in
 that soft layer.
 
 ## Where the timeline lives: meta/ objects + statesnap refs
@@ -448,7 +448,7 @@ same posture as D19's retrofittable packing.
    policies; *adapt* machinery points only at files.
 3. **Attribution = exact rom, never title** — title is presentation +
    explicit-offer fork only; no automatic cross-rev sharing. Confirms
-   the soft grouping layer's coupling to 60-dats.md / D55 / D57.
+   the soft grouping layer's coupling to dats.md / D55 / D57.
 4. **Storage split: raw component blobs in `data/`, CBOR node in
    `meta/`** (D18 applied to saves) — and where the import/export
    wrapper adapters live.

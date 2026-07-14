@@ -1,6 +1,6 @@
-//! The datboi daemon (docs/50-infra.md): axum + tokio, 12-factor config
+//! The datboi daemon (docs/infra.md): axum + tokio, 12-factor config
 //! via env, serving view snapshots over HTTP with Range support (M4,
-//! docs/80-views.md). Loopback connections are implicitly owner;
+//! docs/views.md). Loopback connections are implicitly owner;
 //! binding beyond loopback means non-loopback requests need a session
 //! or bearer token (auth v1, D30/D68 — see [`auth`]).
 //!

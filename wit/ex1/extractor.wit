@@ -44,7 +44,7 @@ interface types {
     /// Extraction is inherently seek-driven (header walks, solid-block
     /// restarts), so the archive always arrives seekable — the host
     /// materializes non-seekable routes first (spill rule,
-    /// docs/70-recipes.md).
+    /// docs/recipes.md).
     resource file {
         /// Read exactly `n` bytes at `offset`; short only where
         /// `offset + n` passes end-of-file. Reads past EOF return empty.

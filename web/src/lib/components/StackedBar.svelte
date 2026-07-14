@@ -16,7 +16,7 @@
 
   const seg = $derived(barSegments(counts));
 
-  // Hover text: the numbers behind each band (87-web-ui.md: color is
+  // Hover text: the numbers behind each band (web-ui.md: color is
   // never the only legend).
   const verifiedTitle = $derived(plural(counts.verified, ['# verified', '# verified']));
   const claimedTitle = $derived(plural(counts.claimed, ['# claimed', '# claimed']));

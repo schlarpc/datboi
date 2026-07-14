@@ -1,7 +1,7 @@
 //! The M1 store: complete blobs only (D14 staging), no partial states, no
 //! eviction — no code path here can destroy verified bytes (D35).
 //!
-//! Durability discipline (docs/10-cas.md): stream to `tmp/<unique>` while
+//! Durability discipline (docs/cas.md): stream to `tmp/<unique>` while
 //! hashing, verify against the expected hash, `fsync` the file, atomically
 //! `rename()` into the sharded final path, then `fsync` the parent
 //! directory so the rename itself is durable. Shard directories are

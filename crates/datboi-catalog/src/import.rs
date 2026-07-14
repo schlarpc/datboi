@@ -1,4 +1,4 @@
-//! Dat import (docs/60-dats.md): dat blob into CAS first, then rows are a
+//! Dat import (docs/dats.md): dat blob into CAS first, then rows are a
 //! deterministic function of that blob (D15). Revision retention per D38:
 //! current + previous stay materialized; older revisions demote to
 //! header-only (rows deleted; re-importable on demand from the CAS blob).
@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{CatalogError, rollup, unify};
 
-/// dat_revision.format codes (65-schema.md §2). Frozen with SCHEMA_VERSION.
+/// dat_revision.format codes (schema.md §2). Frozen with SCHEMA_VERSION.
 #[must_use]
 pub fn format_code(format: DatFormat) -> i64 {
     match format {
@@ -123,7 +123,7 @@ pub fn import_dat(
 /// TOSEC), which is neither a provider nor stable across revisions of
 /// the same source. So: homepage first, UNLESS it is URL-shaped —
 /// FBNeo puts its site there and its org name in author. Provider is
-/// half of the durable source identity (60-dats.md), which is why
+/// half of the durable source identity (dats.md), which is why
 /// this chain prefers the stable org name.
 fn provider_default(header: &DatHeader) -> Option<&str> {
     header

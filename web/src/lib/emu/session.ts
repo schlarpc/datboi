@@ -5,7 +5,7 @@
  * *collection* (events, gamepad polling).
  *
  * Audio is scheduled AudioBuffers with drift correction (dust-web's
- * proven main-thread shape, 88-emulation.md): each frame's samples are
+ * proven main-thread shape, emulation.md): each frame's samples are
  * queued at a running tail timestamp; a tail that falls behind the
  * clock snaps forward (dropout, not slow-motion), a tail too far ahead
  * drops the chunk (bounded latency, not unbounded lag). The

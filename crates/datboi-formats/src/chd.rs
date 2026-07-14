@@ -1,4 +1,4 @@
-//! CHD v5 header parsing (docs/60-dats.md gotcha 3, 90-roadmap M1): MAME
+//! CHD v5 header parsing (docs/dats.md gotcha 3, roadmap M1): MAME
 //! dats identify disks by the CHD's *internal* sha1 — a hash of the
 //! decompressed data+metadata, NOT of the file bytes — so audit needs the
 //! header's declaration to connect a stored `.chd` to a disk claim.

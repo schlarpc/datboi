@@ -1,4 +1,4 @@
-//! Canonical parse output shared by every dat family (docs/60-dats.md).
+//! Canonical parse output shared by every dat family (docs/dats.md).
 //!
 //! Losslessness contract (D13): fields the audit/selection path queries are
 //! typed; everything else — including attributes we have never seen — is
@@ -25,7 +25,7 @@ pub struct DatHeader {
     pub author: Option<String>,
     pub homepage: Option<String>,
     pub url: Option<String>,
-    /// clrmamepro emitter hints (60-dats: forcemerging none|split|full,
+    /// clrmamepro emitter hints (dats: forcemerging none|split|full,
     /// forcenodump obsolete|required|ignore, forcepacking zip|unzip),
     /// stored as written.
     pub force_merging: Option<String>,
@@ -51,7 +51,7 @@ pub struct Entry {
     pub cloneof: Option<String>,
     pub romof: Option<String>,
     pub sampleof: Option<String>,
-    /// No-Intro P/C XML extensions (60-dats gotcha 1: entry identity across
+    /// No-Intro P/C XML extensions (dats gotcha 1: entry identity across
     /// revisions).
     pub id: Option<String>,
     pub cloneof_id: Option<String>,
@@ -105,7 +105,7 @@ pub struct Release {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaimKind {
     Rom,
-    /// CHD internal-data sha1, not a file hash (60-dats gotcha 3).
+    /// CHD internal-data sha1, not a file hash (dats gotcha 3).
     Disk,
     Sample,
 }
@@ -116,7 +116,7 @@ pub enum ClaimStatus {
     Good,
     BadDump,
     /// Can never be satisfied; excluded from completeness math per
-    /// forcenodump (60-dats gotcha 5).
+    /// forcenodump (dats gotcha 5).
     NoDump,
     Verified,
 }
@@ -133,7 +133,7 @@ impl ClaimStatus {
     }
 }
 
-/// One rom/disk/sample claim. Hash tuple is partial by design (60-dats
+/// One rom/disk/sample claim. Hash tuple is partial by design (dats
 /// gotcha 2); zero-byte sizes and duplicate hashes are legal (gotchas 4/5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RomClaim {
@@ -223,7 +223,7 @@ impl ParseError {
 }
 
 /// Parse a crc32 hex string. The wild strips leading zeros from CRCs in old
-/// dats (60-dats gotcha 2), so short strings are left-padded to 8 digits;
+/// dats (dats gotcha 2), so short strings are left-padded to 8 digits;
 /// md5/sha1/sha256 never appear truncated and are parsed exact-length only.
 pub fn parse_crc32(s: &str) -> Option<[u8; 4]> {
     if s.is_empty() || s.len() > 8 {

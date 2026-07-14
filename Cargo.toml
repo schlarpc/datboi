@@ -1,6 +1,6 @@
 # Host workspace. The wasm components (crates/datboi-xf-*, datboi-ex-*)
 # are each their OWN standalone workspace with their own lockfile
-# (D54/D66; different target/profile; see docs/50-infra.md) — the
+# (D54/D66; different target/profile; see docs/infra.md) — the
 # lockfile boundary is what keeps sibling changes from churning
 # component bytes. Excluding them here lets host crates path-depend on
 # a component's PURE logic (gates cross-check wasm vs native, analyzers
@@ -54,7 +54,7 @@ assert_cmd = "2"
 # The NFSv3 VFS trait is #[async_trait]; implementing it requires the
 # same macro on our side.
 async-trait = "0.1"
-# The daemon's serving stack (docs/50-infra.md, docs/80-views.md: axum +
+# The daemon's serving stack (docs/infra.md, docs/views.md: axum +
 # tokio, ratified day-one surface). Only `datboi serve` enters the
 # runtime; client subcommands stay blocking (ureq).
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
@@ -66,7 +66,7 @@ blake3 = "1"
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 crc32fast = "1"
-# WebDAV protocol engine over our snapshot VFS (docs/80-views.md names
+# WebDAV protocol engine over our snapshot VFS (docs/views.md names
 # the stack). No default features: localfs/memfs backends stay out —
 # the only filesystem is the view manifest.
 dav-server = { version = "0.11", default-features = false }
@@ -105,7 +105,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 # databases on a network filesystem. Safe wrapper — the workspace warns
 # on unsafe_code.
 rustix = { version = "1", features = ["fs", "process"] }
-# In-process userspace NFSv3 (docs/80-views.md: the primary mount,
+# In-process userspace NFSv3 (docs/views.md: the primary mount,
 # nfsserve lineage). Serves mount+portmap+nfs on one TCP port; no
 # kernel export, no root.
 nfsserve = "0.11"

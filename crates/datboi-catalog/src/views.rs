@@ -1,4 +1,4 @@
-//! View definitions + evaluation (M4, 80-views.md three layers):
+//! View definitions + evaluation (M4, views.md three layers):
 //! a *definition* is mutable policy (state.db config KV — it may say
 //! "current"); *evaluation* resolves it against the current dat revision
 //! and grounded holdings into an immutable `datboi/viewsnap/1` manifest;
@@ -250,7 +250,7 @@ pub struct EvalReport {
     /// Rows dropped because the profile's size cap can't hold them.
     pub skipped_oversize: usize,
     /// Directories that got an alpha-bucket level because they exceeded
-    /// the profile's entry cap (80-views.md mitigation).
+    /// the profile's entry cap (views.md mitigation).
     pub bucketed_dirs: usize,
     /// Directories STILL exceeding the entry cap after bucketing
     /// (rows kept; the report is the remedy).
@@ -410,7 +410,7 @@ pub fn evaluate_view(
             && p.size > cap
         {
             // The target filesystem cannot hold this file at all;
-            // auto-split is image-synthesis-era work (80-views.md).
+            // auto-split is image-synthesis-era work (views.md).
             skipped_oversize += 1;
             continue;
         }
@@ -445,7 +445,7 @@ pub fn evaluate_view(
         });
     }
 
-    // Entry-cap mitigation (80-views.md): file rows sitting directly in
+    // Entry-cap mitigation (views.md): file rows sitting directly in
     // an over-cap directory move down one alpha-bucket level (`A`..`Z`,
     // `#` for the rest) — mitigated, not just reported. What remains
     // overfull after bucketing (subdir-heavy layouts) is reported.
@@ -494,7 +494,7 @@ pub fn evaluate_view(
     })
 }
 
-/// The 80-views.md entry-cap mitigation: file rows sitting directly in
+/// The views.md entry-cap mitigation: file rows sitting directly in
 /// an over-cap directory move down one alpha-bucket level; bucketed
 /// paths that collide with pre-existing rows get the deterministic
 /// hash-suffix remedy (or stay put if even that collides). Returns
@@ -576,7 +576,7 @@ fn dir_children(rows: &[ViewRow]) -> HashMap<String, HashSet<String>> {
 }
 
 /// `A`–`Z` from a name's FIRST character (uppercased); `#` for digits
-/// and everything else — the 80-views.md bucket vocabulary. First
+/// and everything else — the views.md bucket vocabulary. First
 /// character, not first letter: device menus sort by leading char, and
 /// the bucket must agree with where the eye looks.
 fn alpha_bucket(name: &str) -> String {

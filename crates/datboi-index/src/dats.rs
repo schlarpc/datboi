@@ -1,4 +1,4 @@
-//! Dat model tables (docs/60-dats.md → 65-schema.md §2). Attrs/header
+//! Dat model tables (docs/dats.md → schema.md §2). Attrs/header
 //! long-tail data is stored as SQLite JSONB (preserved-not-queried; the
 //! CAS dat blob is the true canonical form; generated columns are the
 //! index-later escape hatch).
@@ -123,7 +123,7 @@ impl Db {
         Ok(id)
     }
 
-    /// Flip the source's "current" pointer (60-dats: revisions are
+    /// Flip the source's "current" pointer (dats: revisions are
     /// immutable; currency is a pointer).
     pub fn set_current_revision(&self, source_id: i64, revision_id: i64) -> Result<(), IndexError> {
         self.cache().execute(

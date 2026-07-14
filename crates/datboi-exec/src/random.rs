@@ -81,7 +81,7 @@ impl RangeRead for VerifiedRandom {
 }
 
 /// Affine assemble node as a random-access source: range reads translate
-/// arithmetically onto the children (docs/70-recipes.md execution).
+/// arithmetically onto the children (docs/recipes.md execution).
 pub struct AssembleRandom {
     params: AssembleParams,
     size: u64,

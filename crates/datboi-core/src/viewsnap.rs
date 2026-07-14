@@ -1,5 +1,5 @@
 //! `datboi/viewsnap/1` — the immutable, content-addressed result of
-//! evaluating a view (80-views.md, D23/D33): a canonical manifest of
+//! evaluating a view (views.md, D23/D33): a canonical manifest of
 //! `(path, output hash, size, seek class)` rows plus the dat revisions
 //! the evaluation used, so a snapshot is reproducible evidence even
 //! though the view definition says "current".

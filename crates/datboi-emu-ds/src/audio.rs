@@ -6,7 +6,7 @@
 //! inside the emulator): passing a JS closure into the wasm instance
 //! hung `create_emu_state` inside a Web Worker on Chromium 148 headless
 //! (fine on the main thread, fine under an attached debugger — an
-//! engine-side heisenbug, see docs/88-emulation.md). No JS value crosses
+//! engine-side heisenbug, see docs/emulation.md). No JS value crosses
 //! into wasm this way, which kills the whole bug class.
 //!
 //! The DS mixer emits a sample pair every 1024 cycles — 32768 Hz — in

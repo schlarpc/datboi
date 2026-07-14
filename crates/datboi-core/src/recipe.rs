@@ -1,4 +1,4 @@
-//! Recipe objects (docs/70-recipes.md): exactly one operation application,
+//! Recipe objects (docs/recipes.md): exactly one operation application,
 //! `datboi/recipe/1\n` + strict canonical CBOR, identity = blake3 of the
 //! whole blob including the prefix (D18).
 //!

@@ -25,10 +25,10 @@ headless (fine on the main thread, fine with a debugger attached; an
 engine heisenbug we design out rather than debug further, see
 src/audio.rs). Watch item logged: dust's homebrew heuristic
 (open-questions). This
-doc is the design record for the emulator lane; [87-web-ui.md]
-(87-web-ui.md) governs the Play surface it produces. The vision line
+doc is the design record for the emulator lane; [web-ui.md]
+(web-ui.md) governs the Play surface it produces. The vision line
 it serves: "in-browser emulator cores for direct play"
-(00-vision.md), pulled forward from the 90-roadmap M7+ frontier list
+(vision.md), pulled forward from the roadmap M7+ frontier list
 because the M5 web surface reserved its slot and the enabling
 patterns (D58 C-source-to-wasm, D66/D67 embedding) now exist.*
 

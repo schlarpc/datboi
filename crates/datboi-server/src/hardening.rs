@@ -62,7 +62,7 @@ pub(crate) async fn security_headers(req: Request, next: Next) -> Response {
     );
     // COOP + COEP = cross-origin isolation: SharedArrayBuffer (and so
     // the emu lane's future AudioWorklet ring / threaded 3D,
-    // docs/88-emulation.md) becomes available. Free to require today:
+    // docs/emulation.md) becomes available. Free to require today:
     // the CSP above already forbids every cross-origin subresource, so
     // nothing exists for require-corp to break. A future box-art
     // provider must proxy third-party images anyway (same CSP).

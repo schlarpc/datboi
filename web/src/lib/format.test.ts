@@ -7,7 +7,7 @@ import { residencyLabel } from './residency.svelte';
 await loadLocale('en');
 
 describe('shortHash', () => {
-  test('renders the first 8 hex, no ellipsis (87-web-ui.md vocabulary)', () => {
+  test('renders the first 8 hex, no ellipsis (web-ui.md vocabulary)', () => {
     expect(shortHash('3f9a4c2b1d3f9a4c2b1d3f9a4c2b1d3f9a4c2b1d')).toBe('3f9a4c2b');
   });
 
@@ -66,7 +66,7 @@ describe('snapShort', () => {
 });
 
 describe('residencyLabel', () => {
-  test('wire words render as product words (87-web-ui.md vocabulary)', () => {
+  test('wire words render as product words (web-ui.md vocabulary)', () => {
     expect(residencyLabel('resident')).toBe('on disk');
     expect(residencyLabel('evicted_covered')).toBe('rebuildable');
     expect(residencyLabel('absent')).toBe('not here');

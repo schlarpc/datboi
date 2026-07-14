@@ -1,5 +1,5 @@
 //! Minimal zip central-directory reader — just enough to claim members
-//! (docs/90-roadmap.md: containers stay literal, members are claims).
+//! (docs/roadmap.md: containers stay literal, members are claims).
 //!
 //! Owned rather than the `zip` crate: we need exact raw byte ranges
 //! (local-header data offsets) to mint slice/deflate recipes over the

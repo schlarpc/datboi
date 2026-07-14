@@ -1,5 +1,5 @@
 //! Strict canonical CBOR subset codec (RFC 8949 §4.2.1 deterministic
-//! encoding). Recipe objects freeze these bytes forever (docs/70-recipes.md),
+//! encoding). Recipe objects freeze these bytes forever (docs/recipes.md),
 //! so the codec is self-owned and supports exactly the subset they need:
 //! unsigned integers, byte strings, text strings, arrays, and maps with
 //! unsigned-integer keys. Everything else — negative integers, floats, tags,

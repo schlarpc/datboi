@@ -1,4 +1,4 @@
-//! In-process userspace NFSv3 (docs/80-views.md: the primary mount;
+//! In-process userspace NFSv3 (docs/views.md: the primary mount;
 //! D32 userspace-only serving). Read-only over the same snapshot VFS
 //! as HTTP/DAV; every file read is an [`Executor::serve_range`] call —
 //! the D49 verified path.

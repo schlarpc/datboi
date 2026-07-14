@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
-<!-- Synthetic No-Intro-style P/C fixture exercising 60-dats gotchas:
+<!-- Synthetic No-Intro-style P/C fixture exercising dats gotchas:
      P/C ids, sha256/mia/serial extensions, zero-byte rom, duplicate
      hashes under different names, nodump/baddump, unknown attrs,
      releases, biosset, sample, short crc padding. -->

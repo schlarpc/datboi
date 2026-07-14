@@ -11,7 +11,7 @@
  */
 import type { ResidencyState } from './api/types';
 
-// Product words, not engine words (87-web-ui.md vocabulary):
+// Product words, not engine words (web-ui.md vocabulary):
 // "rebuildable" is a brag — space saved, provably reproducible —
 // where "evicted (covered)" read as a malfunction. Lowercase copy,
 // forced into the catalog at statement level.

@@ -142,7 +142,7 @@ test('row click opens the drawer; Escape, ✕, and re-click close it', async () 
   expect(sub?.textContent?.replace(/\s+/g, ' ').trim()).toBe('USA · 4 MB · aabbccdd');
 
   // The drawer summarizes and links out — the blob line is a link into
-  // the inspector, which owns the internals (87-web-ui.md; the old
+  // the inspector, which owns the internals (web-ui.md; the old
   // storage-internals fold is dead).
   const blobLink = screen.getByText('deadbeef').closest('a');
   expect(blobLink?.getAttribute('href')).toBe(`/storage/blob/${BLOB_HASH}`);

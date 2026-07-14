@@ -164,7 +164,7 @@
   <div class="box" bind:this={box} style="width:{fitW}px;height:{fitH}px">
     {#each controls as control (control.name)}
     {#if control.name === 'dpad'}
-      <!-- Four CSS-drawn arms in a plus (87-web-ui: structure over
+      <!-- Four CSS-drawn arms in a plus (web-ui: structure over
            glyph); diagonals read as two arms lit at once. -->
       <div class="dpad" style={place(control)}>
         <div class="arm arm--up" class:on={pressed.has('up')}></div>

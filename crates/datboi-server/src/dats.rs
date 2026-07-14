@@ -1,4 +1,4 @@
-//! Dat import over HTTP (docs/60-dats.md) — the first mutating action
+//! Dat import over HTTP (docs/dats.md) — the first mutating action
 //! to graduate from the M5 CLI-only ruling, because it is
 //! request-sized: bytes in, report out, and the CLI path buffers the
 //! whole file exactly the same way (`std::fs::read` in cmds.rs).

@@ -1,6 +1,6 @@
 //! Dat import, content-identity unification, audit rollups, dir2dat.
 //!
-//! Design record: docs/60-dats.md, docs/65-schema.md §2–§3, decisions
+//! Design record: docs/dats.md, docs/schema.md §2–§3, decisions
 //! D2/D29/D38/D39. Import is a deterministic function of the dat blob
 //! (D15); the only wall-clock in any row is `imported_at`.
 //!

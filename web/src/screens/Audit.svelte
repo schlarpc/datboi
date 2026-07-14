@@ -7,7 +7,7 @@
    * - System header data comes from GET /v1/systems (there is no
    *   single-system endpoint; the list is tiny). Rail counts are the
    *   system's UNFILTERED totals per spec §5.1.
-   * - Rows VIRTUALIZE (87-web-ui.md; the "load more" button died with
+   * - Rows VIRTUALIZE (web-ui.md; the "load more" button died with
    *   it): the first response carries the filtered total, a spacer
    *   sizes the scrollbar to the whole collection from the first
    *   paint, and only the visible window (± a buffer) renders — pages
@@ -59,7 +59,7 @@
   let selected = $state<string | null>(null);
   let detail = $state<Remote<EntryDetail>>(loading());
   /** The last READY detail: the drawer keeps rendering it while the
-   * next selection loads (stale-while-loading, 87-web-ui.md item —
+   * next selection loads (stale-while-loading, web-ui.md item —
    * the old close-and-reopen flicker was the drawer unmounting per
    * selection). Cleared on close so a reopen never flashes old data. */
   let lastDetail = $state<EntryDetail | null>(null);
@@ -287,7 +287,7 @@
       <div class="row2">
         <span class="pct">{pct}%</span>
         <div class="bar-wrap"><StackedBar counts={sys.counts} register="bench" /></div>
-        <!-- Numbers travel with their words (87-web-ui.md: color is
+        <!-- Numbers travel with their words (web-ui.md: color is
              never the only legend — bare color-coded counts read as a
              puzzle). -->
         <span class="counts">
@@ -312,7 +312,7 @@
             class:nodump={st === 'nodump'}
             onclick={() => (filter = st)}
           >
-            <!-- CSS-drawn marks, not unicode glyphs (87-web-ui.md:
+            <!-- CSS-drawn marks, not unicode glyphs (web-ui.md:
                  structure over glyph — ●◐○– rendered at inconsistent
                  widths through font fallback on some OSes). -->
             <span class="rail-label">
@@ -357,7 +357,7 @@
           {/if}
           <!-- The scrollbar tells the truth about collection size from
                the first paint: a spacer the height of EVERY row, with
-               only the window rendered inside it (87-web-ui.md). -->
+               only the window rendered inside it (web-ui.md). -->
           <div class="spacer" style:height="{list.data.total * ROW_H}px">
             <div class="window" style:transform="translateY({winStart * ROW_H}px)">
               {#each rows.slice(winStart, winEnd + 1) as entry, i (winStart + i)}
@@ -594,7 +594,7 @@
     flex: 1;
     overflow-y: auto;
     min-width: 0;
-    /* Themed scrollbar (87-web-ui.md): tokens, not UA chrome. */
+    /* Themed scrollbar (web-ui.md): tokens, not UA chrome. */
     scrollbar-color: var(--hair) transparent;
   }
 

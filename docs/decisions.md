@@ -322,7 +322,7 @@ CLI-only (localhost daemon, no auth/UI until M4), containers-stay-literal
 with members-as-claims (≈1.0× storage), zero load-bearing wasm (builtins
 only; wasmtime ships with reference transform + determinism CI gate).
 Milestone order M2 (shrink) → M3 (views/serving) → M4 (UI/auth) →
-M5 (p2p) → M6+ (frontier). Full definition in 90-roadmap.md. *Rejected:*
+M5 (p2p) → M6+ (frontier). Full definition in roadmap.md. *Rejected:*
 early storage wins in MVP (adds drop-adjacent paths to v1), status-page
 scope leak, p2p-before-UI reordering.
 
@@ -869,7 +869,7 @@ auto-rehabilitation (flapping must never mask corruption).
 
 ## D62 — Reified views ratified: images are assemble recipes (M4 scope: read-only FAT32) (2026-07-10)
 
-The 80-views model is ratified as scoped: a reified image is a plain
+The views model is ratified as scoped: a reified image is a plain
 `assemble@1` recipe — skeleton blobs (boot sector, FATs, directory
 clusters) + windowed segments over content blobs (cluster-aligned) +
 fill for slack — minted by filesystem-layout math running in the
@@ -1490,7 +1490,7 @@ claimed — which makes that bucket actionable instead of alarming;
 claim name → role relative to a claimed root ("chunk 3/74 of X",
 "container holding X") → ingest-sniff fallback; (3) derived blobs
 display provenance *via* their root ("via roms/pack.zip, ingested
-2026-07-11"). This reaffirms 70-recipes (provenance is history in
+2026-07-11"). This reaffirms recipes (provenance is history in
 the DB, never in recipes — recipes are timeless) and D18 (blobs
 untyped; type lives in the edges) while closing the display gap they
 left. *Rejected:* copying claims/provenance onto derived blobs at
@@ -1619,8 +1619,8 @@ lazy-loaded static asset), and exempt from the component doctrine
 entirely: no WIT world, no wasmtime, no recipe pinning, no
 determinism gate — `wasm32-unknown-unknown` + wasm-bindgen, because
 they run in the *browser* and nothing downstream depends on their
-byte-exactness. Design record: [88-emulation.md](88-emulation.md)
-(pulled forward from the 90-roadmap M7+ frontier; the M5 web surface
+byte-exactness. Design record: [emulation.md](emulation.md)
+(pulled forward from the roadmap M7+ frontier; the M5 web surface
 reserved the ▶ Play slot). First console is DS via `dust-core` — the
 only accuracy-credible library-shaped Rust DS core, browser-proven
 (worker + transferable frames + scheduled AudioContext, no
@@ -1645,7 +1645,7 @@ library-shaped wasm path: emscripten fork or dormant port); NES
 first (proves nothing DS doesn't — single screen, no pointer, no
 perf pressure); shipping or requiring Nintendo BIOS/firmware (HLE
 direct-boot covers v1; the later BIOS story is
-known-hashes-from-CAS, see 88-emulation.md).
+known-hashes-from-CAS, see emulation.md).
 
 *Amendment (same day):* the spike shipped through milestone 3 and
 two details moved under it. (1) Play is NOT owner-only: play rights
@@ -1681,7 +1681,7 @@ owner route. The rom name rides the URL tail so core gating stays
 extension-based (registry) and the screen keeps an honest title.
 *Rejected:* resolving an entry to a view path via pins (a playable
 blob may be pinned by zero views, and pins don't carry paths); the
-"playable payload resolver" endpoint 88-emulation.md reserved (the
+"playable payload resolver" endpoint emulation.md reserved (the
 blob route makes it unnecessary); gating ▶ on verified-only (claimed
 bytes serve and play the same; the state line already tells the
 truth about trust).
@@ -1758,3 +1758,29 @@ fullscreen (couples playability to a mode switch); auto-immersive on
 touch devices (stealing the browser UI on arrival is hostile — one
 tap opts in); orientation locking (the stacked DS layout is
 portrait-native; nothing to force).
+
+## D88 — Doc filenames drop positional numbers: names cite, an index orders (2026-07-13)
+
+The `NN-name.md` scheme is retired; subsystem docs are bare stable
+names (`cas.md`, `views.md`, …) and `docs/README.md` is the single
+place that encodes reading order. The numbering failed for a
+diagnosable reason: it was POSITIONAL — each number claimed a slot in
+an ordering, and growth invalidates slots. Growth here is lopsided
+(new subsystems land at the surface layer: cli, web-ui, emulation,
+saves all crowded the 80s until 89 was the last slot), so any gap
+scheme re-crunches; meanwhile the citation graph only densifies
+(house style mandates liberal doc citation in code comments — ~180
+references at rename time), so every future renumber costs more than
+the last. Contrast the numbering in this repo that works: D-numbers
+are APPEND-ONLY IDENTIFIERS, position-free, so citations never rot.
+Filenames now follow the same principle — the name is the identifier;
+order lives in exactly one file (the index) where changing it breaks
+nothing. The one real benefit numbers delivered (vision-first,
+roadmap-last in a cold directory listing) moves into README.md.
+*Rejected:* re-spacing the tail / moving roadmap to 99 (buys nine
+slots, then re-crunches at doc ~25); three-digit renumber (same
+positional failure, bigger blast radius per crunch); keeping token
+sentinels like `00-vision` (a half-scheme reads as drift, not
+design); dropping the reading order entirely (alphabetical listing
+buries vision and roadmap — the order is worth keeping, just not in
+filenames).

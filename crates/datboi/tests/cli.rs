@@ -344,7 +344,7 @@ fn move_is_explicitly_unimplemented() {
         .stderr(predicate::str::contains("not implemented"));
 }
 
-/// The bare-NAS recovery drill (90-roadmap.md M1): mint a signed snapshot,
+/// The bare-NAS recovery drill (roadmap.md M1): mint a signed snapshot,
 /// nuke every database (keeping the identity key — the one non-CAS secret),
 /// recover, and the audit must come back byte-identical with zero manual
 /// re-imports.

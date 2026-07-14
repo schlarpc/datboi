@@ -1,4 +1,4 @@
-//! Browser emulator cores (D84, docs/88-emulation.md): the third wasm
+//! Browser emulator cores (D84, docs/emulation.md): the third wasm
 //! lane, embedded like the web dist (D66/D67 — `DATBOI_EMU_DS` from the
 //! flake or build.rs's `nix build .#emu-ds` dev fallback) and served as
 //! static assets under `/emu/{core}/`. The web app's Play screen spawns
