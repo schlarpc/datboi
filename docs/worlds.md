@@ -1,12 +1,10 @@
 # Worlds — the component ABI: lanes, semver, vending, publishing
 
-*Status: RATIFIED as D89 (2026-07-13). This doc is the canonical home
-for the wit ABI and its distribution; [runtime.md](runtime.md) §ABI
-described the pre-break numbering and defers here. The break this doc
-designs (re-cutting every world under the new doctrine) is pending —
-see open-questions.md for the work list. Authorized on the finding
-that NO non-dev stores exist: this is the last cheap moment to break
-bytes, and the design below is what we break TO.*
+*Status: RATIFIED as D89 (2026-07-13); the break LANDED 2026-07-14
+(every world re-cut, guests on the vending crates, fixtures re-blessed,
+dev stores wiped, `nix flake check` green). This doc is the canonical
+home for the wit ABI and its distribution. Implementation notes that
+refine the design are recorded in §landed notes at the end.*
 
 ## The diagnosis: one integer, two jobs
 
@@ -237,3 +235,33 @@ re-pin goldens; rename `World::Extractor1`-era recipe schema; wipe
 dev stores; retire runtime.md §ABI to a pointer here; then the
 vending crates and publish jobs. Old-world wit text survives in git
 history only.
+
+## Landed notes (2026-07-14, the break as built)
+
+- **WIT doc comments are part of the frozen bytes.** Measured, not
+  assumed: a one-line doc edit in streams.wit changed every component's
+  bytes (wit-bindgen embeds the doc-bearing encoded wit in the
+  component-type custom section). So a wit typo fix is a FORMAT EVENT —
+  wit text freezes with the version it documents, and the gates' pinned
+  `COMPONENT_BLAKE3` constants are the tripwire that catches anyone
+  forgetting this.
+- **Stamp format**: `revision` = `tree:<crate-tree>;guest:<guest-tree>`
+  (both `git write-tree` hashes, verifiable with
+  `git rev-parse <commit>:crates/<crate>` / `:crates/datboi-guest-<lane>`).
+- **The buffered sugar is a trait + macro** (`BufferedGuest` +
+  `export_buffered!`), not a closure — exports are static trait impls,
+  so a closure had nowhere to live. Same author surface otherwise;
+  xf-reference is the in-tree proof and the determinism gate runs it.
+- **Extractor recipe params are host-interpreted**: the recipe's params
+  bstr carries member selection (`ExtractorParams { member_ix }`) which
+  the host turns into the one-request batch; the WORLD call passes an
+  empty params bstr. When world-level params arrive (passwords), the
+  recipe schema grows a forwarded subset — schema evolution, not ABI.
+- **Ingest batches at 128 requests per extract pass** — bounds consumer
+  threads; solid decode restarts once per batch (accepted cap cost).
+- **The wit packages encode with `wasm-tools component wit --wasm`**
+  (same binary encoding `wkg wit build` emits; wkg's builder wants a
+  registry for cross-package deps, wasm-tools resolves the local
+  `deps/` symlinks). `wkg oci push` still does the publishing.
+- **Guest crates are no_std + alloc** so ex-unrar (which owns its panic
+  handler and C heap) links them; std consumers are unaffected.

@@ -39,20 +39,13 @@ semantic (format-aware transforms, codecs for containers, peer-supplied
 code). Wasm runs ~1.5–2.5× native — fine for the long tail, wasteful on
 the hot path. Instantiation is negligible (~120µs AOT).
 
-## ABI (D7)
+## ABI (D7/D89)
 
-*SUPERSEDED by D89 ([worlds.md](worlds.md)) — the numbered-profile
-scheme below describes the pre-break ABI and stands only until the
-epoch break lands; this section then retires to a pointer.*
-
-Own WIT world, `datboi:transform@1.x` (WIT packages support semver),
-frozen at M1 as the *whole-buffer* profile (D41): inputs/outputs are
-complete by-value blobs, and the world imports nothing but its own types
-interface — the empty import surface is the sandbox. Streaming (chunked
-pull/push resources, or WASI 0.3 `stream<u8>` once its rustc target
-matures) is the future `datboi:transform@2` world, a sibling rather than
-a revision — the world is ours, so adding it is not a format break.
-"Which world does this component target" is recipe metadata. Old worlds
-stay executable forever. Components compile to wasm32-unknown-unknown
-core modules and are componentized with `wasm-tools component new`
-(D42: wasip2's std would drag WASI imports into every component).
+The component ABI has its own design record: [worlds.md](worlds.md) —
+named lanes (`datboi:transform@1`, `datboi:extractor@1`, both importing
+`datboi:streams@1`), per-version freeze, CBOR vocabulary surfaces,
+vending crates, publishing. What stays true here: "which world does
+this component target" is recipe metadata, lane-major host linkers are
+append-only forever, and components compile to wasm32-unknown-unknown
+core modules componentized with `wasm-tools component new` (D42:
+wasip2's std would drag WASI imports into every component).

@@ -1847,3 +1847,17 @@ unstable encoding); a single `datboi-guest` crate (two independently
 versioned lanes give one crate no honest version number);
 suffix-`-guest` crate names (inverts the house family-prefix grammar
 and scatters crates.io prefix search).
+
+*Amendment (2026-07-14, the break landed):* shipped whole the day
+after the ruling — wit tree, vending crates, hosts, exec/ingest,
+fixtures, goldens, dev-store wipe, publish tooling; flake gate green.
+Three refinements recorded in worlds.md §landed notes: (1) MEASURED —
+a wit doc-comment edit churns every component's bytes (wit-bindgen
+embeds the doc-bearing encoded wit), so wit text freezes with its
+version and a typo fix is a format event caught by the golden pins;
+(2) the buffered sugar is a trait + export macro (statics, not
+closures); (3) extractor recipe params stay HOST-interpreted member
+selection and the world call passes an empty bstr — world-level
+params (passwords) will be a recipe-schema forwarded subset, not a
+re-reading of existing bytes. Component stamps now carry both source
+trees (`tree:<crate>;guest:<guest-crate>`).

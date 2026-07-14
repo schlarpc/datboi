@@ -12,7 +12,7 @@ a citation sends you.
    determinism contract.
 4. [runtime.md](runtime.md) — the wasm sandbox and execution model.
 5. [worlds.md](worlds.md) — the component ABI: lanes, semver, vending,
-   publishing (D89; break pending).
+   publishing (D89).
 6. [p2p.md](p2p.md) — friends, trust, and byte exchange.
 7. [infra.md](infra.md) — nix, builds, deployment.
 8. [dats.md](dats.md) — dat ingestion and the naming authority.

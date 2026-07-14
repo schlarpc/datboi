@@ -458,23 +458,24 @@ two things were seen and deliberately deferred:
 
 ## Next sessions (pick up here)
 
-**Position as of 2026-07-14 (ABI epoch, D89)**: docs/worlds.md
-ratified — named lanes replace the numbered-profile worlds, and a
-CLEAN BREAK is authorized (no non-dev stores; last cheap moment).
-Docs are landed; NO CODE HAS MOVED. The break work list, in
-dependency order: (1) re-cut the wit tree (`streams`/`transform`/
-`extractor` lanes, CBOR-result `describe`/`enumerate`, extractor
-gets `list<file>` + request-batch `extract` + params bstr), (2) port
-runtime to module-per-major and guests to the new worlds (buffered
-guests onto the `buffered()` sugar once the crate exists — inline
-adapters until then), (3) recipe schema rename (`World::Extractor1`
-etc.; `member_ix` moves from recipe params into the request), (4)
-re-bless checked-in vectors + `unstamped.wasm`, re-pin goldens, wipe
-dev stores, (5) retire runtime.md §ABI to a pointer, (6) vending
-crates (`datboi-guest-transform`/`-extractor`) and the wkg→GHCR +
-cosign publish jobs in container.yml. Empirical item riding step 1:
-does a wit doc-comment edit churn component bytes? Pin with a gate
-either way (worlds.md §churn).
+**Position as of 2026-07-14 (ABI epoch, D89 — LANDED)**: the break
+shipped the same day it was ruled, whole: new wit tree (three lanes,
+CBOR vocabulary), vending crates (`datboi-guest-transform`/
+`-extractor`, no_std+alloc, every in-tree guest consumes them),
+runtime hosts re-cut (whole-buffer host deleted), exec/ingest ported
+(batched extraction, cap 128/pass), fixtures re-blessed, goldens
+re-pinned, dev stores wiped, wkg publish + keyless cosign in
+container.yml. `nix flake check` green. Empirical answer recorded in
+worlds.md §landed notes: wit doc edits DO churn component bytes —
+wit text freezes with its version; the golden pins are the tripwire.
+Deferred, deliberately: crates.io publication of the guest crates
+(wit vendoring at publish time is designed, not built — a git dep
+serves until someone external asks); world-level extractor params
+forwarding (recipe schema grows a forwarded subset when passwords
+become real). Watch item: the FIRST main push after this publishes
+`datboi:{streams,transform,extractor}@1.0.0` to ghcr.io/schlarpc/wit
+— confirm the job goes green and `cosign verify` works as documented
+in the workflow comment.
 
 **Position as of 2026-07-13 (saves design pass)**: docs/saves.md
 opened — the design pass D62 reserved ("writable overlays … save
