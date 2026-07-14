@@ -457,6 +457,28 @@ two things were seen and deliberately deferred:
 
 ## Next sessions (pick up here)
 
+**Position as of 2026-07-13 (saves design pass)**: docs/89-saves.md
+opened — the design pass D62 reserved ("writable overlays … save
+history for free"), written from the emu-worker end because saves are
+the loudest play-surface gap. The model: a lineage **forest** (append
++ fork, no *automatic* merge), the file/state cleave on interop +
+keying axes, raw component blobs in `data/` + self-identifying
+`savenode` meta objects written at flush time (git's objects/refs
+split — statesnap carries only naming refs, so save durability is
+store-grade, not snapshot-cadence), exact-rom structured anchor
+(title is presentation + explicit-offer fork, never automatic
+cross-rev sharing), offline-first capture (OPFS write-ahead queue —
+the train scenario is exactly where the daemon is unreachable), and
+import/export adapters as the third producer / day-one consumer. Two
+findings gate implementation: the state ring-buffer needs the store's
+FIRST byte-destroying code path (posture-change D-entry + drill owed
+— v1 stays explicit-only states so it can ship later), and shared
+media (memcards / Controller Pak / MK64's EEPROM+Pak split) needs its
+own `(media-instance, owner)` timelines when a memcard console lands.
+Eleven rulings enumerated at the end of the doc, none D-numbered yet
+— next session either rules the savenode shape (ruling 1, the
+expensive-to-change one) or starts v1 against the proposed scope.
+
 **Position as of 2026-07-13 (play-surface session)**: D85–D87 ruled
 and shipped. D85: the audit drawer plays — per-rom ▶ for any claim a
 local blob satisfies and a core claims, over a second Play source
