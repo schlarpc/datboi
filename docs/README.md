@@ -11,17 +11,19 @@ a citation sends you.
 3. [transforms.md](transforms.md) — byte transforms and the
    determinism contract.
 4. [runtime.md](runtime.md) — the wasm sandbox and execution model.
-5. [p2p.md](p2p.md) — friends, trust, and byte exchange.
-6. [infra.md](infra.md) — nix, builds, deployment.
-7. [dats.md](dats.md) — dat ingestion and the naming authority.
-8. [schema.md](schema.md) — the index/database schema.
-9. [recipes.md](recipes.md) — recipe semantics, verification, serving.
-10. [views.md](views.md) — projections, shares, reified images.
-11. [cli.md](cli.md) — the operator surface.
-12. [web-ui.md](web-ui.md) — **governs every web surface** (persona,
+5. [worlds.md](worlds.md) — the component ABI: lanes, semver, vending,
+   publishing (D89; break pending).
+6. [p2p.md](p2p.md) — friends, trust, and byte exchange.
+7. [infra.md](infra.md) — nix, builds, deployment.
+8. [dats.md](dats.md) — dat ingestion and the naming authority.
+9. [schema.md](schema.md) — the index/database schema.
+10. [recipes.md](recipes.md) — recipe semantics, verification, serving.
+11. [views.md](views.md) — projections, shares, reified images.
+12. [cli.md](cli.md) — the operator surface.
+13. [web-ui.md](web-ui.md) — **governs every web surface** (persona,
     vocabulary, design rules).
-13. [emulation.md](emulation.md) — in-browser cores; the third wasm lane.
-14. [saves.md](saves.md) — save persistence, lineage & attribution
+14. [emulation.md](emulation.md) — in-browser cores; the third wasm lane.
+15. [saves.md](saves.md) — save persistence, lineage & attribution
     (design pass open).
 
 Cross-cutting records, always current:

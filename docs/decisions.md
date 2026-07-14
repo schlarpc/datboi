@@ -1793,3 +1793,57 @@ sentinels like `00-vision` (a half-scheme reads as drift, not
 design); dropping the reading order entirely (alphabetical listing
 buries vision and roadmap — the order is worth keeping, just not in
 filenames).
+
+## D89 — The ABI epoch break: named lanes, semver with teeth, CBOR vocabulary, extractor reshaped (2026-07-14)
+
+The world numbering was D88's disease in the ABI namespace: the major
+version was a PROFILE REGISTRY (@1 = whole-buffer, @2 = streaming,
+"@3 reserved for wasip3"), one integer doing two jobs — profile
+identity and contract revision — so a whole-buffer fix would have
+become @3, shape-incompatible with the @2 "below" it, and crate
+vending would need a decoder ring. Ruled, with a CLEAN BREAK
+authorized on the finding that no non-dev stores exist (last cheap
+moment; epoch reuses the clean names, nothing was ever published):
+profile identity moves into the package NAME (a *lane*), versions do
+only semver within one shape, and every published version is
+immutable forever — D51's freeze restated per-version. Lanes:
+`datboi:streams@1` (the shared source/file/sink contract, one home
+for doctrine previously copy-pasted between worlds), a streaming-
+shaped `datboi:transform@1` (whole-buffer world DIES — the host never
+consumed its "definitely not streaming" signal; buffered authoring
+becomes guest-crate sugar), and a reshaped `datboi:extractor@1`
+(containers become `list<file>` — the recipe side was already plural;
+`extract` takes a request BATCH, killing the O(n²) solid-archive
+ingest the single-member signature forced, with a new gate-tested
+clause that member bytes are pure in (containers, ix) regardless of
+batch; both exports gain a `params` bstr the recipe layer was already
+smuggling around the wit). Vocabulary surfaces (`describe`,
+`enumerate`) return canonical-CBOR `result`s like params — record/
+enum growth becomes schema evolution, not ABI breaks — under the
+advisory-keys rule (D64: old hosts meet new keys; anything a host
+must understand is a real version, never a key). Semver policy has
+wasmtime enforcement (semver-aware import resolution + instance
+subtyping): additive host imports and probed exports are minors,
+any shape change is a major, host linkers are append-only forever.
+Vending: one crate per lane, `datboi-guest-<lane>`, crate major.minor
+mirrors the world it binds. Publishing: wkg-encoded wit packages as
+flake outputs, `nix run .#publish-wit` to GHCR (check-then-refuse:
+the publish gate enforces immutability) as a job in the existing
+container workflow, keyless-cosign signing both wit packages and the
+container image. wasip3/component-model async DECLINED: guests
+observing readiness imports host scheduling into guest-visible state
+— the nondeterminism class D5 makes unrepresentable — and freezing on
+an in-flux encoding contradicts freeze-forever; it buys host cost,
+not capability, and waits for a future streams@2. Full design:
+docs/worlds.md (the canonical home for the ABI; runtime.md §ABI
+retires to a pointer when the break lands). *Rejected:* integer
+profile registry (the disease); grandfathering the old worlds beside
+named lanes (correct only if real stores existed — they don't, and
+the wart would be permanent); keeping the whole-buffer lane (its one
+consumer was author ergonomics, which a ten-line adapter serves);
+wit-typed descriptor/member records (every advisory field a
+structural break); adopting wasip3 async now (determinism hazard,
+unstable encoding); a single `datboi-guest` crate (two independently
+versioned lanes give one crate no honest version number);
+suffix-`-guest` crate names (inverts the house family-prefix grammar
+and scatters crates.io prefix search).

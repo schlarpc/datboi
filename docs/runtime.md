@@ -41,6 +41,10 @@ the hot path. Instantiation is negligible (~120µs AOT).
 
 ## ABI (D7)
 
+*SUPERSEDED by D89 ([worlds.md](worlds.md)) — the numbered-profile
+scheme below describes the pre-break ABI and stands only until the
+epoch break lands; this section then retires to a pointer.*
+
 Own WIT world, `datboi:transform@1.x` (WIT packages support semver),
 frozen at M1 as the *whole-buffer* profile (D41): inputs/outputs are
 complete by-value blobs, and the world imports nothing but its own types

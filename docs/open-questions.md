@@ -458,6 +458,24 @@ two things were seen and deliberately deferred:
 
 ## Next sessions (pick up here)
 
+**Position as of 2026-07-14 (ABI epoch, D89)**: docs/worlds.md
+ratified — named lanes replace the numbered-profile worlds, and a
+CLEAN BREAK is authorized (no non-dev stores; last cheap moment).
+Docs are landed; NO CODE HAS MOVED. The break work list, in
+dependency order: (1) re-cut the wit tree (`streams`/`transform`/
+`extractor` lanes, CBOR-result `describe`/`enumerate`, extractor
+gets `list<file>` + request-batch `extract` + params bstr), (2) port
+runtime to module-per-major and guests to the new worlds (buffered
+guests onto the `buffered()` sugar once the crate exists — inline
+adapters until then), (3) recipe schema rename (`World::Extractor1`
+etc.; `member_ix` moves from recipe params into the request), (4)
+re-bless checked-in vectors + `unstamped.wasm`, re-pin goldens, wipe
+dev stores, (5) retire runtime.md §ABI to a pointer, (6) vending
+crates (`datboi-guest-transform`/`-extractor`) and the wkg→GHCR +
+cosign publish jobs in container.yml. Empirical item riding step 1:
+does a wit doc-comment edit churn component bytes? Pin with a gate
+either way (worlds.md §churn).
+
 **Position as of 2026-07-13 (saves design pass)**: docs/saves.md
 opened — the design pass D62 reserved ("writable overlays … save
 history for free"), written from the emu-worker end because saves are
