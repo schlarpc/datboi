@@ -473,13 +473,15 @@ takeover everywhere + `requestFullscreen` where present, windowed
 silently unstyled (scoped selector can't reach into <Link>; fixed
 with `:global`), and Play's back-hover named a never-defined `--fg`
 token. Verified: 217 vitest + svelte-check + production build green.
-NOT verified — needs the live-device loop the last session used
-(daemon + real phone): deck ergonomics/sizing on an actual iPhone
-(unit geometry is tested, feel is not), haptics on Android, iOS CSS
-takeover with browser chrome, simultaneous stylus + button
-multitouch against a real game, and landscape gutter sizing on short
-screens. That live pass is the natural next step, then saves
-persistence (item 4) stays the loudest backlog gap.
+The live-device pass HAPPENED (same day, ios-webkit-debug-proxy
+against the real iPhone — see the D86 amendment): it caught an iOS
+26 grid-percentage bug no emulation showed (canvas under the whole
+deck; fixed by the layout-inert-canvas posture), a cluster-sizing
+collapse (fixed by measured ResizeObserver fit), and touch-triggered
+text selection (disabled screen-wide). Still unexercised: haptics on
+Android, landscape deck feel, simultaneous stylus + button
+multitouch in a real game. Saves persistence (item 4) stays the
+loudest backlog gap.
 
 **Position as of 2026-07-12 (emulation session)**: D84 ruled +
 88-emulation.md written, and **spike milestones 1 + 2 shipped**.

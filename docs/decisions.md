@@ -1722,6 +1722,24 @@ breaks simultaneity and is a toggle); overlaying only the top screen
 width (capability is what matters, and the media query is the
 capability).
 
+*Amendment (same day):* live-iPhone debugging (ios-webkit-debug-proxy
+against the shipping phone, after Chromium AND Linux-WebKit emulation
+both showed correct layout) found iOS 26 Safari resolving a grid
+item's percentage height against the grid CONTAINER, not the item's
+grid area — the canvas computed the stage's height and painted under
+the entire deck. Posture locked in: **the canvas is layout-inert.**
+A plain div (the frame) owns the grid area via stretch alignment —
+the mechanism that always sized the pads correctly on every engine —
+and the canvas hangs inside it absolutely positioned; the deck grid
+carries no percentage-sized items and no tracks sized from item
+intrinsics (engines then disagree only about the frame's aspect-ratio
+under single-axis stretch, which object-fit makes invisible). Two
+smaller same-session rulings: cluster boxes are sized by a measured
+ResizeObserver fit, not CSS aspect-ratio auto-sizing (collapses to
+0×0 when every child is absolutely positioned), and the whole play
+screen disables text selection + the long-press callout (touch play
+kept triggering both — it's a game surface, not a document).
+
 ## D87 — Fullscreen play: one immersive flag, native API where the platform has it (2026-07-13)
 
 The Play screen gains fullscreen: one `immersive` flag with two

@@ -352,17 +352,30 @@
            bottom screen stays a pure stylus surface and buttons +
            stylus work simultaneously. -->
       <div class="stage" class:deck={touchDevice}>
-        <canvas
-          bind:this={canvas}
-          {width}
-          {height}
-          {onpointerdown}
-          onpointermove={(e) => {
-            if (penDown) pointer(e, true);
-          }}
-          onpointerup={(e) => pointer(e, false)}
-          onpointercancel={(e) => pointer(e, false)}
-        ></canvas>
+        <!-- The frame owns layout; the canvas is absolutely
+             positioned inside it. Percentage-sizing the canvas as a
+             grid item is what broke real iPhones: iOS 26 Safari
+             resolves a grid item's percentage height against the
+             grid CONTAINER, not the item's grid area (verified over
+             ios-webkit-debug-proxy: rows 280.8px/196.2px correct,
+             canvas height:100% computed 487px = the stage), so the
+             game painted under the whole deck. Grid-stretching a
+             plain div (like the pads, which were always correct) and
+             hanging the canvas off it with inset percentages dodges
+             every engine's opinion about replaced grid items. -->
+        <div class="frame" style="aspect-ratio: {width} / {height}">
+          <canvas
+            bind:this={canvas}
+            {width}
+            {height}
+            {onpointerdown}
+            onpointermove={(e) => {
+              if (penDown) pointer(e, true);
+            }}
+            onpointerup={(e) => pointer(e, false)}
+            onpointercancel={(e) => pointer(e, false)}
+          ></canvas>
+        </div>
         {#if touchDevice && descriptor !== null}
           <div class="pad pad--l">
             <TouchCluster
@@ -456,12 +469,25 @@
     padding-top: 6px;
   }
 
-  canvas {
-    /* Integer-ish upscale, pixels stay pixels; height is the scarce
-       axis for a stacked dual screen. */
-    image-rendering: pixelated;
+  .frame {
+    position: relative;
+    overflow: hidden;
+    flex: none;
+    /* Desktop (flex stage): height is the scarce axis for a stacked
+       dual screen; the inline aspect-ratio derives the width. */
     height: min(100%, 768px);
     max-width: 100%;
+  }
+
+  canvas {
+    /* Layout-inert: sized by the frame alone (see the markup note). */
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    /* Integer-ish upscale, pixels stay pixels. */
+    image-rendering: pixelated;
     /* keep the aspect ratio the descriptor declared */
     object-fit: contain;
     touch-action: none;
@@ -484,8 +510,8 @@
   }
 
   /* Fullscreen exists to buy pixels: the windowed 768px cap goes.
-     (Deck mode's own canvas rules out-specify this, correctly.) */
-  main.immersive canvas {
+     (Deck mode's own frame rules out-specify this, correctly.) */
+  main.immersive .frame {
     height: 100%;
   }
 
@@ -529,20 +555,20 @@
     justify-content: stretch;
   }
 
-  .stage.deck canvas {
+  .stage.deck .frame {
     grid-area: cnv;
-    width: 100%;
-    height: 100%;
-    justify-self: center;
-    /* Grid items' automatic minimum floors a replaced element at its
-       intrinsic size (384px tall here) — on a phone the 1fr row is
-       smaller than that, so without this the canvas bleeds into the
-       deck band below. overflow: hidden is the spec-guaranteed kill
-       switch for the same rule (auto minimums only apply to
-       overflow: visible items), belt to min-height's braces. */
+    /* NO percentage sizes here (the iOS bug above): auto + the grid's
+       stretch alignment sizes to the area — the same mechanism that
+       always sized the pads correctly. Engines disagree on whether
+       the inline aspect-ratio then narrows the stretched width (iOS:
+       yes, frame = exactly game-shaped; Chromium: no, frame = full
+       area) — both render identically because the canvas letterboxes
+       itself via object-fit; center so both look identical too. */
+    height: auto;
+    max-width: none;
     min-width: 0;
     min-height: 0;
-    overflow: hidden;
+    justify-self: center;
   }
 
   .pad {
@@ -560,17 +586,15 @@
   }
 
   /* Landscape: the stacked dual screen is height-bound, so the deck
-     takes the gutters letterboxing would have left black. */
+     takes the gutters letterboxing would have left black. All three
+     tracks are stretch-sized fractions — an auto middle column would
+     need the frame's aspect ratio for its size, and track-from-item
+     sizing is exactly the class of layout the iOS bug lives in. */
   @media (orientation: landscape) {
     .stage.deck {
       grid-template-areas: 'padl cnv padr';
       grid-template-rows: minmax(0, 1fr);
-      grid-template-columns: minmax(110px, 1fr) auto minmax(110px, 1fr);
-    }
-
-    .stage.deck canvas {
-      width: auto;
-      max-width: 100%;
+      grid-template-columns: minmax(120px, 1fr) minmax(0, 1.6fr) minmax(120px, 1fr);
     }
   }
 </style>
