@@ -1,6 +1,6 @@
-//! `xf-cso`: CSO v1 ("CISO") codec for the frozen `datboi:transform@2`
-//! world — the second real component, chosen to exercise every contract
-//! surface the reference guests don't:
+//! `xf-cso`: CSO v1 ("CISO") codec for the `datboi:transform@1` world
+//! (D89 epoch) — the second real component, chosen to exercise every
+//! contract surface the reference guests don't:
 //!
 //! * **CBOR params** (`compress` takes block-size/level/align);
 //! * **per-op seek classes** (`compress` is opaque, `decompress` is
@@ -219,17 +219,15 @@ pub fn touched_blocks(total: u64, block_size: u32, offset: u64, len: u64) -> Opt
     Some((start / bs, (end - 1) / bs))
 }
 
-/// Component glue for the frozen `datboi:transform@2` world; wasm32-only
-/// so host-side tests of the pure logic build natively.
+/// Component glue for the `datboi:transform@1` world (D89 epoch);
+/// wasm32-only so host-side tests of the pure logic build natively.
+/// Bindings come pregenerated from `datboi-guest-transform` — the same
+/// crate external authors get (docs/worlds.md §vending), so every
+/// in-tree guest continuously proves the vending story.
 #[cfg(target_arch = "wasm32")]
 #[allow(unsafe_code)]
 mod component {
-    wit_bindgen::generate!({
-        world: "transform-stream",
-        path: "../../wit/transform/v2",
-    });
-
-    use datboi::transform::types::{File, SeekClass, Source};
+    use datboi_guest_transform::{Descriptor, File, Guest, Input, SeekClass, Sink, Source};
 
     use super::{
         CompressParams, HEADER_LEN, Header, OFFSET_MASK, STORED_FLAG, decode_params,
@@ -461,25 +459,24 @@ mod component {
     }
 
     impl Guest for Xf {
-        fn describe(op: String) -> Descriptor {
+        fn describe(op: String) -> Result<Vec<u8>, String> {
             match op.as_str() {
                 // Two-pass compression: the index precedes the blocks and
                 // sinks can't seek, so input 0 must be re-readable.
-                "compress" => Descriptor {
+                "compress" => Ok(Descriptor {
                     seek: SeekClass::Opaque,
                     random_access_inputs: vec![0],
-                },
+                }
+                .to_cbor()),
                 // The block index is the manifest.
-                "decompress" => Descriptor {
+                "decompress" => Ok(Descriptor {
                     seek: SeekClass::ManifestSeekable,
                     random_access_inputs: Vec::new(),
-                },
-                // Unknown ops still need an answer (describe is total);
-                // run/serve-range reject them properly.
-                _ => Descriptor {
-                    seek: SeekClass::Opaque,
-                    random_access_inputs: Vec::new(),
-                },
+                }
+                .to_cbor()),
+                // Unknown ops refuse politely (D89: describe grew an
+                // error channel for exactly this).
+                other => Err(format!("unknown op {other:?}")),
             }
         }
 
@@ -535,7 +532,7 @@ mod component {
         }
     }
 
-    export!(Xf);
+    datboi_guest_transform::export!(Xf);
 }
 
 #[cfg(test)]

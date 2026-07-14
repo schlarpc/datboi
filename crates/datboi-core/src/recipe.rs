@@ -43,26 +43,27 @@ const OUTKEY_NAME: u64 = 3;
 /// so unknown worlds survive decode and re-encode byte-identically.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum World {
-    /// `datboi:transform@1` — the frozen whole-buffer world.
+    /// `datboi:transform@1` — the streaming transform lane (D89 epoch;
+    /// the pre-break whole-buffer @1 and streaming @2 died with the
+    /// dev-store wipe, docs/worlds.md).
     Transform1,
-    /// `datboi:transform@2` — the frozen streaming world.
-    Transform2,
-    /// `datboi:extractor@1` — the container→member extractor world.
+    /// `datboi:extractor@1` — the container→member extractor lane.
     Extractor1,
-    /// Not a world this build executes; preserved verbatim.
+    /// Not a world this build executes; preserved verbatim. Includes
+    /// the dead pre-D89 spellings ("datboi:transform@2") — refusable,
+    /// never poisonable, like any recipe from the future.
     Other(String),
 }
 
 impl World {
     /// Parse a wire spelling. Total on purpose: only the exact
-    /// canonical spellings become known worlds ("datboi:transform@2.0.0"
+    /// canonical spellings become known worlds ("datboi:transform@1.0.0"
     /// is a different recipe identity and a refusable one, not an
     /// alias), everything else is [`World::Other`].
     #[must_use]
     pub fn parse(s: &str) -> Self {
         match s {
             "datboi:transform@1" => Self::Transform1,
-            "datboi:transform@2" => Self::Transform2,
             "datboi:extractor@1" => Self::Extractor1,
             _ => Self::Other(s.to_owned()),
         }
@@ -88,7 +89,6 @@ impl World {
     pub fn as_str(&self) -> &str {
         match self {
             Self::Transform1 => "datboi:transform@1",
-            Self::Transform2 => "datboi:transform@2",
             Self::Extractor1 => "datboi:extractor@1",
             Self::Other(s) => s,
         }
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn world_parses_exact_canonical_spellings_only() {
-        for w in [World::Transform1, World::Transform2, World::Extractor1] {
+        for w in [World::Transform1, World::Extractor1] {
             assert_eq!(World::parse(w.as_str()), w, "canonical round-trip");
         }
         // Prefix relatives and semver spellings are NOT the frozen
@@ -484,7 +484,7 @@ mod tests {
         // pick exports per recipe.
         assert_eq!(World::Extractor1.required_export(), Some("extract"));
         assert_eq!(World::Transform1.required_export(), None);
-        assert_eq!(World::Transform2.required_export(), None);
+        assert_eq!(World::Transform1.required_export(), None);
     }
 
     #[test]

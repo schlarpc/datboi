@@ -927,6 +927,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "datboi-guest-extractor"
+version = "1.0.0"
+dependencies = [
+ "wit-bindgen 0.46.0",
+]
+
+[[package]]
+name = "datboi-guest-transform"
+version = "1.0.0"
+dependencies = [
+ "wit-bindgen 0.46.0",
+]
+
+[[package]]
 name = "datboi-index"
 version = "0.1.0"
 dependencies = [
@@ -1027,7 +1041,7 @@ dependencies = [
 name = "datboi-xf-ecm"
 version = "0.1.0"
 dependencies = [
- "wit-bindgen 0.46.0",
+ "datboi-guest-transform",
 ]
 
 [[package]]

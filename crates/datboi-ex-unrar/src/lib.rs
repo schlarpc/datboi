@@ -1,5 +1,6 @@
 //! ex-unrar — the RAR extractor guest for the `datboi:extractor@1` world
-//! (D58). Thin Rust over the vendored unrar C++ staticlib: wit-bindgen for
+//! (D58 pathfinder, D89 shape). Thin Rust over the vendored unrar C++
+//! staticlib: pregenerated bindings (datboi-guest-extractor) for
 //! the world's resource bindings, plus `unsafe` FFI into the `extern "C"`
 //! veneer in `csrc/glue.cpp`.
 //!
@@ -65,13 +66,9 @@ mod component {
     use alloc::vec::Vec;
     use core::ffi::c_void;
 
-    wit_bindgen::generate!({
-        world: "extractor",
-        path: "../../wit/extractor/v1",
-    });
-
-    // `generate!` hoists the types named in the world signatures (File,
-    // Member, Sink) to this module's root.
+    // Bindings come pregenerated from `datboi-guest-extractor` — the
+    // same crate external authors get (docs/worlds.md §vending).
+    use datboi_guest_extractor::{ExtractRequest, File, Guest, Member, Sink, encode_members};
 
     // ---- open modes / ops / flags mirrored from dll.hpp ----
     const RAR_OM_LIST: u32 = 0;
@@ -258,9 +255,31 @@ mod component {
         }
     }
 
+    /// This component's v1 policy cuts (D89: policy, not ABI): one
+    /// container only (multi-volume refuses), no params understood
+    /// (non-empty params refuse — params are recipe content).
+    fn single_archive(archives: &[File]) -> Result<&File, String> {
+        let [archive] = archives else {
+            return Err(String::from(
+                "multi-volume rar is unsupported (v1 scope cut)",
+            ));
+        };
+        Ok(archive)
+    }
+
+    fn refuse_params(params: &[u8]) -> Result<(), String> {
+        if params.is_empty() {
+            Ok(())
+        } else {
+            Err(String::from("ex-unrar takes no params"))
+        }
+    }
+
     impl Guest for Ex {
-        fn enumerate(archive: File) -> Result<Vec<Member>, String> {
-            let _fg = FileGuard::set(&archive);
+        fn enumerate(archives: Vec<File>, params: Vec<u8>) -> Result<Vec<u8>, String> {
+            refuse_params(&params)?;
+            let archive = single_archive(&archives)?;
+            let _fg = FileGuard::set(archive);
             let (h, _flags) = open_or_refuse(RAR_OM_LIST)?;
             let mut members = Vec::new();
             let mut hd = ExHeader::zeroed();
@@ -302,14 +321,38 @@ mod component {
                 }
             }
             unsafe { ex_close(h) };
-            Ok(members)
+            Ok(encode_members(&members))
         }
 
-        fn extract(archive: File, target_ix: u32, out: Sink) -> Result<(), String> {
-            let _fg = FileGuard::set(&archive);
+        /// One pass over the archive serves the whole batch — the D89
+        /// reshape's point: each solid block decodes ONCE however many
+        /// members are requested. Member bytes stay a pure function of
+        /// (container, ix); the request set changes cost only.
+        fn extract(
+            archives: Vec<File>,
+            params: Vec<u8>,
+            requests: Vec<ExtractRequest>,
+        ) -> Result<(), String> {
+            refuse_params(&params)?;
+            let archive = single_archive(&archives)?;
+
+            // Sort by ix so matching is a cursor walk; duplicate targets
+            // are ambiguous (two sinks, one member) and refuse.
+            let mut wanted: Vec<(u32, Sink)> =
+                requests.into_iter().map(|r| (r.ix, r.out)).collect();
+            wanted.sort_unstable_by_key(|(ix, _)| *ix);
+            if wanted.windows(2).any(|w| w[0].0 == w[1].0) {
+                return Err(String::from("duplicate member index in extract batch"));
+            }
+            if wanted.is_empty() {
+                return Ok(());
+            }
+
+            let _fg = FileGuard::set(archive);
             let (h, _flags) = open_or_refuse(RAR_OM_EXTRACT)?;
             let mut hd = ExHeader::zeroed();
             let mut ix: u32 = 0;
+            let mut next = 0usize; // cursor into `wanted`
             loop {
                 let r = unsafe { ex_read_header(h, &mut hd) };
                 if r == 1 {
@@ -325,11 +368,11 @@ mod component {
                     return Err(String::from("encrypted member is unsupported (v1 scope cut)"));
                 }
                 let is_file = hd.is_plain_file();
-                let matched = is_file && ix == target_ix;
+                let matched = is_file && ix == wanted[next].0;
                 let op = if matched { RAR_TEST } else { RAR_SKIP };
-                // The sink only receives bytes during the matched TEST.
+                // The sink only receives bytes during a matched TEST.
                 let p = if matched {
-                    let _sg = SinkGuard::set(&out);
+                    let _sg = SinkGuard::set(&wanted[next].1);
                     unsafe { ex_process(h, op) }
                 } else {
                     unsafe { ex_process(h, op) }
@@ -339,8 +382,11 @@ mod component {
                     return Err(process_error(p));
                 }
                 if matched {
-                    unsafe { ex_close(h) };
-                    return Ok(());
+                    next += 1;
+                    if next == wanted.len() {
+                        unsafe { ex_close(h) };
+                        return Ok(());
+                    }
                 }
                 if is_file {
                     ix += 1;
@@ -363,5 +409,5 @@ mod component {
         s
     }
 
-    export!(Ex);
+    datboi_guest_extractor::export!(Ex);
 }

@@ -59,6 +59,10 @@
           src = root;
           filter = path: type:
             (builtins.match ".*\\.(xml|wit|wasm|deflate|bin|rar)$" path != null)
+            # WIT package dependencies are symlinks named after the dep
+            # package (wit/<lane>/v<n>/deps/streams → ../../../streams/v1,
+            # D89) — extensionless, so the .wit match above misses them.
+            || (builtins.match ".*/deps/[^/]+$" path != null)
             # ex-unrar vendors C++ (.cpp/.hpp) plus force-included compat
             # headers (.h) and the license/patch provenance (.txt); the
             # build.rs cross-compiles them (D58).
@@ -93,16 +97,18 @@
       # Each component is a STANDALONE workspace with its own lockfile
       # (D54): sibling crates must not be able to perturb a component's
       # bytes through shared dependency resolution. The reproducibility
-      # boundary is one crate directory plus the frozen ../../wit (D66
-      # layout: crates/<crate> + ./wit).
+      # boundary is one crate directory plus the frozen ../../wit plus
+      # the lane's guest crate ../datboi-guest-<lane> (D66 layout amended
+      # by D89: the pregen-bindings crates are part of the ABI surface
+      # and both tree hashes ride the stamp).
       #
-      # Two world families, distinguished by crate prefix (D58):
-      # `datboi-xf-` = transform (@1 whole-buffer / @2 streaming),
-      # `datboi-ex-` = extractor (seekable archive in → member streams +
-      # metadata out). The build, stamp, and zero-import gate are
-      # identical across both; extractors additionally cross-compile a
-      # vendored C++ staticlib (see the wasiToolchainFor / datboi-ex-unrar
-      # wiring below).
+      # Two lanes, distinguished by crate prefix (D58/D89):
+      # `datboi-xf-` = datboi:transform (streaming; buffered authoring is
+      # guest-crate sugar), `datboi-ex-` = datboi:extractor (seekable
+      # containers in → member streams + metadata out). The build, stamp,
+      # and zero-import gate are identical across both; extractors
+      # additionally cross-compile a vendored C++ staticlib (see the
+      # wasiToolchainFor / datboi-ex-unrar wiring below).
 
       wasmCrateNames = [
         "datboi-xf-cso"
@@ -154,15 +160,25 @@
       unrarSrcFor = system:
         (pkgsFor system).callPackage ./crates/datboi-ex-unrar/nix/unrar-src.nix { };
 
-      # The shared frozen WIT, staged so the guests' `../../wit/transform/v2` path
-      # resolves exactly as it does in the repo (crates/<crate>/../../wit):
-      # nest the unpacked crate one level deeper and put wit at the top.
-      witStageFor = system: ''
+      # Which pregen-bindings crate a component lane consumes (D89,
+      # docs/worlds.md §vending).
+      guestCrateFor = crate:
+        if isExtractor crate then "datboi-guest-extractor" else "datboi-guest-transform";
+
+      # The shared ABI surface, staged so the guests' relative paths
+      # resolve exactly as they do in the repo: nest the unpacked crate
+      # one level deeper, put wit at the top (`../../wit/<lane>/v1`),
+      # and stage the lane's guest crate beside the component
+      # (`../datboi-guest-<lane>`). Raw flake paths on purpose — a flake
+      # path is exactly the git-tracked content, so the staged trees
+      # match `git rev-parse <commit>:wit` / `:crates/<guest>` verbatim.
+      abiStageFor = system: crate: ''
         mkdir -p "$NIX_BUILD_TOP/nest"
         mv "$NIX_BUILD_TOP/$sourceRoot" "$NIX_BUILD_TOP/nest/$sourceRoot"
         sourceRoot="nest/$sourceRoot"
-        cp -r ${srcFor system ./wit} "$NIX_BUILD_TOP/wit"
-        chmod -R u+w "$NIX_BUILD_TOP/wit"
+        cp -r ${./wit} "$NIX_BUILD_TOP/wit"
+        cp -r ${./crates + "/${guestCrateFor crate}"} "$NIX_BUILD_TOP/nest/${guestCrateFor crate}"
+        chmod -R u+w "$NIX_BUILD_TOP/wit" "$NIX_BUILD_TOP/nest/${guestCrateFor crate}"
       '';
 
       wasmCrateArgsFor = system: crate:
@@ -188,7 +204,7 @@
           # Wasm artifacts are data, not executables to test here; the host
           # runs them under the determinism gate instead.
           doCheck = false;
-          postUnpack = witStageFor system;
+          postUnpack = abiStageFor system crate;
         }
         # Extractors (ex-*) cross-compile a C++ staticlib in their build.rs;
         # hand it the wasi toolchain via env (D58). Transforms get nothing extra.
@@ -200,12 +216,15 @@
 
       # One stamped component per crate (D54 attribution): identity
       # metadata rides IN the artifact as execution-inert custom sections,
-      # and the loader refuses components without it. `revision` is the
-      # GIT TREE HASH of the crate source (computed with `git write-tree`
-      # over the build inputs — no .git needed): content-scoped, so
-      # unrelated repo commits cannot churn component bytes, and
+      # and the loader refuses components without it. `revision` carries
+      # the GIT TREE HASHES of the two source inputs (computed with
+      # `git write-tree` over the build inputs — no .git needed):
+      # `tree:` = the crate, `guest:` = the lane's pregen-bindings crate
+      # (D89 — its source shapes component bytes too). Content-scoped,
+      # so unrelated repo commits cannot churn component bytes, and
       # verifiable by anyone with git — no nix required:
       #   git rev-parse <commit>:crates/<crate>
+      #   git rev-parse <commit>:crates/<datboi-guest-lane>
       transformPackageFor = system: crate:
         let
           craneLib = craneLibFor system;
@@ -221,12 +240,16 @@
           cargoArtifacts = craneLib.buildDepsOnly args;
           nativeBuildInputs = [ pkgs.wasm-tools pkgs.gitMinimal ];
           installPhaseCommand = ''
-            # Revision = git tree hash of the pristine source (the store
-            # copy, not the build dir — target/ must not leak in).
-            export GIT_DIR="$TMPDIR/rev-git" GIT_INDEX_FILE="$TMPDIR/rev-index"
+            # Revision = git tree hashes of the pristine sources (the
+            # store copies, not the build dir — target/ must not leak in).
+            export GIT_DIR="$TMPDIR/rev-git"
             git init -q "$GIT_DIR"
+            export GIT_INDEX_FILE="$TMPDIR/rev-index"
             git --work-tree=${args.src} add -A
             tree=$(git write-tree)
+            export GIT_INDEX_FILE="$TMPDIR/rev-index-guest"
+            git --work-tree=${./crates + "/${guestCrateFor crate}"} add -A
+            guest=$(git write-tree)
             mkdir -p $out/lib
             wasm-tools component new \
               target/wasm32-unknown-unknown/release/${moduleName}.wasm \
@@ -237,7 +260,7 @@
               --authors ${nixpkgs.lib.escapeShellArg (builtins.head crateToml.package.authors)} \
               --licenses ${nixpkgs.lib.escapeShellArg crateToml.package.license} \
               --source "https://github.com/schlarpc/datboi/tree/main/crates/${crate}" \
-              --revision "tree:$tree" \
+              --revision "tree:$tree;guest:$guest" \
               -o "$out/lib/${moduleName}.wasm"
           '';
         });
@@ -405,6 +428,56 @@
         DATBOI_MAGIC_DB = "${magicDbFor system}";
       };
 
+      # ---- WIT package distribution (D89, docs/worlds.md §publishing) ----
+      #
+      # Each lane version encoded into the binary package format wkg
+      # publishes and consumers `wkg get`. Pure and deterministic — the
+      # encoded package is content-addressed bytes; the impure OCI push
+      # lives in publish-wit below.
+      witPackagesFor = system:
+        let pkgs = pkgsFor system;
+        in pkgs.runCommand "datboi-wit-packages"
+          { nativeBuildInputs = [ pkgs.wasm-tools ]; } ''
+          mkdir -p $out
+          for lane in ${./wit}/*; do
+            for v in "$lane"/*; do
+              # The package id (datboi:<lane>@<version>) names the file,
+              # matching what `wkg wit build` would emit; wasm-tools does
+              # the encoding because it resolves the deps/ symlinks
+              # locally with no registry configuration.
+              id=$(sed -n 's/^package \(datboi:[a-z-]*@[0-9.]*\);$/\1/p' "$v"/*.wit)
+              wasm-tools component wit --wasm "$v" -o "$out/$id.wasm"
+            done
+          done
+          ls $out
+        '';
+
+      # The publish gate (D89): every published version is immutable
+      # forever — an existing tag is skipped (idempotent re-runs), never
+      # overwritten. Auth rides the ambient docker config (the workflow's
+      # login-action); the registry override exists for local smoke runs.
+      publishWitFor = system:
+        let pkgs = pkgsFor system;
+        in pkgs.writeShellApplication {
+          name = "publish-wit";
+          runtimeInputs = [ pkgs.wkg pkgs.crane ];
+          text = ''
+            repo="''${DATBOI_WIT_REGISTRY:-ghcr.io/schlarpc/wit}"
+            for pkg in ${witPackagesFor system}/*.wasm; do
+              base=$(basename "$pkg" .wasm)   # e.g. datboi:transform@1.0.0
+              name=''${base#datboi:}; name=''${name%@*}
+              version=''${base##*@}
+              ref="$repo/$name:$version"
+              if crane manifest "$ref" >/dev/null 2>&1; then
+                echo "SKIP $ref (already published; versions are immutable, D89)"
+              else
+                wkg oci push "$ref" "$pkg"
+                echo "PUBLISHED $ref"
+              fi
+            done
+          '';
+        };
+
       # ---- container image (nix2container-turbo) ----
       #
       # `docker run` starts the daemon (web UI on :2352); busybox rides
@@ -487,6 +560,10 @@
           web = webFor system;
 
           magicdb = magicDbFor system;
+
+          wit-packages = witPackagesFor system;
+
+          publish-wit = publishWitFor system;
         } // nixpkgs.lib.optionalAttrs (nixpkgs.lib.hasSuffix "-linux" system) {
           container = containerFor system;
         });

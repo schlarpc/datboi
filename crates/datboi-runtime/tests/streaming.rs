@@ -1,10 +1,9 @@
-//! The M2 gate for the `datboi:transform@2` streaming world (D46/D49):
-//! determinism, the exact-read contract, bounded memory, and
-//! seek-equivalence. Same fixture discipline as the @1 gate — committed
-//! component bytes pinned by blake3, golden output anchors for
-//! cross-architecture agreement. The world FROZE 2026-07-07 when this
-//! gate plus the full-size exit test (datboi-exec tests/gate.rs) went
-//! green; from here, updating the fixture is a format event.
+//! The streaming gate for the `datboi:transform@1` world (D46/D49
+//! doctrine, D89 epoch): determinism, the exact-read contract, bounded
+//! memory, and seek-equivalence. Same fixture discipline as the
+//! determinism gate — committed component bytes pinned by blake3, golden
+//! output anchors for cross-architecture agreement. Updating the fixture
+//! is a format event.
 
 use std::io::{Cursor, Write};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -17,7 +16,7 @@ use datboi_runtime::{Limits, RuntimeError, SeekClass};
 const COMPONENT: &[u8] = include_bytes!("fixtures/xf_reference_stream.wasm");
 
 /// blake3 of the fixture — the identity a recipe would pin.
-const COMPONENT_BLAKE3: &str = "da584daadc6d7fe901bb09937e89531736fed4fb466e70b3d7cd39ccd0163716";
+const COMPONENT_BLAKE3: &str = "71a6577b2b7e9ec4e3e9d0b319933f4341059ebf1f9af270459688f362214a40";
 
 /// blake3 of `run("byteswap")` over [`pattern`]`(1 << 20 | 5)` — the
 /// cross-architecture anchor.
@@ -382,16 +381,20 @@ fn ambient_imports_still_refused() {
     );
 }
 
-/// A world mismatch (here: the frozen @1 component under the @2 host) is
-/// a WIRING failure — [`RuntimeError::Instantiate`], never a trap. The
-/// executor's poison classification hangs on the distinction: wiring
-/// errors are retryable, traps indict the claim.
+/// A world mismatch (here: an extractor-lane component under the
+/// transform host — the lanes share the streams imports but not their
+/// exports, D89) is a WIRING failure — [`RuntimeError::Instantiate`],
+/// never a trap. The executor's poison classification hangs on the
+/// distinction: wiring errors are retryable, traps indict the claim.
 #[test]
 fn world_mismatch_is_an_instantiate_error_not_a_trap() {
-    const V1_COMPONENT: &[u8] = include_bytes!("fixtures/xf_reference.wasm");
+    const WRONG_LANE: &[u8] = include_bytes!(concat!(
+        env!("DATBOI_COMPONENTS_DIR"),
+        "/datboi_ex_unrar.wasm"
+    ));
     let (host, _) = shared();
-    let v1 = host.load(V1_COMPONENT).expect("valid, stamped component");
-    let err = host.describe(&v1, "byteswap").expect_err("wrong world");
+    let wrong = host.load(WRONG_LANE).expect("valid, stamped component");
+    let err = host.describe(&wrong, "byteswap").expect_err("wrong world");
     assert!(matches!(err, RuntimeError::Instantiate(_)), "got {err:?}");
 }
 

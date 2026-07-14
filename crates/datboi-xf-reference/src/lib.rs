@@ -4,8 +4,11 @@
 //! Purpose: prove the ABI and the determinism gate (M1 prototype 3), not to
 //! be useful — the native builtin serves production traffic (D6). The pure
 //! functions below are spec-pinned and target-independent (tested on the
-//! host); the `component` module wires them to the frozen
-//! `datboi:transform@1` world and only compiles for `wasm32`.
+//! host); the `component` module wires them to the `datboi:transform@1`
+//! world through the `BufferedGuest` sugar (D89: the whole-buffer world
+//! died, its author experience lives in `datboi-guest-transform` — this
+//! crate is the in-tree proof of that adapter) and only compiles for
+//! `wasm32`.
 
 /// Reverse the bits of every byte (skipper `bitswap`).
 pub fn bitswap(buf: &mut [u8]) {
@@ -54,46 +57,43 @@ pub fn apply(op: &str, input: &[u8]) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-/// Component glue for the frozen `datboi:transform@1` world. Only built for
-/// `wasm32` so the host-side unit tests (run natively by `nix flake check`)
-/// don't drag in the component machinery. `unsafe_code` is allowed here
-/// because the generated component ABI shims require it; our own logic
-/// (`super::apply`) stays safe.
+/// Component glue for the `datboi:transform@1` world through the
+/// `BufferedGuest` adapter (D89): blobs in, blobs out, the streaming is
+/// the crate's problem. Only built for `wasm32` so the host-side unit
+/// tests (run natively by `nix flake check`) don't drag in the component
+/// machinery. `unsafe_code` is allowed here because the generated
+/// component ABI shims require it; our own logic (`super::apply`) stays
+/// safe.
 #[cfg(target_arch = "wasm32")]
 #[allow(unsafe_code)]
 mod component {
-    wit_bindgen::generate!({
-        world: "transform",
-        path: "../../wit/transform/v1",
-    });
-
-    // `generate!` hoists `Descriptor` (it appears in the world's function
-    // signatures) to this module's root; `SeekClass` only appears nested, so
-    // it's imported from the generated interface path.
-    use datboi::transform::types::SeekClass;
+    use datboi_guest_transform::{BufferedGuest, Descriptor, SeekClass};
 
     struct Xf;
 
-    impl Guest for Xf {
+    impl BufferedGuest for Xf {
         /// Every swap is byte-for-byte positional → affine, no random access.
-        fn describe(_op: String) -> Descriptor {
-            Descriptor {
+        fn describe(op: &str) -> Result<Descriptor, String> {
+            if super::apply(op, &[]).is_none() {
+                return Err(format!("unknown swap op {op:?}"));
+            }
+            Ok(Descriptor {
                 seek: SeekClass::Affine,
                 random_access_inputs: Vec::new(),
-            }
+            })
         }
 
         /// One input blob in, one swapped output blob out. `params` is unused
         /// by the swap ops (the operation is fully determined by `op`).
-        fn run(op: String, _params: Vec<u8>, inputs: Vec<Vec<u8>>) -> Result<Vec<Vec<u8>>, String> {
+        fn run(op: &str, _params: &[u8], inputs: Vec<Vec<u8>>) -> Result<Vec<Vec<u8>>, String> {
             let [input] = <[Vec<u8>; 1]>::try_from(inputs)
                 .map_err(|got| format!("swap takes exactly 1 input, got {}", got.len()))?;
-            let out = super::apply(&op, &input).ok_or_else(|| format!("unknown swap op {op:?}"))?;
+            let out = super::apply(op, &input).ok_or_else(|| format!("unknown swap op {op:?}"))?;
             Ok(vec![out])
         }
     }
 
-    export!(Xf);
+    datboi_guest_transform::export_buffered!(Xf);
 }
 
 #[cfg(test)]

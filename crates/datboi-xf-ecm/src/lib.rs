@@ -1,5 +1,5 @@
 //! `xf-ecm`: CD sector regeneration (the ECM idea, datboi-shaped) for the
-//! frozen `datboi:transform@2` world — the last M3 analyzer's transform.
+//! `datboi:transform@1` world (D89 epoch) — the last M3 analyzer's transform.
 //!
 //! Raw CD sectors (2352 bytes) carry sync patterns, EDC checksums, and
 //! Reed-Solomon ECC parity that are pure functions of the sector's
@@ -334,17 +334,12 @@ mod tests {
     }
 }
 
-/// Component glue for the frozen `datboi:transform@2` world; wasm32-only
+/// Component glue for the `datboi:transform@1` world (D89 epoch); wasm32-only
 /// so host-side tests of the pure sector math build natively.
 #[cfg(target_arch = "wasm32")]
 #[allow(unsafe_code)]
 mod component {
-    wit_bindgen::generate!({
-        world: "transform-stream",
-        path: "../../wit/transform/v2",
-    });
-
-    use datboi::transform::types::{File, SeekClass, Source};
+    use datboi_guest_transform::{Descriptor, File, Guest, Input, SeekClass, Sink, Source};
 
     use super::{LayoutRecord, SECTOR, parse_record, rebuild_sector, stripped_len};
 
@@ -416,13 +411,17 @@ mod component {
     }
 
     impl Guest for Xf {
-        fn describe(_op: String) -> Descriptor {
+        fn describe(op: String) -> Result<Vec<u8>, String> {
+            if op != "recreate" {
+                return Err(format!("unknown op {op:?}"));
+            }
             // The layout is the manifest: ranges regenerate only the
             // sectors they touch.
-            Descriptor {
+            Ok(Descriptor {
                 seek: SeekClass::ManifestSeekable,
                 random_access_inputs: Vec::new(),
             }
+            .to_cbor())
         }
 
         fn run(
@@ -564,5 +563,5 @@ mod component {
         }
     }
 
-    export!(Xf);
+    datboi_guest_transform::export!(Xf);
 }

@@ -1,6 +1,6 @@
 [package]
 name = "datboi-xf-ecm"
-description = "ECM-style CD sector regeneration for the frozen datboi:transform@2 world: rebuilds raw 2352-byte sectors bit-exactly from stripped data + a run-length layout, regenerating sync/EDC/ECC (ECMA-130)"
+description = "ECM-style CD sector regeneration for the datboi:transform@1 world: rebuilds raw 2352-byte sectors bit-exactly from stripped data + a run-length layout, regenerating sync/EDC/ECC (ECMA-130)"
 version = "0.1.0"
 edition = "2024"
 authors = ["Chaz Schlarp"]
@@ -11,12 +11,12 @@ repository = "https://github.com/schlarpc/datboi"
 crate-type = ["cdylib", "rlib"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wit-bindgen = { version = "0.46", default-features = false, features = ["macros", "realloc"] }
+datboi-guest-transform = { path = "../datboi-guest-transform" }
 
 # Standalone workspace ON PURPOSE (D54): each transform builds against its
 # own lockfile so sibling crates can't perturb its bytes through shared
 # dependency resolution — component identity must be reproducible from
-# this directory alone (plus ../wit).
+# this directory alone (plus ../wit and ../datboi-guest-transform).
 [workspace]
 
 [lints.rust]

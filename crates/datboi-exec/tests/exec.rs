@@ -260,7 +260,7 @@ fn wasm2_recipe_replays_and_streams() {
     let recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: WasmWorld::Transform2,
+            world: WasmWorld::Transform1,
             export: "byteswap".into(),
         },
         inputs: vec![InputRef {
@@ -307,7 +307,7 @@ fn composed_route_streams_through_wasm_without_storing_intermediates() {
     let swap_recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: WasmWorld::Transform2,
+            world: WasmWorld::Transform1,
             export: "byteswap".into(),
         },
         inputs: vec![InputRef {
@@ -426,7 +426,7 @@ fn served_ranges_verify_after_eviction() {
     let recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: WasmWorld::Transform2,
+            world: WasmWorld::Transform1,
             export: "byteswap".into(),
         },
         inputs: vec![InputRef {
@@ -487,7 +487,7 @@ fn lying_seek_path_is_quarantined_and_falls_back() {
     let recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: WasmWorld::Transform2,
+            world: WasmWorld::Transform1,
             export: "byteswap-lying-range".into(),
         },
         inputs: vec![InputRef {
@@ -549,7 +549,7 @@ fn corrupt_input_mismatch_does_not_quarantine_the_component() {
     let recipe = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: WasmWorld::Transform2,
+            world: WasmWorld::Transform1,
             export: "byteswap".into(),
         },
         inputs: vec![InputRef {
@@ -623,7 +623,7 @@ fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
     let good = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: WasmWorld::Transform2,
+            world: WasmWorld::Transform1,
             export: "byteswap".into(),
         },
         inputs: vec![InputRef {
@@ -654,7 +654,7 @@ fn rehabilitation_clears_wrong_poison_but_not_bad_claims() {
     let bad = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: WasmWorld::Transform2,
+            world: WasmWorld::Transform1,
             export: "byteswap".into(),
         },
         inputs: vec![InputRef {
@@ -897,7 +897,7 @@ fn child_length_lie_does_not_poison_the_parent() {
     let parent = Recipe {
         op: Op::Wasm {
             component: component_hash,
-            world: WasmWorld::Transform2,
+            world: WasmWorld::Transform1,
             export: "byteswap".into(),
         },
         inputs: vec![InputRef {

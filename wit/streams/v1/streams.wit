@@ -1,0 +1,56 @@
+/// datboi:streams@1 — the shared stream contract (D89, ruled 2026-07-14).
+///
+/// One home for the host-implemented resources every lane imports;
+/// previously this doctrine was copy-pasted between the transform and
+/// extractor worlds. The coupling is deliberate: if the stream contract
+/// changes shape, every lane IS affected (a streams major cascades lane
+/// majors — docs/worlds.md).
+///
+/// Determinism doctrine (D5/D46): these resources are implemented BY THE
+/// HOST (never wasi:io) and are the ONLY imports any datboi world links.
+/// No clock, no random, no filesystem: params + input bytes are a guest's
+/// entire world.
+///
+/// The stream contract is EXACT: `read(n)` returns exactly `n` bytes,
+/// short only at end-of-stream; `read-at` is short only where the range
+/// passes end-of-file; `write` accepts every chunk unconditionally —
+/// backpressure is host-side fiber suspension the guest cannot observe.
+/// Anything weaker would let the guest-visible byte sequence depend on
+/// host buffering, and outputs could legally vary.
+///
+/// Versioning (docs/worlds.md): every published version of this package
+/// is immutable forever. Additive resource methods are minors; any shape
+/// change is a major.
+package datboi:streams@1.0.0;
+
+interface types {
+    /// Host-implemented sequential input stream.
+    resource source {
+        /// Read the next `n` bytes. EXACT contract: returns `n` bytes
+        /// unless the stream ends first, in which case the final read
+        /// returns the remainder (possibly empty). A short read IS
+        /// end-of-stream — no retry semantics exist. Reads above the
+        /// host's documented ceiling (16 MiB) trap deterministically.
+        read: func(n: u32) -> list<u8>;
+        /// Total stream length in bytes (always known: inputs are CAS
+        /// blobs with claimed sizes).
+        len: func() -> u64;
+    }
+
+    /// Host-implemented random-access input.
+    resource file {
+        /// Read exactly `n` bytes at `offset`; short only where
+        /// `offset + n` passes end-of-file. Reads past EOF return empty.
+        read-at: func(offset: u64, n: u32) -> list<u8>;
+        len: func() -> u64;
+    }
+
+    /// Host-implemented output sink. The host hash-tees every chunk
+    /// (D4); on seekable routes it additionally verifies against the
+    /// output's bao outboard (D49).
+    resource sink {
+        /// Accepts every chunk, unconditionally. Never fails, never
+        /// blocks visibly: backpressure suspends the guest fiber.
+        write: func(chunk: list<u8>);
+    }
+}

@@ -492,7 +492,7 @@ impl Analyzer for PreflateZipAnalyzer {
             let recipe = Recipe {
                 op: Op::Wasm {
                     component: component_hash,
-                    world: World::Transform2,
+                    world: World::Transform1,
                     export: "recreate".into(),
                 },
                 inputs: vec![
@@ -972,7 +972,7 @@ impl Analyzer for EcmAnalyzer {
         let recipe = Recipe {
             op: Op::Wasm {
                 component: component_hash,
-                world: World::Transform2,
+                world: World::Transform1,
                 export: "recreate".into(),
             },
             inputs: vec![

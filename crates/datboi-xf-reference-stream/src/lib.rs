@@ -1,4 +1,4 @@
-//! Streaming reference transform for the frozen `datboi:transform@2` world:
+//! Streaming reference transform for the `datboi:transform@1` world (D89 epoch):
 //! the swap family, `concat`, and a read-contract probe. Its job is to
 //! prove the pull-in/push-out ABI and feed the M2 determinism +
 //! seek-equivalence gates (D46/D49) — production traffic uses builtins.
@@ -117,20 +117,12 @@ pub fn concat_spans(input_lens: &[u64], offset: u64, len: u64) -> Vec<(usize, u6
 /// page-straddling), cycled deterministically.
 pub const PROBE_SIZES: [u32; 8] = [1, 3, 7, 64, 251, 4093, 65537, 13];
 
-/// Component glue for the frozen `datboi:transform@2` world; wasm32-only so
+/// Component glue for the `datboi:transform@1` world (D89 epoch); wasm32-only so
 /// host-side tests of the pure range math build natively.
 #[cfg(target_arch = "wasm32")]
 #[allow(unsafe_code)]
 mod component {
-    wit_bindgen::generate!({
-        world: "transform-stream",
-        path: "../../wit/transform/v2",
-    });
-
-    // `generate!` hoists types named in world signatures (Descriptor,
-    // Input, Sink) to this module's root; the rest import from the
-    // generated interface path.
-    use datboi::transform::types::{File, SeekClass, Source};
+    use datboi_guest_transform::{Descriptor, File, Guest, Input, SeekClass, Sink, Source};
 
     use super::{CHUNK, PROBE_SIZES, concat_spans, group_of, swap_chunk, swap_range_window};
 
@@ -164,13 +156,22 @@ mod component {
     }
 
     impl Guest for Xf {
-        fn describe(_op: String) -> Descriptor {
+        fn describe(op: String) -> Result<Vec<u8>, String> {
             // Everything here is affine and reads inputs sequentially in
             // `run`; serve-range gets random-access inputs by contract.
-            Descriptor {
+            let known = group_of(&op).is_some()
+                || matches!(
+                    op.as_str(),
+                    "concat" | "greedy" | "byteswap-lying-range" | "read-contract-probe"
+                );
+            if !known {
+                return Err(format!("unknown op {op:?}"));
+            }
+            Ok(Descriptor {
                 seek: SeekClass::Affine,
                 random_access_inputs: Vec::new(),
             }
+            .to_cbor())
         }
 
         fn run(
@@ -349,7 +350,7 @@ mod component {
         }
     }
 
-    export!(Xf);
+    datboi_guest_transform::export!(Xf);
 }
 
 #[cfg(test)]

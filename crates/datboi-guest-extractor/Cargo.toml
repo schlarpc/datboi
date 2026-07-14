@@ -1,0 +1,26 @@
+# The extractor lane's authoring crate (D89, docs/worlds.md §vending):
+# pregenerated bindings for `datboi:extractor@1` plus the member-list
+# CBOR schema. Crate major.minor MIRRORS the world version it binds —
+# datboi-guest-extractor 1.0.x ⇄ datboi:extractor@1.0 — patch is the
+# crate's own. In-tree guests path-depend on it; external authors will
+# get it from crates.io with the wit vendored in at publish time.
+[package]
+name = "datboi-guest-extractor"
+description = "Guest-side bindings and authoring sugar for the datboi:extractor@1 world"
+version = "1.0.0"
+edition = "2024"
+authors = ["Chaz Schlarp"]
+license = "MIT"
+repository = "https://github.com/schlarpc/datboi"
+
+[dependencies]
+# Unconditional (unlike the guests' target-gated dep): the generated
+# bindings compile natively too — import stubs panic off-wasm — so the
+# root workspace gate covers this crate's tests and lints.
+wit-bindgen = { version = "0.46", default-features = false, features = ["macros", "realloc"] }
+
+[lints.rust]
+unsafe_code = "allow" # generated bindings are FFI glue
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

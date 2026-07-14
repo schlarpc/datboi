@@ -1,36 +1,28 @@
 //! wasmtime host for content-addressed transforms (docs/runtime.md,
-//! decisions D5–D7).
+//! docs/worlds.md, decisions D5–D7, D89).
 //!
-//! This crate runs components targeting the frozen `datboi:transform@1`
-//! world (wit/transform/v1/transform.wit). Its one job beyond "call the
-//! component" is to make execution **deterministic and bounded**, because
-//! storage recipes must replay bit-exact forever (D5) and peer-supplied
-//! components are untrusted (their only threat is resource abuse — the CAS
-//! verifies output bytes, D4).
+//! This crate runs components targeting the datboi lanes —
+//! `datboi:transform@1` ([`stream`]) and `datboi:extractor@1`
+//! ([`extractor`]), both importing `datboi:streams@1` — and its one job
+//! beyond "call the component" is to make execution **deterministic and
+//! bounded**, because storage recipes must replay bit-exact forever (D5)
+//! and peer-supplied components are untrusted (their only threat is
+//! resource abuse — the CAS verifies output bytes, D4).
+//!
+//! Lane majors are append-only (D89): when a lane's shape changes, the
+//! new major gets a new host module and THIS one lives forever — never
+//! "clean up" an old linker, old components must replay.
 
 use thiserror::Error;
-use wasmtime::component::{Component, Linker};
-use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
-
-mod bindings {
-    // Host bindings for the frozen world. Generated at compile time from the
-    // shared WIT — the host and guest cannot drift because they read the same
-    // file.
-    wasmtime::component::bindgen!({
-        world: "transform",
-        path: "../../wit/transform/v1",
-    });
-}
-
-use bindings::Transform;
+use wasmtime::Config;
 
 pub mod attribution;
 pub mod extractor;
 pub mod pipe;
 pub mod stream;
 
-/// The deterministic engine configuration (D5) shared by the @1 and @2
-/// hosts. Every knob here is part of the determinism contract.
+/// The deterministic engine configuration (D5) shared by every lane
+/// host. Every knob here is part of the determinism contract.
 #[must_use]
 pub(crate) fn deterministic_config() -> Config {
     let mut config = Config::new();
@@ -49,9 +41,9 @@ pub(crate) fn deterministic_config() -> Config {
     config
 }
 
-/// Seekability class a transform declares (docs/views.md, D27). Mirrors
-/// the WIT enum; kept as a hand-written host type so the rest of the daemon
-/// depends on this crate's vocabulary, not on generated bindings.
+/// Seekability class a transform declares (docs/views.md, D27). Wire
+/// values live in the descriptor CBOR schema (D89) — encoder in
+/// `datboi-guest-transform`, decoder here, one schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeekClass {
     /// Output ranges map to input ranges arithmetically.
@@ -62,21 +54,68 @@ pub enum SeekClass {
     Opaque,
 }
 
-impl From<bindings::SeekClass> for SeekClass {
-    fn from(s: bindings::SeekClass) -> Self {
-        match s {
-            bindings::SeekClass::Affine => Self::Affine,
-            bindings::SeekClass::ManifestSeekable => Self::ManifestSeekable,
-            bindings::SeekClass::Opaque => Self::Opaque,
-        }
-    }
-}
-
-/// A transform's static, pure capability metadata.
+/// A transform's static, pure capability metadata — the decoded form of
+/// the canonical-CBOR bytes `describe` returns (D89 vocabulary rule:
+/// `{1: seek, 2: random-access-inputs}`, key 2 omitted when empty).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Descriptor {
     pub seek: SeekClass,
     pub random_access_inputs: Vec<u32>,
+}
+
+impl Descriptor {
+    /// Decode a descriptor. Unknown keys are IGNORED — the D89 advisory
+    /// rule: newer components run under older cores (D64), so added
+    /// keys must never be load-bearing; anything a host must understand
+    /// is a lane version. Known keys are still strictly checked (the
+    /// house canonical decoder rejects non-canonical bytes outright).
+    ///
+    /// # Errors
+    /// On non-canonical CBOR, a missing/invalid seek class, or a
+    /// present-but-empty input list (one-encoding-per-value).
+    pub fn from_cbor(bytes: &[u8]) -> Result<Self, String> {
+        use datboi_core::cbor::{self, Value};
+        let Ok(Value::Map(entries)) = cbor::decode(bytes) else {
+            return Err("descriptor is not a canonical CBOR map".into());
+        };
+        let mut seek = None;
+        let mut random_access_inputs = Vec::new();
+        for (key, value) in entries {
+            match key {
+                1 => {
+                    seek = Some(match value {
+                        Value::Uint(0) => SeekClass::Affine,
+                        Value::Uint(1) => SeekClass::ManifestSeekable,
+                        Value::Uint(2) => SeekClass::Opaque,
+                        other => return Err(format!("unknown seek class {other:?}")),
+                    });
+                }
+                2 => {
+                    let Value::Array(items) = value else {
+                        return Err("random-access-inputs is not an array".into());
+                    };
+                    if items.is_empty() {
+                        return Err("empty random-access-inputs must be omitted".into());
+                    }
+                    for item in items {
+                        let Value::Uint(ix) = item else {
+                            return Err("random-access-inputs entry is not a uint".into());
+                        };
+                        random_access_inputs.push(
+                            u32::try_from(ix)
+                                .map_err(|_| "random-access input index out of range")?,
+                        );
+                    }
+                }
+                // Advisory keys from a newer component: ignored (D89).
+                _ => {}
+            }
+        }
+        Ok(Self {
+            seek: seek.ok_or("descriptor missing seek class")?,
+            random_access_inputs,
+        })
+    }
 }
 
 /// Resource ceilings for a single transform run. Defaults are generous
@@ -145,100 +184,44 @@ impl RuntimeError {
     }
 }
 
-struct HostState {
-    limits: StoreLimits,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// A reusable, deterministically-configured wasmtime engine for running
-/// transforms. Construct once (compiling the `Config` is the expensive part)
-/// and run many components.
-pub struct TransformHost {
-    engine: Engine,
-    linker: Linker<HostState>,
-    limits: Limits,
-}
-
-impl TransformHost {
-    /// Build a host with the given resource limits.
-    ///
-    /// # Errors
-    /// If wasmtime rejects the deterministic engine configuration.
-    pub fn new(limits: Limits) -> Result<Self, RuntimeError> {
-        let engine = Engine::new(&deterministic_config()).map_err(RuntimeError::Component)?;
-        // The world imports nothing (no clock/random/fs) — ambient
-        // nondeterminism is unrepresentable, so the linker stays empty.
-        let linker = Linker::new(&engine);
-        Ok(Self {
-            engine,
-            linker,
-            limits,
-        })
+    #[test]
+    fn descriptor_decodes_the_guest_schema() {
+        // {1: 2} and {1: 0, 2: [0, 3]} — the datboi-guest-transform
+        // encoder's own test vectors, decoded here: one schema, two
+        // codebases, byte-level agreement pinned.
+        assert_eq!(
+            Descriptor::from_cbor(&[0xa1, 0x01, 0x02]),
+            Ok(Descriptor {
+                seek: SeekClass::Opaque,
+                random_access_inputs: vec![],
+            })
+        );
+        assert_eq!(
+            Descriptor::from_cbor(&[0xa2, 0x01, 0x00, 0x02, 0x82, 0x00, 0x03]),
+            Ok(Descriptor {
+                seek: SeekClass::Affine,
+                random_access_inputs: vec![0, 3],
+            })
+        );
     }
 
-    fn store(&self) -> Result<Store<HostState>, RuntimeError> {
-        let limits = StoreLimitsBuilder::new()
-            .memory_size(self.limits.memory)
-            .build();
-        let mut store = Store::new(&self.engine, HostState { limits });
-        store.limiter(|s| &mut s.limits);
-        store
-            .set_fuel(self.limits.fuel)
-            .map_err(RuntimeError::Component)?;
-        Ok(store)
-    }
-
-    fn instantiate(
-        &self,
-        store: &mut Store<HostState>,
-        component_bytes: &[u8],
-    ) -> Result<Transform, RuntimeError> {
-        let component = Component::from_binary(&self.engine, component_bytes)
-            .map_err(RuntimeError::Component)?;
-        Transform::instantiate(store, &component, &self.linker).map_err(RuntimeError::Instantiate)
-    }
-
-    /// Read a transform's static capability metadata for `op`.
-    ///
-    /// # Errors
-    /// If the component is invalid, fails to instantiate, or traps.
-    pub fn describe(&self, component_bytes: &[u8], op: &str) -> Result<Descriptor, RuntimeError> {
-        let mut store = self.store()?;
-        let transform = self.instantiate(&mut store, component_bytes)?;
-        let d = transform
-            .call_describe(&mut store, op)
-            .map_err(RuntimeError::Trap)?;
-        Ok(Descriptor {
-            seek: d.seek.into(),
-            random_access_inputs: d.random_access_inputs,
-        })
-    }
-
-    /// Run one operation of a transform component: `op` selects the
-    /// operation, `params` is the recipe's canonical-CBOR params, `inputs`
-    /// are the resolved input blobs in recipe order. Returns the output blobs
-    /// in recipe order.
-    ///
-    /// # Errors
-    /// [`RuntimeError::Component`] for an invalid binary,
-    /// [`RuntimeError::Instantiate`] for link/world wiring failures,
-    /// [`RuntimeError::Trap`] for a trap or exhausted budget,
-    /// [`RuntimeError::Transform`] for an error the transform itself
-    /// returned.
-    pub fn run(
-        &self,
-        component_bytes: &[u8],
-        op: &str,
-        params: &[u8],
-        inputs: &[Vec<u8>],
-    ) -> Result<Vec<Vec<u8>>, RuntimeError> {
-        // D54: anonymous components don't run.
-        crate::attribution::parse_attribution(component_bytes)
-            .map_err(|e| RuntimeError::Component(anyhow::anyhow!(e)))?;
-        let mut store = self.store()?;
-        let transform = self.instantiate(&mut store, component_bytes)?;
-        transform
-            .call_run(&mut store, op, params, inputs)
-            .map_err(RuntimeError::Trap)?
-            .map_err(RuntimeError::Transform)
+    #[test]
+    fn descriptor_ignores_advisory_keys_and_rejects_junk() {
+        // {1: 1, 99: "future"} — unknown key ignored (D89 advisory rule).
+        let with_future = [
+            0xa2, 0x01, 0x01, 0x18, 0x63, 0x66, b'f', b'u', b't', b'u', b'r', b'e',
+        ];
+        assert_eq!(
+            Descriptor::from_cbor(&with_future).map(|d| d.seek),
+            Ok(SeekClass::ManifestSeekable)
+        );
+        // Missing seek, empty rai array, non-map: all refuse.
+        assert!(Descriptor::from_cbor(&[0xa0]).is_err());
+        assert!(Descriptor::from_cbor(&[0xa2, 0x01, 0x00, 0x02, 0x80]).is_err());
+        assert!(Descriptor::from_cbor(&[0x01]).is_err());
     }
 }

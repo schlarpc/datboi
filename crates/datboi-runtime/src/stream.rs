@@ -1,10 +1,11 @@
-//! Host for the frozen `datboi:transform@2` streaming world (D46/D49,
-//! frozen 2026-07-07 after the M2 exit test — see the WIT header).
+//! Host for the `datboi:transform@1` world (D89 epoch; the streaming
+//! interaction model D46/D49 proved at M2 — see the WIT header).
 //!
-//! Same determinism doctrine as the @1 host, plus the stream layer:
+//! Determinism doctrine, host side:
 //!
-//! * The linker gains EXACTLY our `types` resource methods — still no
-//!   clock, random, or filesystem. The import surface stays the sandbox.
+//! * The linker gains EXACTLY the `datboi:streams@1` resource methods —
+//!   no clock, random, or filesystem. The import surface stays the
+//!   sandbox.
 //! * The exact-read contract is enforced HERE: `source.read(n)` returns
 //!   `n` bytes unless the stream ends (host loops over short reads from
 //!   the underlying reader), so the guest-visible byte sequence can never
@@ -20,29 +21,30 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use wasmtime::component::{Component, HasSelf, Linker, Resource, ResourceTable};
 use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
 
-use crate::{Limits, RuntimeError, SeekClass};
+use crate::{Limits, RuntimeError};
 
 // The generated `call_serve_range` mirrors the WIT's flat 7-arg shape.
 #[allow(clippy::too_many_arguments)]
 mod bindings {
-    // Host bindings for the v2 world; host resources map to the
+    // Host bindings for the transform lane; host resources map to the
     // entry types below.
     wasmtime::component::bindgen!({
-        world: "transform-stream",
-        path: "../../wit/transform/v2",
+        world: "transform",
+        path: "../../wit/transform/v1",
         // Host methods return wasmtime::Result so contract violations
         // (MAX_READ) and sink I/O failures become deterministic traps.
         imports: { default: trappable },
         with: {
-            "datboi:transform/types/source": super::SourceEntry,
-            "datboi:transform/types/file": super::FileEntry,
-            "datboi:transform/types/sink": super::SinkEntry,
+            "datboi:streams/types/source": super::SourceEntry,
+            "datboi:streams/types/file": super::FileEntry,
+            "datboi:streams/types/sink": super::SinkEntry,
         },
     });
 }
 
-use bindings::TransformStream;
-use bindings::datboi::transform::types;
+use bindings::Transform;
+use bindings::datboi::streams::types as streams;
+use bindings::datboi::transform::types::Input;
 
 /// A single `read(n)` may not exceed this (16 MiB): larger requests trap,
 /// deterministically, everywhere. Documented in the WIT.
@@ -156,9 +158,10 @@ struct HostState {
     table: ResourceTable,
 }
 
-impl types::Host for HostState {}
+impl streams::Host for HostState {}
+impl bindings::datboi::transform::types::Host for HostState {}
 
-impl types::HostSource for HostState {
+impl streams::HostSource for HostState {
     fn read(&mut self, this: Resource<SourceEntry>, n: u32) -> wasmtime::Result<Vec<u8>> {
         if n > MAX_READ {
             anyhow::bail!("read({n}) exceeds MAX_READ ({MAX_READ}): resource-abuse guard");
@@ -202,7 +205,7 @@ impl types::HostSource for HostState {
     }
 }
 
-impl types::HostFile for HostState {
+impl streams::HostFile for HostState {
     fn read_at(
         &mut self,
         this: Resource<FileEntry>,
@@ -240,7 +243,7 @@ impl types::HostFile for HostState {
     }
 }
 
-impl types::HostSink for HostState {
+impl streams::HostSink for HostState {
     fn write(&mut self, this: Resource<SinkEntry>, chunk: Vec<u8>) -> wasmtime::Result<()> {
         let entry = self.table.get_mut(&this)?;
         entry.writer.write_all(&chunk)?;
@@ -253,7 +256,7 @@ impl types::HostSink for HostState {
     }
 }
 
-/// A compiled @2 component, ready to instantiate cheaply.
+/// A compiled transform-lane component, ready to instantiate cheaply.
 pub struct StreamTransform {
     component: Component,
 }
@@ -266,7 +269,7 @@ pub struct RangeRequest {
     pub len: u64,
 }
 
-/// Deterministically-configured host for `datboi:transform@2` components.
+/// Deterministically-configured host for `datboi:transform@1` components.
 pub struct StreamHost {
     engine: Engine,
     linker: Linker<HostState>,
@@ -284,7 +287,7 @@ impl StreamHost {
         // The ONLY imports: our own types interface. Still no ambient
         // capabilities — the stream methods are the whole import surface.
         let mut linker = Linker::new(&engine);
-        TransformStream::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |s| s)
+        Transform::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |s| s)
             .map_err(RuntimeError::Component)?;
         Ok(Self {
             engine,
@@ -334,15 +337,20 @@ impl StreamHost {
         &self,
         store: &mut Store<HostState>,
         transform: &StreamTransform,
-    ) -> Result<TransformStream, RuntimeError> {
-        TransformStream::instantiate(store, &transform.component, &self.linker)
+    ) -> Result<Transform, RuntimeError> {
+        Transform::instantiate(store, &transform.component, &self.linker)
             .map_err(RuntimeError::Instantiate)
     }
 
-    /// Read a transform's static capability metadata for `op`.
+    /// Read a transform's static capability metadata for `op` — the
+    /// canonical-CBOR descriptor (D89 vocabulary rule), decoded with
+    /// the schema mirror in [`crate::Descriptor::from_cbor`].
     ///
     /// # Errors
-    /// If the component is invalid, fails to instantiate, or traps.
+    /// If the component is invalid, fails to instantiate, or traps;
+    /// [`RuntimeError::Transform`] for a guest refusal (unknown op) or
+    /// a malformed descriptor — both deterministic verdicts about the
+    /// component, not the environment (D81).
     pub fn describe(
         &self,
         transform: &StreamTransform,
@@ -350,17 +358,12 @@ impl StreamHost {
     ) -> Result<crate::Descriptor, RuntimeError> {
         let mut store = self.store(None)?;
         let transform = self.instantiate(&mut store, transform)?;
-        let d = transform
+        let bytes = transform
             .call_describe(&mut store, op)
-            .map_err(RuntimeError::Trap)?;
-        Ok(crate::Descriptor {
-            seek: match d.seek {
-                types::SeekClass::Affine => SeekClass::Affine,
-                types::SeekClass::ManifestSeekable => SeekClass::ManifestSeekable,
-                types::SeekClass::Opaque => SeekClass::Opaque,
-            },
-            random_access_inputs: d.random_access_inputs,
-        })
+            .map_err(RuntimeError::Trap)?
+            .map_err(RuntimeError::Transform)?;
+        crate::Descriptor::from_cbor(&bytes)
+            .map_err(|e| RuntimeError::Transform(format!("malformed descriptor: {e}")))
     }
 
     /// Run one streaming operation to completion. Output bytes land in
@@ -416,7 +419,7 @@ impl StreamHost {
                         s.len,
                         Arc::clone(&progress),
                     ));
-                    types::Input::Sequential(
+                    Input::Sequential(
                         store
                             .data_mut()
                             .table
@@ -428,7 +431,7 @@ impl StreamHost {
                             .map_err(|e| RuntimeError::Component(e.into()))?,
                     )
                 }
-                StreamInput::RandomAccess(inner) => types::Input::RandomAccess(
+                StreamInput::RandomAccess(inner) => Input::RandomAccess(
                     store
                         .data_mut()
                         .table
@@ -507,7 +510,7 @@ impl StreamHost {
 
         let mut input_handles = Vec::with_capacity(inputs.len());
         for inner in inputs {
-            input_handles.push(types::Input::RandomAccess(
+            input_handles.push(Input::RandomAccess(
                 store
                     .data_mut()
                     .table

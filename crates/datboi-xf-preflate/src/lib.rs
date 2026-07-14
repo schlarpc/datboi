@@ -1,5 +1,5 @@
-//! `xf-preflate`: deflate-stream recreation for the frozen
-//! `datboi:transform@2` world (D53).
+//! `xf-preflate`: deflate-stream recreation for the
+//! `datboi:transform@1` world (D89 epoch) (D53).
 //!
 //! One op, `recreate`: rebuild a member's raw deflate bytes bit-exactly
 //! from two sequential inputs —
@@ -92,19 +92,14 @@ pub fn encode_frame_header(h: FrameHeader) -> [u8; 8] {
     out
 }
 
-/// Component glue for the frozen `datboi:transform@2` world; wasm32-only
+/// Component glue for the `datboi:transform@1` world (D89 epoch); wasm32-only
 /// so host-side tests of the pure framing build natively.
 #[cfg(target_arch = "wasm32")]
 #[allow(unsafe_code)]
 mod component {
-    wit_bindgen::generate!({
-        world: "transform-stream",
-        path: "../../wit/transform/v2",
-    });
-
     use std::io::Cursor;
 
-    use datboi::transform::types::{SeekClass, Source};
+    use datboi_guest_transform::{Descriptor, Guest, Input, Sink, Source};
     use preflate_rs::RecreateStreamProcessor;
 
     use super::{CHUNK, parse_frame_header};
@@ -141,11 +136,11 @@ mod component {
     }
 
     impl Guest for Xf {
-        fn describe(_op: String) -> Descriptor {
-            Descriptor {
-                seek: SeekClass::Opaque,
-                random_access_inputs: Vec::new(),
+        fn describe(op: String) -> Result<Vec<u8>, String> {
+            if op != "recreate" {
+                return Err(format!("unknown op {op:?}"));
             }
+            Ok(Descriptor::opaque().to_cbor())
         }
 
         fn run(
@@ -214,7 +209,7 @@ mod component {
         }
     }
 
-    export!(Xf);
+    datboi_guest_transform::export!(Xf);
 }
 
 #[cfg(test)]

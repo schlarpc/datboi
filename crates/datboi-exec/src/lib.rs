@@ -28,7 +28,7 @@ pub mod random;
 pub use datboi_runtime::pipe;
 
 use std::collections::HashMap;
-use std::io::{self, Cursor, Read, Seek, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -44,7 +44,7 @@ use datboi_runtime::extractor::{ExtractorComponent, ExtractorHost};
 use datboi_runtime::stream::{
     RangeRead, SequentialInput, StreamHost, StreamInput, StreamTransform,
 };
-use datboi_runtime::{Limits, RuntimeError, TransformHost};
+use datboi_runtime::{Limits, RuntimeError};
 use datboi_store_fs::{Namespace as StoreNs, PutOutcome, Store, StoreError};
 
 use crate::random::{AssembleRandom, FileRandom, SeqOverRandom, VerifiedRandom, WindowSeq};
@@ -186,7 +186,7 @@ enum OpImpl {
         offset: u64,
         len: u64,
     },
-    Wasm2 {
+    Transform {
         transform: Arc<StreamTransform>,
         component: Blake3,
         op: String,
@@ -194,15 +194,13 @@ enum OpImpl {
         seek: datboi_runtime::SeekClass,
         random_access_inputs: Vec<u32>,
     },
-    Wasm1 {
-        component: Vec<u8>,
-        op: String,
-        params: Vec<u8>,
-    },
-    /// Container→member extraction through a `datboi:extractor@1` component
-    /// (D58). Input 0 is the archive container (random-access); the single
-    /// output is member `member_ix` (opaque — the whole member decodes as a
-    /// unit, so range reads spill).
+    /// Container→member extraction through a `datboi:extractor@1`
+    /// component (D58 pathfinder, D89 shape). Input 0 is the archive
+    /// container (random-access); the single output is member
+    /// `member_ix` (opaque — the whole member decodes as a unit, so
+    /// range reads spill). Replay is a one-request batch; the recipe's
+    /// params are HOST-interpreted member selection (docs/worlds.md),
+    /// so the world call passes an empty params bstr.
     Extractor {
         component: Arc<ExtractorComponent>,
         member_ix: u32,
@@ -221,7 +219,6 @@ impl Plan {
 pub struct Executor<'s> {
     store: &'s Store,
     stream_host: Arc<StreamHost>,
-    v1_host: TransformHost,
     extractor_host: Arc<ExtractorHost>,
     config: ExecConfig,
     /// Compiled @2 components by hash — the D51 load/run split.
@@ -237,7 +234,6 @@ impl<'s> Executor<'s> {
         Ok(Self {
             store,
             stream_host: Arc::new(StreamHost::new(config.limits)?),
-            v1_host: TransformHost::new(config.limits)?,
             extractor_host: Arc::new(ExtractorHost::new(config.limits)?),
             config,
             components: Mutex::new(HashMap::new()),
@@ -547,7 +543,7 @@ impl<'s> Executor<'s> {
             return Ok(detail.to_string());
         };
         let mut dirty: Vec<Blake3> = Vec::new();
-        if let Some(children) = find_wasm2_children(plan, &component) {
+        if let Some(children) = find_transform_children(plan, &component) {
             let mut leaves = Vec::new();
             for child in children {
                 collect_literal_leaves(child, &mut leaves);
@@ -609,7 +605,7 @@ impl<'s> Executor<'s> {
                         .map_err(ExecError::Malformed)?;
                     return Ok((read_via(&mut node)?, None));
                 }
-                OpImpl::Wasm2 {
+                OpImpl::Transform {
                     transform,
                     component,
                     op,
@@ -761,28 +757,16 @@ impl<'s> Executor<'s> {
                 world,
                 export,
             } => match world {
-                World::Transform2 => {
+                World::Transform1 => {
                     let transform = self.load_component(component)?;
                     let descriptor = self.stream_host.describe(&transform, export)?;
-                    Ok(OpImpl::Wasm2 {
+                    Ok(OpImpl::Transform {
                         transform,
                         component: *component,
                         op: export.clone(),
                         params: recipe.params.clone(),
                         seek: descriptor.seek,
                         random_access_inputs: descriptor.random_access_inputs,
-                    })
-                }
-                World::Transform1 => {
-                    let mut bytes = Vec::new();
-                    self.store
-                        .get(StoreNs::Data, component)?
-                        .ok_or(ExecError::NoRoute(*component))?
-                        .read_to_end(&mut bytes)?;
-                    Ok(OpImpl::Wasm1 {
-                        component: bytes,
-                        op: export.clone(),
-                        params: recipe.params.clone(),
                     })
                 }
                 World::Extractor1 => {
@@ -871,8 +855,8 @@ impl<'s> Executor<'s> {
                 Ok(Box::new(io::BufReader::new(file)))
             }
             Plan::Op(op_plan) => match &op_plan.op {
-                OpImpl::Assemble(_) | OpImpl::Deflate { .. } | OpImpl::Wasm1 { .. } => {
-                    self.open_builtin_or_v1_sequential(op_plan)
+                OpImpl::Assemble(_) | OpImpl::Deflate { .. } => {
+                    self.open_builtin_sequential(op_plan)
                 }
                 OpImpl::Extractor {
                     component,
@@ -891,9 +875,9 @@ impl<'s> Executor<'s> {
                         let _finished = h.finish_on_drop();
                         if let Err(e) = host.extract_fueled(
                             &component,
-                            container,
-                            member_ix,
-                            Box::new(w),
+                            vec![container],
+                            &[],
+                            vec![(member_ix, Box::new(w))],
                             Some(fuel),
                         ) {
                             h.fail(format!("extractor failed: {e}"));
@@ -901,14 +885,15 @@ impl<'s> Executor<'s> {
                     });
                     Ok(Box::new(r))
                 }
-                OpImpl::Wasm2 {
+                OpImpl::Transform {
                     transform,
                     op,
                     params,
                     random_access_inputs,
                     ..
                 } => {
-                    let inputs = self.open_wasm2_inputs(&op_plan.children, random_access_inputs)?;
+                    let inputs =
+                        self.open_transform_inputs(&op_plan.children, random_access_inputs)?;
                     let n_outputs = op_plan.outputs.len();
                     let mut sinks: Vec<Box<dyn Write + Send>> = Vec::with_capacity(n_outputs);
                     let mut reader = None;
@@ -948,10 +933,7 @@ impl<'s> Executor<'s> {
         }
     }
 
-    fn open_builtin_or_v1_sequential(
-        &self,
-        op_plan: &OpPlan,
-    ) -> Result<Box<dyn Read + Send>, ExecError> {
+    fn open_builtin_sequential(&self, op_plan: &OpPlan) -> Result<Box<dyn Read + Send>, ExecError> {
         match &op_plan.op {
             OpImpl::Assemble(params) => {
                 let children = self.open_children_random(&op_plan.children)?;
@@ -965,17 +947,7 @@ impl<'s> Executor<'s> {
                     container, *offset, *len,
                 ))))
             }
-            OpImpl::Wasm1 {
-                component,
-                op,
-                params,
-            } => {
-                let outputs = self.run_wasm1(op_plan, component, op, params)?;
-                Ok(Box::new(Cursor::new(
-                    outputs.into_iter().nth(op_plan.output_ix).expect("checked"),
-                )))
-            }
-            OpImpl::Wasm2 { .. } | OpImpl::Extractor { .. } => {
+            OpImpl::Transform { .. } | OpImpl::Extractor { .. } => {
                 unreachable!("handled by open_sequential")
             }
         }
@@ -988,7 +960,7 @@ impl<'s> Executor<'s> {
         children.iter().map(|c| self.open_random(c)).collect()
     }
 
-    fn open_wasm2_inputs(
+    fn open_transform_inputs(
         &self,
         children: &[Plan],
         random_access_inputs: &[u32],
@@ -1197,7 +1169,7 @@ impl<'s> Executor<'s> {
                     children,
                     recipe_id: None,
                 };
-                let reader = self.open_builtin_or_v1_sequential(&plan)?;
+                let reader = self.open_builtin_sequential(&plan)?;
                 let outcome =
                     self.store
                         .put_with_obao(StoreNs::Data, outputs[0].0, outputs[0].1, reader)?;
@@ -1210,7 +1182,7 @@ impl<'s> Executor<'s> {
                 // Single opaque output (one member); the container (input
                 // 0) arrives random-access — the extractor seeks its
                 // headers. The guest's typed verdict is joined HERE (the
-                // Wasm2 scoped-thread pattern) so a trap or guest error
+                // transform scoped-thread pattern) so a trap or guest error
                 // classifies as a claim failure instead of dissolving
                 // into pipe I/O on the consumer side.
                 if outputs.len() != 1 {
@@ -1228,9 +1200,9 @@ impl<'s> Executor<'s> {
                     let guest = scope.spawn(move || {
                         host.extract_fueled(
                             &component,
-                            container,
-                            member_ix,
-                            Box::new(w),
+                            vec![container],
+                            &[],
+                            vec![(member_ix, Box::new(w))],
                             Some(fuel),
                         )
                     });
@@ -1254,43 +1226,14 @@ impl<'s> Executor<'s> {
                     Ok(vec![(outputs[0].0, stored?)])
                 })
             }
-            OpImpl::Wasm1 {
-                component,
-                op: opname,
-                params,
-            } => {
-                let plan = OpPlan {
-                    op: OpImpl::Wasm1 {
-                        component: component.clone(),
-                        op: opname.clone(),
-                        params: params.clone(),
-                    },
-                    output_ix: 0,
-                    outputs: outputs.clone(),
-                    children,
-                    recipe_id: None,
-                };
-                let blobs = self.run_wasm1(&plan, component, opname, params)?;
-                let mut results = Vec::with_capacity(outputs.len());
-                for ((hash, size), bytes) in outputs.iter().zip(blobs) {
-                    let outcome = self.store.put_with_obao(
-                        StoreNs::Data,
-                        *hash,
-                        *size,
-                        Cursor::new(bytes),
-                    )?;
-                    results.push((*hash, outcome));
-                }
-                Ok(results)
-            }
-            OpImpl::Wasm2 {
+            OpImpl::Transform {
                 transform,
                 op: opname,
                 params,
                 random_access_inputs,
                 ..
             } => {
-                let inputs = self.open_wasm2_inputs(&children, random_access_inputs)?;
+                let inputs = self.open_transform_inputs(&children, random_access_inputs)?;
                 let mut sinks: Vec<Box<dyn Write + Send>> = Vec::with_capacity(outputs.len());
                 let mut readers = Vec::with_capacity(outputs.len());
                 for _ in &outputs {
@@ -1350,39 +1293,6 @@ impl<'s> Executor<'s> {
             }
         }
     }
-
-    fn run_wasm1(
-        &self,
-        op_plan: &OpPlan,
-        component: &[u8],
-        op: &str,
-        params: &[u8],
-    ) -> Result<Vec<Vec<u8>>, ExecError> {
-        let mut buffers = Vec::with_capacity(op_plan.children.len());
-        let mut total = 0u64;
-        for child in &op_plan.children {
-            let size = child.len();
-            total = total.saturating_add(size);
-            if size > self.config.max_buffer || total > self.config.max_buffer {
-                return Err(ExecError::BufferCap {
-                    size: size.max(total),
-                    cap: self.config.max_buffer,
-                });
-            }
-            let mut buf = Vec::with_capacity(usize::try_from(size).expect("capped"));
-            self.open_sequential(child)?.read_to_end(&mut buf)?;
-            buffers.push(buf);
-        }
-        let outputs = self.v1_host.run(component, op, params, &buffers)?;
-        if outputs.len() != op_plan.outputs.len() {
-            return Err(ExecError::Malformed(format!(
-                "@1 transform produced {} outputs, recipe claims {}",
-                outputs.len(),
-                op_plan.outputs.len()
-            )));
-        }
-        Ok(outputs)
-    }
 }
 
 /// Shared Vec sink: the host consumes it as `Box<dyn Write + Send>`, the
@@ -1431,13 +1341,13 @@ fn fuel_budget(children: &[Plan], outputs: &[(Blake3, u64)]) -> u64 {
     FUEL_BASE.saturating_add(bytes.saturating_mul(FUEL_PER_BYTE))
 }
 
-/// DFS for the wasm2 node running `component`; returns its children —
+/// DFS for the transform node running `component`; returns its children —
 /// the inputs whose integrity decides quarantine attribution.
-fn find_wasm2_children<'p>(plan: &'p Plan, component: &Blake3) -> Option<&'p [Plan]> {
+fn find_transform_children<'p>(plan: &'p Plan, component: &Blake3) -> Option<&'p [Plan]> {
     let Plan::Op(op_plan) = plan else {
         return None;
     };
-    if let OpImpl::Wasm2 { component: c, .. } = &op_plan.op
+    if let OpImpl::Transform { component: c, .. } = &op_plan.op
         && c == component
     {
         return Some(&op_plan.children);
@@ -1445,7 +1355,7 @@ fn find_wasm2_children<'p>(plan: &'p Plan, component: &Blake3) -> Option<&'p [Pl
     op_plan
         .children
         .iter()
-        .find_map(|child| find_wasm2_children(child, component))
+        .find_map(|child| find_transform_children(child, component))
 }
 
 /// Literal leaves grounding a plan subtree.
