@@ -99,7 +99,7 @@ pub fn encode_frame_header(h: FrameHeader) -> [u8; 8] {
 mod component {
     wit_bindgen::generate!({
         world: "transform-stream",
-        path: "../../wit/v2",
+        path: "../../wit/transform/v2",
     });
 
     use std::io::Cursor;

@@ -226,7 +226,7 @@ pub fn touched_blocks(total: u64, block_size: u32, offset: u64, len: u64) -> Opt
 mod component {
     wit_bindgen::generate!({
         world: "transform-stream",
-        path: "../../wit/v2",
+        path: "../../wit/transform/v2",
     });
 
     use datboi::transform::types::{File, SeekClass, Source};

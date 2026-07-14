@@ -154,7 +154,7 @@
       unrarSrcFor = system:
         (pkgsFor system).callPackage ./crates/datboi-ex-unrar/nix/unrar-src.nix { };
 
-      # The shared frozen WIT, staged so the guests' `../../wit/v2` path
+      # The shared frozen WIT, staged so the guests' `../../wit/transform/v2` path
       # resolves exactly as it does in the repo (crates/<crate>/../../wit):
       # nest the unpacked crate one level deeper and put wit at the top.
       witStageFor = system: ''

@@ -64,7 +64,7 @@ pub fn apply(op: &str, input: &[u8]) -> Option<Vec<u8>> {
 mod component {
     wit_bindgen::generate!({
         world: "transform",
-        path: "../../wit/v1",
+        path: "../../wit/transform/v1",
     });
 
     // `generate!` hoists `Descriptor` (it appears in the world's function

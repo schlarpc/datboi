@@ -124,7 +124,7 @@ pub const PROBE_SIZES: [u32; 8] = [1, 3, 7, 64, 251, 4093, 65537, 13];
 mod component {
     wit_bindgen::generate!({
         world: "transform-stream",
-        path: "../../wit/v2",
+        path: "../../wit/transform/v2",
     });
 
     // `generate!` hoists types named in world signatures (Descriptor,

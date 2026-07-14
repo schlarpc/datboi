@@ -67,7 +67,7 @@ mod component {
 
     wit_bindgen::generate!({
         world: "extractor",
-        path: "../../wit/ex1",
+        path: "../../wit/extractor/v1",
     });
 
     // `generate!` hoists the types named in the world signatures (File,

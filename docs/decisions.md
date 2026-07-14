@@ -1014,6 +1014,15 @@ reproduction — is the accepted trade above), components as a
 deploy-time payload directory (a second distribution artifact
 contradicting single-binary for no D64 gain).
 
+*Amendment (2026-07-13):* the WIT tree adopts package-named
+directories — `wit/transform/v1`, `wit/transform/v2`,
+`wit/extractor/v1` — replacing the positional `wit/v1`/`v2`/`ex1`
+(the D88 rule applied to this tree: names cite, and `ex1` encoded
+"extractor@1" only by convention). Repo paths only; the worlds'
+contents stay frozen (D51), and one-package-per-directory is the
+layout `wkg`/wit-deps tooling expects if the WIT is ever published
+for external component authors.
+
 ## D67 — M5 web stack: Svelte 5 + Vite in web/, wuchale i18n, dist embeds like D66 (2026-07-11)
 
 The web UI (D17) lives in `web/` as a standalone npm project with its
