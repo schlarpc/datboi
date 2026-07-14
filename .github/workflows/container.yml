@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
   packages: write
+  # Keyless cosign (D89, docs/worlds.md §publishing): the workflow's OIDC
+  # identity signs what it pushes; certificates land in the Rekor log.
+  id-token: write
 
 # One publish at a time; a new push to main supersedes an in-flight run.
 concurrency:
@@ -56,3 +59,23 @@ jobs:
         run: |
           nix run .#container.copyTo -- docker://ghcr.io/${{ github.repository }}:${{ github.sha }}
           nix run .#container.copyToRegistry
+
+      # D89 (docs/worlds.md §publishing): the wkg-encoded WIT packages.
+      # The publish gate inside the script refuses to overwrite an
+      # existing version tag — published versions are immutable forever —
+      # so re-runs are idempotent and only NEW versions surface as
+      # PUBLISHED lines for the signing step below.
+      - name: Publish WIT packages
+        run: nix run .#publish-wit | tee wit-publish.log
+
+      - uses: sigstore/cosign-installer@v4
+
+      # Keyless: the run's OIDC identity is the key. Verifiable with
+      #   cosign verify --certificate-identity-regexp \
+      #     'github.com/schlarpc/datboi' \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com <ref>
+      - name: Sign published artifacts
+        run: |
+          cosign sign --yes ghcr.io/${{ github.repository }}:${{ github.sha }}
+          grep '^PUBLISHED ' wit-publish.log | cut -d' ' -f2 \
+            | xargs -r -n1 cosign sign --yes
