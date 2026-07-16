@@ -32,7 +32,7 @@ pub use analysis::{
 pub use auth::{InviteOutcome, InviteRow, SessionRow, UserRow};
 pub use blobs::BlobRow;
 pub use gc::{GuardHolder, OrphanCandidate};
-pub use recipes::{GroundingMode, VerifyAdvance};
+pub use recipes::{GroundingMode, RebuildInput, SwapCandidate, VerifyAdvance};
 pub use types::{
     AliasAlgo, ClaimKind, ClaimStatus, JobKind, JobState, Namespace, OpKind, RecipeSource,
     Residency, Role, SeekClass, VerifyState,

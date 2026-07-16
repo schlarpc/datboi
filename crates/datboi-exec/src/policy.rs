@@ -12,6 +12,12 @@ use datboi_index::{Db, IndexError};
 pub const KEY_HIGH_WATER: &str = "evict:high-water";
 pub const KEY_LOW_WATER: &str = "evict:low-water";
 pub const KEY_GRACE_SECS: &str = "gc:grace-secs";
+/// D91: the affine piece-swap phase (on/off).
+pub const KEY_SWAP_ENABLED: &str = "swap:enabled";
+/// D91: minimum percentage of a rebuild's input bytes that must be
+/// shared (claimed by ≥2 decompositions) or already resident before
+/// the swap pays — the never-eager gate.
+pub const KEY_SWAP_SHARE_PCT: &str = "swap:share-min-pct";
 /// Keep-marks: `gc:keep:<hex>` → optional operator note. By HASH, not
 /// blob id — intent must survive a cache rebuild (D73).
 pub const KEEP_PREFIX: &str = "gc:keep:";
@@ -21,6 +27,9 @@ pub const DEFAULT_HIGH_PCT: u8 = 90;
 pub const DEFAULT_LOW_PCT: u8 = 85;
 /// D73 review-eligibility grace from first-observed-unreferenced.
 pub const DEFAULT_GRACE_SECS: i64 = 24 * 60 * 60;
+/// D91: a lone decomposition (0% sharing) never trips this; a variant
+/// pair (MKDS-shaped, ~98% shared) always does.
+pub const DEFAULT_SWAP_SHARE_PCT: u8 = 50;
 
 /// A watermark setting: `off`, a percentage of the store filesystem
 /// (`"90%"`), or absolute used bytes (`"500000000000"`).
@@ -82,6 +91,30 @@ pub fn grace_secs(db: &Db) -> Result<i64, IndexError> {
         .config_get(KEY_GRACE_SECS)?
         .and_then(|v| std::str::from_utf8(&v).ok()?.trim().parse().ok())
         .unwrap_or(DEFAULT_GRACE_SECS))
+}
+
+/// D91 swap phase armed? Ambient like the watermarks: the predicate,
+/// not the switch, is what keeps it from being eager.
+///
+/// # Errors
+/// Index I/O.
+pub fn swap_enabled(db: &Db) -> Result<bool, IndexError> {
+    Ok(db
+        .config_get(KEY_SWAP_ENABLED)?
+        .is_none_or(|v| v != b"0" && !v.eq_ignore_ascii_case(b"off")))
+}
+
+/// D91 sharing threshold (percent). Unparsable falls back to the
+/// default — a typo must fail toward the bounded posture.
+///
+/// # Errors
+/// Index I/O.
+pub fn swap_share_min_pct(db: &Db) -> Result<u8, IndexError> {
+    Ok(db
+        .config_get(KEY_SWAP_SHARE_PCT)?
+        .and_then(|v| std::str::from_utf8(&v).ok()?.trim().parse().ok())
+        .filter(|p| *p <= 100)
+        .unwrap_or(DEFAULT_SWAP_SHARE_PCT))
 }
 
 /// Every kept hash (operator "this is not junk" marks).

@@ -24,6 +24,7 @@
 pub mod evict;
 pub mod policy;
 pub mod random;
+pub mod swap;
 
 pub use datboi_runtime::pipe;
 
@@ -224,6 +225,10 @@ pub struct Executor<'s> {
 impl<'s> Executor<'s> {
     /// # Errors
     /// If wasmtime rejects the deterministic configuration.
+    pub(crate) fn store_ref(&self) -> &'s Store {
+        self.store
+    }
+
     pub fn new(store: &'s Store, config: ExecConfig) -> Result<Self, ExecError> {
         Ok(Self {
             store,

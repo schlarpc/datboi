@@ -41,6 +41,10 @@ pub enum Blocked {
     /// A pinned view or image tag references this blob (D27): eviction
     /// would degrade pinned serving. Drop or move the tag first.
     PinnedByView,
+    /// The blob's local bytes live inside a sealed pack (D91): packs
+    /// are immutable, and packed pieces are grounding leaves — freeing
+    /// their bytes is a future tombstone-and-repack, never an evict.
+    Packed,
 }
 
 #[derive(Debug)]
@@ -95,6 +99,11 @@ impl<'s> Executor<'s> {
         }
         if protected.contains(&row.blob_id) {
             return Ok(EvictOutcome::Blocked(Blocked::PinnedByView));
+        }
+        // D91: a packed blob has no loose file to unlink — flipping its
+        // residency would strand index truth away from byte truth.
+        if self.store.is_packed(hash) && !self.store.has_loose(StoreNs::Data, hash) {
+            return Ok(EvictOutcome::Blocked(Blocked::Packed));
         }
         if !db.is_evictable(row.blob_id)? {
             // Distinguish "needs a replay" from "structurally impossible"

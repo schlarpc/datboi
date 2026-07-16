@@ -62,6 +62,9 @@ impl Maintainer {
         self.license(db, jobs);
         if ambient {
             self.mark_orphans(db);
+            // D91: the piece-swap rides ambient ticks only (its
+            // candidate scan is full-corpus, like the orphan sweep).
+            self.swap(db, jobs);
         }
         self.watermark_evict(db, store, jobs);
         if ambient {
@@ -148,6 +151,60 @@ impl Maintainer {
             }
             Ok(_) => {}
             Err(e) => warn!("maintenance: orphan sweep: {e}"),
+        }
+    }
+
+    /// Phase 2b — the D91 affine piece-swap, under the singleton guard
+    /// (its evict step computes grounding counterfactuals; two
+    /// planners interleaving those can strand an inverse pair). Quiet
+    /// when nothing trips the sharing predicate — a tray job only when
+    /// bytes actually moved.
+    fn swap(&self, db: &mut Db, jobs: &Registry) {
+        match policy::swap_enabled(db) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => {
+                warn!("maintenance: swap policy: {e}");
+                return;
+            }
+        }
+        if !claim_guard(db, &self.holder) {
+            debug!("maintenance: swap deferred; gc guard busy");
+            return;
+        }
+        let result = self.exec.swap_covered(db);
+        db.release_gc_guard(&self.holder).unwrap_or_else(|e| {
+            warn!("maintenance: guard release: {e}"); // TTL is the backstop
+        });
+        match result {
+            Ok(report) if report.swapped == 0 && report.skipped.is_empty() => {}
+            Ok(report) => {
+                let job = jobs.create_gc("swap — pieces over container", 0, now_unix());
+                for (hash, why) in &report.skipped {
+                    debug!("maintenance job {job}: swap {hash}: {why}");
+                }
+                let done = report.swapped as u64;
+                jobs.refine_progress(job, done, done + report.skipped.len() as u64);
+                jobs.push_note(
+                    job,
+                    format!(
+                        "{} container(s) swapped into {} pack(s): {} byte(s) packed, \
+                         {} reclaimed; {} below the sharing threshold, {} skipped",
+                        report.swapped,
+                        report.packs,
+                        report.bytes_packed,
+                        report.bytes_reclaimed,
+                        report.below_threshold,
+                        report.skipped.len()
+                    ),
+                );
+                jobs.finish(job, now_unix());
+                info!(
+                    "maintenance job {job}: swapped {} container(s), reclaimed {} byte(s)",
+                    report.swapped, report.bytes_reclaimed
+                );
+            }
+            Err(e) => warn!("maintenance: swap phase: {e}"),
         }
     }
 

@@ -317,6 +317,14 @@ impl Store {
             || (ns == Namespace::Data && self.packed_loc(hash).is_some())
     }
 
+    /// Does a LOOSE file exist for this blob? `has` also answers for
+    /// packed members; eviction planners need the distinction (a
+    /// packed blob has nothing evictable, D91).
+    #[must_use]
+    pub fn has_loose(&self, ns: Namespace, hash: &Blake3) -> bool {
+        self.blob_path(ns, hash).exists()
+    }
+
     pub fn len(&self, ns: Namespace, hash: &Blake3) -> Result<Option<u64>, StoreError> {
         let path = self.blob_path(ns, hash);
         match fs::metadata(&path) {

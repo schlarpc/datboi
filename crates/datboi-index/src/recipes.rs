@@ -39,6 +39,30 @@ pub struct RecipeInputRow {
     pub role: Option<String>,
 }
 
+/// One D91 swap candidate: a resident container with an affine
+/// builtin-assemble rebuild route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwapCandidate {
+    pub recipe_id: i64,
+    pub blob_id: i64,
+    pub hash: Blake3,
+    pub size: Option<u64>,
+}
+
+/// One input of a rebuild route, with the D91 sharing evidence: how
+/// many distinct non-failed recipes claim this blob as output. Two or
+/// more means two decompositions produced the same piece — the
+/// cross-variant dedup the swap exists to cash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebuildInput {
+    pub position: u32,
+    pub blob_id: i64,
+    pub hash: Blake3,
+    pub size: Option<u64>,
+    pub residency: crate::Residency,
+    pub covering_claims: u64,
+}
+
 /// A legal target for [`Db::set_verify_state`]: the Failed⇔detail
 /// correlation is the type — `Failed` cannot travel without its error,
 /// and `Pending` (which no transition reaches) is unrepresentable.
@@ -474,6 +498,83 @@ impl Db {
             .into_iter()
             .map(|(c, at, r)| (Blake3(c), at, r))
             .collect())
+    }
+
+    /// D91 swap candidates: resident data blobs with an affine,
+    /// pure-builtin assemble rebuild route in trusted verify state.
+    /// One row per blob (lowest recipe id wins — any affine route
+    /// serves; the planner re-derives inputs from the returned id).
+    pub fn swap_candidates(&self) -> Result<Vec<SwapCandidate>, IndexError> {
+        let mut stmt = self.cache().prepare_cached(
+            "SELECT MIN(r.recipe_id), b.blob_id, b.hash, b.size
+             FROM recipe r
+             JOIN recipe_output ro ON ro.recipe_id = r.recipe_id
+             JOIN blob b ON b.blob_id = ro.blob_id
+             WHERE b.namespace = 0 AND b.residency = 0
+               AND r.op_kind = 0 AND r.op_name = 'assemble@1'
+               AND r.seek_class = 0 AND r.verify IN (1, 3)
+             GROUP BY b.blob_id
+             ORDER BY b.size DESC, b.blob_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, [u8; 32]>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(recipe_id, blob_id, hash, size)| SwapCandidate {
+                recipe_id,
+                blob_id,
+                hash: Blake3(hash),
+                size: size.and_then(|s| u64::try_from(s).ok()),
+            })
+            .collect())
+    }
+
+    /// A rebuild route's inputs in position (coverage) order, each with
+    /// its sharing evidence for the D91 predicate.
+    pub fn rebuild_inputs(&self, recipe_id: i64) -> Result<Vec<RebuildInput>, IndexError> {
+        let mut stmt = self.cache().prepare_cached(
+            "SELECT ri.position, b.blob_id, b.hash, b.size, b.residency,
+                    (SELECT COUNT(DISTINCT ro2.recipe_id)
+                     FROM recipe_output ro2
+                     JOIN recipe r2 ON r2.recipe_id = ro2.recipe_id
+                     WHERE ro2.blob_id = b.blob_id AND r2.verify != 2)
+             FROM recipe_input ri
+             JOIN blob b ON b.blob_id = ri.blob_id
+             WHERE ri.recipe_id = ?1
+             ORDER BY ri.position",
+        )?;
+        let rows = stmt
+            .query_map([recipe_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, [u8; 32]>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(position, blob_id, hash, size, residency, claims)| {
+                Ok(RebuildInput {
+                    position: u32::try_from(position).unwrap_or(u32::MAX),
+                    blob_id,
+                    hash: Blake3(hash),
+                    size: size.and_then(|s| u64::try_from(s).ok()),
+                    residency: Residency::from_code(residency)?,
+                    covering_claims: u64::try_from(claims).unwrap_or(0),
+                })
+            })
+            .collect()
     }
 
     /// The D21 grounding fixpoint: blobs reconstructible from retained
