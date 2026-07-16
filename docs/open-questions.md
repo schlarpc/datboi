@@ -507,6 +507,32 @@ two things were seen and deliberately deferred:
 
 ## Next sessions (pick up here)
 
+**Position as of 2026-07-15, later (build session)**: **D91 AND D92
+ARE BUILT** — the same-day landing of the morning's rulings, seven
+commits, 378 tests green. D92: cache schema v6
+(sweep_absent_eligible), `refresh_absent_eligibility` (grounding
+fixpoint ∩ eagerness KV `refine:absent:mode`, default dat-named,
+EvictedCovered admitted unconditionally), the `Logical` byte source
+(resident → store file; grounded absent → executor spill, re-hashed,
+never a residency flip), all four analyzers ported, both sweep
+drivers wired. The flagship stall is a regression test: an .nds
+STORED in a zip gets NitroFS-split with nothing ever materializing
+it. D91: sealed packs live in the STORE (footer-scan resolution —
+see the D91 amendment), `Store::get` returns the windowed `Blob`,
+swap planner as an ambient maintenance phase (predicate → headroom →
+pack → license → evict under the D72 guard), `Blocked::Packed`
+eviction refusal. E2E: two synthetic variants sharing ~79% of piece
+bytes swap into two packs and serve byte-exact + range-verified
+afterward; the loner never trips; re-runs no-op. OWED from the
+landing: pack scrub coverage (store `verify`/`list` are loose-only —
+a scrub pass should re-hash pack members against footers);
+`ensure_obao` over pack windows (packed pieces currently serve
+ranges via the D4 literal plain-read default); tombstone-and-repack;
+pack-per-chunking; grounded-set-aware enqueue cost at corpus scale
+(unchanged from the morning); and the swap phase's guard hold spans
+its materialization — fine at DS scale, revisit if packs grow to
+disc-image size (GUARD_TTL is 15 min).
+
 **Position as of 2026-07-15 (residency rulings session — docs only,
 no code)**: **D90, D91, and D92 RULED.** D92 landed after the arc
 was mapped: analyzers consume the LOGICAL CAS (sweep candidacy is

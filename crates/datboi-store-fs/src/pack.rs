@@ -375,6 +375,19 @@ impl Store {
         self.packed_loc(hash).is_some()
     }
 
+    /// Every packed member `(hash, len)` — the recovery-scan
+    /// complement of [`Store::list`], which walks loose files only. A
+    /// rebuilt index must see packed pieces or every evicted
+    /// container's grounding silently breaks after bare-NAS recovery.
+    #[must_use]
+    pub fn list_packed(&self) -> Vec<(Blake3, u64)> {
+        let packs = self.packs.read().unwrap_or_else(|e| e.into_inner());
+        let mut members: Vec<(Blake3, u64)> =
+            packs.iter().map(|(hash, loc)| (*hash, loc.len)).collect();
+        members.sort_unstable_by_key(|(hash, _)| hash.0);
+        members
+    }
+
     /// Every pack's identity, for scrub and recovery surfaces.
     #[must_use]
     pub fn list_packs(&self) -> Vec<Blake3> {

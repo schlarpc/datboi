@@ -117,7 +117,7 @@ fn read_back(exec: &Executor, db: &Db, hash: &Blake3) -> Vec<u8> {
 
 #[test]
 fn variants_swap_into_packs_and_serve_byte_exact() {
-    let (_dir, store, mut db) = world();
+    let (dir, store, mut db) = world();
 
     // Variants USA/EUR share arm9 + fnt + fat + f1..f3 (~79% of piece
     // bytes); f4 differs. The loner shares nothing with anyone.
@@ -197,4 +197,21 @@ fn variants_swap_into_packs_and_serve_byte_exact() {
         "skipped: {:?}",
         again.skipped
     );
+
+    // The recovery half that lives in the store: a FRESH open rescans
+    // pack footers (no database, no memory of this process) and both
+    // resolution and serving come back — footers are the truth (D15).
+    drop(exec);
+    drop(store);
+    let store = Store::open(dir.path().join("store")).expect("reopen");
+    let exec = Executor::new(&store, ExecConfig::default()).expect("executor");
+    assert!(store.is_packed(&shared_piece), "footer rescan resolves");
+    assert!(
+        store
+            .list_packed()
+            .iter()
+            .any(|(hash, _)| *hash == shared_piece),
+        "recovery scan surfaces packed members"
+    );
+    assert_eq!(read_back(&exec, &db, &usa_hash), usa, "serves after reopen");
 }

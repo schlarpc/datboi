@@ -188,6 +188,15 @@ migrate off someone else's.
   local index (never READDIR), deep shard fanout, parallelized recovery
   scans. Packing remains retrofittable behind the trait as a pure
   optimization (identities unchanged) if it ever hurts.
+- **Sealed packs (D91)** are that clause's first exercise: the affine
+  piece-swap writes one immutable pack per decomposition
+  (`packs/ab/cd/<hex>`, members in coverage order, self-describing
+  footer + trailer magic). Resolution is store-internal — open() scans
+  footers into a map; `get`/`has`/`len` serve packed members as bounded
+  windows, indistinguishable from loose blobs to every consumer.
+  Identities unchanged; packs are write-once; a packed blob refuses
+  eviction (tombstone-and-repack is the future path). Inode growth is
+  O(swapped decompositions), never O(pieces).
 - All embedded DBs on daemon-local disk (never NFS); NAS holds only
   authoritative bytes.
 

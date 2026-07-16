@@ -1115,12 +1115,20 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
     // recover from the truncate anyway. (The meta pass stays unbatched:
     // insert_recipe manages its own transaction.)
     let tx = env.db.cache().unchecked_transaction()?;
+    // Packed members (D91) walk alongside loose files in BOTH passes:
+    // the store resolves them transparently, so a rebuilt index that
+    // missed them would silently break every evicted container's
+    // grounding. `None` size defers to the pack footer's length.
+    let packed = env.store.list_packed();
     if selected.is_some() {
         fast_walk = true;
-        for item in env
+        let loose = env
             .store
-            .list_parallel(Namespace::Data, RECOVER_WALK_WORKERS)
-        {
+            .list_parallel(Namespace::Data, RECOVER_WALK_WORKERS);
+        let all = loose
+            .into_iter()
+            .chain(packed.iter().map(|&(hash, size)| Ok((hash, size))));
+        for item in all {
             match item {
                 Ok((hash, size)) => {
                     env.db
@@ -1132,9 +1140,16 @@ pub fn recover(mut env: Env, json: bool) -> anyhow::Result<ExitCode> {
             }
         }
     } else {
-        for item in env.store.list(Namespace::Data) {
+        let all = env
+            .store
+            .list(Namespace::Data)
+            .chain(packed.iter().map(|&(hash, size)| Ok((hash, size))));
+        for item in all {
             match item {
                 Ok((hash, _size)) => {
+                    // store.get resolves loose files AND pack windows,
+                    // so the full re-hash verifies packed bytes too
+                    // (a lying footer lands in `corrupt`).
                     let mut file = env
                         .store
                         .get(Namespace::Data, &hash)?

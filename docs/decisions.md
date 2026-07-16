@@ -1978,3 +1978,19 @@ residency is the planner's knob, D91's territory; the executor's
 bounded spill inside one analysis is fine, a residency flip is not);
 analyzer-side special-casing per container format (the executor
 already generalizes exactly this).
+
+*Amendment (same day, D91 landed):* pack resolution went
+STORE-INTERNAL, not index tables — `Store::open` scans pack footers
+(one tail read per pack, O(decompositions)) into an in-memory map,
+and `get`/`has`/`len` fall through to bounded windows, so every
+consumer present and future inherits pack support by construction
+and recovery needs no database (footers are the truth, D15).
+`Store::get` returns the windowed `Blob` handle; a packed blob
+refuses eviction explicitly (`Blocked::Packed`). Rejected in the
+landing: cache-db pack tables (a resolution cache nothing needed —
+the map is derivable state the store already owns); obao sidecars at
+pack time (packed pieces serve through the D4 plain-read literal
+default; `ensure_obao` over the window upgrades later). Landed
+defaults: `swap:share-min-pct` 50, `swap:enabled` on, swap phase on
+ambient ticks under the D72 guard. Owed, recorded in open-questions:
+pack scrub coverage, tombstone-and-repack, packs for chunk sets.
