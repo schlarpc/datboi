@@ -2101,3 +2101,27 @@ remains vigilance, named: write handlers still choose the write
 mutex by hand — the per-surface audit that would let writes pool
 (row-guarded check-then-act) is future work, and until then the
 mutex is the named argument.
+*Amendment (2026-07-16, the write audit):* done, and it split the
+request path into THREE write lanes, each naming its argument. The
+finding that made pooling safe: the daemon already runs many rw
+connections (refiner prime + drones + jobs registry), coordinated by
+row-level leases and the gc_guard, NOT a shared mutex — the `App.db`
+mutex only ever serialized REQUEST-path writes against each other, and
+D93's own IMMEDIATE-by-construction flip already made every
+single-transaction surface atomic without it. So (1) the auth/admin
+surfaces (each one IMMEDIATE transaction or an idempotent statement,
+over users/sessions/invites/grants the pipeline never touches) moved
+to a QUICK-WRITE pool — a login no longer queues behind a 512 MiB
+dat-import; (2) `GET /v1/gc/orphans` was a pure read miscloseted on the
+write mutex and moved to the read pool; (3) the PIPELINE writer keeps
+the mutex, now with a SHARPER named argument than "check-then-act": its
+survivors are MULTI-transaction sequences that must serialize in-
+process while yielding the WAL lock between steps — dat import, ingest
+(the lock releases between files by design), view eval, snapshot, and
+gc keep/apply (apply reads the keep-set once then loops deleting, and
+its delete-time re-verification checks unreferenced+aged but NOT
+keep-marks, so a keep must not interleave an apply — the guard
+serializes apply against other gc actors, the mutex serializes it
+against keep). Wrapping a pipeline in one mega-transaction was rejected:
+it would hold the WAL write lock for a whole import and starve the
+refiner, the exact opposite of what the between-steps release buys.

@@ -103,15 +103,68 @@ impl ReadPool {
     }
 }
 
-/// Shared server state (D93 shape). ONE write connection behind the
-/// mutex — its named serialization argument: check-then-act flows
-/// (invite redemption, session mint) get their atomicity from doing
-/// both halves under one hold. Reads go through the READ-ONLY pool:
-/// WAL gives readers snapshot isolation against the writer, and the
-/// flags-level read-only fence makes a misclassified handler error
-/// loudly instead of corrupting quietly.
+/// Quick-write lane size (D93). Two lets a second single-transaction
+/// write reach the WAL lock while the first is mid-commit; SQLite
+/// serializes the writers themselves, so this is about not queueing a
+/// login behind another login, never about parallel writers.
+const WRITE_POOL_SIZE: usize = 2;
+
+/// D93: the request path's QUICK-WRITE lane. Auth and admin writes are
+/// each a single IMMEDIATE transaction (or an idempotent single
+/// statement) over tables — users, sessions, invites, grants — the
+/// pipeline writer never touches. Their atomicity is the transaction
+/// (IMMEDIATE takes the WAL write lock at BEGIN, so no other writer on
+/// ANY connection can interleave until COMMIT), not a process-wide
+/// hold — so they pool instead of queueing behind a long dat-import or
+/// ingest on the pipeline writer. The per-surface audit that named this
+/// safe is D93's owed follow-up, now cashed. Shape mirrors [`ReadPool`],
+/// but the connections are read-WRITE.
+pub(crate) struct WritePool {
+    conns: Vec<Mutex<Db>>,
+    rotor: std::sync::atomic::AtomicUsize,
+}
+
+impl WritePool {
+    fn open(db_dir: &std::path::Path, size: usize) -> anyhow::Result<Self> {
+        let conns = (0..size)
+            .map(|_| Ok(Mutex::new(Db::open(db_dir)?)))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok(Self {
+            conns,
+            rotor: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    pub(crate) fn get(&self) -> std::sync::MutexGuard<'_, Db> {
+        let start = self
+            .rotor
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        for i in 0..self.conns.len() {
+            if let Ok(guard) = self.conns[(start + i) % self.conns.len()].try_lock() {
+                return guard;
+            }
+        }
+        self.conns[start % self.conns.len()]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Shared server state (D93 shape). Three lanes, each with a named
+/// argument. The PIPELINE writer (`db`) is serialized in-process: its
+/// surfaces — dat import, ingest, gc keep/apply, view eval, snapshot —
+/// are multi-transaction sequences that must not interleave with each
+/// other while yielding the WAL lock between steps (a single mega-
+/// transaction would hold the write lock for a whole 512 MiB import and
+/// starve the refiner). The QUICK-WRITE pool (`writers`) carries the
+/// single-transaction auth/admin surfaces, whose atomicity is intrinsic
+/// (D93's IMMEDIATE default) — they no longer need the process hold the
+/// original mutex named. Reads go through the READ-ONLY pool: WAL gives
+/// readers snapshot isolation, and the flags-level read-only fence
+/// makes a misclassified handler error loudly instead of corrupting.
 pub(crate) struct App {
     pub(crate) db: Mutex<Db>,
+    pub(crate) writers: WritePool,
     pub(crate) readers: ReadPool,
     pub(crate) exec: Executor<'static>,
     pub(crate) store: &'static Store,
@@ -176,12 +229,17 @@ impl App {
         let refiner = config
             .refine
             .then(|| refine::Refiner::spawn(config.db_dir.clone(), store, Arc::clone(&jobs)));
-        // After the read-write open: migrations have run, so the
-        // read-only pool sees the current schema.
+        // After the read-write open: migrations have run, so the quick-
+        // write and read-only pools open onto the current schema (the
+        // D93 migration-ladder hardening also makes a concurrent open
+        // idempotent, but sequencing after the first open keeps it moot).
+        let writers =
+            WritePool::open(&config.db_dir, WRITE_POOL_SIZE).context("quick-write pool")?;
         let readers =
             ReadPool::open(&config.db_dir, READ_POOL_SIZE).context("read-only pool")?;
         Ok(Arc::new(App {
             db: Mutex::new(db),
+            writers,
             readers,
             exec,
             store,

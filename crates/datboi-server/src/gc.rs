@@ -44,10 +44,10 @@ pub(crate) async fn orphans(
 ) -> Response {
     run_blocking(move || {
         require_owner(&caller)?;
-        let db = app
-            .db
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Pure read (D93): the orphan LIST reads grace + keep-marks +
+        // candidates and mutates nothing, so it belongs on the read-only
+        // pool, not the pipeline writer it used to borrow.
+        let db = app.readers.get();
         let grace = policy::grace_secs(&db).map_err(internal)?;
         let keeps = policy::keep_set(&db).map_err(internal)?;
         let candidates = db
@@ -90,6 +90,13 @@ pub(crate) async fn keep(
             .parse()
             .map_err(|_| err(ErrorCode::BadRequest, "not a blake3 hex hash"))?;
         let keep = req.keep;
+        // Stays on the PIPELINE writer, not the quick-write pool (D93):
+        // `apply` reads the keep-set ONCE and then loops deleting, and
+        // its delete-time re-verification checks unreferenced+aged, NOT
+        // keep-marks — so a keep must not interleave with an in-flight
+        // apply. The process mutex is the named argument that serializes
+        // keep against apply; the guard only serializes apply against
+        // other gc actors.
         let db = app
             .db
             .lock()

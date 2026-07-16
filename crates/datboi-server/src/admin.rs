@@ -31,10 +31,14 @@ fn internal(e: impl std::fmt::Display) -> Response {
     err(ErrorCode::Internal, &e.to_string())
 }
 
+/// Admin writes ride the D93 quick-write pool: each handler is one
+/// IMMEDIATE transaction (or an idempotent single statement) over
+/// invites/grants/sessions — tables the pipeline writer never touches —
+/// so its atomicity is the transaction, not a process hold. (The
+/// tag/view existence checks in `grant_create` are advisory reads;
+/// a concurrent view redefine racing an idempotent grant is benign.)
 fn lock_db(app: &App) -> std::sync::MutexGuard<'_, datboi_index::Db> {
-    app.db
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    app.writers.get()
 }
 
 /// Read-only pool connection (D93) — see api.rs's twin.

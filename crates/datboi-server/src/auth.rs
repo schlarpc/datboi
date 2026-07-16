@@ -404,10 +404,7 @@ pub(crate) async fn invite_accept(
         let phc = hash_password(password)
             .map_err(|e| err(ErrorCode::Internal, &format!("hashing: {e}")))?;
         let now = now_unix();
-        let db = app
-            .db
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let db = app.writers.get();
         let outcome = db
             .accept_invite(&token_hash(token), username, &phc, now)
             .map_err(|e| err(ErrorCode::Internal, &e.to_string()))?;
@@ -435,10 +432,7 @@ pub(crate) async fn login(
     run_blocking(move || {
         let LoginRequest { username, password } = &body;
         let user = {
-            let db = app
-                .db
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let db = app.readers.get();
             db.user_by_name(username)
                 .map_err(|e| err(ErrorCode::Internal, &e.to_string()))?
         };
@@ -454,10 +448,7 @@ pub(crate) async fn login(
             return Err(err(ErrorCode::InvalidCredentials, "invalid credentials"));
         };
         let now = now_unix();
-        let db = app
-            .db
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let db = app.writers.get();
         let _ = db.delete_expired_sessions(now); // opportunistic sweep
         session_response(&db, user.user_id, &user.username, user.role, now)
     })
@@ -472,10 +463,7 @@ pub(crate) async fn logout(State(app): State<Arc<App>>, req: Request) -> Respons
         .map(token_hash);
     run_blocking(move || {
         if let Some(hash) = presented {
-            let db = app
-                .db
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let db = app.writers.get();
             let _ = db.delete_session(&hash);
         }
         let mut resp = json_response(StatusCode::OK, &OkResponse { ok: true });
