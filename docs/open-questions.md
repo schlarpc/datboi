@@ -131,13 +131,16 @@ the record.
   open for the NSZ/3DS/WiiU/PS3 decrypt row. (2) DSi modcrypt —
   AES-CTR over ARM9i/ARM7i; rank-1 store-decrypted win, console
   keys again. (3) Interior decompression — LZ overlays and
-  NARC/SDAT interiors, preflate-shaped (plaintext + corrections
+  SDAT interiors, preflate-shaped (plaintext + corrections
   blob); before building, verify the overlay-table +1Ch
   compressed-size/flag convention against real ROMs (tool
-  convention, not documented in GBATEK). NARC recursion itself
-  needs no wasm (same FNT/FAT format, IMG-relative offsets) but is
-  policy-gated on recipe volume — a max FAT is 61440 files and
-  NARCs multiply that.
+  convention, not documented in GBATEK). **NARC recursion LANDED
+  2026-07-16 as D94** (`narc-split/1`): builtin-affine, no wasm (same
+  FNT/FAT format), recipe-volume gated (`narc:max-members`, default
+  4096) — it eats the archive-shaped near-misses before CDC. Still
+  wasm-shaped and open: SDAT audio + LZ-compressed NARC MEMBERS (the
+  codec, not the archive) — a max FAT is 61440 files and NARCs
+  multiply that.
 - **Emulation deferred items (split out of the D84 ratification,
   see emulation.md)**: each is real design work owed after the
   spike, none gates it. (1) ~~BIOS slots from CAS~~ SHIPPED same

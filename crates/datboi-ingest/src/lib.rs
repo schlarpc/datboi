@@ -27,6 +27,7 @@
 
 pub mod analyzers;
 pub mod archive;
+pub mod narc;
 pub mod nds;
 pub mod refine;
 pub mod zip;

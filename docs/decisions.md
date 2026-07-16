@@ -2191,3 +2191,36 @@ family" flavor (prime blocked on family F while a drone detours through
 G) is bounded by one burst and costs only tray latency, not work; the
 alternative (per-family drone tracking) buys nothing a restart-free
 operator would notice.
+
+## D94 — NARC interior decomposition: builtin-affine, one level down (2026-07-16)
+
+The decomposition-arc step 3 lands as a native analyzer, `narc-split/1`.
+A NARC (Nitro Archive — a NitroFS-file inside a .nds) is the SAME Nitro
+filesystem the ROM container is: a BTAF (FAT), BTNF (FNT), GMIF (file
+image), members as byte ranges of the GMIF data with alignment padding.
+So its decomposition is the SAME coverage-map arithmetic one level down
+— the nds `classify_gap`/`Piece`/`Region` machinery and the mint path
+are shared verbatim (one tested `mint_decomposition` serves both
+containers). Ruled: NARC recursion is **builtin-affine, no wasm** (the
+open-questions NARC clause) — pure concatenation, every recipe an
+`assemble@1`, so the D46 empty-import contract is untouched and no
+component ships. Why it matters: two regional ROM variants that differ
+only INSIDE a NARC (a localized text/graphics archive) share nothing at
+the NitroFS-file boundary but almost everything at the NARC-MEMBER
+boundary; decomposing the NARC recovers that dedup exactly, BEFORE CDC
+(the D59 rank-7 lane) has to chew the media-stream remainder. Runs in
+the refine family order after nds-split, before chunk. **Recipe-volume
+gated** (`narc:max-members`, default 4096): a NARC can hold thousands of
+tiny files, and past a point the claim + recipe volume outweighs the
+dedup — those stay whole-archive literals (which still dedupe, and CDC
+can still chew). Ambient reach is governed by the D92 eagerness policy
+(NARC pieces are interior claims, not dat-named, so default `dat-named`
+mode leaves them for an operator's `all`); the analyzer itself works on
+any resident or grounded NARC and is exercised directly by `datboi
+analyze narc`.
+*Rejected:* a wasm NARC parser (it is pure byte arithmetic — a Rust
+analyzer is the "moderately safe" bar, D58); recursing into NARC members
+that are themselves compressed (SDAT audio, LZ overlays) — those need an
+LZ codec + corrections blob, a separate wasm lane with its own ruling,
+explicitly NOT attempted here; unconditional decomposition (the
+recipe-volume flood a 60k-file NARC would mint).

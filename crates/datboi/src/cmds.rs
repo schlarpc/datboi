@@ -858,8 +858,11 @@ pub fn sweep(
         }
         "ecm" => Box::new(datboi_ingest::analyzers::EcmAnalyzer::new()),
         "nds" | "nds-split" => Box::new(datboi_ingest::analyzers::NdsAnalyzer),
+        "narc" | "narc-split" => Box::new(datboi_ingest::analyzers::NarcAnalyzer),
         other => {
-            anyhow::bail!("unknown analyzer {other:?} (available: noop, chunk, preflate, ecm, nds)")
+            anyhow::bail!(
+                "unknown analyzer {other:?} (available: noop, chunk, preflate, ecm, nds, narc)"
+            )
         }
     };
     // D92: sweeps read the logical CAS — the executor serves

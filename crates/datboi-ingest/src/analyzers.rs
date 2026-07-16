@@ -1058,103 +1058,18 @@ impl Analyzer for NdsAnalyzer {
             Err(crate::nds::NdsError::Io(e)) => return Err(format!("reading rom: {e}")),
         };
 
-        // Claim every piece: hash by streaming its range out of the
-        // stored ROM, then an absent row + a ROM→piece slice recipe.
-        // Residency is looked up first, never blind-upserted: a piece
-        // whose bytes already live resident (a loose file ingested
-        // earlier — the dedupe hit working) must not be demoted.
-        let mut piece_hashes: Vec<Blake3> = Vec::with_capacity(layout.pieces.len());
-        for piece in &layout.pieces {
-            let hash = hash_range(&mut rom, piece.start, piece.len).map_err(|e| e.to_string())?;
-            if db.blob_by_hash(&hash).map_err(|e| e.to_string())?.is_none() {
-                db.upsert_blob(&hash, Some(piece.len), IndexNs::Data, Residency::Absent)
-                    .map_err(|e| e.to_string())?;
-            }
-            let recipe = Recipe {
-                op: Op::Builtin {
-                    name: "assemble".into(),
-                    major: 1,
-                },
-                inputs: vec![InputRef {
-                    hash: item.hash,
-                    role: None,
-                }],
-                outputs: vec![OutputRef {
-                    hash,
-                    size: piece.len,
-                    name: Some(piece.name.clone()),
-                }],
-                params: AssembleParams {
-                    segments: vec![Segment::BlobRange {
-                        input_ix: 0,
-                        offset: piece.start,
-                        len: piece.len,
-                    }],
-                }
-                .encode()
-                .map_err(|e| e.to_string())?,
-            };
-            crate::mint_recipe(store, db, &recipe, SeekClass::Affine).map_err(|e| e.to_string())?;
-            piece_hashes.push(hash);
-        }
-
-        // Zero-length FAT entries: their identity is the empty blob —
-        // ground it (no recipe; assemble rejects empty outputs by
-        // design, the zip precedent).
-        if layout.empty_files > 0 {
-            let empty = Blake3::compute(b"");
-            store
-                .put(StoreNs::Data, empty, std::io::empty())
-                .map_err(|e| e.to_string())?;
-            db.upsert_blob(&empty, Some(0), IndexNs::Data, Residency::Resident)
-                .map_err(|e| e.to_string())?;
-        }
-
-        // The rebuild: the coverage map verbatim, one segment per
-        // region, inputs deduped by hash (identical pieces at different
-        // offsets are one blob).
-        let mut inputs: Vec<InputRef> = Vec::new();
-        let mut input_ix: std::collections::HashMap<Blake3, u32> = std::collections::HashMap::new();
-        let mut segments: Vec<Segment> = Vec::with_capacity(layout.regions.len());
-        for region in &layout.regions {
-            segments.push(match region {
-                crate::nds::Region::Piece(ix) => {
-                    let hash = piece_hashes[*ix];
-                    let input_ix = *input_ix.entry(hash).or_insert_with(|| {
-                        inputs.push(InputRef { hash, role: None });
-                        u32::try_from(inputs.len() - 1).expect("piece count fits u32")
-                    });
-                    Segment::BlobRange {
-                        input_ix,
-                        offset: 0,
-                        len: layout.pieces[*ix].len,
-                    }
-                }
-                crate::nds::Region::Fill { byte, len } => Segment::Fill {
-                    byte: *byte,
-                    len: *len,
-                },
-                crate::nds::Region::Literal { start, len } => Segment::Literal {
-                    bytes: read_range(&mut rom, *start, *len).map_err(|e| e.to_string())?,
-                },
-            });
-        }
-        let rebuild = Recipe {
-            op: Op::Builtin {
-                name: "assemble".into(),
-                major: 1,
-            },
-            inputs,
-            outputs: vec![OutputRef {
-                hash: item.hash,
-                size: layout.rom_len,
-                name: None,
-            }],
-            params: AssembleParams { segments }
-                .encode()
-                .map_err(|e| e.to_string())?,
-        };
-        crate::mint_recipe(store, db, &rebuild, SeekClass::Affine).map_err(|e| e.to_string())?;
+        // Claim every piece + mint the coverage-map rebuild (shared with
+        // the NARC lane one level down — same decomposition arithmetic).
+        mint_decomposition(
+            store,
+            db,
+            item.hash,
+            layout.rom_len,
+            &layout.pieces,
+            &layout.regions,
+            layout.empty_files,
+            &mut rom,
+        )?;
 
         // The trimmed view's identity: a prefix slice, claimed with the
         // full alias tuple so trimmed dumps in the wild dat-match it.
@@ -1213,6 +1128,217 @@ impl Analyzer for NdsAnalyzer {
             )),
         })
     }
+}
+
+/// NARC interior decomposition (decomposition-arc step 3): the same
+/// affine byte-slicing the nds analyzer does on the ROM container, one
+/// level down on a Nitro archive. It runs over any blob that sniffs as
+/// a NARC — in practice the NitroFS-file pieces the nds analyzer already
+/// claimed (read through the executor, D92) — so a NARC's members dedupe
+/// across regional variants at the archive-member boundary, the sharing
+/// the whole-NARC blob hides. No wasm: NARC is pure concatenation, every
+/// recipe a builtin.
+///
+/// Recipe-volume gated (`narc:max-members`): a NARC can hold thousands
+/// of tiny files, and past a point the claim + recipe volume outweighs
+/// the dedup — those stay literals (the whole-archive blob still
+/// dedupes, and CDC can still chew it). The interior LZ codecs (SDAT
+/// audio, LZ overlays) are a separate, wasm-shaped lane and are NOT
+/// attempted here.
+pub struct NarcAnalyzer;
+
+impl NarcAnalyzer {
+    const VERSIONED_NAME: &'static str = "narc-split/1";
+    const DEFAULT_MAX_MEMBERS: usize = 4096;
+}
+
+impl Analyzer for NarcAnalyzer {
+    fn name(&self) -> &'static str {
+        Self::VERSIONED_NAME
+    }
+
+    fn family(&self) -> &'static str {
+        "narc"
+    }
+
+    fn id(&self) -> Blake3 {
+        analyzer_tag(Self::VERSIONED_NAME)
+    }
+
+    fn analyze(
+        &mut self,
+        item: &SweepItem,
+        bytes: &Logical<'_, '_>,
+        store: &Store,
+        db: &mut Db,
+        pulse: &mut dyn Pulse,
+    ) -> Result<AnalysisResult, String> {
+        let file = bytes.open(item, db, pulse)?;
+        let mut narc = TickRandom { inner: file, pulse };
+
+        let layout = match crate::narc::parse_layout(&mut narc) {
+            Ok(layout) => layout,
+            Err(crate::nds::NdsError::Refused(refusal)) => {
+                return Ok(AnalysisResult {
+                    outcome: AnalysisOutcome::Negative,
+                    detail: Some(refusal.to_string()),
+                });
+            }
+            Err(crate::nds::NdsError::Io(e)) => return Err(format!("reading narc: {e}")),
+        };
+
+        // Recipe-volume gate (D91-style molten policy): a huge-member
+        // NARC would flood claims and recipes for marginal dedup.
+        let max = db
+            .config_get("narc:max-members")
+            .map_err(|e| e.to_string())?
+            .and_then(|v| std::str::from_utf8(&v).ok()?.trim().parse::<usize>().ok())
+            .unwrap_or(Self::DEFAULT_MAX_MEMBERS);
+        if layout.file_count > max {
+            return Ok(AnalysisResult {
+                outcome: AnalysisOutcome::Negative,
+                detail: Some(format!(
+                    "{} members exceed the narc:max-members cap ({max})",
+                    layout.file_count
+                )),
+            });
+        }
+
+        mint_decomposition(
+            store,
+            db,
+            item.hash,
+            layout.narc_len,
+            &layout.pieces,
+            &layout.regions,
+            layout.empty_files,
+            &mut narc,
+        )?;
+
+        Ok(AnalysisResult {
+            outcome: AnalysisOutcome::Positive,
+            detail: Some(format!(
+                "split into {} piece(s) ({} member(s), {} residual byte(s))",
+                layout.pieces.len(),
+                layout.file_count,
+                layout.residual_bytes
+            )),
+        })
+    }
+}
+
+/// Mint a container decomposition (D83): an absent claim + a
+/// `container→piece` slice recipe per piece, then the coverage-map
+/// rebuild recipe over the regions. Shared by the .nds container and
+/// the NARC interior one level down — the same affine byte-range
+/// arithmetic, so one tested mint path serves both. `container` is the
+/// blob being decomposed, `total_len` its length, `pieces`/`regions`
+/// its exact coverage map (concatenating to `[0, total_len)`).
+fn mint_decomposition<R: std::io::Read + std::io::Seek>(
+    store: &Store,
+    db: &mut Db,
+    container: Blake3,
+    total_len: u64,
+    pieces: &[crate::nds::Piece],
+    regions: &[crate::nds::Region],
+    empty_files: usize,
+    rom: &mut R,
+) -> Result<(), String> {
+    // Claim every piece: hash its range out of the container, then an
+    // absent row (never blind-upserted — a piece already resident from an
+    // earlier ingest, the dedupe hit, must not be demoted) + the slice.
+    let mut piece_hashes: Vec<Blake3> = Vec::with_capacity(pieces.len());
+    for piece in pieces {
+        let hash = hash_range(rom, piece.start, piece.len).map_err(|e| e.to_string())?;
+        if db.blob_by_hash(&hash).map_err(|e| e.to_string())?.is_none() {
+            db.upsert_blob(&hash, Some(piece.len), IndexNs::Data, Residency::Absent)
+                .map_err(|e| e.to_string())?;
+        }
+        let recipe = Recipe {
+            op: Op::Builtin {
+                name: "assemble".into(),
+                major: 1,
+            },
+            inputs: vec![InputRef {
+                hash: container,
+                role: None,
+            }],
+            outputs: vec![OutputRef {
+                hash,
+                size: piece.len,
+                name: Some(piece.name.clone()),
+            }],
+            params: AssembleParams {
+                segments: vec![Segment::BlobRange {
+                    input_ix: 0,
+                    offset: piece.start,
+                    len: piece.len,
+                }],
+            }
+            .encode()
+            .map_err(|e| e.to_string())?,
+        };
+        crate::mint_recipe(store, db, &recipe, SeekClass::Affine).map_err(|e| e.to_string())?;
+        piece_hashes.push(hash);
+    }
+
+    // Zero-length entries: identity is the empty blob — ground it
+    // directly (assemble rejects empty outputs, the zip precedent).
+    if empty_files > 0 {
+        let empty = Blake3::compute(b"");
+        store
+            .put(StoreNs::Data, empty, std::io::empty())
+            .map_err(|e| e.to_string())?;
+        db.upsert_blob(&empty, Some(0), IndexNs::Data, Residency::Resident)
+            .map_err(|e| e.to_string())?;
+    }
+
+    // The rebuild: the coverage map verbatim, one segment per region,
+    // inputs deduped by hash (identical pieces at different offsets are
+    // one blob).
+    let mut inputs: Vec<InputRef> = Vec::new();
+    let mut input_ix: std::collections::HashMap<Blake3, u32> = std::collections::HashMap::new();
+    let mut segments: Vec<Segment> = Vec::with_capacity(regions.len());
+    for region in regions {
+        segments.push(match region {
+            crate::nds::Region::Piece(ix) => {
+                let hash = piece_hashes[*ix];
+                let input_ix = *input_ix.entry(hash).or_insert_with(|| {
+                    inputs.push(InputRef { hash, role: None });
+                    u32::try_from(inputs.len() - 1).expect("piece count fits u32")
+                });
+                Segment::BlobRange {
+                    input_ix,
+                    offset: 0,
+                    len: pieces[*ix].len,
+                }
+            }
+            crate::nds::Region::Fill { byte, len } => Segment::Fill {
+                byte: *byte,
+                len: *len,
+            },
+            crate::nds::Region::Literal { start, len } => Segment::Literal {
+                bytes: read_range(rom, *start, *len).map_err(|e| e.to_string())?,
+            },
+        });
+    }
+    let rebuild = Recipe {
+        op: Op::Builtin {
+            name: "assemble".into(),
+            major: 1,
+        },
+        inputs,
+        outputs: vec![OutputRef {
+            hash: container,
+            size: total_len,
+            name: None,
+        }],
+        params: AssembleParams { segments }
+            .encode()
+            .map_err(|e| e.to_string())?,
+    };
+    crate::mint_recipe(store, db, &rebuild, SeekClass::Affine).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// `Read + Seek` over the stored blob that pulses per read — piece

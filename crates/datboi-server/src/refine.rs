@@ -48,7 +48,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use datboi_index::Db;
-use datboi_ingest::analyzers::{ChunkAnalyzer, EcmAnalyzer, NdsAnalyzer, PreflateZipAnalyzer};
+use datboi_ingest::analyzers::{
+    ChunkAnalyzer, EcmAnalyzer, NarcAnalyzer, NdsAnalyzer, PreflateZipAnalyzer,
+};
 use datboi_ingest::refine::{
     Analyzer, Logical, SweepObserver, analyzer_enabled, enqueue_candidates, process_round,
     refresh_admission,
@@ -162,9 +164,12 @@ fn families() -> Vec<Box<dyn Analyzer>> {
     vec![
         Box::new(PreflateZipAnalyzer::new()),
         Box::new(EcmAnalyzer::new()),
-        // nds-split before chunk: it mints the covering rebuild route
-        // that lets the D59 gate skip chunking the same ROM.
+        // nds-split before narc before chunk: the ROM decomposes into
+        // NitroFS files, a NARC among them decomposes into members, and
+        // only the media-stream remainder falls through to CDC (D59
+        // rank-7 sequencing).
         Box::new(NdsAnalyzer),
+        Box::new(NarcAnalyzer),
         Box::new(ChunkAnalyzer),
     ]
 }

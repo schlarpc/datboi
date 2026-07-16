@@ -61,6 +61,10 @@ const SCAN_CHUNK: usize = 64 * 1024;
 pub enum Refusal {
     #[error("not an nds rom (header checksums do not verify)")]
     NotNds,
+    #[error("not a narc (magic or byte-order mark absent)")]
+    NotNarc,
+    #[error("narc: {0}")]
+    Narc(String),
     #[error("truncated: {0}")]
     Truncated(&'static str),
     #[error("header field out of bounds: {0}")]
@@ -531,7 +535,7 @@ fn overlay_names(
 /// mixed with a long pad tail → head + Fill; short mixed → inline
 /// literal; anything else → a residual piece (exact coverage, poor
 /// dedupe — counted against the residue gate).
-fn classify_gap<R: Read + Seek>(
+pub(crate) fn classify_gap<R: Read + Seek>(
     rom: &mut R,
     start: u64,
     len: u64,
@@ -611,18 +615,18 @@ fn tail_is_pad(regions: &[Region], pieces: &[Piece], candidate: u64) -> bool {
     true
 }
 
-fn read_at<R: Read + Seek>(rom: &mut R, start: u64, len: usize) -> io::Result<Vec<u8>> {
+pub(crate) fn read_at<R: Read + Seek>(rom: &mut R, start: u64, len: usize) -> io::Result<Vec<u8>> {
     rom.seek(SeekFrom::Start(start))?;
     let mut buf = vec![0u8; len];
     rom.read_exact(&mut buf)?;
     Ok(buf)
 }
 
-fn u16_at(buf: &[u8], at: usize) -> u16 {
+pub(crate) fn u16_at(buf: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([buf[at], buf[at + 1]])
 }
 
-fn u32_at(buf: &[u8], at: usize) -> u64 {
+pub(crate) fn u32_at(buf: &[u8], at: usize) -> u64 {
     u64::from(u32::from_le_bytes([
         buf[at],
         buf[at + 1],
