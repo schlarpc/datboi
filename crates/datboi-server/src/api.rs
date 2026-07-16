@@ -1,11 +1,14 @@
-//! The M5 v1 read-model API (D30/D68 auth; scope ruling 2026-07-11):
-//! systems/entries audit rollups, view metadata, storage stats — JSON
-//! renders of the same queries the CLI's `audit`/`status` commands run.
-//! Mutating actions have been graduating out of the original
-//! CLI-only ruling: dat import (dats.rs, request-sized) and ingest
-//! (ingest.rs, staged uploads + the jobs.rs registry). Eviction,
-//! scrub, and view eval remain CLI-only; the UI deep-links CLI
-//! instructions for those.
+//! The v1 API (D30/D68 auth). Under D96 the HTTP+web surface is the
+//! COMPLETE one and the CLI is a convenience over the same daemon —
+//! both call one shared library function per verb, never two impls.
+//! Read models (systems/entries audit rollups, view metadata, storage
+//! stats) are JSON renders of the same `datboi-catalog` queries the
+//! CLI's `audit`/`status` run. Mutating and expensive verbs live here
+//! too — dat import (dats.rs), ingest (ingest.rs, staged uploads + the
+//! jobs.rs registry), and the view/maintenance verbs graduating under
+//! D96 — each registering long-running work in the jobs.rs ledger.
+//! The only permanent CLI-first exceptions (D96) are operator
+//! bootstrap: `recover` and initial identity/token minting.
 //!
 //! Everything here is owner-only except the view surface, which is the
 //! friend surface (D68 grants). Owner-only misses answer 403; view-

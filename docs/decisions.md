@@ -2261,3 +2261,54 @@ dir (can't manage a configurable/NFS store path, and we want the two
 roots handled symmetrically); a config-file format (the daemon is env-only
 by charter, docs/infra.md); opening the NFS port under `openFirewall`
 (NFS is unauthenticated, D68 — never auto-exposed).
+
+## D96 — the serve+web surface is the complete one; CLI is convenience (2026-07-16)
+
+Posture inversion. The prior scope ruling (2026-07-11, encoded in the
+`api.rs` header prose and the graduating-out-of-CLI-only language) treated
+the CLI as the complete surface and the HTTP/web surface as a read-model
+that *deep-links CLI instructions* for anything mutating or expensive —
+"eviction, scrub, and view eval remain CLI-only." That is now reversed.
+**Every capability MUST be reachable through the daemon's HTTP surface and
+the web UI. The CLI SHOULD carry the same capabilities but is not required
+to** — it is an operator convenience over the same daemon, not the system
+of record. Rationale: the web UI is the product (docs/web-ui.md: "the best
+rom manager ever," not a CAS admirer); a rom manager whose owner must drop
+to a shell to *create a shelf* is not that. "The UI tells you to go run a
+command" was a placeholder, not an architecture.
+
+The binding half is correct-by-construction: **the two surfaces MUST share
+one code path per capability.** The real work already lives in the library
+crates (`datboi-ingest`, `datboi-catalog`, `datboi-exec`, `datboi-index`,
+`datboi-formats`); an HTTP handler and a CLI subcommand are two thin callers
+of the *same* library function, never two implementations of the same verb.
+Where a verb's logic still sits inside an entrypoint crate (`dat fetch`'s
+HTTP-fetch, `scrub`'s corpus walk, `recover`'s rebuild, the verified-write
+primitive under `view sync`), it moves DOWN into a library crate before it
+graduates to serve — that descent is the work, and it is the point:
+divergence becomes unrepresentable when there is one function to call. The
+same rule retires existing near-duplication: the audit/storage read models
+that today run bespoke inline SQL in `api.rs` collapse onto the shared
+`datboi-catalog` query the CLI's `audit`/`status` already call. New
+long-running verbs (view eval, image mint, scrub, evict, snapshot) register
+as jobs in the `jobs.rs` ledger the way ingest already does, so the UI gets
+progress instead of a spinner. Every graduated endpoint follows the D69
+contract mechanically (shapes in `datboi-api`, `paths.rs`+`http.rs` parity,
+regenerated `openapi.json`/`schema.d.ts`).
+
+**Breaking changes are welcomed where they make the design cleaner** — this
+is a house daemon with no external API consumers to preserve; a better shape
+beats a compatible one. Two capabilities are ruled explicit *operator
+bootstrap* exceptions, permanently CLI-first and NOT required on the web
+surface: `recover` (rebuilds the DB from the store — runs precisely when no
+trustworthy server exists) and initial identity/`token` minting (the
+chicken-and-egg before a session can exist; invite-accept remains the normal
+in-band path). `view sync` writing to a *local* directory stays CLI-shaped
+(it is inherently local filesystem I/O), but its verified-write primitive is
+library code the daemon's own materialization shares.
+*Rejected:* keeping the read-model/mutation split (the placeholder we are
+replacing); a compatibility shim that lets serve reimplement a verb "for
+now" (that is the divergence D96 exists to forbid — descent into a shared
+crate is mandatory, not deferrable); exposing `recover`/bootstrap-token over
+HTTP (they precede the trust the HTTP surface assumes); making the CLI
+authoritative-but-mirrored (two systems of record is the disease).

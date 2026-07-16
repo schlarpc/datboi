@@ -512,6 +512,33 @@ two things were seen and deliberately deferred:
 
 ## Next sessions (pick up here)
 
+**Position as of 2026-07-16, latest (D96 — serve+web is the complete
+surface, CLI is convenience)**: parity audit done; posture INVERTED and
+ruled as **D96**. Every capability must reach the HTTP+web surface;
+both surfaces call one shared library fn per verb (correct-by-
+construction), and stranded entrypoint logic descends into a library
+crate before it graduates. Punch list, in order (biggest persona hole
+first, foundations where a descent unblocks several verbs):
+  1. **Read-model de-dup** (foundational, correctness): collapse the
+     bespoke inline SQL in `api.rs` (systems/storage) onto the shared
+     `datboi-catalog` `audit()`/`status` queries the CLI already calls.
+  2. **View authoring** (the big hole): `define` / `eval` / image
+     `mint` / `profiles` over HTTP+UI. Shared fns exist (`define_view`,
+     `evaluate_view`, `mint_image`, `PROFILES`); eval+mint register in
+     the jobs.rs ledger like ingest.
+  3. **Config surfaces**: analyzer enable/disable/params, GC policy
+     (watermarks/grace — today `gc.rs` reads grace but can't set it).
+  4. **On-demand maintenance**: evict / sweep / materialize / snapshot,
+     and **scrub** — scrub's corpus walk must move OUT of `cmds.rs`
+     into a library crate (candidate: `datboi-exec` or new
+     `datboi-maintain`) so daemon+CLI share it; verify endpoint stops
+     deep-linking `datboi scrub`.
+  5. **Dat lifecycle**: fetch / diff / clonelist / export — `dat
+     fetch`'s ureq+redump+zip-unwrap logic descends out of `cmds.rs`.
+  Explicit CLI-first exceptions (NOT gaps): `recover`, bootstrap
+  identity/token minting. `view sync` stays local-fs CLI, but its
+  verified-write primitive is shared library code.
+
 **Position as of 2026-07-16, later (loose-thread + decomposition-arc
 sweep — all nine items landed, workspace green, clippy clean)**: the
 D91/D92/D93 loose ends and the decomposition arc are DONE, in order.
