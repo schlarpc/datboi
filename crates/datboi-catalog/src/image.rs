@@ -12,7 +12,6 @@
 //! (D49-blessed from birth) unless the caller opts out — the D63
 //! carve-out then covers serving.
 
-use std::fs::File;
 
 use datboi_core::assemble::{self, AssembleParams, Segment, Source};
 use datboi_core::hash::Blake3;
@@ -82,10 +81,11 @@ pub fn missing_inputs(db: &Db, snap: &ViewSnapshot) -> Result<Vec<Blake3>, Catal
     Ok(missing)
 }
 
-/// An assemble input source: in-memory skeleton or a store file.
+/// An assemble input source: in-memory skeleton or a store blob
+/// (loose or packed — `Blob` answers positioned reads either way).
 enum Src {
     Mem(Vec<u8>),
-    File { file: File, len: u64 },
+    File { file: datboi_store_fs::Blob, len: u64 },
 }
 
 impl Source for Src {
@@ -199,7 +199,7 @@ pub fn mint_image(
             missing += 1;
             continue;
         };
-        let len = file.metadata()?.len();
+        let len = file.byte_len()?;
         if blob.size.is_some_and(|s| s != len) {
             return Err(CatalogError::Image(format!(
                 "input {hash} is {len} bytes on disk but indexed as {:?}",

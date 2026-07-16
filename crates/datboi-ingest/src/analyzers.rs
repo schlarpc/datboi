@@ -128,7 +128,7 @@ struct MemberSplit {
 /// (~0.002–3% of plaintext). Deterministic split failures land in
 /// `fail`, distinguishable from real I/O errors.
 struct SplitReader<'a> {
-    src: &'a mut std::fs::File,
+    src: &'a mut datboi_store_fs::Blob,
     remaining_comp: u64,
     window: Vec<u8>,
     processor: preflate_rs::PreflateStreamProcessor,
@@ -141,7 +141,7 @@ struct SplitReader<'a> {
 }
 
 impl<'a> SplitReader<'a> {
-    fn new(src: &'a mut std::fs::File, comp_size: u64) -> Self {
+    fn new(src: &'a mut datboi_store_fs::Blob, comp_size: u64) -> Self {
         let config = preflate_rs::PreflateConfig {
             // Self-verifying split: preflate recompresses each window and
             // compares before we ever mint a claim.
@@ -267,7 +267,7 @@ impl Analyzer for PreflateZipAnalyzer {
         let mut file = bytes.open(item, db, pulse)?;
         let container_size = item
             .size
-            .or_else(|| file.metadata().ok().map(|m| m.len()))
+            .or_else(|| file.byte_len().ok())
             .ok_or("container size unknown")?;
         let mut head = [0u8; 4];
         let n = file.read(&mut head).map_err(|e| e.to_string())?;
@@ -783,7 +783,7 @@ impl Default for EcmAnalyzer {
 /// stripped bytes as a `Read` (driving `Store::put_new` in one pass),
 /// and accumulates run-length layout records on the side.
 struct EcmSplitReader<'a> {
-    src: &'a mut std::fs::File,
+    src: &'a mut datboi_store_fs::Blob,
     remaining: u64,
     records: Vec<datboi_xf_ecm::LayoutRecord>,
     sectors: [u64; 4], // by kind; [0] counts literal BYTES
@@ -792,7 +792,7 @@ struct EcmSplitReader<'a> {
 }
 
 impl<'a> EcmSplitReader<'a> {
-    fn new(src: &'a mut std::fs::File, size: u64) -> Self {
+    fn new(src: &'a mut datboi_store_fs::Blob, size: u64) -> Self {
         Self {
             src,
             remaining: size,
@@ -882,7 +882,7 @@ impl Analyzer for EcmAnalyzer {
         let mut file = bytes.open(item, db, pulse)?;
         let size = item
             .size
-            .or_else(|| file.metadata().ok().map(|m| m.len()))
+            .or_else(|| file.byte_len().ok())
             .ok_or("blob size unknown")?;
         if size < datboi_xf_ecm::SECTOR as u64 {
             return Ok(AnalysisResult {
@@ -1204,7 +1204,7 @@ impl Analyzer for NdsAnalyzer {
 /// hashing and gap classification are the long loops here, and bytes
 /// moving is the lease heartbeat (D71).
 struct TickRandom<'p> {
-    inner: std::fs::File,
+    inner: datboi_store_fs::Blob,
     pulse: &'p mut dyn Pulse,
 }
 

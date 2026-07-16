@@ -13,7 +13,9 @@
 mod crash;
 pub mod layout;
 pub mod obao;
+pub mod pack;
 pub mod store;
 
 pub use layout::Namespace;
+pub use pack::{Blob, PackMember};
 pub use store::{PutOutcome, Store, StoreError, VerifyOutcome};

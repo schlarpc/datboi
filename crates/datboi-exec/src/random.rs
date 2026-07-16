@@ -3,7 +3,6 @@
 //! host feeds to guests — so a node is "seekable" exactly when it can
 //! hand out one of these.
 
-use std::fs::File;
 use std::io::{self, Read};
 
 use datboi_core::assemble::{AssembleParams, Piece, translate};
@@ -38,7 +37,7 @@ pub use datboi_runtime::stream::FileRandom;
 /// leaf hash before returning bytes. The D63 carve-out's leaf reader —
 /// input-side verification standing in for the missing output bao.
 pub struct VerifiedRandom {
-    file: File,
+    file: datboi_store_fs::Blob,
     len: u64,
     hash: Blake3,
     /// Pre-order obao4; empty is correct for blobs ≤ one chunk group.
@@ -47,7 +46,7 @@ pub struct VerifiedRandom {
 
 impl VerifiedRandom {
     #[must_use]
-    pub fn new(file: File, len: u64, hash: Blake3, sidecar: Vec<u8>) -> Self {
+    pub fn new(file: datboi_store_fs::Blob, len: u64, hash: Blake3, sidecar: Vec<u8>) -> Self {
         Self {
             file,
             len,

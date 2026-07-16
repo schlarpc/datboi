@@ -52,10 +52,24 @@ pub enum StoreError {
         #[source]
         source: crate::obao::ObaoError,
     },
+    /// A pack needs at least one member (D91).
+    #[error("refusing to write an empty pack")]
+    EmptyPack,
+    /// A pack member's streamed bytes disagree with its declaration.
+    /// The temp pack has been deleted; nothing was published.
+    #[error(
+        "pack member mismatch: expected {expected} ({expected_len} B), got {got} ({got_len} B)"
+    )]
+    PackMemberMismatch {
+        expected: Blake3,
+        got: Blake3,
+        expected_len: u64,
+        got_len: u64,
+    },
 }
 
 impl StoreError {
-    fn io(path: &Path, source: io::Error) -> Self {
+    pub(crate) fn io(path: &Path, source: io::Error) -> Self {
         Self::Io {
             path: path.to_owned(),
             source,
@@ -88,26 +102,41 @@ pub struct Store {
     /// a pid; combined with a counter for uniqueness within the process.
     temp_token: u64,
     temp_counter: AtomicU64,
+    /// D91 pack resolution: packed-member hash → (pack, offset, len),
+    /// built from pack footers at open (the footers are the truth; this
+    /// map is derivable state). RwLock: reads are the hot path,
+    /// `put_pack` the rare writer.
+    pub(crate) packs: std::sync::RwLock<std::collections::HashMap<Blake3, crate::pack::PackedLoc>>,
 }
 
 impl Store {
-    /// Open (creating if needed) a store rooted at `root`.
+    /// Open (creating if needed) a store rooted at `root`. Scans the
+    /// pack shard tree (one footer read per pack, D91) to build the
+    /// packed-member resolution map; malformed packs are skipped —
+    /// their members simply fail to resolve until repaired.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let root = root.into();
         for dir in [
             root.clone(),
             root.join(Namespace::Data.dir()),
             root.join(Namespace::Meta.dir()),
+            root.join("packs"),
             root.join("tmp"),
         ] {
             fs::create_dir_all(&dir).map_err(|e| StoreError::io(&dir, e))?;
         }
         fsync_dir(&root)?;
+        let (packs, _bad) = Self::scan_packs(&root);
         Ok(Self {
             root,
             temp_token: entropy_token(),
             temp_counter: AtomicU64::new(0),
+            packs: std::sync::RwLock::new(packs),
         })
+    }
+
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
     }
 
     /// Stream `reader` into the store, verifying it hashes to `expected`.
@@ -259,27 +288,48 @@ impl Store {
         Ok((PutOutcome::Stored, aliases))
     }
 
-    /// Open a blob for reading; `None` if absent.
-    pub fn get(&self, ns: Namespace, hash: &Blake3) -> Result<Option<File>, StoreError> {
+    /// Open a blob for reading; `None` if absent. Loose files win;
+    /// data-namespace blobs fall through to the D91 pack map, coming
+    /// back as bounded windows — callers cannot tell the difference,
+    /// which is the design.
+    pub fn get(&self, ns: Namespace, hash: &Blake3) -> Result<Option<crate::pack::Blob>, StoreError> {
         let path = self.blob_path(ns, hash);
         match File::open(&path) {
-            Ok(f) => Ok(Some(f)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(StoreError::io(&path, e)),
+            Ok(f) => return Ok(Some(crate::pack::Blob::loose(f))),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(StoreError::io(&path, e)),
         }
+        if ns != Namespace::Data {
+            return Ok(None);
+        }
+        let Some(loc) = self.packed_loc(hash) else {
+            return Ok(None);
+        };
+        let pack_path = self.pack_path(&loc.pack);
+        let file = File::open(&pack_path).map_err(|e| StoreError::io(&pack_path, e))?;
+        let blob = crate::pack::Blob::packed(file, loc.offset, loc.len)
+            .map_err(|e| StoreError::io(&pack_path, e))?;
+        Ok(Some(blob))
     }
 
     pub fn has(&self, ns: Namespace, hash: &Blake3) -> bool {
         self.blob_path(ns, hash).exists()
+            || (ns == Namespace::Data && self.packed_loc(hash).is_some())
     }
 
     pub fn len(&self, ns: Namespace, hash: &Blake3) -> Result<Option<u64>, StoreError> {
         let path = self.blob_path(ns, hash);
         match fs::metadata(&path) {
-            Ok(m) => Ok(Some(m.len())),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(StoreError::io(&path, e)),
+            Ok(m) => return Ok(Some(m.len())),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(StoreError::io(&path, e)),
         }
+        if ns == Namespace::Data
+            && let Some(loc) = self.packed_loc(hash)
+        {
+            return Ok(Some(loc.len));
+        }
+        Ok(None)
     }
 
     /// Free bytes on the filesystem holding the store root — the D56
@@ -904,7 +954,7 @@ fn classify(path: &Path) -> FileKind {
     }
 }
 
-fn fsync_dir(dir: &Path) -> Result<(), StoreError> {
+pub(crate) fn fsync_dir(dir: &Path) -> Result<(), StoreError> {
     let f = File::open(dir).map_err(|e| StoreError::io(dir, e))?;
     f.sync_all().map_err(|e| StoreError::io(dir, e))
 }

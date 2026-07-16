@@ -15,7 +15,6 @@
 //! sandbox) — see `Ingester::process_rar`; this module keeps only the 7z
 //! extraction and the magic sniffs.
 
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
 /// 7z signature: `'7' 'z' 0xBC 0xAF 0x27 0x1C`.
@@ -44,8 +43,8 @@ pub struct ExtractedMember {
 /// Unsupported codecs, encrypted archives, and corrupt streams surface
 /// as one error string; the caller records it and the container stays
 /// an opaque literal.
-pub fn extract_7z(
-    blob: &mut File,
+pub fn extract_7z<R: Read + Seek>(
+    blob: &mut R,
     mut sink: impl FnMut(&str, &mut dyn Read) -> Result<(), String>,
 ) -> Result<Vec<ExtractedMember>, String> {
     blob.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;

@@ -79,25 +79,27 @@ impl RangeRead for Vec<u8> {
     }
 }
 
-/// A plain file as a random-access source (seek + read; `RangeRead`
-/// takes `&mut self`, so the file's cursor is ours to move).
-pub struct FileRandom {
-    file: std::fs::File,
+/// A seekable byte source as random access (`RangeRead` takes
+/// `&mut self`, so the cursor is ours to move). Generic over the
+/// source (plain files, store blobs — anything Read + Seek) with the
+/// historical `File` default.
+pub struct FileRandom<R = std::fs::File> {
+    file: R,
     len: u64,
 }
 
-impl FileRandom {
+impl<R: std::io::Read + std::io::Seek + Send> FileRandom<R> {
     /// # Errors
-    /// If the file's length cannot be stat'd.
-    pub fn new(file: std::fs::File) -> std::io::Result<Self> {
-        let len = file.metadata()?.len();
+    /// If the source's length cannot be determined (one seek to the end).
+    pub fn new(mut file: R) -> std::io::Result<Self> {
+        let len = file.seek(std::io::SeekFrom::End(0))?;
         Ok(Self { file, len })
     }
 }
 
-impl RangeRead for FileRandom {
+impl<R: std::io::Read + std::io::Seek + Send> RangeRead for FileRandom<R> {
     fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
-        use std::io::{Read as _, Seek as _, SeekFrom};
+        use std::io::SeekFrom;
         if offset >= self.len {
             return Ok(0);
         }

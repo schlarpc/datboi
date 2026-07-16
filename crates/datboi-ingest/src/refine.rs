@@ -117,7 +117,7 @@ impl<'a, 's> Logical<'a, 's> {
         item: &SweepItem,
         db: &Db,
         pulse: &mut dyn Pulse,
-    ) -> Result<std::fs::File, String> {
+    ) -> Result<datboi_store_fs::Blob, String> {
         use std::io::{Read, Seek, Write};
 
         if let Some(file) = self
@@ -163,7 +163,7 @@ impl<'a, 's> Logical<'a, 's> {
             return Err("spilled route produced bytes that are not the item's".into());
         }
         tmp.rewind().map_err(|e| e.to_string())?;
-        Ok(tmp)
+        Ok(datboi_store_fs::Blob::loose(tmp))
     }
 }
 

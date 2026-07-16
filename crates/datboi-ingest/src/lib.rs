@@ -356,7 +356,11 @@ impl<'a> Ingester<'a> {
     /// for why extraction, not claims: no LZMA-class rebuild transform
     /// exists yet, so the container stays literal and the members become
     /// first-class resident blobs).
-    fn process_7z(&mut self, blob: &mut File, report: &mut IngestReport) -> Result<(), String> {
+    fn process_7z(
+        &mut self,
+        blob: &mut datboi_store_fs::Blob,
+        report: &mut IngestReport,
+    ) -> Result<(), String> {
         let store = self.store;
         let mut stored: Vec<(datboi_core::alias::AliasTuple, String)> = Vec::new();
         archive::extract_7z(blob, |name, reader| {
@@ -574,7 +578,7 @@ impl<'a> Ingester<'a> {
         &mut self,
         path: &Path,
         zip_hash: &Blake3,
-        blob: &mut File,
+        blob: &mut datboi_store_fs::Blob,
         report: &mut IngestReport,
     ) -> Result<(), IngestError> {
         let parsed = zip::parse_members(blob)?;
@@ -866,7 +870,7 @@ fn builtin(name_at_major: &str) -> Op {
 /// Hash one member by streaming out of the stored container. Returns a
 /// reason string (for the report) on any inconsistency — a lying central
 /// directory must not produce a claim.
-fn hash_member(blob: &mut File, member: &zip::Member) -> Result<AliasTuple, String> {
+fn hash_member<R: Read + Seek>(blob: &mut R, member: &zip::Member) -> Result<AliasTuple, String> {
     blob.seek(SeekFrom::Start(member.data_start))
         .map_err(|e| e.to_string())?;
     let window = Window {
@@ -918,12 +922,12 @@ fn stream_into(mut reader: impl Read, hasher: &mut AliasHasher) -> std::io::Resu
 }
 
 /// A bounded sequential window over an already-positioned reader.
-struct Window<'a> {
-    inner: &'a mut File,
+struct Window<'a, R> {
+    inner: &'a mut R,
     remaining: u64,
 }
 
-impl Read for Window<'_> {
+impl<R: Read> Read for Window<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.remaining == 0 {
             return Ok(0);
@@ -935,7 +939,7 @@ impl Read for Window<'_> {
     }
 }
 
-fn read_head(file: &mut File, head: &mut [u8]) -> std::io::Result<usize> {
+fn read_head(file: &mut impl Read, head: &mut [u8]) -> std::io::Result<usize> {
     let mut filled = 0;
     while filled < head.len() {
         match file.read(&mut head[filled..]) {
