@@ -209,7 +209,15 @@ the record.
   pieces sit under the 4 MiB chunk threshold); if big near-miss
   pieces show up (region-variant movies, large localized archives),
   amend D59 to admit resident pieces whose only route derives from
-  an evicted container, rather than building anything new.
+  an evicted container, rather than building anything new. Update
+  2026-07-15: **D91 creates exactly this population** (resident
+  grounding-leaf pieces — routed on paper, route-less to the D21
+  fixpoint, so the has-any-route gate mispredicts them), so the
+  trigger becomes testable once swaps run. Sequencing note:
+  NARC/SDAT interior decomposition (wasm-lanes item above) should
+  eat the archive-shaped near-misses exactly, before CDC takes the
+  media-stream remainder (localized movies/audio — the pieces no
+  format analyzer will ever help with).
 
 ## Flagged for ruling (raised 2026-07-09, M4 serving session)
 
@@ -249,7 +257,16 @@ strict mode + retool clonelist consumption are M4 work items).
   candidates seek-class-first (still dat-blind; it fixed the
   mutually-inverse-pair stranding the e2e caught). The dat-AWARE half
   (keep dat-named blobs resident, materialize view-pinned absent
-  members) remains open and still wants its ruling.
+  members) remains open and still wants its ruling. Update
+  2026-07-15: the which-literal-holds-the-bytes half RULED as
+  **D91** for affine routes (pieces over container, sharing-gated,
+  one sealed pack per decomposition). Keep-dat-named-resident was
+  rejected there as a GENERAL rule (it would block the swap
+  everywhere it pays) — the instinct survives only for opaque
+  routes, which D91 never touches. Still open here: materialize
+  view-pinned absent members whose containers refused a preflate
+  split (the serving case), and any dat-aware preference for opaque
+  routes.
 - **GC-family concurrency preconditions** (raised 2026-07-11, D71
   session; RULED same day — D72 takes the singleton guard, D73 takes
   the grace-window/mark-clearing shape; kept for the reasoning): two
@@ -456,7 +473,60 @@ two things were seen and deliberately deferred:
   build it only if recipes grow multi-level structure worth
   deep-linking; another CAS-debugger surface is the failure mode.
 
+## Flagged for ruling (raised 2026-07-15, residency rulings session)
+
+- **Grounded-not-resident sweeps** (the absent-blob analysis gap):
+  the refinement fixpoint silently stalls on claimed-but-absent
+  identities — sweeps only claim Resident blobs and analyzers read
+  via `store.get`, but the analyzer contract ("pure function of
+  bytes", D45) only needs the LOGICAL layer, and the executor can
+  already stream any grounded blob verified. Concrete stalls today:
+  an .nds STORED (uncompressed) in a zip is claimed at ingest and
+  never analyzed — preflate only materializes DEFLATE plaintext,
+  stored members live in the skeleton — so no NitroFS claims, no
+  trim alias, on a dat-matched ROM provably held; same stall for
+  members of preflate-refused containers (the D24-tax zips); and
+  every future nested interior (NARC-inside-NDS) gates on
+  materialization events that happen for unrelated reasons. The
+  happy path works by side effect (preflate and 7z/rar extraction
+  happen to materialize what the next analyzer needs), not by
+  mechanism. Proposed shape: sweeps claim GROUNDED, not resident;
+  analyzers read through the executor (TickReader wraps an executor
+  stream as happily as a file; identity, provenance rows, leases
+  all unchanged); cost policy decides eagerness — absent blobs
+  enter queues when dat-named or head-sniffed interesting, the D71
+  dat-aware-scheduling lane. This changes an architectural posture
+  (analyzers consume the logical CAS, not the literal store), so it
+  wants its D-entry before code. Dependency note: D91 unblocks
+  depth-2 analysis only incidentally (pieces happen to become
+  resident); this is the general fix and the most foundational step
+  of the decomposition arc in the position note below.
+
 ## Next sessions (pick up here)
+
+**Position as of 2026-07-15 (residency rulings session — docs only,
+no code)**: **D90 and D91 RULED.** D90 closes at-rest compression:
+delegate to the filesystem, loop-device advice for ext4/xfs,
+store-level encoding rejected until a filesystem-less backend
+(S3/HTTP) needs it — retrofittable by construction, so nothing is
+foreclosed. D91 rules the affine piece-swap: pieces over container
+when the rebuild route is affine, gated on a plan-time sharing
+predicate (never eager — lone ROMs never trip it), materialization
+writing one sealed pack per decomposition (D19's packing clause
+first exercised), D56 disk-headroom guard as prerequisite, run as a
+maintenance phase (D47 intact, sweeps untouched). Nothing
+implemented yet — the build is a swap planner phase + pack
+write/read paths + the headroom guard. The session also mapped the
+DECOMPOSITION ARC these belong to, in dependency order: (1)
+grounded-not-resident sweeps (new flagged ruling above — the
+absent-blob analysis gap, most foundational), (2) D91
+implementation, (3) NARC/SDAT interior decomposition (existing
+wasm-lanes item), (4) the rank-7 D59 amendment (existing item —
+D91 creates the population its gate mispredicts; NARC/SDAT eats the
+archive-shaped near-misses exactly; CDC takes the media-stream
+remainder). Each step's evidence trigger fires as a consequence of
+the previous step landing, so re-check triggers after each landing
+rather than re-litigating order.
 
 **Position as of 2026-07-14 (ABI epoch, D89 — LANDED)**: the break
 shipped the same day it was ruled, whole: new wit tree (three lanes,

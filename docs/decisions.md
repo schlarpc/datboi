@@ -1861,3 +1861,75 @@ selection and the world call passes an empty bstr — world-level
 params (passwords) will be a recipe-schema forwarded subset, not a
 re-reading of existing bytes. Component stamps now carry both source
 trees (`tree:<crate>;guest:<guest-crate>`).
+
+## D90 — At-rest compression delegates to the filesystem (2026-07-15)
+
+Object identity is the *uncompressed* bytes' blake3 (D2/D18), so
+compression at rest can only ever be an encoding below or beside the
+store — and the ruling is: below. The store writes plain bytes; the
+filesystem compresses (ZFS/btrfs zstd on the NAS — the target
+deployment already does this transparently). Store-level encoding
+(seekable-zstd frames, a per-blob encoding flag) is REJECTED until a
+backend without a filesystem underneath actually needs it — S3/HTTP
+are the named future exception, and cas.md's S3 sketch already
+reserves the metadata flag. Why: the win over ZFS is zero on the
+deployment that exists, while the cost is real — outboards verify
+uncompressed bytes, so verified range reads would need a
+compressed-frame offset map under every seek path, plus level policy.
+The ruling forecloses nothing by construction: encodings never touch
+identities, recipes, or wire hashes, so this retrofits exactly like
+D19 packing if the S3 day comes. Operational guidance for local
+stores on ext4/xfs (documented posture, not a gap): a loopback file
+carrying btrfs or ZFS with zstd on and discard/hole-punching enabled,
+so the backing file shrinks with the store.
+*Rejected:* uniform store-level seekable zstd now (obao frame-map
+complexity + compression-level knobs, for bytes the target filesystem
+already saves); leaving the question open (the ext4 story reads as
+oversight instead of posture, and the question keeps costing
+attention).
+
+## D91 — Affine piece-swap: pieces over container, sealed packs per decomposition (2026-07-15)
+
+First exercise of the third residency knob (WHICH literal holds the
+bytes — the open-questions dat-aware-residency thread): when a
+resident literal's rebuild route is AFFINE (pure-builtin assemble,
+the D63 class), the planner may materialize the route's pieces and
+evict the container — pieces over container. Affine-gated because
+both costs that could bite can't: serving the evicted ROM stays
+range-arithmetic (no recompute, D63), and the spill rule is
+unreachable (no opaque op can sit below a random-access demand, by
+construction). NEVER eager: a lone ROM's swap buys pad savings and
+pays a piece bill, so the swap is gated on a plan-time sharing
+predicate — piece bytes claimed by ≥2 distinct rebuild recipes (or
+already resident from elsewhere) above a molten threshold, a policy
+KV like the watermarks. Evidence: MKDS USA↔EUR share 556 of 564
+NitroFS pieces — a variant pair converges to ~1.02× instead of 2×.
+This is a MAINTENANCE PHASE (plan-time SQL alongside
+license/mark/evict), never an analyzer: D47 stays intact, sweeps and
+claims untouched; variant B finishing nds-split trips variant A's
+predicate one ambient wake later, no event plumbing. Materialization
+writes ONE SEALED PACK per decomposition — pieces in coverage order,
+magic'd self-describing index footer — D19's packing clause
+exercised for the first time: inode growth O(swapped ROMs), not
+O(pieces); rebuild IO ~sequential (coverage order = read order);
+cross-variant serving touches ~2 packs; recovery scans still sniff
+contents; packs immutable, rsyncable. Pieces are grounding leaves
+(their only route derives from the container they ground), so packs
+are stable; tombstone-and-repack under the gc guard is the escape
+hatch, not the plan. Prerequisite: the D56 disk-headroom guard — the
+swap is transiently double-resident by design. Interactions recorded
+now: (1) this ruling CREATES resident grounding-leaf pieces, the
+exact population D59's has-any-route gate mispredicts (routed on
+paper, route-less to the D21 fixpoint) — the rank-7 CDC amendment in
+open-questions is the queued fix, trigger unchanged; (2) chunk sets
+are the same small-blob-flood shape — pack-per-chunking is the named
+follow-on, not built here.
+*Rejected:* eager swap-on-decomposition (inode + IO cost for
+pad-only savings on lone ROMs); keep-dat-named-blobs-resident as the
+general rule (dats name the ROM, which would block the swap
+everywhere it pays — the instinct is right only where eviction
+degrades serving to recompute, i.e. opaque routes, which this ruling
+simply never touches); loose piece files (O(pieces) inodes cranks
+the D19 accepted cost toward millions at scale); a background
+repacker (the swap job knows membership and read order at write
+time — grouping needs no guessing, packing rides the swap).

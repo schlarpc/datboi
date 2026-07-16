@@ -75,10 +75,14 @@ integrity.
 ### Compression at rest
 
 Object identity is always the *uncompressed* bytes' blake3. At-rest
-compression is a backend-internal encoding. (Open: delegate to ZFS zstd on
-the NAS vs uniform store-level seekable zstd — see open questions.)
-Solid compression across similar roms (7z-style) is an *output transform*,
-not a storage concern.
+compression is a backend-internal encoding. Ruled (D90): delegate to the
+filesystem — the store writes plain bytes, ZFS/btrfs zstd below it
+compresses; store-level seekable-zstd encoding is rejected until a backend
+without a filesystem (S3/HTTP) needs it, and retrofits without touching
+identities if that day comes. Local stores on ext4/xfs: a loopback file
+carrying btrfs/ZFS with zstd + discard/hole-punching is the documented
+answer. Solid compression across similar roms (7z-style) is an *output
+transform*, not a storage concern.
 
 ### GC
 
