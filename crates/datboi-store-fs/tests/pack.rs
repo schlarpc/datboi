@@ -131,6 +131,97 @@ fn member_mismatch_publishes_nothing() {
     ));
 }
 
+fn pack_file(root: &std::path::Path, pack: &Blake3) -> std::path::PathBuf {
+    let hex = pack.to_hex();
+    root.join("store")
+        .join("packs")
+        .join(&hex[0..2])
+        .join(&hex[2..4])
+        .join(hex)
+}
+
+#[test]
+fn scrub_certifies_an_intact_pack_and_yields_aliases() {
+    let (dir, store) = world();
+    let pieces: Vec<Vec<u8>> = vec![pattern(300, 1), pattern(70_000, 2), pattern(5, 3)];
+    let members = members_of(&pieces);
+    let pack = store
+        .put_pack(&members, |ix| {
+            Ok(Box::new(std::io::Cursor::new(pieces[ix].clone())))
+        })
+        .expect("pack");
+
+    let scrub = store.scrub_pack(&pack).expect("scrub");
+    assert!(scrub.intact, "a freshly written pack re-hashes to its name");
+    assert_eq!(scrub.members.len(), pieces.len());
+    for (piece, member) in pieces.iter().zip(&scrub.members) {
+        let aliases = member.aliases.as_ref().expect("intact ⇒ every member verifies");
+        assert_eq!(aliases.blake3, Blake3::compute(piece));
+        assert_eq!(member.len, piece.len() as u64);
+    }
+    // Survives a reopen (the map is rebuilt from footers, scrub reads
+    // bytes off disk regardless).
+    drop(store);
+    let store = Store::open(dir.path().join("store")).expect("reopen");
+    assert!(store.scrub_pack(&pack).expect("scrub").intact);
+}
+
+#[test]
+fn scrub_catches_a_rotted_member() {
+    let (dir, store) = world();
+    let pieces: Vec<Vec<u8>> = vec![pattern(300, 1), pattern(9000, 2), pattern(64, 3)];
+    let members = members_of(&pieces);
+    let pack = store
+        .put_pack(&members, |ix| {
+            Ok(Box::new(std::io::Cursor::new(pieces[ix].clone())))
+        })
+        .expect("pack");
+
+    // Flip a byte inside member 1's data region (its window starts at
+    // offset 300, past member 0). The pack map is unchanged — only the
+    // bytes on disk rotted, exactly the bitrot scrub exists to catch.
+    let path = pack_file(dir.path(), &pack);
+    let mut bytes = std::fs::read(&path).expect("read pack");
+    bytes[500] ^= 0xFF;
+    std::fs::write(&path, &bytes).expect("write pack");
+
+    let scrub = store.scrub_pack(&pack).expect("scrub");
+    assert!(!scrub.intact, "whole-file hash no longer matches the name");
+    assert!(
+        scrub.members[0].aliases.is_some(),
+        "member 0 sits before the flip and still verifies"
+    );
+    assert!(
+        scrub.members[1].aliases.is_none(),
+        "the rotted member's slice no longer hashes to its identity"
+    );
+    assert!(scrub.members[2].aliases.is_some(), "member 2 untouched");
+}
+
+#[test]
+fn scrub_names_a_pack_whose_footer_rotted() {
+    let (dir, store) = world();
+    let pieces: Vec<Vec<u8>> = vec![pattern(128, 4), pattern(256, 5)];
+    let members = members_of(&pieces);
+    let pack = store
+        .put_pack(&members, |ix| {
+            Ok(Box::new(std::io::Cursor::new(pieces[ix].clone())))
+        })
+        .expect("pack");
+
+    // Corrupt the trailer magic so the footer will not locate.
+    let path = pack_file(dir.path(), &pack);
+    let mut bytes = std::fs::read(&path).expect("read pack");
+    let n = bytes.len();
+    bytes[n - 1] ^= 0xFF;
+    std::fs::write(&path, &bytes).expect("write pack");
+
+    assert!(matches!(
+        store.scrub_pack(&pack),
+        Err(StoreError::PackFooter { .. })
+    ));
+}
+
 #[test]
 fn pack_files_are_content_addressed_and_deterministic() {
     let (_dir, store_a) = world();

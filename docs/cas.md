@@ -196,7 +196,14 @@ migrate off someone else's.
   windows, indistinguishable from loose blobs to every consumer.
   Identities unchanged; packs are write-once; a packed blob refuses
   eviction (tombstone-and-repack is the future path). Inode growth is
-  O(swapped decompositions), never O(pieces).
+  O(swapped decompositions), never O(pieces). **Scrub covers packs**:
+  the loose walk (`Store::list`) never sees packed members, so
+  `scrub_pack` re-hashes each whole pack against its own identity (the
+  filename) in one sequential read — a match certifies every member by
+  construction (`put_pack` verified each member's bytes INTO the hashed
+  file), and the same pass re-derives per-member alias tuples for the
+  fast-recovery back-fill. Packs are O(decompositions), so scrub reads
+  them all rather than sampling.
 - All embedded DBs on daemon-local disk (never NFS); NAS holds only
   authoritative bytes.
 

@@ -1429,6 +1429,37 @@ pub fn scrub(
             }
         }
     }
+    // Sealed packs (D91): the loose walk above never sees packed members,
+    // so a rotting pack was invisible to scrub. Each pack carries its own
+    // identity (the filename), so re-hashing the whole file is the
+    // strongest and cheapest proof — a match certifies every member.
+    // Packs are O(decompositions) and the coverage gap this closes, so we
+    // scrub them ALL whenever sampling is active, not by hash prefix.
+    if pct > 0 {
+        for pack in env.store.list_packs() {
+            let scrub = env.store.scrub_pack(&pack)?;
+            checked += scrub.members.len() as u64;
+            if !scrub.intact {
+                corrupt.push(format!("pack {}", pack.to_hex()));
+            }
+            for member in &scrub.members {
+                match &member.aliases {
+                    Some(aliases) => {
+                        let blob_id = env.db.upsert_blob(
+                            &member.hash,
+                            Some(member.len),
+                            NsRow::Data,
+                            Residency::Resident,
+                        )?;
+                        env.db.insert_aliases(blob_id, aliases)?;
+                        env.db.set_verified(blob_id, now)?;
+                        refreshed += 1;
+                    }
+                    None => corrupt.push(member.hash.to_hex()),
+                }
+            }
+        }
+    }
     // Rehabilitation (D54-era work item): re-execute poisoned recipes;
     // a verified re-replay is the one sanctioned exit from Failed.
     let mut rehabilitated: Vec<i64> = Vec::new();

@@ -66,6 +66,11 @@ pub enum StoreError {
         expected_len: u64,
         got_len: u64,
     },
+    /// A pack file's footer would not parse during a scrub (structural
+    /// rot the open-time scan would also refuse). Bytes-are-truth: the
+    /// pack fails to resolve, scrub names it.
+    #[error("pack footer at {path} is unparseable: {detail}")]
+    PackFooter { path: PathBuf, detail: String },
 }
 
 impl StoreError {

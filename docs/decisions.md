@@ -1993,7 +1993,9 @@ pack time (packed pieces serve through the D4 plain-read literal
 default; `ensure_obao` over the window upgrades later). Landed
 defaults: `swap:share-min-pct` 50, `swap:enabled` on, swap phase on
 ambient ticks under the D72 guard. Owed, recorded in open-questions:
-pack scrub coverage, tombstone-and-repack, packs for chunk sets.
+pack scrub coverage (LANDED 2026-07-16 — `scrub_pack` re-hashes each
+whole pack against its identity, one read, certifying every member and
+back-filling aliases), tombstone-and-repack, packs for chunk sets.
 
 ## D93 — Fearless concurrency: parallel by default, serialization must name its argument (2026-07-16)
 

@@ -37,6 +37,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
+use datboi_core::alias::{AliasHasher, AliasTuple};
 use datboi_core::hash::Blake3;
 
 use crate::store::{Store, StoreError, fsync_dir};
@@ -47,6 +48,28 @@ pub(crate) type PackScan = (HashMap<Blake3, PackedLoc>, Vec<PathBuf>);
 
 /// A written pack's identity + its member table rows.
 type SealedPack = (Blake3, Vec<(Blake3, u64, u64)>);
+
+/// The outcome of scrubbing one sealed pack ([`Store::scrub_pack`]).
+#[derive(Debug)]
+pub struct PackScrub {
+    pub pack: Blake3,
+    /// The pack file re-hashed to its own identity. `false` means the
+    /// file rotted somewhere (member bytes, footer, or trailer); `true`
+    /// proves every member by construction.
+    pub intact: bool,
+    /// One row per member, in offset order.
+    pub members: Vec<PackMemberScrub>,
+}
+
+/// One member's scrub row: its identity, length, and the alias tuple
+/// re-derived from its bytes — `None` only if the member's own slice
+/// failed to hash to its identity.
+#[derive(Debug)]
+pub struct PackMemberScrub {
+    pub hash: Blake3,
+    pub len: u64,
+    pub aliases: Option<AliasTuple>,
+}
 
 pub(crate) const PACK_MAGIC: &[u8] = b"datboi/pack/1\n";
 pub(crate) const PACK_TRAILER: &[u8] = b"DBOIPACK";
@@ -396,6 +419,91 @@ impl Store {
         ids.sort_unstable_by_key(|id| id.0);
         ids.dedup();
         ids
+    }
+
+    /// Scrub one sealed pack (D91): re-hash the whole file against its
+    /// own identity (the filename) and re-derive every member's alias
+    /// tuple, all in ONE sequential read. The whole-file check is the
+    /// strongest and cheapest integrity proof a pack can get — `put_pack`
+    /// verified each member's bytes INTO the hashed file, so a matching
+    /// whole-file hash proves every member by construction (member bytes,
+    /// footer, and trailer alike). The per-member tuples ride the same
+    /// read for the fast-recovery alias back-fill (`scrub`'s second job).
+    ///
+    /// Packs are O(decompositions), so scrub re-reads each fully rather
+    /// than sampling — they are the newest artifacts and the coverage
+    /// gap the loose walk (`Store::list`) never touches.
+    ///
+    /// # Errors
+    /// Missing/unreadable pack file, or a footer that no longer parses
+    /// (structural rot — the open-time scan would refuse it too).
+    pub fn scrub_pack(&self, pack: &Blake3) -> Result<PackScrub, StoreError> {
+        let path = self.pack_path(pack);
+        let mut file = File::open(&path).map_err(|e| StoreError::io(&path, e))?;
+        let mut members = parse_footer(&mut file).map_err(|detail| StoreError::PackFooter {
+            path: path.clone(),
+            detail,
+        })?;
+        // Coverage order = write order = read order; drive per-member
+        // hashers as the single forward pass crosses their spans.
+        members.sort_unstable_by_key(|(_, offset, _)| *offset);
+        file.seek(SeekFrom::Start(0)).map_err(|e| StoreError::io(&path, e))?;
+        let mut whole = blake3::Hasher::new();
+        let mut hashers: Vec<AliasHasher> = members.iter().map(|_| AliasHasher::new()).collect();
+        let mut reader = io::BufReader::new(&mut file);
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut pos = 0u64;
+        let mut cur = 0usize;
+        loop {
+            let n = reader.read(&mut buf).map_err(|e| StoreError::io(&path, e))?;
+            if n == 0 {
+                break;
+            }
+            whole.update(&buf[..n]);
+            let (chunk_start, chunk_end) = (pos, pos + n as u64);
+            // Fan the buffer out over the members it overlaps. Footer and
+            // trailer bytes past the last member fall through to `whole`
+            // only. At most one member straddles any buffer boundary.
+            while cur < members.len() {
+                let (_, offset, len) = members[cur];
+                let (mstart, mend) = (offset, offset + len);
+                if mstart >= chunk_end {
+                    break;
+                }
+                let lo = mstart.max(chunk_start);
+                let hi = mend.min(chunk_end);
+                if lo < hi {
+                    let (a, b) = ((lo - chunk_start) as usize, (hi - chunk_start) as usize);
+                    hashers[cur].update(&buf[a..b]);
+                }
+                if mend <= chunk_end {
+                    cur += 1;
+                } else {
+                    break;
+                }
+            }
+            pos = chunk_end;
+        }
+        let intact = Blake3(*whole.finalize().as_bytes()) == *pack;
+        let members = members
+            .into_iter()
+            .zip(hashers)
+            .map(|((hash, _, len), hasher)| {
+                let aliases = hasher.finalize();
+                PackMemberScrub {
+                    hash,
+                    len,
+                    // Trusted for back-fill on its own merits: the slice's
+                    // own bytes hashed to its identity.
+                    aliases: (aliases.blake3 == hash).then_some(aliases),
+                }
+            })
+            .collect();
+        Ok(PackScrub {
+            pack: *pack,
+            intact,
+            members,
+        })
     }
 
     pub(crate) fn pack_path(&self, hash: &Blake3) -> PathBuf {

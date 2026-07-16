@@ -17,5 +17,5 @@ pub mod pack;
 pub mod store;
 
 pub use layout::Namespace;
-pub use pack::{Blob, PackMember};
+pub use pack::{Blob, PackMember, PackMemberScrub, PackScrub};
 pub use store::{PutOutcome, Store, StoreError, VerifyOutcome};
