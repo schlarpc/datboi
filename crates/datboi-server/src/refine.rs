@@ -515,53 +515,6 @@ fn drone(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_shared() -> Arc<Shared> {
-        Arc::new(Shared {
-            inbox: Mutex::new(PrimeInbox::default()),
-            wake: Condvar::new(),
-            active_drones: std::sync::atomic::AtomicUsize::new(0),
-            drone_gen: Mutex::new(0),
-            drone_wake: Condvar::new(),
-        })
-    }
-
-    #[test]
-    fn drone_fleet_grows_and_shrinks_live() {
-        use std::sync::atomic::Ordering::Relaxed;
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store: &'static Store =
-            Box::leak(Box::new(Store::open(dir.path().join("store")).expect("store")));
-        // Migrate once so each drone's private open sees the schema.
-        let _db = Db::open(dir.path()).expect("db");
-        let exec = Arc::new(
-            datboi_exec::Executor::new(store, datboi_exec::ExecConfig::default()).expect("exec"),
-        );
-        let shared = test_shared();
-        let mut drones = Vec::new();
-        let mut next_id = 1usize;
-
-        resize_drones(3, &mut drones, &mut next_id, dir.path(), store, &exec, &shared);
-        assert_eq!(drones.len(), 3, "grew to three drones");
-        assert_eq!(next_id, 4, "ids are monotonic");
-
-        // A retired drone is flagged to stop (and will observe it — the
-        // loop checks the flag before every burst and after every wake).
-        let retired = Arc::clone(drones.last().expect("nonempty"));
-        resize_drones(1, &mut drones, &mut next_id, dir.path(), store, &exec, &shared);
-        assert_eq!(drones.len(), 1, "shrank to one drone");
-        assert!(retired.load(Relaxed), "the retired drone was flagged to exit");
-
-        // Regrowth spawns fresh, fungible drones (no id reuse needed).
-        resize_drones(4, &mut drones, &mut next_id, dir.path(), store, &exec, &shared);
-        assert_eq!(drones.len(), 4);
-        assert_eq!(next_id, 7, "three fresh ids (4,5,6) after the shrink");
-    }
-}
-
 /// Names the blob under the knife in the tray ("current" line).
 struct TrayObserver<'a> {
     jobs: &'a Registry,
@@ -674,4 +627,51 @@ fn drain_family(
         pos1.saturating_sub(pos0),
         neg1.saturating_sub(neg0)
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_shared() -> Arc<Shared> {
+        Arc::new(Shared {
+            inbox: Mutex::new(PrimeInbox::default()),
+            wake: Condvar::new(),
+            active_drones: std::sync::atomic::AtomicUsize::new(0),
+            drone_gen: Mutex::new(0),
+            drone_wake: Condvar::new(),
+        })
+    }
+
+    #[test]
+    fn drone_fleet_grows_and_shrinks_live() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store: &'static Store =
+            Box::leak(Box::new(Store::open(dir.path().join("store")).expect("store")));
+        // Migrate once so each drone's private open sees the schema.
+        let _db = Db::open(dir.path()).expect("db");
+        let exec = Arc::new(
+            datboi_exec::Executor::new(store, datboi_exec::ExecConfig::default()).expect("exec"),
+        );
+        let shared = test_shared();
+        let mut drones = Vec::new();
+        let mut next_id = 1usize;
+
+        resize_drones(3, &mut drones, &mut next_id, dir.path(), store, &exec, &shared);
+        assert_eq!(drones.len(), 3, "grew to three drones");
+        assert_eq!(next_id, 4, "ids are monotonic");
+
+        // A retired drone is flagged to stop (and will observe it — the
+        // loop checks the flag before every burst and after every wake).
+        let retired = Arc::clone(drones.last().expect("nonempty"));
+        resize_drones(1, &mut drones, &mut next_id, dir.path(), store, &exec, &shared);
+        assert_eq!(drones.len(), 1, "shrank to one drone");
+        assert!(retired.load(Relaxed), "the retired drone was flagged to exit");
+
+        // Regrowth spawns fresh, fungible drones (no id reuse needed).
+        resize_drones(4, &mut drones, &mut next_id, dir.path(), store, &exec, &shared);
+        assert_eq!(drones.len(), 4);
+        assert_eq!(next_id, 7, "three fresh ids (4,5,6) after the shrink");
+    }
 }

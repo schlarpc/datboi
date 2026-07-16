@@ -97,7 +97,7 @@ pub fn parse_layout<R: Read + Seek>(narc: &mut R) -> Result<Layout, NdsError> {
         }
         let bh = read_at(narc, off, 8)?;
         let size = u32_at(&bh, 4);
-        if size < 8 || size > MAX_BLOCK_LEN || off + size > narc_len {
+        if !(8..=MAX_BLOCK_LEN).contains(&size) || off + size > narc_len {
             return Err(Refusal::Narc("block size out of bounds".into()).into());
         }
         match &bh[0..4] {
@@ -252,7 +252,7 @@ mod tests {
         let mut gmif = Vec::new();
         gmif.extend_from_slice(b"GMIF");
         gmif.extend_from_slice(&((8 + data_len) as u32).to_le_bytes());
-        gmif.extend(std::iter::repeat(0xABu8).take(data_len));
+        gmif.extend(std::iter::repeat_n(0xABu8, data_len));
         let total = (0x10 + btaf.len() + btnf.len() + gmif.len()) as u32;
         let mut out = Vec::new();
         out.extend_from_slice(b"NARC");

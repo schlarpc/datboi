@@ -1234,6 +1234,7 @@ impl Analyzer for NarcAnalyzer {
 /// arithmetic, so one tested mint path serves both. `container` is the
 /// blob being decomposed, `total_len` its length, `pieces`/`regions`
 /// its exact coverage map (concatenating to `[0, total_len)`).
+#[allow(clippy::too_many_arguments)] // container + map + rom, all load-bearing
 fn mint_decomposition<R: std::io::Read + std::io::Seek>(
     store: &Store,
     db: &mut Db,

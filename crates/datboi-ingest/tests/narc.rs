@@ -110,7 +110,7 @@ fn build_narc(members: &[&[u8]]) -> Vec<u8> {
         let start = data.len() as u32;
         data.extend_from_slice(m);
         fat.push((start, data.len() as u32));
-        while data.len() % 4 != 0 {
+        while !data.len().is_multiple_of(4) {
             data.push(0xFF); // Nitro alignment padding.
         }
     }
