@@ -475,7 +475,10 @@ two things were seen and deliberately deferred:
 
 ## Flagged for ruling (raised 2026-07-15, residency rulings session)
 
-- **Grounded-not-resident sweeps** (the absent-blob analysis gap):
+- **Grounded-not-resident sweeps** (the absent-blob analysis gap;
+  RULED same day as **D92** — analyzers consume the logical CAS,
+  eagerness/budget/sniff-admission stay molten, grounded-set-aware
+  enqueue named as owed design work; kept for the reasoning):
   the refinement fixpoint silently stalls on claimed-but-absent
   identities — sweeps only claim Resident blobs and analyzers read
   via `store.get`, but the analyzer contract ("pure function of
@@ -505,7 +508,14 @@ two things were seen and deliberately deferred:
 ## Next sessions (pick up here)
 
 **Position as of 2026-07-15 (residency rulings session — docs only,
-no code)**: **D90 and D91 RULED.** D90 closes at-rest compression:
+no code)**: **D90, D91, and D92 RULED.** D92 landed after the arc
+was mapped: analyzers consume the LOGICAL CAS (sweep candidacy is
+grounded-not-resident, analyzers read through the executor) — the
+posture ruled, eagerness policy molten, grounded-set-aware enqueue
+cost the named owed design work. That converts arc step (1) below
+from "wants a ruling" to "wants a build," and its implementation
+naturally precedes or rides the D91 build (same sweep-driver
+surface). D90 closes at-rest compression:
 delegate to the filesystem, loop-device advice for ext4/xfs,
 store-level encoding rejected until a filesystem-less backend
 (S3/HTTP) needs it — retrofittable by construction, so nothing is
@@ -518,8 +528,8 @@ maintenance phase (D47 intact, sweeps untouched). Nothing
 implemented yet — the build is a swap planner phase + pack
 write/read paths + the headroom guard. The session also mapped the
 DECOMPOSITION ARC these belong to, in dependency order: (1)
-grounded-not-resident sweeps (new flagged ruling above — the
-absent-blob analysis gap, most foundational), (2) D91
+grounded-not-resident sweeps (RULED same day as D92 — build owed),
+(2) D91
 implementation, (3) NARC/SDAT interior decomposition (existing
 wasm-lanes item), (4) the rank-7 D59 amendment (existing item —
 D91 creates the population its gate mispredicts; NARC/SDAT eats the

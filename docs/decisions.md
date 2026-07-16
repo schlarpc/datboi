@@ -1933,3 +1933,48 @@ simply never touches); loose piece files (O(pieces) inodes cranks
 the D19 accepted cost toward millions at scale); a background
 repacker (the swap job knows membership and read order at write
 time — grouping needs no guessing, packing rides the swap).
+
+## D92 — Analyzers consume the logical CAS (2026-07-15)
+
+The refinement fixpoint's promise is "analysis advances over the
+corpus" — and the corpus is every grounded identity, not every
+resident literal. Ruled: sweep candidacy is GROUNDED, not resident;
+analyzers read blob bytes through the executor (verified streams,
+spill for seek-demanding formats) instead of `store.get`. The
+resident-only gate was an implementation leak, not doctrine: the
+analyzer contract (D45, "pure function of bytes × identity") never
+mentioned residency — bytes-by-hash are identical through any route
+— and the happy path only worked by side effect (preflate and the
+7z/rar extractors happened to materialize what the next analyzer
+needed). The stalls it caused were real: a dat-matched .nds STORED
+in a zip was claimed at ingest and never analyzed (no NitroFS
+claims, no trim alias); members of preflate-refused containers, same;
+every nested interior gated on unrelated materialization events.
+Three arguments carried it. (1) Trust: executor materializations are
+tee-verified (D4), so a logical read is exactly as trustworthy as a
+physical one, and a wrong claim could only ever waste replay CPU —
+D4's stated worst case. (2) Purity: preserved perfectly; provenance
+rows stay identity-keyed and route-blind. (3) Consistency — the
+clincher: the D39 audit already grades grounded-but-absent as
+have-verified. The library says "you have this ROM" about identities
+analysis refused to look at; every other subsystem (audit, serving,
+GC grounding) defines existence as groundedness. This ruling brings
+the last holdout into the system's own philosophy. What stays MOLTEN
+(policy KV, the D60/D72 pattern — mechanism ruled, thresholds
+molten): eagerness — which absent blobs enqueue (dat-named first is
+the obvious start, the D71 dat-aware scheduling lane), replay budget
+per sweep, and head-sniff admission (sniffing through an opaque
+route costs a partial replay). Owed design work, named not blocking:
+`enqueue_unanalyzed` becomes grounded-set-aware — a fixpoint
+question at enqueue time, at corpus scale (the audit rollup already
+computes this set; sharing or caching it is the likely shape).
+Recursion is bounded by content depth plus the existing per-format
+policy gates (the NARC recipe-volume clause), not by residency
+accident.
+*Rejected:* resident-only sweeps as permanent doctrine (the gap this
+entry exists to close); materialize-for-analysis as the primary
+mechanism (entangles residency policy with analysis progress —
+residency is the planner's knob, D91's territory; the executor's
+bounded spill inside one analysis is fine, a residency flip is not);
+analyzer-side special-casing per container format (the executor
+already generalizes exactly this).
