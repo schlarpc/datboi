@@ -278,6 +278,12 @@ impl Registry {
         self.push_job(JobKind::Eval, format!("eval — {view}"), 0, 0, now)
     }
 
+    /// A FAT32 image-mint job (D62/D96): opaque like eval (materialize
+    /// missing inputs, then mint), summarized in the closing note.
+    pub(crate) fn create_mint(&self, view: &str, now: i64) -> i64 {
+        self.push_job(JobKind::Mint, format!("mint — {view}"), 0, 0, now)
+    }
+
     /// Refine drain progress: `done` items finished, `total` = done +
     /// still queued. Item counts mirror into the byte fields so the
     /// shared progress arithmetic stays item-weighted.

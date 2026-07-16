@@ -238,6 +238,25 @@ fn view_define() {}
 )]
 fn view_eval() {}
 
+/// Mint the view's FAT32 image from its current snapshot (owner-only,
+/// D62). Long-running (materialize + mint), so it starts a background
+/// job; the minted image downloads at `GET /v1/views/{name}/image`. A
+/// never-evaluated view is a 400.
+#[utoipa::path(
+    post,
+    path = "/v1/views/{name}/image",
+    tag = "views",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    params(("name" = String, Path, description = "View name")),
+    responses(
+        (status = 200, description = "Mint job started", body = JobStartResponse),
+        (status = 400, description = "View has no snapshot yet", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+        (status = 404, description = "No such view", body = ApiError),
+    ),
+)]
+fn view_mint() {}
+
 // ---- views (the friend surface: ACL-filtered, misses look alike) ----
 
 /// Views visible to the caller: owners see everything, friends see
@@ -696,6 +715,7 @@ fn gc_apply() {}
         view_profiles,
         view_define,
         view_eval,
+        view_mint,
         views,
         view_detail,
         view_files,

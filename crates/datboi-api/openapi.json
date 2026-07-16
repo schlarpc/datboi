@@ -4391,6 +4391,74 @@
         "tags": [
           "views"
         ]
+      },
+      "post": {
+        "operationId": "view_mint",
+        "parameters": [
+          {
+            "description": "View name",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStartResponse"
+                }
+              }
+            },
+            "description": "Mint job started"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "View has no snapshot yet"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "No such view"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Mint the view's FAT32 image from its current snapshot (owner-only,\nD62). Long-running (materialize + mint), so it starts a background\njob; the minted image downloads at `GET /v1/views/{name}/image`. A\nnever-evaluated view is a 400.",
+        "tags": [
+          "views"
+        ]
       }
     }
   }

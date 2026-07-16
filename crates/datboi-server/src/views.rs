@@ -15,7 +15,9 @@ use axum::extract::{Path as UrlPath, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use datboi_api::{ErrorCode, JobStartResponse, ViewDefineRequest, ViewDefineResponse};
-use datboi_catalog::{CatalogError, SelectionPolicy, ViewDef};
+use datboi_catalog::{CatalogError, ImageParams, SelectionPolicy, ViewDef};
+use datboi_core::hash::Blake3;
+use datboi_core::viewsnap::ViewSnapshot;
 use tracing::{info, warn};
 
 use crate::App;
@@ -113,6 +115,111 @@ fn run_eval_job(app: &App, id: i64, def: ViewDef) {
         Err(e) => {
             warn!("eval job {id}: FAILED — {e}");
             app.jobs.fail(id, &e.to_string(), auth::now_unix());
+        }
+    }
+}
+
+// ---- POST /v1/views/{name}/image ----
+
+pub(crate) async fn mint(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+    UrlPath(name): UrlPath<String>,
+) -> Response {
+    run_blocking(move || {
+        require_owner(&caller)?;
+        // Image params ride the definition (D62); the current snapshot is
+        // the mint input, so a never-evaluated view is a precondition
+        // failure, not a 404. Resolve both before spawning.
+        let (params, snap_hash) = {
+            let db = app
+                .db
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let def = datboi_catalog::get_view(&db, &name)
+                .map_err(internal)?
+                .ok_or_else(|| err(ErrorCode::NotFound, "no such view"))?;
+            let snapshot = db
+                .get_tag(&format!("view/{name}"))
+                .map_err(internal)?
+                .ok_or_else(|| {
+                    err(
+                        ErrorCode::BadRequest,
+                        "view has no snapshot yet — evaluate it first",
+                    )
+                })?;
+            (def.image.unwrap_or_default(), snapshot)
+        };
+        let snap = load_snapshot(&app, snap_hash)?;
+        let id = app.jobs.create_mint(&name, auth::now_unix());
+        let app = Arc::clone(&app);
+        std::thread::spawn(move || run_mint_job(&app, id, name, snap_hash, snap, params));
+        Ok(json_response(StatusCode::OK, &JobStartResponse { job: id }))
+    })
+    .await
+}
+
+/// Read a snapshot object from the meta namespace and decode it — the
+/// raw `ViewSnapshot` mint needs (the vfs cache holds a `ViewIndex`
+/// instead, and mint is rare enough not to warrant its own cache).
+fn load_snapshot(app: &App, hash: Blake3) -> Result<ViewSnapshot, Response> {
+    use std::io::Read as _;
+    let mut file = app
+        .store
+        .get(datboi_store_fs::Namespace::Meta, &hash)
+        .map_err(internal)?
+        .ok_or_else(|| err(ErrorCode::Internal, "snapshot object missing from store"))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(internal)?;
+    ViewSnapshot::decode(&bytes).map_err(internal)
+}
+
+/// The mint job body: materialize the snapshot's absent inputs, then mint
+/// the FAT32 image (D62) — the same `missing_inputs` → `materialize` →
+/// `mint_image` sequence the CLI's `view image` runs. Obao is always
+/// stored (the download surface serves ranges from it); no file export
+/// (the image downloads via `GET /v1/views/{name}/image`).
+fn run_mint_job(app: &App, id: i64, name: String, snap_hash: Blake3, snap: ViewSnapshot, params: ImageParams) {
+    info!("mint job {id}: view {name} (snapshot {snap_hash})");
+    let now = auth::now_unix();
+    let result: Result<(datboi_catalog::ImageReport, usize), String> = (|| {
+        let mut db = app
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let missing = datboi_catalog::missing_inputs(&db, &snap).map_err(|e| e.to_string())?;
+        let materialized = missing.len();
+        for hash in &missing {
+            app.exec
+                .materialize(&db, hash)
+                .map_err(|e| format!("materializing image input {hash}: {e}"))?;
+        }
+        let report =
+            datboi_catalog::mint_image(&mut db, app.store, &name, &snap_hash, &snap, &params, true, now)
+                .map_err(|e| e.to_string())?;
+        Ok((report, materialized))
+    })();
+    match result {
+        Ok((report, materialized)) => {
+            let obao = if report.obao_stored { ", obao stored" } else { "" };
+            let extra = if materialized > 0 {
+                format!(" (materialized {materialized} input(s) first)")
+            } else {
+                String::new()
+            };
+            app.jobs.push_note(
+                id,
+                format!(
+                    "image {} — {} B, {} row(s), skeleton {} B{obao}{extra}",
+                    report.image, report.size, report.rows, report.skeleton_bytes
+                ),
+            );
+            info!("mint job {id}: image {} ({} B)", report.image, report.size);
+            app.jobs.finish(id, auth::now_unix());
+        }
+        Err(e) => {
+            warn!("mint job {id}: FAILED — {e}");
+            app.jobs.fail(id, &e, auth::now_unix());
         }
     }
 }

@@ -79,6 +79,7 @@ fn v1() -> V1Routes {
         .get("/v1/views/{name}", api::view_detail)
         .get("/v1/views/{name}/files", api::view_files)
         .get("/v1/views/{name}/image", view_image)
+        .post("/v1/views/{name}/image", crate::views::mint)
         .get("/v1/storage", api::storage)
         .get("/v1/storage/breakdown", api::storage_breakdown)
         .get("/v1/blobs", api::blobs)
