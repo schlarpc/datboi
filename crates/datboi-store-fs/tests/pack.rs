@@ -223,6 +223,95 @@ fn scrub_names_a_pack_whose_footer_rotted() {
 }
 
 #[test]
+fn repack_drops_dead_members_and_keeps_survivors() {
+    let (dir, store) = world();
+    let pieces: Vec<Vec<u8>> = vec![
+        pattern(300, 1),
+        pattern(9000, 2),
+        pattern(64, 3),
+        pattern(500, 4),
+    ];
+    let members = members_of(&pieces);
+    let pack = store
+        .put_pack(&members, |ix| {
+            Ok(Box::new(std::io::Cursor::new(pieces[ix].clone())))
+        })
+        .expect("pack");
+
+    // Tombstone members 1 and 3 (the 9000- and 500-byte pieces).
+    let dead: std::collections::HashSet<Blake3> =
+        [members[1].hash, members[3].hash].into_iter().collect();
+    let outcome = store.repack(&pack, &dead).expect("repack");
+    assert_eq!(outcome.bytes_freed, 9000 + 500);
+    assert_eq!(outcome.dropped.len(), 2);
+    let new_pack = outcome.new_pack.expect("survivors remain");
+    assert_ne!(new_pack, pack, "rewrite changes the pack identity");
+
+    // Survivors still resolve, byte-exact, from the new pack.
+    for keep in [0usize, 2] {
+        assert!(store.is_packed(&members[keep].hash));
+        let mut blob = store
+            .get(Namespace::Data, &members[keep].hash)
+            .expect("get")
+            .expect("survivor resolves");
+        let mut bytes = Vec::new();
+        blob.read_to_end(&mut bytes).expect("read");
+        assert_eq!(&bytes, &pieces[keep]);
+    }
+    // Dropped members are gone from the map and the old pack is unlinked.
+    assert!(!store.is_packed(&members[1].hash));
+    assert!(!store.is_packed(&members[3].hash));
+    assert!(!pack_file(dir.path(), &pack).exists(), "old pack unlinked");
+    assert_eq!(store.list_packs(), vec![new_pack]);
+
+    // Footer-truth survives a reopen: the new pack alone resolves.
+    drop(store);
+    let store = Store::open(dir.path().join("store")).expect("reopen");
+    assert!(store.is_packed(&members[0].hash));
+    assert!(!store.is_packed(&members[1].hash));
+}
+
+#[test]
+fn repack_dropping_every_member_deletes_the_pack() {
+    let (dir, store) = world();
+    let pieces: Vec<Vec<u8>> = vec![pattern(100, 5), pattern(200, 6)];
+    let members = members_of(&pieces);
+    let pack = store
+        .put_pack(&members, |ix| {
+            Ok(Box::new(std::io::Cursor::new(pieces[ix].clone())))
+        })
+        .expect("pack");
+
+    let drop: std::collections::HashSet<Blake3> =
+        members.iter().map(|m| m.hash).collect();
+    let outcome = store.repack(&pack, &drop).expect("repack");
+    assert!(outcome.new_pack.is_none(), "whole pack reclaimed");
+    assert_eq!(outcome.bytes_freed, 300);
+    assert!(store.list_packs().is_empty());
+    assert!(!pack_file(dir.path(), &pack).exists());
+    assert!(!store.has(Namespace::Data, &members[0].hash));
+}
+
+#[test]
+fn repack_with_no_matching_drop_is_a_noop() {
+    let (_dir, store) = world();
+    let pieces: Vec<Vec<u8>> = vec![pattern(100, 7)];
+    let members = members_of(&pieces);
+    let pack = store
+        .put_pack(&members, |ix| {
+            Ok(Box::new(std::io::Cursor::new(pieces[ix].clone())))
+        })
+        .expect("pack");
+    let drop: std::collections::HashSet<Blake3> =
+        [Blake3::compute(b"not a member")].into_iter().collect();
+    let outcome = store.repack(&pack, &drop).expect("repack");
+    assert_eq!(outcome.new_pack, Some(pack), "pack stands unchanged");
+    assert_eq!(outcome.bytes_freed, 0);
+    assert!(outcome.dropped.is_empty());
+    assert_eq!(store.list_packs(), vec![pack]);
+}
+
+#[test]
 fn pack_files_are_content_addressed_and_deterministic() {
     let (_dir, store_a) = world();
     let (_dir_b, store_b) = world();

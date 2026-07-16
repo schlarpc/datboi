@@ -195,8 +195,14 @@ migrate off someone else's.
   footers into a map; `get`/`has`/`len` serve packed members as bounded
   windows, indistinguishable from loose blobs to every consumer.
   Identities unchanged; packs are write-once; a packed blob refuses
-  eviction (tombstone-and-repack is the future path). Inode growth is
-  O(swapped decompositions), never O(pieces). **Scrub covers packs**:
+  eviction (`Blocked::Packed`) — reclaiming its bytes is
+  TOMBSTONE-AND-REPACK, not an in-place edit. When orphan GC (D73)
+  applies to a packed piece, it can't `remove_blob` (no loose file),
+  so it groups the pack's dead members and `Store::repack` rewrites the
+  pack WITHOUT them (survivors streamed and re-verified out of the old
+  windows into a fresh sealed pack, the map flips, the old file
+  unlinks) — or unlinks the pack outright if every member died. Inode
+  growth is O(swapped decompositions), never O(pieces). **Scrub covers packs**:
   the loose walk (`Store::list`) never sees packed members, so
   `scrub_pack` re-hashes each whole pack against its own identity (the
   filename) in one sequential read — a match certifies every member by

@@ -61,6 +61,18 @@ pub struct PackScrub {
     pub members: Vec<PackMemberScrub>,
 }
 
+/// The outcome of a tombstone-and-repack ([`Store::repack`]).
+#[derive(Debug)]
+pub struct RepackOutcome {
+    /// The surviving pack's new identity, or `None` if every member was
+    /// dropped and the pack file is gone.
+    pub new_pack: Option<Blake3>,
+    /// Members actually dropped (present in the pack AND in the drop set).
+    pub dropped: Vec<Blake3>,
+    /// Bytes freed — the summed lengths of the dropped members.
+    pub bytes_freed: u64,
+}
+
 /// One member's scrub row: its identity, length, and the alias tuple
 /// re-derived from its bytes — `None` only if the member's own slice
 /// failed to hash to its identity.
@@ -503,6 +515,117 @@ impl Store {
             pack: *pack,
             intact,
             members,
+        })
+    }
+
+    /// Which pack holds this blob's bytes, if any — the eviction/GC
+    /// complement of [`Store::is_packed`] (the orphan path needs the
+    /// pack identity to repack it).
+    #[must_use]
+    pub fn pack_of(&self, hash: &Blake3) -> Option<Blake3> {
+        self.packed_loc(hash).map(|loc| loc.pack)
+    }
+
+    /// Tombstone-and-repack (D91 escape hatch): rewrite `pack` WITHOUT
+    /// the members in `drop`, freeing their bytes. Packs are immutable,
+    /// so "removing" a member means writing a fresh sealed pack of the
+    /// survivors (streamed and re-verified straight out of the old
+    /// windows), flipping the map, and unlinking the old file — or, if
+    /// every member is dropped, unlinking outright. The CALLER owns the
+    /// D73 safety (dropped members are orphaned + aged + unkept, under
+    /// the gc guard); this only moves bytes. Returns what happened.
+    ///
+    /// # Errors
+    /// Missing/unreadable pack, an unparseable footer, or I/O during the
+    /// rewrite (the old pack is left intact on any failure — the new
+    /// pack publishes atomically or not at all).
+    pub fn repack(
+        &self,
+        pack: &Blake3,
+        drop: &std::collections::HashSet<Blake3>,
+    ) -> Result<RepackOutcome, StoreError> {
+        let old_path = self.pack_path(pack);
+        let members = {
+            let mut f = File::open(&old_path).map_err(|e| StoreError::io(&old_path, e))?;
+            parse_footer(&mut f).map_err(|detail| StoreError::PackFooter {
+                path: old_path.clone(),
+                detail,
+            })?
+        };
+        let mut survivors: Vec<(Blake3, u64, u64)> = Vec::new();
+        let mut dropped: Vec<Blake3> = Vec::new();
+        let mut bytes_freed = 0u64;
+        for (hash, offset, len) in &members {
+            if drop.contains(hash) {
+                dropped.push(*hash);
+                bytes_freed += *len;
+            } else {
+                survivors.push((*hash, *offset, *len));
+            }
+        }
+        // Nothing to drop (the caller's set named no member of this
+        // pack): a no-op, the pack stands.
+        if dropped.is_empty() {
+            return Ok(RepackOutcome {
+                new_pack: Some(*pack),
+                dropped,
+                bytes_freed: 0,
+            });
+        }
+        // Whole pack is garbage: unlink and forget, no rewrite.
+        if survivors.is_empty() {
+            {
+                let mut map = self.packs.write().unwrap_or_else(|e| e.into_inner());
+                for (hash, _, _) in &members {
+                    map.remove(hash);
+                }
+            }
+            match fs::remove_file(&old_path) {
+                Ok(()) => fsync_dir(old_path.parent().expect("pack paths have parents"))?,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(StoreError::io(&old_path, e)),
+            }
+            return Ok(RepackOutcome {
+                new_pack: None,
+                dropped,
+                bytes_freed,
+            });
+        }
+        // Rewrite the survivors (coverage order) into a fresh pack,
+        // streaming each straight out of the old pack's window — which
+        // re-verifies every survivor against its hash as it lands.
+        survivors.sort_unstable_by_key(|(_, offset, _)| *offset);
+        let pack_members: Vec<PackMember> = survivors
+            .iter()
+            .map(|(hash, _, len)| PackMember {
+                hash: *hash,
+                len: *len,
+            })
+            .collect();
+        let old = File::open(&old_path).map_err(|e| StoreError::io(&old_path, e))?;
+        let new_hash = self.put_pack(&pack_members, |ix| {
+            let (_, offset, len) = survivors[ix];
+            Ok(Box::new(Blob::packed(old.try_clone()?, offset, len)?))
+        })?;
+        // put_pack remapped the survivors onto the new pack. Forget the
+        // dropped members and unlink the superseded file.
+        {
+            let mut map = self.packs.write().unwrap_or_else(|e| e.into_inner());
+            for hash in &dropped {
+                map.remove(hash);
+            }
+        }
+        if new_hash != *pack {
+            match fs::remove_file(&old_path) {
+                Ok(()) => fsync_dir(old_path.parent().expect("pack paths have parents"))?,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(StoreError::io(&old_path, e)),
+            }
+        }
+        Ok(RepackOutcome {
+            new_pack: Some(new_hash),
+            dropped,
+            bytes_freed,
         })
     }
 

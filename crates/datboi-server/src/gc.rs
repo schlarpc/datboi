@@ -149,6 +149,12 @@ pub(crate) async fn apply(
             skipped: 0,
         };
         let mut failure: Option<Response> = None;
+        // Packed orphans (D91) have no loose file to unlink — remove_blob
+        // would no-op and leave the bytes stranded in the pack while the
+        // row vanished (index/store divergence). Defer them, grouped by
+        // pack, to one tombstone-and-repack each after the loose sweep.
+        let mut packed: std::collections::HashMap<Blake3, Vec<(i64, Blake3, u64)>> =
+            std::collections::HashMap::new();
         for candidate in wanted {
             if keeps.contains(&candidate.hash) {
                 response.skipped += 1;
@@ -167,7 +173,15 @@ pub(crate) async fn apply(
                     break;
                 }
             }
-            // Bytes first, rows second (recovery's direction).
+            if let Some(pack) = app.store.pack_of(&candidate.hash) {
+                packed.entry(pack).or_default().push((
+                    candidate.blob_id,
+                    candidate.hash,
+                    candidate.size.unwrap_or(0),
+                ));
+                continue;
+            }
+            // Loose (or already-gone): bytes first, rows second.
             if let Err(e) = app.store.remove_blob(StoreNs::Data, &candidate.hash) {
                 failure = Some(internal(e));
                 break;
@@ -178,6 +192,32 @@ pub(crate) async fn apply(
             }
             response.deleted += 1;
             response.bytes_reclaimed += candidate.size.unwrap_or(0);
+        }
+        // Tombstone-and-repack the affected packs (D91): each is rewritten
+        // once without its orphaned members, then their obao sidecars and
+        // rows go. Same bytes-first-rows-second direction as the loose path.
+        if failure.is_none() {
+            for (pack, orphans) in packed {
+                let drop: std::collections::HashSet<Blake3> =
+                    orphans.iter().map(|(_, hash, _)| *hash).collect();
+                if let Err(e) = app.store.repack(&pack, &drop) {
+                    failure = Some(internal(e));
+                    break;
+                }
+                for (blob_id, hash, size) in &orphans {
+                    // Clear any obao sidecar / double-resident loose copy.
+                    let _ = app.store.remove_blob(StoreNs::Data, hash);
+                    if let Err(e) = db.delete_orphan_rows(*blob_id) {
+                        failure = Some(internal(e));
+                        break;
+                    }
+                    response.deleted += 1;
+                    response.bytes_reclaimed += size;
+                }
+                if failure.is_some() {
+                    break;
+                }
+            }
         }
         db.release_gc_guard(&holder).unwrap_or(()); // TTL is the backstop
         if let Some(resp) = failure {

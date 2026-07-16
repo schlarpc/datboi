@@ -2009,7 +2009,7 @@ defaults: `swap:share-min-pct` 50, `swap:enabled` on, swap phase on
 ambient ticks under the D72 guard. Owed, recorded in open-questions:
 pack scrub coverage (LANDED 2026-07-16 — `scrub_pack` re-hashes each
 whole pack against its identity, one read, certifying every member and
-back-filling aliases), tombstone-and-repack, packs for chunk sets.
+back-filling aliases), tombstone-and-repack (LANDED 2026-07-16 — Store::repack rewrites a pack without its orphaned members; orphan GC routes packed pieces to it since remove_blob can't unlink pack bytes), packs for chunk sets.
 
 *Amendment (2026-07-16, grounded-set-aware enqueue):* the owed
 enqueue-side work landed as fixpoint DEDUP. `refresh_queue` was called
