@@ -1994,3 +1994,53 @@ default; `ensure_obao` over the window upgrades later). Landed
 defaults: `swap:share-min-pct` 50, `swap:enabled` on, swap phase on
 ambient ticks under the D72 guard. Owed, recorded in open-questions:
 pack scrub coverage, tombstone-and-repack, packs for chunk sets.
+
+## D93 — Fearless concurrency: parallel by default, serialization must name its argument (2026-07-16)
+
+The posture inverts: concurrency is the DEFAULT everywhere, and any
+serialization point must carry a named correctness argument — "one at
+a time" is no longer a design to inherit, only a conclusion to prove.
+The named survivors: the D72 gc guard (two grounding counterfactuals
+can jointly strand an inverse pair — the one correctness lease), and
+the request path's single WRITE connection (auth flows are
+check-then-act — invite redemption, session mint — whose atomicity
+today comes from doing both halves under one lock hold). Everything
+else parallelizes:
+
+**Refinement drains multi-threaded by default.** Worker count =
+`max(ceil(n/2), n−2)` of available parallelism (n≤2 ⇒ 1, 4 ⇒ 2, 8 ⇒
+6, 16 ⇒ 14), molten as `refine:workers` ("auto" | a number; 1
+restores the old shape; read at daemon start). One PRIME worker keeps
+everything coordination-shaped: wake handling, queue refresh (the
+per-wake grounding fixpoint), the tray job per family drain, lease
+amnesty, and ALL maintenance phases. The remaining workers are
+DRONES: own `Db` connection each, a shared `Executor` (it is `Sync` —
+pinned by test — so compiled components are cached once), nice(19),
+and nothing but claim-analyze-complete loops. This supersedes D71's
+"one dedicated worker thread" SHAPE while cashing the design D71
+already built: the lease column is claim-granular work distribution
+(daemon + CLI sweeps already exercised it), at-least-once absorbs
+every race, and a lease is dedup — so adding workers is scheduling,
+not correctness. Tray progress switches to queue-depth deltas so
+drone work shows in the prime's job.
+
+**Request-path reads leave the mutex.** WAL has always allowed N
+readers + 1 writer; the `Mutex<Db>` serialized reads for no named
+reason. The server gains a pool of READ-ONLY connections
+(`Db::open_read_only` — flags-level read-only, so a misclassified
+handler ERRORS loudly instead of corrupting quietly: the fearless
+posture is safe exactly because the fence is mechanical). The
+per-request auth middleware (`resolve` — pure SELECT) and the
+read-only serving/browsing surfaces move to the pool; every write
+stays on the single write connection behind the mutex, preserving
+D71-era reasoning wholesale for the surfaces that mutate.
+
+*Rejected:* a rayon/work-stealing pool inside the drain (the lease
+column already IS the dispatcher; a pool inside a queue is two
+schedulers fighting); n workers (leave headroom for the request path
+and a running emulator — the formula's floor and ceiling both exist
+on purpose); connection-per-request writes (check-then-act atomicity
+would silently become a race — each write surface must be audited to
+row-level guards before it leaves the mutex, a per-surface follow-up,
+not a default); per-drone Executors (recompiles every component per
+thread for no isolation win).
