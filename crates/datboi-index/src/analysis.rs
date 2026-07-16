@@ -64,6 +64,22 @@ pub const PRIORITY_DAT_MATCHED: i64 = 1;
 /// user is looking at right now refines before either backlog tier.
 pub const PRIORITY_FRESH: i64 = 2;
 
+/// D92 eagerness policy for absent-blob analysis — MOLTEN (state.db KV
+/// `refine:absent:mode`, riding snapshots like every config row). The
+/// posture (analyzers consume the logical CAS) is ruled; how eagerly
+/// the claim gate admits non-resident items is policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbsentMode {
+    /// Never admit absent blobs (the pre-D92 posture, kept reachable).
+    Off,
+    /// Grounded absents whose identity a dat names (the default):
+    /// bounds the spill bill to bytes someone actually cares about,
+    /// while the wild-member flood stays queued-but-unclaimed.
+    DatNamed,
+    /// Every grounded absent.
+    All,
+}
+
 impl Db {
     /// Record what `analyzer` concluded about `blob_id`'s bytes. Replaces
     /// any prior row for the pair (a re-run under the same analyzer
@@ -256,10 +272,13 @@ impl Db {
     /// The lease is dedup, not a correctness gate: a crashed holder's
     /// items reappear on expiry and the analyzer re-runs a pure function.
     ///
-    /// Non-resident blobs (zip member claims, peer-advertised hashes)
-    /// stay QUEUED but are never picked: analyzing them is impossible
-    /// until bytes exist, and erroring on each every sweep is noise.
-    /// Rematerialization makes them eligible again automatically.
+    /// Non-resident blobs are picked only when the D92 admission table
+    /// ([`Db::refresh_absent_eligibility`]) says their bytes are
+    /// obtainable — grounded through trusted claims, within the molten
+    /// eagerness policy. Ungrounded claims (peer-advertised hashes,
+    /// members of refused containers) stay QUEUED but unclaimed:
+    /// erroring on each every sweep is noise, and a later grounding or
+    /// rematerialization admits them automatically.
     pub fn claim_sweep_items(
         &mut self,
         analyzer: &Blake3,
@@ -276,7 +295,10 @@ impl Db {
             let mut stmt = tx.prepare_cached(
                 "SELECT q.blob_id, b.hash, b.size, q.priority
                  FROM sweep_queue q JOIN blob b ON b.blob_id = q.blob_id
-                 WHERE q.analyzer = ?1 AND b.residency = 0
+                 WHERE q.analyzer = ?1
+                   AND (b.residency = 0 OR EXISTS (
+                     SELECT 1 FROM sweep_absent_eligible e
+                     WHERE e.blob_id = b.blob_id))
                    AND q.leased_until <= ?2
                  ORDER BY q.priority DESC, q.enqueued_at, q.blob_id
                  LIMIT ?3",
@@ -391,6 +413,96 @@ impl Db {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// The configured [`AbsentMode`] (`refine:absent:mode` in the
+    /// state.db config KV). Absent or unparsable falls back to the D92
+    /// default, dat-named — a typo'd value must fail toward the bounded
+    /// posture, never toward `all`.
+    pub fn absent_mode(&self) -> Result<AbsentMode, IndexError> {
+        Ok(match self.config_get("refine:absent:mode")?.as_deref() {
+            Some(b"off") => AbsentMode::Off,
+            Some(b"all") => AbsentMode::All,
+            _ => AbsentMode::DatNamed,
+        })
+    }
+
+    /// Set (or clear, with `None`) the absent-analysis eagerness mode.
+    pub fn set_absent_mode(&self, mode: Option<AbsentMode>) -> Result<(), IndexError> {
+        self.config_set(
+            "refine:absent:mode",
+            match mode {
+                Some(AbsentMode::Off) => b"off",
+                Some(AbsentMode::All) => b"all",
+                Some(AbsentMode::DatNamed) => b"dat-named",
+                None => b"",
+            },
+        )
+    }
+
+    /// Recompute the D92 claim-gate admission table: non-resident blobs
+    /// whose bytes the executor can actually produce (grounded under the
+    /// audit-verified rule — trusted claims over retained literals),
+    /// filtered by the molten eagerness policy. Called once per sweep
+    /// wake (the refresh-queue beat), so the grounding fixpoint is paid
+    /// per wake, never per claim.
+    ///
+    /// EvictedCovered blobs are admitted UNCONDITIONALLY under any
+    /// non-off mode: they were resident once and were dropped exactly
+    /// because a licensed route covers them — a re-shipped analyzer
+    /// version must re-cover them without a dat having to name them.
+    /// The dat-named gate exists for the other population: the flood of
+    /// absent member claims from wild containers.
+    ///
+    /// Returns rows admitted.
+    pub fn refresh_absent_eligibility(&self) -> Result<usize, IndexError> {
+        let mode = self.absent_mode()?;
+        // Fixpoint first, outside the write transaction: grounded() owns
+        // its own temp-table lifecycle on this connection.
+        let grounded = if mode == AbsentMode::Off {
+            std::collections::HashSet::new()
+        } else {
+            self.grounded_set_with(crate::GroundingMode::AuditVerified)?
+        };
+        let conn = self.cache();
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM sweep_absent_eligible", [])?;
+        if mode == AbsentMode::Off {
+            tx.commit()?;
+            return Ok(0);
+        }
+        tx.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS d92_grounded (blob_id INTEGER PRIMARY KEY);
+             DELETE FROM d92_grounded;",
+        )?;
+        {
+            let mut ins = tx.prepare_cached("INSERT OR IGNORE INTO d92_grounded VALUES (?1)")?;
+            for id in &grounded {
+                ins.execute([id])?;
+            }
+        }
+        let dat_gate = match mode {
+            AbsentMode::All => "",
+            AbsentMode::DatNamed => {
+                "AND (b.residency = 1 OR EXISTS (
+                   SELECT 1 FROM identity_blob ib
+                   JOIN rom_claim rc ON rc.identity_id = ib.identity_id
+                   WHERE ib.blob_id = b.blob_id))"
+            }
+            AbsentMode::Off => unreachable!("handled above"),
+        };
+        let n = tx.execute(
+            &format!(
+                "INSERT INTO sweep_absent_eligible (blob_id)
+                 SELECT b.blob_id FROM blob b
+                 JOIN d92_grounded g ON g.blob_id = b.blob_id
+                 WHERE b.namespace = 0 AND b.residency != 0 {dat_gate}"
+            ),
+            [],
+        )?;
+        tx.execute_batch("DROP TABLE IF EXISTS temp.d92_grounded")?;
+        tx.commit()?;
+        Ok(n)
     }
 
     /// Queue depth for one analyzer (status surface).

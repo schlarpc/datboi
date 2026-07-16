@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 pub use analysis::{
-    AnalysisOutcome, PRIORITY_AMBIENT, PRIORITY_DAT_MATCHED, PRIORITY_FRESH, SweepItem,
+    AbsentMode, AnalysisOutcome, PRIORITY_AMBIENT, PRIORITY_DAT_MATCHED, PRIORITY_FRESH, SweepItem,
     SweepLeaseKeeper,
 };
 pub use auth::{InviteOutcome, InviteRow, SessionRow, UserRow};

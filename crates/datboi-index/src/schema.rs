@@ -19,7 +19,8 @@
 /// v4: gc_guard + orphan_candidate (D72/D73 background GC).
 /// v5: sf_by_blob + analyzer-first sweep_by_priority (query-shaped
 /// indexes; no table changes).
-pub const CACHE_SCHEMA_VERSION: u32 = 5;
+/// v6: sweep_absent_eligible (D92 grounded-not-resident sweeps).
+pub const CACHE_SCHEMA_VERSION: u32 = 6;
 
 /// cache.db migration ladder, same shape and rules as
 /// [`STATE_MIGRATIONS`]: `CACHE_MIGRATIONS[i]` migrates version `i + 1`
@@ -97,6 +98,14 @@ CREATE TABLE orphan_candidate (
 CREATE INDEX sf_by_blob ON source_file(blob_id);
 DROP INDEX sweep_by_priority;
 CREATE INDEX sweep_by_priority ON sweep_queue(analyzer, priority DESC, enqueued_at, blob_id);
+",
+    // v5 → v6 (D92): the claim-gate admission table for non-resident
+    // sweep items. Cache-grade scheduling state — refresh regrows it
+    // from the grounding fixpoint each sweep wake.
+    "
+CREATE TABLE sweep_absent_eligible (
+  blob_id INTEGER PRIMARY KEY REFERENCES blob(blob_id)
+) STRICT, WITHOUT ROWID;
 ",
 ];
 
@@ -383,6 +392,15 @@ CREATE TABLE sweep_queue (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX sweep_by_priority ON sweep_queue(analyzer, priority DESC, enqueued_at, blob_id);
 
+-- D92: analyzers consume the logical CAS — the claim gate hands out
+-- non-resident queue items only when this table admits them. Regrown
+-- once per sweep wake ([`Db::refresh_absent_eligibility`]) from the
+-- D21 grounding fixpoint ∩ the molten eagerness policy
+-- (refine:absent:mode); cache-grade by construction.
+CREATE TABLE sweep_absent_eligible (
+  blob_id INTEGER PRIMARY KEY REFERENCES blob(blob_id)
+) STRICT, WITHOUT ROWID;
+
 -- D72: the eviction singleton guard — the one lease that IS a
 -- correctness gate (two concurrent grounding computations can jointly
 -- approve stranding a mutually-inverse recipe pair). Single seeded row;
@@ -424,6 +442,7 @@ CREATE INDEX ph_by_blob ON peer_have(blob_id);
 /// `gc_guard` is deliberately absent: its single seeded row must exist
 /// for claims to UPDATE, and a stale holder is already handled by TTL.
 pub const CACHE_TABLES_CHILD_FIRST: &[&str] = &[
+    "sweep_absent_eligible",
     "orphan_candidate",
     "sweep_queue",
     "analysis",

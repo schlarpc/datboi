@@ -166,7 +166,8 @@ fn version_skew_recreates_cache_and_protects_state() {
         let conn = rusqlite::Connection::open(dir.path().join("cache.db")).expect("raw open");
         conn.execute_batch(
             "DROP TABLE sweep_queue; DROP TABLE analysis; DROP TABLE seek_quarantine;
-             DROP TABLE gc_guard; DROP TABLE orphan_candidate; DROP INDEX sf_by_blob;",
+             DROP TABLE gc_guard; DROP TABLE orphan_candidate;
+             DROP TABLE sweep_absent_eligible; DROP INDEX sf_by_blob;",
         )
         .expect("devolve");
         conn.pragma_update(None, "user_version", 1).expect("rewind");
@@ -266,7 +267,8 @@ fn migrated_cache_equals_fresh_schema() {
             rusqlite::Connection::open(migrated_dir.path().join("cache.db")).expect("raw open");
         conn.execute_batch(
             "DROP TABLE sweep_queue; DROP TABLE analysis; DROP TABLE seek_quarantine;
-             DROP TABLE gc_guard; DROP TABLE orphan_candidate; DROP INDEX sf_by_blob;",
+             DROP TABLE gc_guard; DROP TABLE orphan_candidate;
+             DROP TABLE sweep_absent_eligible; DROP INDEX sf_by_blob;",
         )
         .expect("devolve");
         conn.pragma_update(None, "user_version", 1).expect("rewind");
@@ -1159,4 +1161,96 @@ fn orphan_marks_clear_on_rooting_and_delete_reverifies() {
         None
     );
     assert!(db.list_orphan_candidates(200, 0).unwrap().is_empty());
+}
+
+/// D92: the claim gate admits non-resident items exactly when the
+/// admission table says their bytes are obtainable — grounded through
+/// trusted claims, within the molten eagerness policy. Ungrounded
+/// rumors never claim; the dat-named default admits named members and
+/// (unconditionally) evicted-covered blobs; `all` widens to every
+/// grounded absent; `off` restores the pre-D92 posture.
+#[test]
+fn absent_eligibility_gates_the_claim_query() {
+    use datboi_index::AbsentMode;
+
+    let (_dir, mut db) = open_db();
+    let analyzer = Blake3::compute(b"analyzer-d92");
+
+    let container = blob(&db, b"resident container", Residency::Resident);
+    let member = blob(&db, b"claimed member", Residency::Absent);
+    let rumor = blob(&db, b"peer rumor", Residency::Absent);
+    let evicted = blob(&db, b"evicted blob", Residency::EvictedCovered);
+    // A verified local claim grounds the member in the container; a
+    // licensed route grounds the evicted blob. The rumor has nothing.
+    recipe(
+        &mut db,
+        b"r-member",
+        &[container],
+        &[member],
+        VerifyState::Verified,
+    );
+    recipe(
+        &mut db,
+        b"r-evicted",
+        &[container],
+        &[evicted],
+        VerifyState::ReplayedLocal,
+    );
+    db.enqueue_unanalyzed(&analyzer, 1).unwrap();
+
+    let claim_ids = |db: &mut Db, at: i64| -> Vec<i64> {
+        let ids = db
+            .claim_sweep_items(&analyzer, 10, at, 60)
+            .unwrap()
+            .iter()
+            .map(|i| i.blob_id)
+            .collect();
+        db.clear_sweep_leases().unwrap();
+        ids
+    };
+
+    // Never refreshed (empty admission table): the resident-only shape.
+    assert_eq!(claim_ids(&mut db, 100), [container]);
+
+    // Default (dat-named), nothing dat-named yet: the evicted blob is
+    // admitted unconditionally; the member claim and the rumor are not.
+    db.refresh_absent_eligibility().unwrap();
+    assert_eq!(claim_ids(&mut db, 200), [container, evicted]);
+
+    // A dat names the member: admitted under the default mode.
+    db.cache()
+        .execute_batch(
+            "INSERT INTO dat_source (provider, system) VALUES ('t', 't');
+             INSERT INTO dat_revision (source_id, blob_id, format, imported_at)
+               VALUES (1, 1, 0, 0);
+             INSERT INTO entry (revision_id, name) VALUES (1, 'game');
+             INSERT INTO content_identity (size, strength) VALUES (64, 1);
+             INSERT INTO rom_claim (entry_id, kind, name, size) VALUES (1, 0, 'game.nds', 64);",
+        )
+        .unwrap();
+    db.cache()
+        .execute(
+            "INSERT INTO identity_blob (identity_id, blob_id, basis) VALUES (1, ?1, 1)",
+            [member],
+        )
+        .unwrap();
+    // rom_claim.identity_id links the claim to the identity.
+    db.cache()
+        .execute("UPDATE rom_claim SET identity_id = 1", [])
+        .unwrap();
+    db.refresh_absent_eligibility().unwrap();
+    assert_eq!(claim_ids(&mut db, 300), [container, member, evicted]);
+
+    // `all` widens to every grounded absent — which still excludes the
+    // ungrounded rumor (eligibility is grounding first, policy second).
+    db.set_absent_mode(Some(AbsentMode::All)).unwrap();
+    db.refresh_absent_eligibility().unwrap();
+    let ids = claim_ids(&mut db, 400);
+    assert_eq!(ids, [container, member, evicted]);
+    assert!(!ids.contains(&rumor), "ungrounded claims never admitted");
+
+    // `off` restores the pre-D92 posture.
+    db.set_absent_mode(Some(AbsentMode::Off)).unwrap();
+    assert_eq!(db.refresh_absent_eligibility().unwrap(), 0);
+    assert_eq!(claim_ids(&mut db, 500), [container]);
 }
