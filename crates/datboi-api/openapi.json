@@ -2135,6 +2135,50 @@
         ],
         "type": "object"
       },
+      "ViewProfile": {
+        "description": "One constraint profile. Mirrors `datboi-catalog`'s built-in `Profile`\n(the CLI's `view profiles` renders the same three limits).",
+        "properties": {
+          "max_dir_entries": {
+            "$ref": "#/components/schemas/Nullable_u64",
+            "description": "Directories with more children than this are reported; null = no\nlimit enforced."
+          },
+          "max_file_size": {
+            "$ref": "#/components/schemas/Nullable_u64",
+            "description": "Files larger than this don't fit the target at all; null = no\nceiling (e.g. exFAT targets)."
+          },
+          "max_name_len": {
+            "description": "Max bytes per path component (UTF-8).",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "max_name_len",
+          "max_file_size",
+          "max_dir_entries"
+        ],
+        "type": "object"
+      },
+      "ViewProfilesResponse": {
+        "description": "GET /v1/view-profiles: the built-in constraint profiles a view\ndefinition may name (the target-device limits an evaluation checks\nagainst — docs/views.md). Static built-in data; the define UI offers\nthese as the `profile` choice.",
+        "properties": {
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/ViewProfile"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "profiles"
+        ],
+        "type": "object"
+      },
       "ViewSummary": {
         "description": "One view in the listing: the union of tagged views (things being\nserved) and stored ViewDefs (defined but maybe never evaluated).\nRow/byte/created stats come from the decoded snapshot manifest; a\nmissing or undecodable snapshot just omits them — the listing must\nnot die of one damaged view.",
         "properties": {
@@ -3857,6 +3901,45 @@
         "summary": "Entry detail by NAME (unique within a revision), with per-claim\nhashes, resolved blobs, rebuild routes, and pin lists.",
         "tags": [
           "systems"
+        ]
+      }
+    },
+    "/v1/view-profiles": {
+      "get": {
+        "operationId": "view_profiles",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewProfilesResponse"
+                }
+              }
+            },
+            "description": "Built-in constraint profiles"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "The built-in constraint profiles a definition may name (owner-only:\nauthoring support, same surface as define).",
+        "tags": [
+          "views"
         ]
       }
     },

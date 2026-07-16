@@ -72,6 +72,7 @@ fn v1() -> V1Routes {
             axum::routing::post(ingest::upload).layer(DefaultBodyLimit::disable()),
         )
         .post("/v1/ingest", ingest::start)
+        .get("/v1/view-profiles", api::view_profiles)
         .get("/v1/views", api::views)
         .get("/v1/views/{name}", api::view_detail)
         .get("/v1/views/{name}/files", api::view_files)

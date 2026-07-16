@@ -473,6 +473,30 @@ pub struct ImageParams {
     pub label: Nullable<String>,
 }
 
+/// GET /v1/view-profiles: the built-in constraint profiles a view
+/// definition may name (the target-device limits an evaluation checks
+/// against — docs/views.md). Static built-in data; the define UI offers
+/// these as the `profile` choice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ViewProfilesResponse {
+    pub profiles: Vec<ViewProfile>,
+}
+
+/// One constraint profile. Mirrors `datboi-catalog`'s built-in `Profile`
+/// (the CLI's `view profiles` renders the same three limits).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ViewProfile {
+    pub name: String,
+    /// Max bytes per path component (UTF-8).
+    pub max_name_len: u64,
+    /// Files larger than this don't fit the target at all; null = no
+    /// ceiling (e.g. exFAT targets).
+    pub max_file_size: Nullable<u64>,
+    /// Directories with more children than this are reported; null = no
+    /// limit enforced.
+    pub max_dir_entries: Nullable<u64>,
+}
+
 /// GET /v1/views/{name}: the summary plus serve endpoints and mint
 /// status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

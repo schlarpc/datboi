@@ -27,7 +27,8 @@ use crate::{
     IngestRequest, IngestStartResponse, InviteAcceptRequest, InviteMintRequest, InviteMintResponse,
     JobDetail, JobsResponse, LoginRequest, OkResponse, OrphansResponse, ResidencyState,
     SessionResponse, SessionsRevokedResponse, StorageBreakdown, StorageResponse, SystemsResponse,
-    UploadResponse, VerifyStartResponse, ViewDetail, ViewFilesPage, ViewsResponse, WhoamiResponse,
+    UploadResponse, VerifyStartResponse, ViewDetail, ViewFilesPage, ViewProfilesResponse,
+    ViewsResponse, WhoamiResponse,
 };
 
 /// Marker schema for the minted-image download body: raw octets, not
@@ -185,6 +186,22 @@ fn system_entry() {}
     ),
 )]
 fn dat_import() {}
+
+// ---- view authoring (owner-only) ----
+
+/// The built-in constraint profiles a definition may name (owner-only:
+/// authoring support, same surface as define).
+#[utoipa::path(
+    get,
+    path = "/v1/view-profiles",
+    tag = "views",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    responses(
+        (status = 200, description = "Built-in constraint profiles", body = ViewProfilesResponse),
+        (status = 403, description = "Owner only", body = ApiError),
+    ),
+)]
+fn view_profiles() {}
 
 // ---- views (the friend surface: ACL-filtered, misses look alike) ----
 
@@ -641,6 +658,7 @@ fn gc_apply() {}
         dat_import,
         ingest_upload,
         ingest_start,
+        view_profiles,
         views,
         view_detail,
         view_files,

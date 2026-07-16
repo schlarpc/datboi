@@ -32,8 +32,8 @@ use datboi_api::{
     FileRow, HashRef, ImageStatus, JobsResponse, Nullable, ProvenanceRow, ProvenanceViaRow,
     Quarantine, QuarantineItem, ResidencyState, Revision, RomClaim, RomHashes, RootRef,
     RootRelation, RouteEdge, RouteInfo, RouteVerify, SourceBytes, StorageBreakdown,
-    StorageResponse, System, SystemsResponse, ViewDetail, ViewFilesPage, ViewSummary,
-    ViewsResponse,
+    StorageResponse, System, SystemsResponse, ViewDetail, ViewFilesPage, ViewProfile,
+    ViewProfilesResponse, ViewSummary, ViewsResponse,
 };
 use datboi_catalog::ViewDef;
 use datboi_core::hash::Blake3;
@@ -743,6 +743,32 @@ fn route_verb(op_name: &str) -> &str {
         .map(|(_, export)| export)
         .or_else(|| op_name.split_once('@').map(|(name, _)| name))
         .unwrap_or(op_name)
+}
+
+// ---- GET /v1/view-profiles ----
+
+/// The built-in constraint profiles, rendered from
+/// `datboi_catalog::PROFILES` — the same static data the CLI's `view
+/// profiles` prints (D96: one source, two surfaces). Owner-only, since
+/// it exists to feed the authoring UI.
+pub(crate) async fn view_profiles(Extension(caller): Extension<Caller>) -> Response {
+    run_blocking(move || {
+        require_owner(&caller)?;
+        let profiles = datboi_catalog::PROFILES
+            .iter()
+            .map(|p| ViewProfile {
+                name: p.name.to_owned(),
+                max_name_len: p.max_name_len as u64,
+                max_file_size: p.max_file_size.into(),
+                max_dir_entries: p.max_dir_entries.map(|n| n as u64).into(),
+            })
+            .collect();
+        Ok(json_response(
+            StatusCode::OK,
+            &ViewProfilesResponse { profiles },
+        ))
+    })
+    .await
 }
 
 // ---- GET /v1/views ----
