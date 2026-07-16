@@ -218,6 +218,143 @@ enum SwapSkip {
     Other(String),
 }
 
+#[derive(Debug, Default)]
+pub struct ChunkPackReport {
+    /// Chunk sets whose loose pieces were consolidated into a pack.
+    pub sets_packed: usize,
+    /// Pieces moved from loose files into packs.
+    pub members: usize,
+    /// Bytes consolidated.
+    pub bytes_packed: u64,
+    /// Redundant loose copies swept from a prior interrupted run.
+    pub swept_loose: usize,
+    /// (output, why) — sets skipped (headroom, missing sizes).
+    pub skipped: Vec<(Blake3, String)>,
+}
+
+impl<'s> Executor<'s> {
+    /// Pack-per-chunking (D91's named follow-on / D59's small-blob
+    /// flood): consolidate a chunk set's LOOSE grounding-leaf pieces into
+    /// one sealed pack, the same inode win the swap buys for
+    /// decomposition pieces. Unlike the swap, chunks are born RESIDENT
+    /// (the analyzer writes them loose), so there is nothing to
+    /// materialize — the pieces stream out of their own loose files into
+    /// the pack, their obao is blessed over the window, and the redundant
+    /// loose `.data` is dropped (the `.obao` stays for verified serving).
+    /// A piece shared across sets packs with the FIRST set (first-packer-
+    /// wins, like the swap); the rest see it already packed and skip it,
+    /// so cross-set dedup is preserved — the global pack map resolves it
+    /// for every consumer. Runs as a maintenance phase under the caller's
+    /// D72 guard.
+    ///
+    /// # Errors
+    /// Index/store failures abort; per-set problems land in the report.
+    pub fn pack_chunk_sets(&self, db: &mut Db) -> Result<ChunkPackReport, ExecError> {
+        let mut report = ChunkPackReport::default();
+        if !policy::chunk_pack_enabled(db)? {
+            return Ok(report);
+        }
+        let min_members = policy::chunk_pack_min_members(db)?;
+        // swap_candidates is exactly the population: affine builtin-
+        // assemble routes in trusted verify state. A chunk set's original
+        // is one; its inputs are the chunks.
+        for candidate in db.swap_candidates()? {
+            match self.pack_one_set(db, candidate.recipe_id, min_members, &mut report) {
+                Ok(()) | Err(SwapSkip::BelowThreshold) => {}
+                Err(SwapSkip::Other(why)) => report.skipped.push((candidate.hash, why)),
+            }
+        }
+        Ok(report)
+    }
+
+    fn pack_one_set(
+        &self,
+        db: &mut Db,
+        recipe_id: i64,
+        min_members: usize,
+        report: &mut ChunkPackReport,
+    ) -> Result<(), SwapSkip> {
+        let inputs = db
+            .rebuild_inputs(recipe_id)
+            .map_err(|e| SwapSkip::Other(e.to_string()))?;
+        let mut seen = std::collections::HashSet::new();
+        let mut to_pack: Vec<PackMember> = Vec::new();
+        for input in &inputs {
+            if input.residency != Residency::Resident {
+                continue;
+            }
+            if self.store_ref().is_packed(&input.hash) {
+                // Already packed. Self-heal an interrupted prior run that
+                // packed the bytes but never dropped the loose copy.
+                if self.store_ref().has_loose(StoreNs::Data, &input.hash)
+                    && self
+                        .store_ref()
+                        .evict_literal(StoreNs::Data, &input.hash)
+                        .map_err(|e| SwapSkip::Other(e.to_string()))?
+                {
+                    report.swept_loose += 1;
+                }
+                continue;
+            }
+            if !self.store_ref().has_loose(StoreNs::Data, &input.hash) {
+                continue;
+            }
+            let Some(len) = input.size else { continue };
+            if seen.insert(input.hash) {
+                to_pack.push(PackMember {
+                    hash: input.hash,
+                    len,
+                });
+            }
+        }
+        if to_pack.len() < min_members {
+            return Err(SwapSkip::BelowThreshold);
+        }
+        // The pack is a transient second copy until the loose files drop.
+        let need: u64 = to_pack
+            .iter()
+            .map(|m| m.len)
+            .sum::<u64>()
+            .saturating_add(SWAP_SLACK);
+        if let Some(have) = self
+            .store_ref()
+            .available_bytes()
+            .map_err(|e| SwapSkip::Other(e.to_string()))?
+            && have < need
+        {
+            return Err(SwapSkip::Other(format!(
+                "insufficient headroom: need ~{need} bytes, have {have}"
+            )));
+        }
+        // Stream every loose piece out of its own file into one pack.
+        self.store_ref()
+            .put_pack(&to_pack, |ix| {
+                let reader = self
+                    .store_ref()
+                    .get(StoreNs::Data, &to_pack[ix].hash)
+                    .map_err(std::io::Error::other)?
+                    .ok_or_else(|| std::io::Error::other("loose piece vanished mid-pack"))?;
+                Ok(Box::new(reader))
+            })
+            .map_err(|e| SwapSkip::Other(format!("pack write: {e}")))?;
+        report.sets_packed += 1;
+        // Bless obao over the window, then drop the now-redundant loose
+        // `.data` (evict_literal keeps the `.obao` for verified serving).
+        // Residency stays Resident — a packed piece is still resident.
+        for member in &to_pack {
+            self.store_ref()
+                .ensure_obao(StoreNs::Data, &member.hash)
+                .map_err(|e| SwapSkip::Other(format!("obao bless: {e}")))?;
+            self.store_ref()
+                .evict_literal(StoreNs::Data, &member.hash)
+                .map_err(|e| SwapSkip::Other(format!("loose drop: {e}")))?;
+            report.members += 1;
+            report.bytes_packed += member.len;
+        }
+        Ok(())
+    }
+}
+
 // The empty-blob edge: zero-length pieces are grounded by the empty
 // literal at decomposition time and arrive Resident, so they never
 // reach `to_pack` — asserted by the e2e rather than special-cased here.

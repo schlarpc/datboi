@@ -18,6 +18,12 @@ pub const KEY_SWAP_ENABLED: &str = "swap:enabled";
 /// shared (claimed by ≥2 decompositions) or already resident before
 /// the swap pays — the never-eager gate.
 pub const KEY_SWAP_SHARE_PCT: &str = "swap:share-min-pct";
+/// D91/D59 pack-per-chunking: consolidate a chunk set's loose pieces
+/// into one sealed pack (on/off).
+pub const KEY_CHUNK_PACK_ENABLED: &str = "chunk:pack";
+/// Fewest loose pieces a set must have before packing pays — packing a
+/// single piece just swaps one inode for another.
+pub const KEY_CHUNK_PACK_MIN: &str = "chunk:pack-min-members";
 /// Keep-marks: `gc:keep:<hex>` → optional operator note. By HASH, not
 /// blob id — intent must survive a cache rebuild (D73).
 pub const KEEP_PREFIX: &str = "gc:keep:";
@@ -30,6 +36,10 @@ pub const DEFAULT_GRACE_SECS: i64 = 24 * 60 * 60;
 /// D91: a lone decomposition (0% sharing) never trips this; a variant
 /// pair (MKDS-shaped, ~98% shared) always does.
 pub const DEFAULT_SWAP_SHARE_PCT: u8 = 50;
+/// Pack-per-chunking: below this many loose pieces the inode saving
+/// (N files → 1 pack) doesn't clear the rewrite cost. A CDC set of a
+/// ≥4 MiB literal (D59) is dozens of chunks, well past this.
+pub const DEFAULT_CHUNK_PACK_MIN: usize = 4;
 
 /// A watermark setting: `off`, a percentage of the store filesystem
 /// (`"90%"`), or absolute used bytes (`"500000000000"`).
@@ -115,6 +125,31 @@ pub fn swap_share_min_pct(db: &Db) -> Result<u8, IndexError> {
         .and_then(|v| std::str::from_utf8(&v).ok()?.trim().parse().ok())
         .filter(|p| *p <= 100)
         .unwrap_or(DEFAULT_SWAP_SHARE_PCT))
+}
+
+/// Pack-per-chunking armed? On by default; only fires where a chunk
+/// flood exists (route-less ≥4 MiB literals, D59), so it is dormant
+/// until chunking has actually run.
+///
+/// # Errors
+/// Index I/O.
+pub fn chunk_pack_enabled(db: &Db) -> Result<bool, IndexError> {
+    Ok(db
+        .config_get(KEY_CHUNK_PACK_ENABLED)?
+        .is_none_or(|v| v != b"0" && !v.eq_ignore_ascii_case(b"off")))
+}
+
+/// Minimum loose pieces before a set is worth packing (unparsable →
+/// default, same bounded-fallback posture as the swap threshold).
+///
+/// # Errors
+/// Index I/O.
+pub fn chunk_pack_min_members(db: &Db) -> Result<usize, IndexError> {
+    Ok(db
+        .config_get(KEY_CHUNK_PACK_MIN)?
+        .and_then(|v| std::str::from_utf8(&v).ok()?.trim().parse().ok())
+        .filter(|n| *n >= 2)
+        .unwrap_or(DEFAULT_CHUNK_PACK_MIN))
 }
 
 /// Every kept hash (operator "this is not junk" marks).

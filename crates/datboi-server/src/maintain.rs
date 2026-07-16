@@ -65,6 +65,9 @@ impl Maintainer {
             // D91: the piece-swap rides ambient ticks only (its
             // candidate scan is full-corpus, like the orphan sweep).
             self.swap(db, jobs);
+            // D91/D59: consolidate chunk-set loose floods into packs
+            // (after the swap, which may have evicted their originals).
+            self.pack_chunks(db, jobs);
         }
         self.watermark_evict(db, store, jobs);
         if ambient {
@@ -205,6 +208,57 @@ impl Maintainer {
                 );
             }
             Err(e) => warn!("maintenance: swap phase: {e}"),
+        }
+    }
+
+    /// Phase 2c — pack-per-chunking (D91/D59), under the singleton
+    /// guard (it drops loose piece files; keeping it serial with the
+    /// evictor avoids a piece being packed and watermark-evicted at
+    /// once). Quiet unless a chunk flood was actually consolidated.
+    fn pack_chunks(&self, db: &mut Db, jobs: &Registry) {
+        match policy::chunk_pack_enabled(db) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => {
+                warn!("maintenance: chunk-pack policy: {e}");
+                return;
+            }
+        }
+        if !claim_guard(db, &self.holder) {
+            debug!("maintenance: chunk-pack deferred; gc guard busy");
+            return;
+        }
+        let result = self.exec.pack_chunk_sets(db);
+        db.release_gc_guard(&self.holder).unwrap_or_else(|e| {
+            warn!("maintenance: guard release: {e}");
+        });
+        match result {
+            Ok(report) if report.sets_packed == 0 && report.swept_loose == 0 => {}
+            Ok(report) => {
+                let job = jobs.create_gc("chunk-pack — pieces into packs", 0, now_unix());
+                for (hash, why) in &report.skipped {
+                    debug!("maintenance job {job}: chunk-pack {hash}: {why}");
+                }
+                jobs.refine_progress(job, report.sets_packed as u64, report.sets_packed as u64);
+                jobs.push_note(
+                    job,
+                    format!(
+                        "{} chunk set(s) packed: {} piece(s), {} byte(s) consolidated; \
+                         {} stale loose copy(ies) swept, {} skipped",
+                        report.sets_packed,
+                        report.members,
+                        report.bytes_packed,
+                        report.swept_loose,
+                        report.skipped.len()
+                    ),
+                );
+                jobs.finish(job, now_unix());
+                info!(
+                    "maintenance job {job}: packed {} chunk set(s), {} piece(s)",
+                    report.sets_packed, report.members
+                );
+            }
+            Err(e) => warn!("maintenance: chunk-pack phase: {e}"),
         }
     }
 

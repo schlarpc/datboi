@@ -128,6 +128,91 @@ fn chunk_sweep_dedupes_and_eviction_shrinks_the_store() {
     }
 }
 
+/// D91/D59 pack-per-chunking: a chunk set's loose flood consolidates
+/// into ONE sealed pack, the original evicts, and it still serves
+/// byte-exact and range-verified through the packed chunks.
+#[test]
+fn pack_chunk_sets_consolidates_the_loose_flood() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(dir.path().join("store")).expect("store");
+    let mut db = Db::open(dir.path()).expect("db");
+
+    // One 6 MiB image → a CDC set of dozens of loose chunks.
+    let size = 6 << 20;
+    let blob = pattern(size, 0xFEED_FACE_1234_5678);
+    let src = dir.path().join("src");
+    fs::create_dir_all(&src).expect("mkdir");
+    fs::write(src.join("big.iso"), &blob).expect("write");
+    assert_eq!(
+        Ingester::new(&store, &mut db, &[]).ingest(&[&src]).files_stored,
+        1
+    );
+    let hash = Blake3::compute(&blob);
+
+    let sweep = sweep_all(&mut db, &store, &mut ChunkAnalyzer, 10_000);
+    assert_eq!(sweep.positive, 1, "the image chunked");
+
+    // Capture the chunk hashes while the original is still a swap
+    // candidate (resident, affine assemble route).
+    let exec = Executor::new(&store, ExecConfig::default()).expect("exec");
+    let cand = db
+        .swap_candidates()
+        .expect("candidates")
+        .into_iter()
+        .find(|c| c.hash == hash)
+        .expect("the original's rebuild route");
+    let chunks: Vec<Blake3> = db
+        .rebuild_inputs(cand.recipe_id)
+        .expect("inputs")
+        .into_iter()
+        .map(|i| i.hash)
+        .collect();
+    assert!(chunks.len() >= 4, "a flood worth packing");
+    assert!(chunks.iter().all(|c| store.has_loose(StoreNs::Data, c)));
+
+    // Pack the set: one pack, every chunk packed, loose copies dropped.
+    let report = exec.pack_chunk_sets(&mut db).expect("pack");
+    assert_eq!(report.sets_packed, 1, "skipped: {:?}", report.skipped);
+    assert_eq!(report.members, chunks.len());
+    assert_eq!(store.list_packs().len(), 1, "one pack for the set");
+    for c in &chunks {
+        assert!(store.is_packed(c), "chunk packed");
+        assert!(!store.has_loose(StoreNs::Data, c), "loose .data dropped");
+    }
+
+    // Evict the original: it now routes through the PACKED chunks.
+    let evicted = exec.evict_covered(&db, 0, true).expect("evict");
+    assert!(evicted.evicted >= 1);
+    assert!(!store.has_loose(StoreNs::Data, &hash), "original dropped");
+
+    // Serves byte-exact and range-verified from the packed chunks.
+    let mut streamed = Vec::new();
+    exec.open_stream(&db, &hash)
+        .expect("route")
+        .read_to_end(&mut streamed)
+        .expect("read");
+    assert_eq!(streamed, blob, "byte-exact through packed chunks");
+    let mid = exec.serve_range(&db, &hash, 1 << 20, 4096).expect("range");
+    assert_eq!(mid, blob[1 << 20..(1 << 20) + 4096]);
+
+    // Idempotent: nothing loose remains to pack or sweep.
+    let again = exec.pack_chunk_sets(&mut db).expect("again");
+    assert_eq!((again.sets_packed, again.swept_loose), (0, 0));
+
+    // Footer-truth: a fresh open resolves the packed chunks and serves.
+    drop(exec);
+    drop(store);
+    let store = Store::open(dir.path().join("store")).expect("reopen");
+    let exec = Executor::new(&store, ExecConfig::default()).expect("exec");
+    assert!(store.is_packed(&chunks[0]));
+    let mut again = Vec::new();
+    exec.open_stream(&db, &hash)
+        .expect("route")
+        .read_to_end(&mut again)
+        .expect("read");
+    assert_eq!(again, blob, "serves after reopen");
+}
+
 /// D59: a big literal that already has a covering route is NOT chunked —
 /// it's already evictable through that route; chunking it would add
 /// recipe metadata for no marginal dedup.

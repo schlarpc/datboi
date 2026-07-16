@@ -1947,6 +1947,25 @@ stall entirely. Sidecars live beside the member (`data/…/<hex>.obao`),
 so the lazy `open_random_verified` path stays the backstop for
 packs restored by bare-NAS recovery (whose member sidecars the walk
 did not rebuild).
+*Amendment (2026-07-16, pack-per-chunking):* the named chunk-set
+follow-on landed as a maintenance phase, `pack_chunk_sets`, sibling to
+the swap. Chunk pieces differ from decomposition pieces in ONE way —
+the CDC analyzer writes them RESIDENT (loose) immediately, so there is
+nothing to materialize. The phase iterates the same `swap_candidates`
+(affine assemble routes), collects each set's LOOSE, unpacked,
+grounding-leaf inputs, streams them straight out of their own loose
+files into one sealed pack, blesses each obao over the window, and
+drops the redundant loose `.data` (keeping the `.obao`) — trading N
+inodes for one. First-packer-wins preserves cross-set dedup (a shared
+chunk packs with whichever set reaches it first; the rest see it
+packed and skip). Crash-safe by construction: a piece left both packed
+and loose by an interrupted run is swept on the next pass.
+Policy-gated `chunk:pack` (on by default, dormant until a D59 chunk
+flood exists) with a `chunk:pack-min-members` floor (default 4 —
+packing one piece just swaps one inode for another). The accepted cost
+is write amplification (chunks written loose, then re-read into the
+pack), paid on the niced maintenance thread; born-into-pack was
+rejected because it needs the whole set buffered or a second CDC pass.
 
 ## D92 — Analyzers consume the logical CAS (2026-07-15)
 
@@ -2009,7 +2028,7 @@ defaults: `swap:share-min-pct` 50, `swap:enabled` on, swap phase on
 ambient ticks under the D72 guard. Owed, recorded in open-questions:
 pack scrub coverage (LANDED 2026-07-16 — `scrub_pack` re-hashes each
 whole pack against its identity, one read, certifying every member and
-back-filling aliases), tombstone-and-repack (LANDED 2026-07-16 — Store::repack rewrites a pack without its orphaned members; orphan GC routes packed pieces to it since remove_blob can't unlink pack bytes), packs for chunk sets.
+back-filling aliases), tombstone-and-repack (LANDED 2026-07-16 — Store::repack rewrites a pack without its orphaned members; orphan GC routes packed pieces to it since remove_blob can't unlink pack bytes), packs for chunk sets (LANDED 2026-07-16 — pack_chunk_sets maintenance phase, D91 amendment).
 
 *Amendment (2026-07-16, grounded-set-aware enqueue):* the owed
 enqueue-side work landed as fixpoint DEDUP. `refresh_queue` was called
