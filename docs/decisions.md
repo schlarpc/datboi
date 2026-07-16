@@ -2011,6 +2011,23 @@ pack scrub coverage (LANDED 2026-07-16 — `scrub_pack` re-hashes each
 whole pack against its identity, one read, certifying every member and
 back-filling aliases), tombstone-and-repack, packs for chunk sets.
 
+*Amendment (2026-07-16, grounded-set-aware enqueue):* the owed
+enqueue-side work landed as fixpoint DEDUP. `refresh_queue` was called
+once per analyzer family per wake, and each call recomputed the
+grounding fixpoint (`refresh_absent_eligibility`) — the corpus-scale
+cost — even though that pass and the dat-priority bump are
+analyzer-INDEPENDENT. Split: `enqueue_candidates` (per family) vs
+`refresh_admission` (once per wake, the fixpoint + bump), so the prime
+runs the fixpoint ONCE after all families enqueue, N×→1×. The
+`sweep_absent_eligible` table IS the within-tick cache the owed note
+called for. `refresh_queue` still bundles both for single-family
+sweeps (`run_sweep`). Left deliberately: enqueue_unanalyzed does NOT
+add the grounded predicate to its INSERT — the claim gate already
+filters `resident OR eligible`, and an ungrounded-absent blob (a claim
+with no route) is pathological, so the leaner-queue win is marginal
+against the ordering coupling it would add; sharing the fixpoint with
+the audit rollup (different cadence, different crate) stays a someday.
+
 ## D93 — Fearless concurrency: parallel by default, serialization must name its argument (2026-07-16)
 
 The posture inverts: concurrency is the DEFAULT everywhere, and any

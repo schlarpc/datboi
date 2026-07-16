@@ -50,7 +50,8 @@ use std::time::{Duration, Instant};
 use datboi_index::Db;
 use datboi_ingest::analyzers::{ChunkAnalyzer, EcmAnalyzer, NdsAnalyzer, PreflateZipAnalyzer};
 use datboi_ingest::refine::{
-    Analyzer, Logical, SweepObserver, analyzer_enabled, process_round, refresh_queue,
+    Analyzer, Logical, SweepObserver, analyzer_enabled, enqueue_candidates, process_round,
+    refresh_admission,
 };
 use datboi_store_fs::Store;
 use tracing::{debug, error, info, warn};
@@ -391,8 +392,17 @@ fn enqueue(
             db.enqueue_fresh(&analyzer.id(), fresh, now_unix())?;
         }
         if ambient_due {
-            refresh_queue(db, analyzer.as_ref())?;
+            enqueue_candidates(db, analyzer.as_ref())?;
         }
+    }
+    // The admission pass (dat-aware priorities + the D92 grounding
+    // fixpoint) is analyzer-independent, so it runs ONCE per wake after
+    // every family enqueues — not once per family (D92: the corpus-scale
+    // fixpoint was being recomputed N times a tick). The fresh path
+    // enqueues just-ingested RESIDENT blobs, which need no admission
+    // check, so this is ambient-only.
+    if ambient_due {
+        refresh_admission(db)?;
     }
     Ok(())
 }

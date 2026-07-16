@@ -376,13 +376,39 @@ pub trait SweepObserver {
 pub struct NoObserver;
 impl SweepObserver for NoObserver {}
 
-/// Refresh one analyzer's queue: enqueue unanalyzed candidates
-/// (dat-blind, D47), apply dat-aware ordering, and recompute the D92
-/// absent-admission table so this wake's claims see current
-/// groundedness. Returns rows enqueued. Separate from
-/// [`process_round`] so a draining driver pays the full-corpus
-/// candidate scan (and the grounding fixpoint) once per wake, not
-/// once per batch.
+/// Enqueue one analyzer's unanalyzed candidates (dat-blind, D47).
+/// Returns rows enqueued. The per-FAMILY half of a queue refresh; the
+/// analyzer-independent half is [`refresh_admission`].
+///
+/// # Errors
+/// Index I/O.
+pub fn enqueue_candidates(
+    db: &Db,
+    analyzer: &dyn Analyzer,
+) -> Result<usize, datboi_index::IndexError> {
+    db.enqueue_unanalyzed(&analyzer.id(), now_unix())
+}
+
+/// The analyzer-INDEPENDENT half of a queue refresh: dat-aware priority
+/// ordering + the D92 absent-admission table (which recomputes the
+/// grounding fixpoint). Both operate over blobs/queues globally, not per
+/// analyzer, so a multi-family driver runs this ONCE per wake after all
+/// families enqueue — paying the corpus-scale fixpoint once, not once
+/// per family (D92 owed: grounded-set-aware enqueue). Order: after
+/// enqueue, so the priority bump sees every family's fresh rows.
+///
+/// # Errors
+/// Index I/O.
+pub fn refresh_admission(db: &Db) -> Result<(), datboi_index::IndexError> {
+    db.bump_dat_matched_priorities()?;
+    db.refresh_absent_eligibility()?;
+    Ok(())
+}
+
+/// Refresh one analyzer's queue whole: enqueue candidates then run the
+/// admission pass. The single-family entry point ([`run_sweep`], CLI
+/// sweeps); a multi-family driver splits the two halves so the fixpoint
+/// in [`refresh_admission`] runs once per wake, not once per family.
 ///
 /// # Errors
 /// Index I/O.
@@ -390,9 +416,8 @@ pub fn refresh_queue(
     db: &mut Db,
     analyzer: &dyn Analyzer,
 ) -> Result<usize, datboi_index::IndexError> {
-    let enqueued = db.enqueue_unanalyzed(&analyzer.id(), now_unix())?;
-    db.bump_dat_matched_priorities()?;
-    db.refresh_absent_eligibility()?;
+    let enqueued = enqueue_candidates(db, analyzer)?;
+    refresh_admission(db)?;
     Ok(enqueued)
 }
 

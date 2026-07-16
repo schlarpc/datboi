@@ -185,6 +185,33 @@ fn preflate_split_mints_rebuild_recipes_and_records_negatives() {
 /// this test never waits for). The workers share one executor
 /// (`Executor` is `Sync`) and own private `Db` connections — the
 /// exact daemon drone shape.
+/// D92: the prime enqueues every family, THEN runs ONE admission pass
+/// (the grounding fixpoint) — not one per family. This proves the two
+/// halves are independently usable and idempotent, the property that
+/// dedup relies on; `refresh_queue` (run_sweep) still bundles both.
+#[test]
+fn split_enqueue_and_admission_are_independent_and_idempotent() {
+    use datboi_ingest::refine::{Analyzer, NoopAnalyzer, enqueue_candidates, refresh_admission};
+
+    let (_dir, store, db) = world();
+    for i in 0..5 {
+        put(&store, &db, format!("split blob {i}").as_bytes());
+    }
+    // Per-family enqueue, dat-blind over resident blobs.
+    assert_eq!(enqueue_candidates(&db, &NoopAnalyzer).expect("enqueue"), 5);
+    // The once-per-wake admission pass, separable from enqueue.
+    refresh_admission(&db).expect("admission");
+    // Re-running both is a no-op / safe: INSERT OR IGNORE means no
+    // double-enqueue, and admission is a rebuild of derivable state.
+    assert_eq!(enqueue_candidates(&db, &NoopAnalyzer).expect("re-enqueue"), 0);
+    refresh_admission(&db).expect("admission again");
+    assert_eq!(
+        db.sweep_queue_len(&NoopAnalyzer.id()).expect("len"),
+        5,
+        "resident items sit claimable in the queue"
+    );
+}
+
 #[test]
 fn concurrent_drains_share_the_queue_without_duplication() {
     use datboi_ingest::refine::{NoObserver, NoopAnalyzer, process_round, refresh_queue};
