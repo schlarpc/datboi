@@ -836,7 +836,7 @@ fn view_summary(
 }
 
 /// ViewDef summary: dat ref, 1G1R mode, profile, image params (D62).
-fn definition(def: &ViewDef) -> Definition {
+pub(crate) fn definition(def: &ViewDef) -> Definition {
     Definition {
         provider: def.provider.clone(),
         system: def.system.clone(),

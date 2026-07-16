@@ -26,6 +26,7 @@ mod maintain;
 mod nfs;
 mod refine;
 mod vfs;
+mod views;
 mod web;
 
 use std::collections::HashMap;

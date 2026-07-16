@@ -497,6 +497,44 @@ pub struct ViewProfile {
     pub max_dir_entries: Nullable<u64>,
 }
 
+/// PUT /v1/views/{name}: define or replace a view (D96 view authoring;
+/// the CLI's `view define`). The name is the path segment — this body
+/// is its definition. `one_g_one_r` and `mame_mode` are mutually
+/// exclusive (families vs sets answer different questions); setting both
+/// is a 400. Omitting all selection fields defines an all-entries view.
+/// Mirrors the read-side [`Definition`], but with omittable optionals
+/// (request convention: `T` for required, `Option<T>` + skip for
+/// optional — see [`wire`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ViewDefineRequest {
+    pub provider: String,
+    pub system: String,
+    /// Layout template. Placeholders `{entry}` / `{name}`; path
+    /// separators inside expanded values are sanitized to `_`.
+    pub template: String,
+    /// `Some` = 1G1R over clone families with these priorities.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub one_g_one_r: Option<OneGOneR>,
+    /// Built-in constraint profile name (see `GET /v1/view-profiles`).
+    /// An unknown name is a 400.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// `Some` = the view also reifies as a FAT32 image (D62).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<ImageParams>,
+    /// `Some` = render a MAME listxml source as merge-mode sets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mame_mode: Option<MameMode>,
+}
+
+/// PUT /v1/views/{name} result: the stored definition, echoed back so
+/// the UI can render the view without a follow-up read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ViewDefineResponse {
+    pub name: String,
+    pub definition: Definition,
+}
+
 /// GET /v1/views/{name}: the summary plus serve endpoints and mint
 /// status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

@@ -74,6 +74,7 @@ fn v1() -> V1Routes {
         .post("/v1/ingest", ingest::start)
         .get("/v1/view-profiles", api::view_profiles)
         .get("/v1/views", api::views)
+        .put("/v1/views/{name}", crate::views::define)
         .get("/v1/views/{name}", api::view_detail)
         .get("/v1/views/{name}/files", api::view_files)
         .get("/v1/views/{name}/image", view_image)
@@ -127,6 +128,14 @@ impl V1Routes {
         T: 'static,
     {
         self.record("post", path, axum::routing::post(handler))
+    }
+
+    fn put<H, T>(self, path: &'static str, handler: H) -> Self
+    where
+        H: Handler<T, Arc<App>>,
+        T: 'static,
+    {
+        self.record("put", path, axum::routing::put(handler))
     }
 
     fn delete<H, T>(self, path: &'static str, handler: H) -> Self

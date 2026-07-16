@@ -27,8 +27,8 @@ use crate::{
     IngestRequest, IngestStartResponse, InviteAcceptRequest, InviteMintRequest, InviteMintResponse,
     JobDetail, JobsResponse, LoginRequest, OkResponse, OrphansResponse, ResidencyState,
     SessionResponse, SessionsRevokedResponse, StorageBreakdown, StorageResponse, SystemsResponse,
-    UploadResponse, VerifyStartResponse, ViewDetail, ViewFilesPage, ViewProfilesResponse,
-    ViewsResponse, WhoamiResponse,
+    UploadResponse, VerifyStartResponse, ViewDefineRequest, ViewDefineResponse, ViewDetail,
+    ViewFilesPage, ViewProfilesResponse, ViewsResponse, WhoamiResponse,
 };
 
 /// Marker schema for the minted-image download body: raw octets, not
@@ -202,6 +202,24 @@ fn dat_import() {}
     ),
 )]
 fn view_profiles() {}
+
+/// Define or replace a view by name (owner-only; idempotent upsert). The
+/// name is the path; the body is the definition. 1G1R and MAME modes are
+/// mutually exclusive (400 if both). An unknown profile is a 400.
+#[utoipa::path(
+    put,
+    path = "/v1/views/{name}",
+    tag = "views",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    params(("name" = String, Path, description = "View name")),
+    request_body = ViewDefineRequest,
+    responses(
+        (status = 200, description = "View defined; stored definition echoed", body = ViewDefineResponse),
+        (status = 400, description = "Bad definition (unknown profile, or both selection modes)", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+    ),
+)]
+fn view_define() {}
 
 // ---- views (the friend surface: ACL-filtered, misses look alike) ----
 
@@ -659,6 +677,7 @@ fn gc_apply() {}
         ingest_upload,
         ingest_start,
         view_profiles,
+        view_define,
         views,
         view_detail,
         view_files,

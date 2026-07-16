@@ -1,10 +1,10 @@
-//! Dat import over HTTP (docs/dats.md) — the first mutating action
-//! to graduate from the M5 CLI-only ruling, because it is
-//! request-sized: bytes in, report out, and the CLI path buffers the
-//! whole file exactly the same way (`std::fs::read` in cmds.rs).
-//! Ingest graduated after it with the opposite shape (streamed
-//! staging + a background job — see ingest.rs); eval, mint, evict,
-//! and scrub still wait on their CLI processes.
+//! Dat import over HTTP (docs/dats.md) — request-sized: bytes in,
+//! report out, and the CLI path buffers the whole file exactly the same
+//! way (`std::fs::read` in cmds.rs). Ingest has the opposite shape
+//! (streamed staging + a background job — see ingest.rs). Under D96 the
+//! serve+web surface is the complete one and every verb graduates here;
+//! this was among the first, back when the split was still read-model
+//! vs CLI-only.
 
 // Same rationale as http.rs: fallible steps short-circuit with the
 // error Response itself.

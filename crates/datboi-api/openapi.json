@@ -2072,6 +2072,83 @@
         ],
         "type": "string"
       },
+      "ViewDefineRequest": {
+        "description": "PUT /v1/views/{name}: define or replace a view (D96 view authoring;\nthe CLI's `view define`). The name is the path segment — this body\nis its definition. `one_g_one_r` and `mame_mode` are mutually\nexclusive (families vs sets answer different questions); setting both\nis a 400. Omitting all selection fields defines an all-entries view.\nMirrors the read-side [`Definition`], but with omittable optionals\n(request convention: `T` for required, `Option<T>` + skip for\noptional — see [`wire`]).",
+        "properties": {
+          "image": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ImageParams",
+                "description": "`Some` = the view also reifies as a FAT32 image (D62)."
+              }
+            ]
+          },
+          "mame_mode": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MameMode",
+                "description": "`Some` = render a MAME listxml source as merge-mode sets."
+              }
+            ]
+          },
+          "one_g_one_r": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OneGOneR",
+                "description": "`Some` = 1G1R over clone families with these priorities."
+              }
+            ]
+          },
+          "profile": {
+            "description": "Built-in constraint profile name (see `GET /v1/view-profiles`).\nAn unknown name is a 400.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "system": {
+            "type": "string"
+          },
+          "template": {
+            "description": "Layout template. Placeholders `{entry}` / `{name}`; path\nseparators inside expanded values are sanitized to `_`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "system",
+          "template"
+        ],
+        "type": "object"
+      },
+      "ViewDefineResponse": {
+        "description": "PUT /v1/views/{name} result: the stored definition, echoed back so\nthe UI can render the view without a follow-up read.",
+        "properties": {
+          "definition": {
+            "$ref": "#/components/schemas/Definition"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "definition"
+        ],
+        "type": "object"
+      },
       "ViewDetail": {
         "allOf": [
           {
@@ -4017,6 +4094,74 @@
           }
         ],
         "summary": "One view with serve endpoints and image-mint status. Denial answers\nexactly like a miss so probing learns nothing.",
+        "tags": [
+          "views"
+        ]
+      },
+      "put": {
+        "operationId": "view_define",
+        "parameters": [
+          {
+            "description": "View name",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ViewDefineRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewDefineResponse"
+                }
+              }
+            },
+            "description": "View defined; stored definition echoed"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Bad definition (unknown profile, or both selection modes)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Define or replace a view by name (owner-only; idempotent upsert). The\nname is the path; the body is the definition. 1G1R and MAME modes are\nmutually exclusive (400 if both). An unknown profile is a 400.",
         "tags": [
           "views"
         ]
