@@ -87,36 +87,28 @@ fn read_db(app: &App) -> std::sync::MutexGuard<'_, Db> {
 }
 
 // ---- the 4-state entry vocabulary (web spec §7) ----
+//
+// The threshold rule, its SQL projection, and the wire codes all live in
+// ONE place — `datboi_catalog::state` (D96: one code path per concept).
+// This module only bridges catalog's `RollupState` to the `datboi-api`
+// wire enum. `STATE_CASE` is catalog's SQL fragment; the `{STATE_CASE}`
+// format sites below splice it into query strings unchanged.
 
-/// The UI's per-entry state, derived from the D39 rollup: `verified` =
-/// every required claim grounded-verified; `claimed` = the rest covered
-/// by verified-grade claims; `missing` = anything short of that
-/// (probable/peer fold into missing for UI purposes — they are not
-/// holdings); `nodump` = no satisfiable claims at all (forcenodump
-/// semantics: excluded from completeness math client-side).
-const STATE_CASE: &str = "CASE \
-     WHEN ea.required IS NULL OR ea.required = 0 THEN 3 \
-     WHEN ea.have_verified >= ea.required THEN 0 \
-     WHEN ea.have_verified + ea.have_claimed >= ea.required THEN 1 \
-     ELSE 2 END";
+use datboi_catalog::RollupState;
+
+const STATE_CASE: &str = datboi_catalog::STATE_CASE_SQL;
 
 fn entry_state(code: i64) -> EntryState {
-    match code {
-        0 => EntryState::Verified,
-        1 => EntryState::Claimed,
-        2 => EntryState::Missing,
-        _ => EntryState::Nodump,
+    match RollupState::from_code(code) {
+        RollupState::Verified => EntryState::Verified,
+        RollupState::Claimed => EntryState::Claimed,
+        RollupState::Missing => EntryState::Missing,
+        RollupState::Nodump => EntryState::Nodump,
     }
 }
 
 fn state_code(name: &str) -> Option<i64> {
-    match name {
-        "verified" => Some(0),
-        "claimed" => Some(1),
-        "missing" => Some(2),
-        "nodump" => Some(3),
-        _ => None,
-    }
+    RollupState::from_name(name).map(RollupState::code)
 }
 
 // ---- query-string parsing (axum's Query needs serde derive; a

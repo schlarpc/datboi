@@ -26,6 +26,7 @@ pub mod mame;
 pub mod profiles;
 pub mod rollup;
 pub mod selection;
+pub mod state;
 pub mod statesnap;
 pub mod unify;
 pub mod views;
@@ -40,6 +41,7 @@ pub use mame::MameMode;
 pub use profiles::{PROFILES, Profile};
 pub use rollup::refresh_rollups;
 pub use selection::SelectionPolicy;
+pub use state::{RollupState, STATE_CASE_SQL};
 pub use unify::relink_all;
 pub use views::{EvalReport, ViewDef, define_view, evaluate_view, get_view, list_views};
 
