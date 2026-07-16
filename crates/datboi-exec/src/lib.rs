@@ -556,7 +556,15 @@ impl<'s> Executor<'s> {
         if dirty.is_empty() {
             // Inputs clean: the seek path itself lied. Quarantine (the
             // claim stays trusted — sequential replay proved it).
-            db.quarantine_seek(&component, now_unix(), detail)?;
+            // BEST-EFFORT (D93): serving surfaces run on read-only
+            // connections, where this write fails — and the row is
+            // cache-grade by its own schema comment (losing it costs
+            // one more detected-and-refused bad serve; the per-read
+            // bao check is what actually protects). The read's own
+            // error still surfaces either way.
+            if let Err(e) = db.quarantine_seek(&component, now_unix(), detail) {
+                tracing::warn!("seek quarantine for {component} not recorded: {e}");
+            }
             Ok(detail.to_string())
         } else {
             let dirty_list = dirty

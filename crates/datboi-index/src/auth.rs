@@ -182,7 +182,8 @@ impl Db {
         argon2: &str,
         now: i64,
     ) -> Result<InviteOutcome, IndexError> {
-        let tx = self.state().unchecked_transaction()?;
+        // Read-then-write: must be IMMEDIATE (D93, see cache_write_tx).
+        let tx = self.state_write_tx()?;
         let role: Option<i64> = tx
             .query_row(
                 "SELECT role FROM invite

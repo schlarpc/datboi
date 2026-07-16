@@ -1254,3 +1254,41 @@ fn absent_eligibility_gates_the_claim_query() {
     assert_eq!(db.refresh_absent_eligibility().unwrap(), 0);
     assert_eq!(claim_ids(&mut db, 500), [container]);
 }
+
+/// D93: the read pool's fence is mechanical — a read-only handle
+/// serves queries, refuses writes at the sqlite layer (a
+/// misclassified handler errors loudly, never corrupts quietly), and
+/// still verifies identity + schema version so a stale reader can't
+/// misread a newer schema.
+#[test]
+fn read_only_open_reads_but_never_writes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let hash = Blake3::compute(b"visible to readers");
+    {
+        let db = Db::open(dir.path()).expect("rw open");
+        db.upsert_blob(&hash, Some(1), Namespace::Data, Residency::Resident)
+            .expect("row");
+        db.config_set("k", b"v").expect("cfg");
+    }
+    let ro = Db::open_read_only(dir.path()).expect("ro open");
+    assert!(ro.get_blob_id(&hash).expect("read works").is_some());
+    assert_eq!(ro.config_get("k").expect("read works").as_deref(), Some(&b"v"[..]));
+    // Writes refuse on both files.
+    assert!(
+        ro.upsert_blob(&Blake3::compute(b"x"), None, Namespace::Data, Residency::Resident)
+            .is_err(),
+        "cache write must refuse"
+    );
+    assert!(ro.config_set("k2", b"v").is_err(), "state write must refuse");
+
+    // A version-skewed file refuses to open read-only (no migrations
+    // from a handle that can't write them).
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("cache.db")).expect("raw");
+        conn.pragma_update(None, "user_version", 1).expect("rewind");
+    }
+    assert!(matches!(
+        Db::open_read_only(dir.path()),
+        Err(IndexError::SchemaVersion { .. })
+    ));
+}

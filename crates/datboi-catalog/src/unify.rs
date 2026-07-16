@@ -103,8 +103,8 @@ impl Tuple {
 /// Unify every claim of a revision into content identities. Returns the
 /// touched identity ids (for blob linking).
 pub fn unify_revision(db: &mut Db, revision_id: i64) -> Result<Vec<i64>, CatalogError> {
-    let conn = db.cache();
-    let tx = conn.unchecked_transaction()?;
+    // Read-then-write: must be IMMEDIATE (D93, see Db::cache_write_tx).
+    let tx = db.cache_write_tx()?;
     let mut touched = Vec::new();
     {
         let mut claims = tx.prepare(
@@ -290,8 +290,8 @@ pub fn relink_all(db: &Db) -> Result<(), CatalogError> {
 /// tuple (ingest always records all four, D2) and sizes agree; basis =
 /// the identity's evidence strength.
 pub fn link_identities_to_blobs(db: &Db, identity_ids: &[i64]) -> Result<(), CatalogError> {
-    let conn = db.cache();
-    let tx = conn.unchecked_transaction()?;
+    // Read-then-write: must be IMMEDIATE (D93, see Db::cache_write_tx).
+    let tx = db.cache_write_tx()?;
     for &identity_id in identity_ids {
         let Some(tuple) = load_identity(&tx, identity_id)? else {
             continue; // merged away earlier in this import

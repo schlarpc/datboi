@@ -914,6 +914,7 @@ dependencies = [
  "proptest",
  "tempfile",
  "thiserror",
+ "tracing",
  "wasmtime",
 ]
 

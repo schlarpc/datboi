@@ -16,6 +16,9 @@ datboi-store-fs.workspace = true
 flate2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
+# D81/D93: quarantine bookkeeping failures on read-only serving
+# connections are WARN-grade, not fatal.
+tracing.workspace = true
 
 [dev-dependencies]
 crc32fast.workspace = true

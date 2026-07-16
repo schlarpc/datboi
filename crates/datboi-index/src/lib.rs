@@ -127,6 +127,97 @@ impl Db {
         &self.state
     }
 
+    /// An IMMEDIATE transaction on cache.db — THE way to open any
+    /// transaction that writes (D93). A deferred transaction that
+    /// reads before writing hits SQLITE_BUSY on the read→write
+    /// upgrade WITHOUT consulting the busy handler (waiting cannot
+    /// refresh a stale snapshot), so under concurrent writers it
+    /// fails instead of queueing. IMMEDIATE takes the write lock at
+    /// BEGIN, where the busy handler applies. Write-first legacy
+    /// transactions are upgrade-safe as written, but new write
+    /// transactions come from here, categorically.
+    ///
+    /// # Errors
+    /// Busy timeout exhausted at BEGIN.
+    pub fn cache_write_tx(&self) -> Result<rusqlite::Transaction<'_>, IndexError> {
+        Ok(rusqlite::Transaction::new_unchecked(
+            &self.cache,
+            rusqlite::TransactionBehavior::Immediate,
+        )?)
+    }
+
+    /// [`Db::cache_write_tx`]'s state.db twin.
+    ///
+    /// # Errors
+    /// Busy timeout exhausted at BEGIN.
+    pub fn state_write_tx(&self) -> Result<rusqlite::Transaction<'_>, IndexError> {
+        Ok(rusqlite::Transaction::new_unchecked(
+            &self.state,
+            rusqlite::TransactionBehavior::Immediate,
+        )?)
+    }
+
+    /// Open both files READ-ONLY (D93): the request path's read-pool
+    /// shape. Flags-level enforcement — a write through this handle
+    /// errors at the sqlite layer, so a misclassified handler is
+    /// LOUD, never quietly corrupting; that mechanical fence is what
+    /// makes migrating reads off the write mutex fearless. No DDL, no
+    /// migrations, no pragmas that write (the daemon's read-write
+    /// open runs first and owns all of those); identity and schema
+    /// version are still verified so a stale reader can never misread
+    /// a newer schema.
+    ///
+    /// # Errors
+    /// Missing files, wrong application id, version mismatch, I/O.
+    pub fn open_read_only(dir: &Path) -> Result<Self, IndexError> {
+        let open_ro = |path: &Path,
+                       file: &'static str,
+                       app_id: u32,
+                       version: u32|
+         -> Result<Connection, IndexError> {
+            let conn = Connection::open_with_flags(
+                path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )?;
+            conn.busy_timeout(std::time::Duration::from_secs(5))?;
+            let found_app: u32 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
+            if found_app != app_id {
+                return Err(IndexError::WrongApplicationId {
+                    file,
+                    found: found_app,
+                });
+            }
+            let found: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+            if found != version {
+                return Err(IndexError::SchemaVersion {
+                    file,
+                    found,
+                    expected: version,
+                });
+            }
+            Ok(conn)
+        };
+        let cache_path = dir.join("cache.db");
+        let state = open_ro(
+            &dir.join("state.db"),
+            "state.db",
+            schema::STATE_APP_ID,
+            schema::STATE_SCHEMA_VERSION,
+        )?;
+        let cache = open_ro(
+            &cache_path,
+            "cache.db",
+            schema::CACHE_APP_ID,
+            schema::CACHE_SCHEMA_VERSION,
+        )?;
+        Ok(Self {
+            cache,
+            state,
+            cache_path,
+        })
+    }
+
     /// Truncate every cache.db table (children first — FKs are on).
     ///
     /// This is the first step of bare-metal recovery (D15): state.db (or
@@ -247,12 +338,22 @@ fn open_file(
     version: u32,
     on_older: OnOlderVersion,
 ) -> Result<Connection, IndexError> {
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
     // Multiple connections share these files (the daemon's request
     // handle + the refine worker's, or a CLI alongside the daemon):
     // WAL serializes writers, and this makes a contended writer wait
     // instead of failing SQLITE_BUSY.
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    // D93, MECHANICAL: every transaction on a read-write connection
+    // begins IMMEDIATE — `transaction()` and `unchecked_transaction()`
+    // both honor this default, so the deferred read→write upgrade
+    // (SQLITE_BUSY with the busy handler never consulted) is
+    // unrepresentable rather than audited-for. Pure reads outside
+    // transactions are unaffected; pure-read TRANSACTIONS on rw
+    // connections don't exist here (reads ride the read-only pool or
+    // bare statements), so the write-lock-at-BEGIN cost lands only
+    // where a write was coming anyway.
+    conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
     // page_size must precede WAL; a WAL database's page size is frozen.
     conn.pragma_update(None, "page_size", 8192)?;
     // journal_mode returns a result row; query instead of execute.
@@ -338,7 +439,17 @@ fn migrate_in_place(
     }
     for step in from..to {
         let sql = ladder[usize::try_from(step).expect("small") - 1];
-        let tx = conn.unchecked_transaction()?;
+        // IMMEDIATE + re-check inside (D93): two processes can race a
+        // first-open after an upgrade; the loser must observe the
+        // winner's stamp instead of re-running DDL into a conflict.
+        let tx = rusqlite::Transaction::new_unchecked(
+            conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let current: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if current != step {
+            continue; // another opener already advanced this step
+        }
         tx.execute_batch(sql)?;
         tx.pragma_update(None, "user_version", step + 1)?;
         tx.commit()?;
@@ -385,6 +496,10 @@ mod migrate_tests {
         conn2
             .execute_batch("CREATE TABLE t (v INTEGER, w INTEGER);")
             .expect("ddl");
+        // Real callers derive `from` FROM the stamp; the D93 in-step
+        // re-check trusts the stamp (concurrent-open guard), so the
+        // fixture must carry it like a real file would.
+        conn2.pragma_update(None, "user_version", 2).expect("stamp");
         migrate_in_place(&conn2, "state.db", 2, 3, ladder).expect("migrates");
         let u_exists: i64 = conn2
             .query_row(

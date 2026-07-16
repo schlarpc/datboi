@@ -286,7 +286,16 @@ impl Db {
         now_unix: i64,
         lease_secs: i64,
     ) -> Result<Vec<SweepItem>, IndexError> {
-        let tx = self.cache.transaction()?;
+        // IMMEDIATE, not deferred (D93): this transaction reads then
+        // writes, and a deferred read→write upgrade against a
+        // concurrent claimant returns SQLITE_BUSY without consulting
+        // the busy handler (waiting can't refresh a stale snapshot).
+        // Taking the write lock up front makes concurrent claimants
+        // queue politely instead — the whole multi-worker design
+        // hangs on this one statement ordering.
+        let tx = self
+            .cache
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let rows = {
             // Predicate + ORDER BY mirror sweep_by_priority (analyzer,
             // priority DESC, enqueued_at, blob_id): the claim is an
@@ -503,6 +512,23 @@ impl Db {
         tx.execute_batch("DROP TABLE IF EXISTS temp.d92_grounded")?;
         tx.commit()?;
         Ok(n)
+    }
+
+    /// Total (positive, negative) provenance rows for one analyzer —
+    /// the D93 tray note takes a delta across a drain, so the numbers
+    /// reflect the whole worker fleet's outcomes, not one worker's
+    /// private counters.
+    pub fn analysis_counts(&self, analyzer: &Blake3) -> Result<(u64, u64), IndexError> {
+        let (positive, negative): (i64, i64) = self.cache().query_row(
+            "SELECT COALESCE(SUM(outcome = 1), 0), COALESCE(SUM(outcome = 0), 0)
+             FROM analysis WHERE analyzer = ?1",
+            params![analyzer.0.as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok((
+            u64::try_from(positive).unwrap_or(0),
+            u64::try_from(negative).unwrap_or(0),
+        ))
     }
 
     /// Queue depth for one analyzer (status surface).
