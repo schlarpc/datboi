@@ -2224,3 +2224,40 @@ that are themselves compressed (SDAT audio, LZ overlays) — those need an
 LZ codec + corrections blob, a separate wasm lane with its own ruling,
 explicitly NOT attempted here; unconditional decomposition (the
 recipe-volume flood a 60k-file NARC would mint).
+
+## D95 — NixOS module: the DATBOI_* surface, dressed in options (2026-07-16)
+
+The flake gains `nixosModules.default` (plus `overlays.default` for
+`pkgs.datboi`) so a self-hoster adds datboi as a flake input and
+`services.datboi.enable = true`s it. The option surface IS the daemon's
+existing 12-factor `DATBOI_*` env surface — the same config the CLI and
+the container image speak — dressed in NixOS-idiomatic camelCase: each
+friendly option (`store`, `databaseDir`, `listenAddress`,
+`nfsListenAddress`, `detectorsDir`, `refine`) owns exactly one
+`DATBOI_*` var, and a freeform `environment` attrset is the escape hatch
+for anything not yet promoted. One config vocabulary end to end; no new
+config file format, no second source of truth. The unit runs as a static
+`datboi` system user (NOT DynamicUser) because the store may sit on an
+admin-managed/NFS path whose ownership must stay stable, and the D15
+identity key under `databaseDir` is persistent per-instance state that
+survives restarts and gets backed up out-of-band. Store and db dir are
+created symmetrically via tmpfiles with the right ownership (StateDirectory
+would pin the db dir to `/var/lib/datboi` and can't manage an arbitrary
+store path), both land in `ReadWritePaths`, and `RequiresMountsFor`
+orders start after a network store mount (D15: store may be NFS, db dir
+never). Hardening is the standard sandbox set with ONE deliberate
+omission: no `MemoryDenyWriteExecute` — datboi runs transform/extractor
+components under wasmtime, whose JIT maps W+X pages, so the usual knob
+would kill the runtime. The package defaults to this flake's build for
+the host system (via `mkDefault`, overridable), so the module is turnkey
+without the overlay. A `checks.<linux>.nixos-module` VM test boots the
+service and asserts `/healthz` serves and both roots are owned by the
+service user.
+*Rejected:* a bespoke `settings.DATBOI_*`-keyed freeform-only surface
+(honest to the daemon but clunky for operators who expect camelCase
+options — the hybrid gives both); DynamicUser (fights the stable store
+ownership and the persistent identity key); StateDirectory for the db
+dir (can't manage a configurable/NFS store path, and we want the two
+roots handled symmetrically); a config-file format (the daemon is env-only
+by charter, docs/infra.md); opening the NFS port under `openFirewall`
+(NFS is unauthenticated, D68 — never auto-exposed).

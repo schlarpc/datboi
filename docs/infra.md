@@ -74,7 +74,41 @@ different placement rules, D15: store may be network, DB dir must be
 container-local) and `DATBOI_LISTEN=0.0.0.0:2352` (loopback inside a
 container is unreachable; a wide bind means auth-required, D68).
 `.github/workflows/container.yml` pushes `:latest` + `:<sha>` to ghcr
-on main. (survey — ruled D30/D68: invite tokens → local accounts + sessions, shipped M5)
+on main.
+
+## NixOS module (`nixosModules.default`, D95)
+
+For self-hosters on NixOS: add this flake as an input and
+`services.datboi.enable = true`. The module's option surface IS the
+daemon's `DATBOI_*` env surface (the same config the CLI and container
+speak), one option per var in camelCase:
+
+```nix
+services.datboi = {
+  enable = true;
+  store = "/srv/datboi/store";     # DATBOI_STORE — the CAS; may be NFS
+  listenAddress = "0.0.0.0:2352";  # DATBOI_LISTEN — wide bind ⇒ auth (D68)
+  openFirewall = true;
+  # databaseDir defaults to /var/lib/datboi (DATBOI_DB_DIR — local disk,
+  # never NFS, D15; holds the SQLite DBs + the backed-up identity key).
+  # nfsListenAddress / detectorsDir / refine map the rest; `environment`
+  # is the freeform escape hatch (e.g. RUST_LOG) for anything unsurfaced.
+};
+```
+
+The unit runs as a static `datboi` system user (not DynamicUser — the
+store may be an admin-managed/NFS path with stable ownership, and the
+identity key is persistent state to back up). Store and db dir are
+created via tmpfiles with matching ownership and both land in
+`ReadWritePaths`; `RequiresMountsFor` orders start after a network store
+mount. Hardening is the standard sandbox set MINUS `MemoryDenyWriteExecute`
+— wasmtime's JIT needs W+X (docs/runtime.md). `package` defaults to this
+flake's build, so the module is turnkey without the overlay; add
+`overlays.default` if you also want the `datboi` CLI in a profile. The
+`checks.<linux>.nixos-module` VM test boots it and asserts `/healthz`
+serves.
+
+(survey — ruled D30/D68: invite tokens → local accounts + sessions, shipped M5)
 
 | Option | Fit |
 |---|---|

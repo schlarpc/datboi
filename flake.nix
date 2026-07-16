@@ -662,7 +662,32 @@
                 cargoNextestExtraArgs = "--no-tests=pass";
               });
             })
-          wasmCrateNames));
+          wasmCrateNames)
+        # D95: boot a VM, enable the module, prove the daemon comes up
+        # and serves. Linux-only (nixosTest needs KVM); built on demand,
+        # not on the default `nix build` path.
+        // nixpkgs.lib.optionalAttrs (nixpkgs.lib.hasSuffix "-linux" system) {
+          nixos-module = (pkgsFor system).testers.runNixOSTest {
+            name = "datboi-module";
+            nodes.machine = { pkgs, ... }: {
+              imports = [ self.nixosModules.default ];
+              environment.systemPackages = [ pkgs.curl ];
+              services.datboi = {
+                enable = true;
+                store = "/srv/datboi/store";
+              };
+            };
+            testScript = ''
+              machine.wait_for_unit("datboi.service")
+              machine.wait_for_open_port(2352)
+              machine.succeed("curl -sf http://127.0.0.1:2352/healthz | grep -q ok")
+              # Both roots exist, owned by the service user (D15 placement).
+              machine.succeed("test -d /srv/datboi/store")
+              machine.succeed("stat -c %U /srv/datboi/store | grep -qx datboi")
+              machine.succeed("stat -c %U /var/lib/datboi | grep -qx datboi")
+            '';
+          };
+        });
 
       devShells = eachSystem (system:
         let
@@ -710,6 +735,25 @@
             # (crane) set the vars.
           };
         });
+
+      # Consume as a flake dep: add `overlays.default` for `pkgs.datboi`,
+      # or import `nixosModules.default` and `services.datboi.enable = true`
+      # (D95, docs/infra.md §NixOS module). The module defaults its
+      # package to this flake's build for the host system, so it works
+      # turnkey without the overlay; the overlay is for those who also
+      # want the CLI in their system/user profile.
+      overlays.default = final: _prev: {
+        datboi = self.packages.${final.stdenv.hostPlatform.system}.default;
+      };
+
+      nixosModules.default = { pkgs, lib, ... }: {
+        imports = [ ./nix/module.nix ];
+        # mkDefault (1000) beats mkPackageOption's option-default (1500)
+        # inside module.nix, and a user's plain assignment (100) still
+        # beats this — so the flake build is the default, overridable.
+        services.datboi.package =
+          lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+      };
 
       lib = {
         inherit nix-direnv;
