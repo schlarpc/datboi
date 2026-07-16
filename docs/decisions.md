@@ -2125,3 +2125,16 @@ serializes apply against other gc actors, the mutex serializes it
 against keep). Wrapping a pipeline in one mega-transaction was rejected:
 it would hold the WAL write lock for a whole import and starve the
 refiner, the exact opposite of what the between-steps release buys.
+The same day closed the two cosmetic D93 tails: (a) `refine:workers`
+now LIVE-RELOADS — the prime owns the fleet's stop flags and re-reads
+the knob each ambient tick, growing (spawn) or retiring (flag-and-exit)
+drones without a restart, safe because drones are fungible (all drain
+the one leased queue, at-least-once covers a retiree's unfinished
+item). (b) The drone-holds-the-family-job-open lingering was reviewed
+and KEPT: the job stays open precisely while that family still has
+in-flight leased items a drone will return to — closing earlier is the
+false-"done" race the completion gate exists to prevent. The "cross-
+family" flavor (prime blocked on family F while a drone detours through
+G) is bounded by one burst and costs only tray latency, not work; the
+alternative (per-family drone tracking) buys nothing a restart-free
+operator would notice.

@@ -16,7 +16,10 @@
 //! holds anyone else's lock; WAL + busy_timeout arbitrate) and shares
 //! ONE `Executor` (it is `Sync` — pinned by test — so compiled
 //! components cache once). Worker count is the D93 formula
-//! max(⌈n/2⌉, n−2), molten as `refine:workers` (read at start).
+//! ⌈n/2⌉.clamp(1,6), molten as `refine:workers` — read at start AND
+//! re-read each ambient tick, so the prime grows or retires drones
+//! live (drones are fungible, so a resize is spawn-or-flag-and-exit,
+//! no restart).
 //!
 //! Scheduling is three tiers of one queue (datboi-index consts):
 //! fresh-ingest > dat-matched > ambient backlog — D47 intact (tiers
@@ -192,6 +195,46 @@ fn worker_count(db: &Db) -> usize {
     n.div_ceil(2).clamp(1, 6)
 }
 
+/// Grow or shrink the live drone fleet to `target` threads (D93 live
+/// reload). Called by the prime at boot and on every ambient tick with
+/// the current `refine:workers` value, so an operator's `datboi
+/// analyzer`-set count takes effect within one rescan beat, no restart.
+/// Drones are fungible; the prime owns the stop-flag vector and is the
+/// sole mutator, so no lock guards it.
+fn resize_drones(
+    target: usize,
+    drones: &mut Vec<Arc<std::sync::atomic::AtomicBool>>,
+    next_id: &mut usize,
+    db_dir: &std::path::Path,
+    store: &'static Store,
+    exec: &Arc<datboi_exec::Executor<'static>>,
+    shared: &Arc<Shared>,
+) {
+    let mut shrank = false;
+    while drones.len() > target {
+        if let Some(stop) = drones.pop() {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            shrank = true;
+        }
+    }
+    // Wake the parked fleet so retired drones observe their flag and exit
+    // (survivors re-park immediately on an unchanged generation).
+    if shrank {
+        shared.drone_wake.notify_all();
+    }
+    while drones.len() < target {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let id = *next_id;
+        *next_id += 1;
+        let db_dir = db_dir.to_path_buf();
+        let exec = Arc::clone(exec);
+        let shared = Arc::clone(shared);
+        let stop_thread = Arc::clone(&stop);
+        std::thread::spawn(move || drone(id, &db_dir, store, &exec, &shared, &stop_thread));
+        drones.push(stop);
+    }
+}
+
 fn worker(
     db_dir: std::path::PathBuf,
     store: &'static Store,
@@ -234,17 +277,23 @@ fn worker(
     };
     // D93: spawn the drone fleet AFTER lease amnesty (a drone claiming
     // pre-amnesty would only duplicate a pure function — dedup grade —
-    // but there is no reason to invite it).
-    let workers = worker_count(&db);
-    for ix in 1..workers {
-        let db_dir = db_dir.clone();
-        let exec = Arc::clone(&exec);
-        let shared = Arc::clone(&shared);
-        std::thread::spawn(move || drone(ix, &db_dir, store, &exec, &shared));
-    }
+    // but there is no reason to invite it). The prime owns the fleet's
+    // stop flags and resizes it live on the ambient clock.
+    let mut drones: Vec<Arc<std::sync::atomic::AtomicBool>> = Vec::new();
+    let mut next_drone_id = 1usize;
+    resize_drones(
+        worker_count(&db).saturating_sub(1),
+        &mut drones,
+        &mut next_drone_id,
+        &db_dir,
+        store,
+        &exec,
+        &shared,
+    );
     info!(
-        "refinement: {workers} worker(s) (1 prime + {} drone(s))",
-        workers - 1
+        "refinement: {} worker(s) (1 prime + {} drone(s))",
+        drones.len() + 1,
+        drones.len()
     );
     let bytes = Logical::new(store, &exec);
     let mut analyzers = families();
@@ -288,6 +337,21 @@ fn worker(
         }
         if ambient_due {
             next_ambient = Instant::now() + AMBIENT_RESCAN;
+            // Live-reload the fleet size from `refine:workers` (D93):
+            // adopt a re-tuned count without a daemon restart.
+            let want = worker_count(&db).saturating_sub(1);
+            if want != drones.len() {
+                info!("refinement: resizing drone fleet {} → {}", drones.len(), want);
+                resize_drones(
+                    want,
+                    &mut drones,
+                    &mut next_drone_id,
+                    &db_dir,
+                    store,
+                    &exec,
+                    &shared,
+                );
+            }
         }
         // Wake the drones: the queues just gained (or regained) work.
         {
@@ -343,7 +407,9 @@ fn drone(
     store: &'static Store,
     exec: &datboi_exec::Executor<'static>,
     shared: &Shared,
+    stop: &std::sync::atomic::AtomicBool,
 ) {
+    use std::sync::atomic::Ordering::Relaxed;
     if let Err(e) = rustix::process::nice(19) {
         warn!("refine drone {ix}: nice(19) failed ({e}); running at normal priority");
     }
@@ -358,6 +424,13 @@ fn drone(
     let mut analyzers = families();
     let mut seen = 0u64;
     loop {
+        // Live-reload retirement (D93): the prime flips this when
+        // `refine:workers` shrinks. Drones are fungible (all drain the
+        // same leased queue), so retiring one is just an exit — no
+        // handoff, at-least-once absorbs any item it never got to.
+        if stop.load(Relaxed) {
+            return;
+        }
         {
             let generation = lock(&shared.drone_gen);
             let generation = if *generation == seen {
@@ -370,6 +443,11 @@ fn drone(
                 generation
             };
             seen = *generation;
+        }
+        // A shrink notifies drone_wake to shake retired drones loose from
+        // the wait above; observe the flag before starting a burst.
+        if stop.load(Relaxed) {
+            return;
         }
         // Drain until nothing claims: leased/settled items make the
         // claim come back empty, so error backoff (items keep their
@@ -419,6 +497,53 @@ fn drone(
             lock(&shared.inbox).maintenance_due = true;
             shared.wake.notify_one();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_shared() -> Arc<Shared> {
+        Arc::new(Shared {
+            inbox: Mutex::new(PrimeInbox::default()),
+            wake: Condvar::new(),
+            active_drones: std::sync::atomic::AtomicUsize::new(0),
+            drone_gen: Mutex::new(0),
+            drone_wake: Condvar::new(),
+        })
+    }
+
+    #[test]
+    fn drone_fleet_grows_and_shrinks_live() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store: &'static Store =
+            Box::leak(Box::new(Store::open(dir.path().join("store")).expect("store")));
+        // Migrate once so each drone's private open sees the schema.
+        let _db = Db::open(dir.path()).expect("db");
+        let exec = Arc::new(
+            datboi_exec::Executor::new(store, datboi_exec::ExecConfig::default()).expect("exec"),
+        );
+        let shared = test_shared();
+        let mut drones = Vec::new();
+        let mut next_id = 1usize;
+
+        resize_drones(3, &mut drones, &mut next_id, dir.path(), store, &exec, &shared);
+        assert_eq!(drones.len(), 3, "grew to three drones");
+        assert_eq!(next_id, 4, "ids are monotonic");
+
+        // A retired drone is flagged to stop (and will observe it — the
+        // loop checks the flag before every burst and after every wake).
+        let retired = Arc::clone(drones.last().expect("nonempty"));
+        resize_drones(1, &mut drones, &mut next_id, dir.path(), store, &exec, &shared);
+        assert_eq!(drones.len(), 1, "shrank to one drone");
+        assert!(retired.load(Relaxed), "the retired drone was flagged to exit");
+
+        // Regrowth spawns fresh, fungible drones (no id reuse needed).
+        resize_drones(4, &mut drones, &mut next_id, dir.path(), store, &exec, &shared);
+        assert_eq!(drones.len(), 4);
+        assert_eq!(next_id, 7, "three fresh ids (4,5,6) after the shrink");
     }
 }
 
