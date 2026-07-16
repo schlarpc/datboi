@@ -1933,6 +1933,20 @@ simply never touches); loose piece files (O(pieces) inodes cranks
 the D19 accepted cost toward millions at scale); a background
 repacker (the swap job knows membership and read order at write
 time — grouping needs no guessing, packing rides the swap).
+*Amendment (2026-07-16):* the swap phase now BLESSES each packed
+piece's obao over its window right after `put_pack`, before the
+container evicts — refining the amendment below that rejected obao "at
+pack time." That rejection stands for the pack FILE (sidecars never go
+inside the immutable pack), but the swap evicts the container in the
+same phase, so "serve through the D4 plain-read default, upgrade
+later" would in practice mean the container's VERY FIRST served range
+pays a lazy `ensure_obao` over every piece, on the serving thread, a
+stall proportional to the whole decomposition. Blessing during the
+swap costs one warm re-read of freshly written bytes and removes that
+stall entirely. Sidecars live beside the member (`data/…/<hex>.obao`),
+so the lazy `open_random_verified` path stays the backstop for
+packs restored by bare-NAS recovery (whose member sidecars the walk
+did not rebuild).
 
 ## D92 — Analyzers consume the logical CAS (2026-07-15)
 

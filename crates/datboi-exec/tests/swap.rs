@@ -50,11 +50,11 @@ fn pattern(len: usize, seed: u8) -> Vec<u8> {
 /// carries the variant-unique content, and `family` seeds everything
 /// else — two ROMs share pieces exactly when they share a family (the
 /// MKDS shape in miniature).
-fn variant_nds(title: &[u8], family: u8, f4: &[u8]) -> Vec<u8> {
+fn variant_nds(title: &[u8], family: u8, f4: &[u8], shared_len: usize) -> Vec<u8> {
     let files: Vec<Vec<u8>> = vec![
-        pattern(300, family.wrapping_add(1)),
-        pattern(300, family.wrapping_add(2)),
-        pattern(300, family.wrapping_add(3)),
+        pattern(shared_len, family.wrapping_add(1)),
+        pattern(shared_len, family.wrapping_add(2)),
+        pattern(shared_len, family.wrapping_add(3)),
         f4.to_vec(),
     ];
     let mut b = vec![0u8; 0x200];
@@ -116,14 +116,63 @@ fn read_back(exec: &Executor, db: &Db, hash: &Blake3) -> Vec<u8> {
 }
 
 #[test]
+fn swap_blesses_packed_piece_obao_over_the_window() {
+    // A shared file large enough to need a real outboard (> one 16 KiB
+    // chunk group). The swap phase must compute each packed piece's obao
+    // sidecar over its window right after packing — BEFORE the container
+    // evicts — so the container's first served range never pays a lazy
+    // ensure_obao stall (D91 amendment).
+    let (_dir, store, mut db) = world();
+    let shared_len = 20 * 1024;
+    let usa = variant_nds(b"BIG USA", 0, &pattern(600, 100), shared_len);
+    let eur = variant_nds(b"BIG EUR", 0, &pattern(600, 101), shared_len);
+    let usa_hash = put(&store, &db, &usa);
+    let eur_hash = put(&store, &db, &eur);
+
+    let exec = Executor::new(&store, ExecConfig::default()).expect("executor");
+    let bytes = Logical::new(&store, &exec);
+    let sweep = run_sweep(&mut db, &store, &bytes, &mut NdsAnalyzer, 100).expect("sweep");
+    assert_eq!(sweep.positive, 2, "{:?}", sweep.errors);
+
+    // A shared piece large enough to carry a non-empty outboard.
+    let big_piece = Blake3::compute(&pattern(shared_len, 1)); // family 0, f1
+    assert!(datboi_store_fs::obao::outboard_size(shared_len as u64) > 0);
+
+    let report = exec.swap_covered(&mut db).expect("swap");
+    assert_eq!(report.swapped, 2, "skipped: {:?}", report.skipped);
+    assert!(store.is_packed(&big_piece), "the large shared piece packed");
+
+    // The sidecar exists NOW — right after the swap, with no serve yet.
+    let sidecar = store
+        .get_obao(StoreNs::Data, &big_piece)
+        .expect("get_obao")
+        .expect("swap blessed the packed piece's obao");
+    assert!(
+        !sidecar.is_empty(),
+        "a >16 KiB member carries a real outboard, not the empty small-blob one"
+    );
+
+    // And that sidecar verifies a range read straight out of the pack
+    // window — the piece is served verified, not plain-read.
+    let mid = store
+        .read_range_verified(StoreNs::Data, &big_piece, 8192, 4096)
+        .expect("verified range over the packed window");
+    assert_eq!(mid, pattern(shared_len, 1)[8192..8192 + 4096]);
+
+    // Both containers still serve byte-exact through the packed pieces.
+    assert_eq!(read_back(&exec, &db, &usa_hash), usa);
+    assert_eq!(read_back(&exec, &db, &eur_hash), eur);
+}
+
+#[test]
 fn variants_swap_into_packs_and_serve_byte_exact() {
     let (dir, store, mut db) = world();
 
     // Variants USA/EUR share arm9 + fnt + fat + f1..f3 (~79% of piece
     // bytes); f4 differs. The loner shares nothing with anyone.
-    let usa = variant_nds(b"MKDS USA", 0, &pattern(600, 100));
-    let eur = variant_nds(b"MKDS EUR", 0, &pattern(600, 101));
-    let lone = variant_nds(b"LONER", 50, &pattern(600, 102));
+    let usa = variant_nds(b"MKDS USA", 0, &pattern(600, 100), 300);
+    let eur = variant_nds(b"MKDS EUR", 0, &pattern(600, 101), 300);
+    let lone = variant_nds(b"LONER", 50, &pattern(600, 102), 300);
     let usa_hash = put(&store, &db, &usa);
     let eur_hash = put(&store, &db, &eur);
     let lone_hash = put(&store, &db, &lone);

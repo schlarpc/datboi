@@ -33,7 +33,7 @@
 
 use datboi_core::hash::Blake3;
 use datboi_index::{Db, Residency, SwapCandidate, VerifyState};
-use datboi_store_fs::PackMember;
+use datboi_store_fs::{Namespace as StoreNs, PackMember};
 
 use crate::evict::EvictOutcome;
 use crate::{ExecError, Executor, policy};
@@ -169,6 +169,20 @@ impl<'s> Executor<'s> {
             for (blob_id, _) in &piece_ids {
                 db.set_residency(*blob_id, Residency::Resident)
                     .map_err(|e| SwapSkip::Other(e.to_string()))?;
+            }
+            // Bless each packed piece's obao over its window NOW, while
+            // the bytes are warm from the pack write (D91 amendment). The
+            // very next step evicts the container; its first served range
+            // replays through these pieces via the D63 carve-out, which
+            // would otherwise ensure_obao them lazily ON the serving
+            // thread — a stall proportional to the whole decomposition.
+            // Sidecars live beside the member (`data/…/<hex>.obao`),
+            // never inside the immutable pack, so this "upgrades the
+            // window" exactly as the landing note promised.
+            for member in &to_pack {
+                self.store_ref()
+                    .ensure_obao(StoreNs::Data, &member.hash)
+                    .map_err(|e| SwapSkip::Other(format!("obao bless: {e}")))?;
             }
         }
 

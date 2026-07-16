@@ -203,7 +203,13 @@ migrate off someone else's.
   construction (`put_pack` verified each member's bytes INTO the hashed
   file), and the same pass re-derives per-member alias tuples for the
   fast-recovery back-fill. Packs are O(decompositions), so scrub reads
-  them all rather than sampling.
+  them all rather than sampling. **Packed pieces are obao-blessed at
+  swap time** (D91 amendment): the swap phase computes each member's
+  outboard over its window right after packing — while the bytes are
+  warm and before the container evicts — so the container's first
+  served range is verified with no lazy stall. The sidecar lives beside
+  the member (never inside the pack); the lazy `open_random_verified`
+  path stays the backstop for recovery-restored packs.
 - All embedded DBs on daemon-local disk (never NFS); NAS holds only
   authoritative bytes.
 
