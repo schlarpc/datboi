@@ -20,7 +20,7 @@
   import { fmtAge, fmtDuration } from '../lib/format';
   import { plural } from '../lib/plural';
 
-  const KINDS: ('all' | JobKind)[] = ['all', 'ingest', 'refine', 'gc', 'scrub'];
+  const KINDS: ('all' | JobKind)[] = ['all', 'ingest', 'refine', 'gc', 'scrub', 'eval', 'mint'];
   const STATES: ('all' | JobRunState)[] = ['all', 'running', 'done', 'failed'];
 
   let kindFilter = $state<'all' | JobKind>('all');
@@ -104,6 +104,10 @@
             <!-- @wc-context: job kind -->gc
           {:else if kind === 'scrub'}
             <!-- @wc-context: job kind -->scrub
+          {:else if kind === 'eval'}
+            <!-- @wc-context: job kind -->eval
+          {:else if kind === 'mint'}
+            <!-- @wc-context: job kind -->mint
           {:else}
             {assertNever(kind)}
           {/if}

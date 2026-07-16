@@ -25,7 +25,8 @@ use crate::{
     AdminUsersResponse, ApiError, BlobDetail, BlobsPage, DatImportResponse, EntriesPage,
     EntryDetail, EntryState, GcApplyRequest, GcApplyResponse, GcKeepRequest, GrantAddRequest,
     IngestRequest, IngestStartResponse, InviteAcceptRequest, InviteMintRequest, InviteMintResponse,
-    JobDetail, JobsResponse, LoginRequest, OkResponse, OrphansResponse, ResidencyState,
+    JobDetail, JobStartResponse, JobsResponse, LoginRequest, OkResponse, OrphansResponse,
+    ResidencyState,
     SessionResponse, SessionsRevokedResponse, StorageBreakdown, StorageResponse, SystemsResponse,
     UploadResponse, VerifyStartResponse, ViewDefineRequest, ViewDefineResponse, ViewDetail,
     ViewFilesPage, ViewProfilesResponse, ViewsResponse, WhoamiResponse,
@@ -220,6 +221,22 @@ fn view_profiles() {}
     ),
 )]
 fn view_define() {}
+
+/// Evaluate a view into a fresh immutable snapshot (owner-only). Long-
+/// running, so it starts a background job (D96); poll `GET /v1/jobs/{id}`.
+#[utoipa::path(
+    post,
+    path = "/v1/views/{name}/eval",
+    tag = "views",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    params(("name" = String, Path, description = "View name")),
+    responses(
+        (status = 200, description = "Evaluation job started", body = JobStartResponse),
+        (status = 403, description = "Owner only", body = ApiError),
+        (status = 404, description = "No such view", body = ApiError),
+    ),
+)]
+fn view_eval() {}
 
 // ---- views (the friend surface: ACL-filtered, misses look alike) ----
 
@@ -678,6 +695,7 @@ fn gc_apply() {}
         ingest_start,
         view_profiles,
         view_define,
+        view_eval,
         views,
         view_detail,
         view_files,

@@ -1176,12 +1176,14 @@
         "description": "GET /v1/jobs/{id}: the row plus counters and the (growing, then\nfinal) report. File paths in the report are the CLIENT's original\nnames — staging paths never leak."
       },
       "JobKind": {
-        "description": "What a job is doing. Scrub/eval/evict join these when they graduate\nfrom CLI-only.",
+        "description": "What a job is doing. Under D96 the expensive view verbs graduated to\nbackground jobs on the serve surface (eval, mint); evict/sweep follow.",
         "enum": [
           "ingest",
           "refine",
           "gc",
-          "scrub"
+          "scrub",
+          "eval",
+          "mint"
         ],
         "type": "string"
       },
@@ -1192,6 +1194,19 @@
           "failed"
         ],
         "type": "string"
+      },
+      "JobStartResponse": {
+        "description": "A started background job (D96 view verbs: eval, mint). Poll `GET\n/v1/jobs/{id}` for progress; the finished job's report carries the\noutcome, a failed one carries `error`.",
+        "properties": {
+          "job": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "job"
+        ],
+        "type": "object"
       },
       "JobsResponse": {
         "properties": {
@@ -4162,6 +4177,66 @@
           }
         ],
         "summary": "Define or replace a view by name (owner-only; idempotent upsert). The\nname is the path; the body is the definition. 1G1R and MAME modes are\nmutually exclusive (400 if both). An unknown profile is a 400.",
+        "tags": [
+          "views"
+        ]
+      }
+    },
+    "/v1/views/{name}/eval": {
+      "post": {
+        "operationId": "view_eval",
+        "parameters": [
+          {
+            "description": "View name",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStartResponse"
+                }
+              }
+            },
+            "description": "Evaluation job started"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "No such view"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Evaluate a view into a fresh immutable snapshot (owner-only). Long-\nrunning, so it starts a background job (D96); poll `GET /v1/jobs/{id}`.",
         "tags": [
           "views"
         ]

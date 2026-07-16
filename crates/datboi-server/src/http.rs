@@ -75,6 +75,7 @@ fn v1() -> V1Routes {
         .get("/v1/view-profiles", api::view_profiles)
         .get("/v1/views", api::views)
         .put("/v1/views/{name}", crate::views::define)
+        .post("/v1/views/{name}/eval", crate::views::eval)
         .get("/v1/views/{name}", api::view_detail)
         .get("/v1/views/{name}/files", api::view_files)
         .get("/v1/views/{name}/image", view_image)

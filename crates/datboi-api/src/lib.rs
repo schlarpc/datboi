@@ -881,6 +881,14 @@ pub struct VerifyStartResponse {
     pub job: i64,
 }
 
+/// A started background job (D96 view verbs: eval, mint). Poll `GET
+/// /v1/jobs/{id}` for progress; the finished job's report carries the
+/// outcome, a failed one carries `error`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct JobStartResponse {
+    pub job: i64,
+}
+
 // ---- GET /v1/jobs (+ /{id}) ----
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -888,8 +896,8 @@ pub struct JobsResponse {
     pub jobs: Vec<Job>,
 }
 
-/// What a job is doing. Scrub/eval/evict join these when they graduate
-/// from CLI-only.
+/// What a job is doing. Under D96 the expensive view verbs graduated to
+/// background jobs on the serve surface (eval, mint); evict/sweep follow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum JobKind {
@@ -904,6 +912,11 @@ pub enum JobKind {
     /// A scrub pass (CLI-recorded via the D74 ledger; the run ledger
     /// the storage screen wants).
     Scrub,
+    /// A view evaluation → immutable snapshot (D96): the CLI's `view
+    /// eval`, run as a background job on the serve surface.
+    Eval,
+    /// A FAT32 image mint for a view (D62/D96): the CLI's `view image`.
+    Mint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

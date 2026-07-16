@@ -58,7 +58,7 @@ pub(crate) fn err(code: datboi_api::ErrorCode, msg: &str) -> Response {
     )
 }
 
-fn internal(e: impl std::fmt::Display) -> Response {
+pub(crate) fn internal(e: impl std::fmt::Display) -> Response {
     err(datboi_api::ErrorCode::Internal, &e.to_string())
 }
 

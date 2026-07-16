@@ -38,6 +38,8 @@ fn to_ledger(kind: JobKind) -> LedgerKind {
         JobKind::Refine => LedgerKind::Refine,
         JobKind::Gc => LedgerKind::Gc,
         JobKind::Scrub => LedgerKind::Scrub,
+        JobKind::Eval => LedgerKind::Eval,
+        JobKind::Mint => LedgerKind::Mint,
     }
 }
 
@@ -47,6 +49,8 @@ fn from_ledger(kind: LedgerKind) -> JobKind {
         LedgerKind::Refine => JobKind::Refine,
         LedgerKind::Gc => JobKind::Gc,
         LedgerKind::Scrub => JobKind::Scrub,
+        LedgerKind::Eval => JobKind::Eval,
+        LedgerKind::Mint => JobKind::Mint,
     }
 }
 
@@ -264,6 +268,14 @@ impl Registry {
     /// A verify-one job (D80): scrub kind, item-counted like refine.
     pub(crate) fn create_scrub(&self, name: &str, items: u64, now: i64) -> i64 {
         self.push_job(JobKind::Scrub, name.to_owned(), items, items, now)
+    }
+
+    /// A view-evaluation job (D96): one opaque `evaluate_view` call, so
+    /// there is no intra-op progress to weight — it reads running until
+    /// the snapshot lands. The closing note carries the row/missing
+    /// summary.
+    pub(crate) fn create_eval(&self, view: &str, now: i64) -> i64 {
+        self.push_job(JobKind::Eval, format!("eval — {view}"), 0, 0, now)
     }
 
     /// Refine drain progress: `done` items finished, `total` = done +

@@ -140,6 +140,11 @@ db_enum! {
         Refine = 1,
         Gc = 2,
         Scrub = 3,
+        /// View evaluation → immutable snapshot (D96: eval graduated to a
+        /// background job on the serve surface).
+        Eval = 4,
+        /// FAT32 image mint for a view (D62/D96).
+        Mint = 5,
     }
 }
 

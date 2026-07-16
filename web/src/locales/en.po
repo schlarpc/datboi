@@ -1628,3 +1628,13 @@ msgstr "exit fullscreen"
 #: src/screens/Play.svelte
 msgid "fullscreen"
 msgstr "fullscreen"
+
+#: src/screens/Activity.svelte
+msgctxt "job kind"
+msgid "eval"
+msgstr "eval"
+
+#: src/screens/Activity.svelte
+msgctxt "job kind"
+msgid "mint"
+msgstr "mint"
