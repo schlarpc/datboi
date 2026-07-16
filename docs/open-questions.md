@@ -512,6 +512,41 @@ two things were seen and deliberately deferred:
 
 ## Next sessions (pick up here)
 
+**Position as of 2026-07-16, later (loose-thread + decomposition-arc
+sweep — all nine items landed, workspace green, clippy clean)**: the
+D91/D92/D93 loose ends and the decomposition arc are DONE, in order.
+D91: pack scrub (`scrub_pack` re-hashes whole packs against identity,
+one read, certifies every member + back-fills aliases); obao blessed at
+swap time over each packed piece's window (no first-serve stall — a
+refinement of the pack-time-obao rejection); tombstone-and-repack
+(`Store::repack` rewrites a pack without its dropped members; orphan GC
+routes packed pieces there since `remove_blob` can't unlink pack bytes,
+the one real correctness gap this closed); pack-per-chunking
+(`pack_chunk_sets` maintenance phase consolidates the loose chunk flood,
+policy-gated `chunk:pack`). D92: grounded-set-aware enqueue is fixpoint
+DEDUP — `refresh_admission` runs the grounding fixpoint ONCE per wake
+(was once per family); `sweep_absent_eligible` is the within-tick cache.
+D93: the write audit split the request path into THREE lanes (pipeline
+mutex / quick-write pool for auth+admin / read pool; gc/orphans GET
+un-miscloseted); `refine:workers` live-reloads (prime resizes the
+fungible drone fleet each ambient tick); the family-job lingering was
+reviewed and KEPT (correct — the job stays open while a family has
+in-flight leased items). DECOMPOSITION ARC: rank-7 D59 amendment
+(`is_covered_by_others` — grounded WITHOUT the blob's own literal —
+replaces has-any-recipe, so D91 grounding-leaf pieces get chunked; +
+resident-only guard); NARC interior decomposition RULED+BUILT as D94
+(`narc-split/1`, builtin-affine, shared `mint_decomposition` with
+nds-split, recipe-volume gated, bit-faithful round-trip test). STILL
+OWED (unchanged, genuinely wasm-shaped): SDAT audio + LZ-compressed
+NARC MEMBERS (the codec, a separate wasm lane + ruling), the NDS
+secure-area/modcrypt decrypt lanes (console keys), and — noted not
+built — sharing the D92 fixpoint with the audit rollup (cross-cadence),
+the swap guard-hold spanning materialization at disc-image scale, and
+grounded-set-aware enqueue COST at corpus scale. Hermetic
+`nix build .#datboi` NOT run this session (no flake/build.rs/deps
+changes — new source files were git-added so cargo/flake see them);
+run it if paranoid before a release.
+
 **Position as of 2026-07-16 (D93 — fearless concurrency, ruled and
 built same day)**: refine drains are multi-threaded by default (prime
 + drones, default ⌈n/2⌉ clamped to 6 after the formula challenge —
