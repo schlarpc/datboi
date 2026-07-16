@@ -10,7 +10,7 @@ use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe, World};
 use datboi_index::{AnalysisOutcome, Db, Namespace as IndexNs, Residency, SeekClass, SweepItem};
 use datboi_store_fs::{Namespace as StoreNs, Store};
 
-use crate::refine::{AnalysisResult, Analyzer, Pulse, TickReader, analyzer_tag};
+use crate::refine::{AnalysisResult, Analyzer, Logical, Pulse, TickReader, analyzer_tag};
 
 /// FastCDC parameters (D3 strategy ladder, rung 3): gear hash, NC level
 /// 2, 64 KiB / 256 KiB / 1 MiB — tuned for disc images. The values are
@@ -41,23 +41,6 @@ pub const XF_PREFLATE_WASM: &[u8] = include_bytes!(concat!(
 /// corrections blobs), which is a NEW discovery pass, never a broken old
 /// recipe.
 const SPLIT_WINDOW: usize = 4 * 1024 * 1024;
-
-/// The claim query only hands out blobs the index calls Resident
-/// (analysis.rs `claim_sweep_items`), so an empty store read here
-/// means THE INDEX IS WRONG — a wiped or swapped store dir, not a
-/// racing evict. Self-heal by demoting the row to Absent (D81): the
-/// item then drops out of every future claim, where "stay queued and
-/// retry" re-errored on every ambient sweep forever. A later
-/// rematerialization or re-ingest flips it back to Resident.
-fn heal_not_resident(db: &Db, item: &SweepItem) -> String {
-    match db.set_residency(item.blob_id, Residency::Absent) {
-        Ok(()) => {
-            "blob not resident — index said resident, store had no bytes; demoted to absent (D81)"
-                .into()
-        }
-        Err(e) => format!("blob not resident (and the index demote failed: {e})"),
-    }
-}
 
 /// Per-frame plaintext ceiling handed to preflate (bounds rebuild memory;
 /// comfortably under the guest's 64 MiB MAX_FRAME guard).
@@ -274,21 +257,17 @@ impl Analyzer for PreflateZipAnalyzer {
     fn analyze(
         &mut self,
         item: &SweepItem,
+        bytes: &Logical<'_, '_>,
         store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
     ) -> Result<AnalysisResult, String> {
         use std::io::{Read, Seek, SeekFrom};
 
-        let Some(mut file) = store
-            .get(StoreNs::Data, &item.hash)
-            .map_err(|e| e.to_string())?
-        else {
-            return Err(heal_not_resident(db, item));
-        };
+        let mut file = bytes.open(item, db, pulse)?;
         let container_size = item
             .size
-            .or_else(|| store.len(StoreNs::Data, &item.hash).ok().flatten())
+            .or_else(|| file.metadata().ok().map(|m| m.len()))
             .ok_or("container size unknown")?;
         let mut head = [0u8; 4];
         let n = file.read(&mut head).map_err(|e| e.to_string())?;
@@ -637,6 +616,7 @@ impl Analyzer for ChunkAnalyzer {
     fn analyze(
         &mut self,
         item: &SweepItem,
+        bytes: &Logical<'_, '_>,
         store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
@@ -645,7 +625,7 @@ impl Analyzer for ChunkAnalyzer {
             .size
             .or_else(|| store.len(StoreNs::Data, &item.hash).ok().flatten())
         else {
-            return Err("blob absent from store".into());
+            return Err("blob size unknown".into());
         };
         if size < CHUNK_THRESHOLD {
             return Ok(AnalysisResult {
@@ -657,7 +637,9 @@ impl Analyzer for ChunkAnalyzer {
         // evictable via cross-image dedup. A blob with any non-failed
         // covering recipe is already evictable through that route;
         // chunking it would add sweep I/O + recipe metadata for no
-        // marginal dedup.
+        // marginal dedup. Checked BEFORE bytes open: every D92-admitted
+        // absent item is grounded (routed) by definition, so this
+        // settles it without paying a spill.
         let routed = db
             .recipes_for_output(item.blob_id)
             .map_err(|e| e.to_string())?
@@ -669,12 +651,7 @@ impl Analyzer for ChunkAnalyzer {
                 detail: Some("already covered by a rebuild route (D59)".into()),
             });
         }
-        let Some(file) = store
-            .get(StoreNs::Data, &item.hash)
-            .map_err(|e| e.to_string())?
-        else {
-            return Err(heal_not_resident(db, item));
-        };
+        let file = bytes.open(item, db, pulse)?;
 
         // One streaming pass: chunk, store each chunk, build segments.
         let mut inputs: Vec<InputRef> = Vec::new();
@@ -895,21 +872,17 @@ impl Analyzer for EcmAnalyzer {
     fn analyze(
         &mut self,
         item: &SweepItem,
+        bytes: &Logical<'_, '_>,
         store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
     ) -> Result<AnalysisResult, String> {
         use std::io::Read;
 
-        let Some(mut file) = store
-            .get(StoreNs::Data, &item.hash)
-            .map_err(|e| e.to_string())?
-        else {
-            return Err(heal_not_resident(db, item));
-        };
+        let mut file = bytes.open(item, db, pulse)?;
         let size = item
             .size
-            .or_else(|| store.len(StoreNs::Data, &item.hash).ok().flatten())
+            .or_else(|| file.metadata().ok().map(|m| m.len()))
             .ok_or("blob size unknown")?;
         if size < datboi_xf_ecm::SECTOR as u64 {
             return Ok(AnalysisResult {
@@ -1051,16 +1024,12 @@ impl Analyzer for NdsAnalyzer {
     fn analyze(
         &mut self,
         item: &SweepItem,
+        bytes: &Logical<'_, '_>,
         store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
     ) -> Result<AnalysisResult, String> {
-        let Some(file) = store
-            .get(StoreNs::Data, &item.hash)
-            .map_err(|e| e.to_string())?
-        else {
-            return Err(heal_not_resident(db, item));
-        };
+        let file = bytes.open(item, db, pulse)?;
         let mut rom = TickRandom { inner: file, pulse };
 
         let layout = match crate::nds::parse_layout(&mut rom) {

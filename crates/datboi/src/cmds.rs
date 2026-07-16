@@ -862,8 +862,12 @@ pub fn sweep(
             anyhow::bail!("unknown analyzer {other:?} (available: noop, chunk, preflate, ecm, nds)")
         }
     };
+    // D92: sweeps read the logical CAS — the executor serves
+    // absent-but-grounded items through a bounded spill.
+    let exec = datboi_exec::Executor::new(&env.store, datboi_exec::ExecConfig::default())?;
+    let bytes = datboi_ingest::refine::Logical::new(&env.store, &exec);
     let report =
-        datboi_ingest::refine::run_sweep(&mut env.db, &env.store, analyzer.as_mut(), limit)?;
+        datboi_ingest::refine::run_sweep(&mut env.db, &env.store, &bytes, analyzer.as_mut(), limit)?;
     if report.disabled {
         let family = analyzer.family();
         if json {

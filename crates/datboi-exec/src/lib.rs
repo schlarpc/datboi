@@ -1114,11 +1114,19 @@ impl<'s> Executor<'s> {
         Ok(true)
     }
 
+    /// An anonymous temp file in the configured spill location —
+    /// deleted by the OS when the handle drops. Public for the D92
+    /// analyzer read path: a sweep spilling an absent blob must land
+    /// on the same filesystem policy as the executor's own spills.
+    pub fn spill_tempfile(&self) -> std::io::Result<std::fs::File> {
+        match &self.config.spill_dir {
+            Some(dir) => tempfile::tempfile_in(dir),
+            None => tempfile::tempfile(),
+        }
+    }
+
     fn spill(&self, plan: &Plan) -> Result<Box<dyn RangeRead>, ExecError> {
-        let mut file = match &self.config.spill_dir {
-            Some(dir) => tempfile::tempfile_in(dir)?,
-            None => tempfile::tempfile()?,
-        };
+        let mut file = self.spill_tempfile()?;
         let mut reader = self.open_sequential(plan)?;
         let written = io::copy(&mut reader, &mut file)?;
         if written != plan.len() {

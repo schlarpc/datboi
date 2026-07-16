@@ -14,6 +14,19 @@ use datboi_ingest::analyzers::ChunkAnalyzer;
 use datboi_ingest::refine::run_sweep;
 use datboi_store_fs::{Namespace as StoreNs, Store};
 
+/// One sweep through the D92 logical-CAS shape (executor-backed reads).
+fn sweep_all(
+    db: &mut datboi_index::Db,
+    store: &datboi_store_fs::Store,
+    analyzer: &mut dyn datboi_ingest::refine::Analyzer,
+    limit: usize,
+) -> datboi_ingest::refine::SweepReport {
+    let exec = Executor::new(store, ExecConfig::default()).expect("executor");
+    let bytes = datboi_ingest::refine::Logical::new(store, &exec);
+    run_sweep(db, store, &bytes, analyzer, limit).expect("sweep")
+}
+
+
 fn pattern(len: usize, seed: u64) -> Vec<u8> {
     let mut state = seed;
     (0..len)
@@ -52,16 +65,16 @@ fn chunk_sweep_dedupes_and_eviction_shrinks_the_store() {
     let beta_hash = Blake3::compute(&beta);
 
     // Refinement sweep: both images chunked, provenance positive.
-    let sweep = run_sweep(&mut db, &store, &mut ChunkAnalyzer, 10_000).expect("sweep");
+    let sweep = sweep_all(&mut db, &store, &mut ChunkAnalyzer, 10_000);
     assert_eq!(sweep.errors.len(), 0, "{:?}", sweep.errors);
     assert_eq!(sweep.positive, 2, "both images chunked");
 
     // A second sweep only sees the new chunk blobs — all below the
     // threshold, all negative, nothing re-analyzed (the fixpoint).
-    let sweep2 = run_sweep(&mut db, &store, &mut ChunkAnalyzer, 10_000).expect("sweep");
+    let sweep2 = sweep_all(&mut db, &store, &mut ChunkAnalyzer, 10_000);
     assert_eq!(sweep2.positive, 0);
     assert!(sweep2.analyzed > 0, "chunks got their negative rows");
-    let sweep3 = run_sweep(&mut db, &store, &mut ChunkAnalyzer, 10_000).expect("sweep");
+    let sweep3 = sweep_all(&mut db, &store, &mut ChunkAnalyzer, 10_000);
     assert_eq!(sweep3.analyzed, 0, "at rest");
 
     let resident_bytes = |db: &Db| -> u64 {
@@ -163,7 +176,7 @@ fn chunking_skips_already_routed_blobs() {
         .cache()
         .query_row("SELECT COUNT(*) FROM blob", [], |row| row.get(0))
         .expect("count");
-    let sweep = run_sweep(&mut db, &store, &mut ChunkAnalyzer, 10_000).expect("sweep");
+    let sweep = sweep_all(&mut db, &store, &mut ChunkAnalyzer, 10_000);
     assert_eq!(sweep.errors.len(), 0, "{:?}", sweep.errors);
     assert_eq!(sweep.positive, 0, "routed blob is skipped (D59)");
     assert!(sweep.analyzed >= 1, "it still got its negative row");

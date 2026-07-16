@@ -41,7 +41,7 @@ use std::time::{Duration, Instant};
 use datboi_index::Db;
 use datboi_ingest::analyzers::{ChunkAnalyzer, EcmAnalyzer, NdsAnalyzer, PreflateZipAnalyzer};
 use datboi_ingest::refine::{
-    Analyzer, SweepObserver, analyzer_enabled, process_round, refresh_queue,
+    Analyzer, Logical, SweepObserver, analyzer_enabled, process_round, refresh_queue,
 };
 use datboi_store_fs::Store;
 use tracing::{debug, error, info, warn};
@@ -149,6 +149,17 @@ fn worker(db_dir: &std::path::Path, store: &'static Store, jobs: &Registry, shar
     if let Err(e) = db.optimize_at_open() {
         warn!("refine worker: pragma optimize at open: {e}");
     }
+    // D92: analyzers read the LOGICAL CAS — absent-but-grounded items
+    // spill through this executor. Losing it means no byte source at
+    // all, the same severity as losing the databases.
+    let exec = match datboi_exec::Executor::new(store, datboi_exec::ExecConfig::default()) {
+        Ok(exec) => exec,
+        Err(e) => {
+            error!("refine worker: executor: {e} — ambient refinement is OFF");
+            return;
+        }
+    };
+    let bytes = Logical::new(store, &exec);
     let mut analyzers = families();
     // The D72/D73 maintenance phases ride this same thread (one
     // background writer). Losing them degrades to refine-only, loudly.
@@ -182,7 +193,7 @@ fn worker(db_dir: &std::path::Path, store: &'static Store, jobs: &Registry, shar
             next_ambient = Instant::now() + AMBIENT_RESCAN;
         }
         for analyzer in &mut analyzers {
-            drain_family(&mut db, store, jobs, shared, analyzer.as_mut());
+            drain_family(&mut db, store, &bytes, jobs, shared, analyzer.as_mut());
         }
         // Maintenance AFTER refinement: licensing wants the routes the
         // drains just minted (the "drop a zip → evictable" motion).
@@ -239,6 +250,7 @@ impl SweepObserver for TrayObserver<'_> {
 fn drain_family(
     db: &mut Db,
     store: &'static Store,
+    bytes: &Logical<'_, '_>,
     jobs: &Registry,
     shared: &Shared,
     analyzer: &mut dyn Analyzer,
@@ -273,7 +285,7 @@ fn drain_family(
             warn!("refine worker: fresh enqueue: {e}");
         }
         let mut observer = TrayObserver { jobs, job };
-        let report = match process_round(db, store, analyzer, ROUND, &mut observer) {
+        let report = match process_round(db, store, bytes, analyzer, ROUND, &mut observer) {
             Ok(report) => report,
             Err(e) => {
                 warn!("refine job {job}: FAILED — {e}");

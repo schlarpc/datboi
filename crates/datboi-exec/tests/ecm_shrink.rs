@@ -14,6 +14,19 @@ use datboi_ingest::refine::run_sweep;
 use datboi_store_fs::{Namespace as StoreNs, Store};
 use datboi_xf_ecm::{SECTOR, rebuild_sector, stripped_len};
 
+/// One sweep through the D92 logical-CAS shape (executor-backed reads).
+fn sweep_all(
+    db: &mut datboi_index::Db,
+    store: &datboi_store_fs::Store,
+    analyzer: &mut dyn datboi_ingest::refine::Analyzer,
+    limit: usize,
+) -> datboi_ingest::refine::SweepReport {
+    let exec = Executor::new(store, ExecConfig::default()).expect("executor");
+    let bytes = datboi_ingest::refine::Logical::new(store, &exec);
+    run_sweep(db, store, &bytes, analyzer, limit).expect("sweep")
+}
+
+
 fn pattern(len: usize, seed: u64) -> Vec<u8> {
     let mut state = seed;
     (0..len)
@@ -61,7 +74,7 @@ fn ecm_sweep_licenses_evicts_and_serves_ranges() {
     )
     .expect("row");
 
-    let sweep = run_sweep(&mut db, &store, &mut EcmAnalyzer::new(), 1000).expect("sweep");
+    let sweep = sweep_all(&mut db, &store, &mut EcmAnalyzer::new(), 1000);
     assert_eq!(sweep.errors.len(), 0, "{:?}", sweep.errors);
     assert_eq!(sweep.positive, 1, "image split");
 

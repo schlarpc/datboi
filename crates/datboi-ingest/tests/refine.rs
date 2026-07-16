@@ -6,10 +6,18 @@ use std::io::Write as _;
 use datboi_core::hash::Blake3;
 use datboi_index::{AnalysisOutcome, Db, Namespace as IndexNs, Residency};
 use datboi_ingest::analyzers::PreflateZipAnalyzer;
-use datboi_ingest::refine::{Analyzer, run_sweep};
+use datboi_ingest::refine::{Analyzer, Logical, SweepReport, run_sweep};
 use datboi_store_fs::{Namespace as StoreNs, Store};
 use flate2::Compression;
 use flate2::write::DeflateEncoder;
+
+/// One sweep through the D92 logical-CAS shape (executor-backed reads).
+fn sweep_all(db: &mut Db, store: &Store, analyzer: &mut dyn Analyzer, limit: usize) -> SweepReport {
+    let exec =
+        datboi_exec::Executor::new(store, datboi_exec::ExecConfig::default()).expect("executor");
+    let bytes = Logical::new(store, &exec);
+    run_sweep(db, store, &bytes, analyzer, limit).expect("sweep")
+}
 
 fn world() -> (tempfile::TempDir, Store, Db) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -112,7 +120,7 @@ fn preflate_split_mints_rebuild_recipes_and_records_negatives() {
     let (_plain_hash, plain_id) = put(&store, &db, b"just bytes, not a container");
 
     let mut analyzer = PreflateZipAnalyzer::new();
-    let report = run_sweep(&mut db, &store, &mut analyzer, 1000).expect("sweep");
+    let report = sweep_all(&mut db, &store, &mut analyzer, 1000);
     assert_eq!(report.errors.len(), 0, "{:?}", report.errors);
     assert_eq!(report.analyzed, 3);
     assert_eq!(report.positive, 1);
@@ -165,8 +173,8 @@ fn preflate_split_mints_rebuild_recipes_and_records_negatives() {
 
     // A second sweep sees only the new products; none are zips, so all
     // negative — and a third finds nothing (the fixpoint at rest).
-    let again = run_sweep(&mut db, &store, &mut analyzer, 1000).expect("sweep");
+    let again = sweep_all(&mut db, &store, &mut analyzer, 1000);
     assert_eq!(again.positive, 0, "no zips among split products");
-    let rest = run_sweep(&mut db, &store, &mut analyzer, 1000).expect("sweep");
+    let rest = sweep_all(&mut db, &store, &mut analyzer, 1000);
     assert_eq!(rest.analyzed, 0, "fixpoint at rest");
 }

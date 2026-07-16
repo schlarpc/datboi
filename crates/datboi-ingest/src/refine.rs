@@ -16,8 +16,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use datboi_core::hash::Blake3;
-use datboi_index::{AnalysisOutcome, Db, SweepItem};
-use datboi_store_fs::Store;
+use datboi_exec::Executor;
+use datboi_index::{AnalysisOutcome, Db, Residency, SweepItem};
+use datboi_store_fs::{Namespace as StoreNs, Store};
 
 /// Identity hash for a native (non-wasm) analyzer: a domain-separated
 /// hash over a versioned name, e.g. `"noop/1"`. Bump the version to make
@@ -75,6 +76,97 @@ impl<R: std::io::Read> std::io::Read for TickReader<'_, R> {
     }
 }
 
+/// D92: the analyzer's byte source — the LOGICAL CAS. Resident
+/// literals open straight from the store; grounded absents spill
+/// through the executor's verified sequential path into an anonymous
+/// temp file (bounded, dropped with the handle — never a residency
+/// flip; that would be the planner's decision, D91's territory). One
+/// concrete type on purpose: every sweep reads through the same
+/// semantics, so "which byte source am I under" divergence is
+/// unrepresentable.
+pub struct Logical<'a, 's> {
+    store: &'a Store,
+    exec: &'a Executor<'s>,
+}
+
+impl<'a, 's> Logical<'a, 's> {
+    pub fn new(store: &'a Store, exec: &'a Executor<'s>) -> Self {
+        Self { store, exec }
+    }
+
+    /// Open one sweep item's bytes as a plain seekable file.
+    ///
+    /// The claim gate only hands out items whose bytes are obtainable
+    /// (resident, or admitted by [`Db::refresh_absent_eligibility`]),
+    /// so every failure here is environmental: the item stays queued.
+    /// One self-heal rides the resident path (D81): the index claiming
+    /// Resident while the store has no bytes means the INDEX is wrong
+    /// (wiped or swapped store dir) — demote to Absent so the row
+    /// drops out of future claims until something rematerializes it.
+    ///
+    /// A spill pulses per copied chunk — the bytes moving ARE the
+    /// lease heartbeat (D71) — and re-hashes the produced stream:
+    /// analyzers must never conclude over bytes that aren't the
+    /// item's (a mismatch wastes this sweep, never mints a claim).
+    ///
+    /// # Errors
+    /// Environmental (store I/O, no groundable route right now, spill
+    /// I/O, hash mismatch): the analysis is retryable, not settled.
+    pub fn open(
+        &self,
+        item: &SweepItem,
+        db: &Db,
+        pulse: &mut dyn Pulse,
+    ) -> Result<std::fs::File, String> {
+        use std::io::{Read, Seek, Write};
+
+        if let Some(file) = self
+            .store
+            .get(StoreNs::Data, &item.hash)
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(file);
+        }
+        match db.blob_by_hash(&item.hash).map_err(|e| e.to_string())? {
+            Some(row) if row.residency == Residency::Resident => {
+                return Err(match db.set_residency(row.blob_id, Residency::Absent) {
+                    Ok(()) => "blob not resident — index said resident, store had no bytes; \
+                               demoted to absent (D81)"
+                        .into(),
+                    Err(e) => format!("blob not resident (and the index demote failed: {e})"),
+                });
+            }
+            Some(_) => {}
+            None => return Err("sweep item has no blob row".into()),
+        }
+
+        // Grounded absent: verified sequential stream, spilled to the
+        // executor's spill location (never the OS tmp by accident —
+        // dual-layer images do not fit a tmpfs).
+        let mut stream = self
+            .exec
+            .open_stream(db, &item.hash)
+            .map_err(|e| format!("logical open of absent blob: {e}"))?;
+        let mut tmp = self.exec.spill_tempfile().map_err(|e| e.to_string())?;
+        let mut hasher = blake3::Hasher::new();
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = stream.read(&mut buf).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            tmp.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+            pulse.tick(n as u64);
+        }
+        if Blake3(*hasher.finalize().as_bytes()) != item.hash {
+            return Err("spilled route produced bytes that are not the item's".into());
+        }
+        tmp.rewind().map_err(|e| e.to_string())?;
+        Ok(tmp)
+    }
+}
+
 /// One analyzer. Implementations mint recipes/claims through their own
 /// side effects (they get store + db access) and report provenance via
 /// the returned result. What they claim must be dat-blind (D47).
@@ -91,10 +183,11 @@ pub trait Analyzer {
     /// Identity hash — what provenance rows pin (D48).
     fn id(&self) -> Blake3;
 
-    /// Analyze one blob's bytes. Long byte-crunching loops should
-    /// `pulse` as they progress (wrap the reader in [`TickReader`]) so
-    /// the item's lease outlives any fixed TTL exactly while work
-    /// advances.
+    /// Analyze one blob's bytes — read via `bytes` (the logical CAS,
+    /// D92), minted results written via `store`. Long byte-crunching
+    /// loops should `pulse` as they progress (wrap the reader in
+    /// [`TickReader`]) so the item's lease outlives any fixed TTL
+    /// exactly while work advances.
     ///
     /// # Errors
     /// A per-blob error string: recorded nowhere, item stays queued (the
@@ -103,6 +196,7 @@ pub trait Analyzer {
     fn analyze(
         &mut self,
         item: &SweepItem,
+        bytes: &Logical<'_, '_>,
         store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
@@ -130,6 +224,7 @@ impl Analyzer for NoopAnalyzer {
     fn analyze(
         &mut self,
         _item: &SweepItem,
+        _bytes: &Logical<'_, '_>,
         _store: &Store,
         _db: &mut Db,
         _pulse: &mut dyn Pulse,
@@ -282,9 +377,12 @@ pub struct NoObserver;
 impl SweepObserver for NoObserver {}
 
 /// Refresh one analyzer's queue: enqueue unanalyzed candidates
-/// (dat-blind, D47) and apply dat-aware ordering. Returns rows
-/// enqueued. Separate from [`process_round`] so a draining driver pays
-/// the full-corpus candidate scan once per wake, not once per batch.
+/// (dat-blind, D47), apply dat-aware ordering, and recompute the D92
+/// absent-admission table so this wake's claims see current
+/// groundedness. Returns rows enqueued. Separate from
+/// [`process_round`] so a draining driver pays the full-corpus
+/// candidate scan (and the grounding fixpoint) once per wake, not
+/// once per batch.
 ///
 /// # Errors
 /// Index I/O.
@@ -294,6 +392,7 @@ pub fn refresh_queue(
 ) -> Result<usize, datboi_index::IndexError> {
     let enqueued = db.enqueue_unanalyzed(&analyzer.id(), now_unix())?;
     db.bump_dat_matched_priorities()?;
+    db.refresh_absent_eligibility()?;
     Ok(enqueued)
 }
 
@@ -314,6 +413,7 @@ pub fn refresh_queue(
 pub fn process_round(
     db: &mut Db,
     store: &Store,
+    bytes: &Logical<'_, '_>,
     analyzer: &mut dyn Analyzer,
     limit: usize,
     observer: &mut dyn SweepObserver,
@@ -340,7 +440,7 @@ pub fn process_round(
         };
         observer.item_started(&item);
         let mut pulse = LeaseHeartbeat::new(&keeper, id, item.blob_id);
-        match analyzer.analyze(&item, store, db, &mut pulse) {
+        match analyzer.analyze(&item, bytes, store, db, &mut pulse) {
             Ok(result) => {
                 db.complete_sweep_item(
                     item.blob_id,
@@ -374,6 +474,7 @@ pub fn process_round(
 pub fn run_sweep(
     db: &mut Db,
     store: &Store,
+    bytes: &Logical<'_, '_>,
     analyzer: &mut dyn Analyzer,
     limit: usize,
 ) -> Result<SweepReport, datboi_index::IndexError> {
@@ -384,7 +485,7 @@ pub fn run_sweep(
         });
     }
     let enqueued = refresh_queue(db, analyzer)?;
-    let mut report = process_round(db, store, analyzer, limit, &mut NoObserver)?;
+    let mut report = process_round(db, store, bytes, analyzer, limit, &mut NoObserver)?;
     report.enqueued = enqueued;
     Ok(report)
 }

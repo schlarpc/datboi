@@ -27,13 +27,13 @@ datboi-xf-ecm = { path = "../datboi-xf-ecm" }
 # LZMA-class transform; ingest extracts members as first-class blobs.
 sevenz-rust2 = "0.21"
 thiserror.workspace = true
+# D92: analyzers consume the logical CAS — the refine sweep reads
+# absent-but-grounded blobs through the executor (bounded spill).
+datboi-exec.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
 crc32fast.workspace = true
-tempfile.workspace = true
-# The rar ingest test replays the minted derive recipe (evict → rebuild
-# the member through the ex-unrar component) end to end.
-datboi-exec.workspace = true
 
 [lints]
 workspace = true

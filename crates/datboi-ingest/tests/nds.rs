@@ -40,8 +40,11 @@ fn put(store: &Store, db: &Db, bytes: &[u8]) -> (Blake3, i64) {
 }
 
 fn sweep(db: &mut Db, store: &Store) -> datboi_ingest::refine::SweepReport {
+    let exec =
+        datboi_exec::Executor::new(store, datboi_exec::ExecConfig::default()).expect("executor");
+    let bytes = datboi_ingest::refine::Logical::new(store, &exec);
     let mut analyzer = NdsAnalyzer;
-    run_sweep(db, store, &mut analyzer, 100).expect("sweep")
+    run_sweep(db, store, &bytes, &mut analyzer, 100).expect("sweep")
 }
 
 fn analysis_details(db: &Db) -> Vec<String> {
