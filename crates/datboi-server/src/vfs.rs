@@ -62,10 +62,7 @@ impl std::fmt::Display for LookupError {
 
 /// All `view/<name>` tags as (name, snapshot hash), the serving roots.
 pub(crate) fn view_tags(app: &App) -> Result<Vec<(String, Blake3)>, LookupError> {
-    let db = app
-        .db
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let db = app.readers.get();
     let tags = db
         .list_tags()
         .map_err(|e| LookupError::Internal(e.to_string()))?;
@@ -78,10 +75,7 @@ pub(crate) fn view_tags(app: &App) -> Result<Vec<(String, Blake3)>, LookupError>
 /// Resolve a view name through its tag (the per-request D33 read).
 pub(crate) fn view_index(app: &App, name: &str) -> Result<Arc<ViewIndex>, LookupError> {
     let snapshot = {
-        let db = app
-            .db
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let db = app.readers.get();
         db.get_tag(&format!("view/{name}"))
             .map_err(|e| LookupError::Internal(e.to_string()))?
     };

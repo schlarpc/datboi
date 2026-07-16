@@ -231,10 +231,9 @@ pub(crate) async fn gate(
     } else {
         let headers = req.headers().clone();
         tokio::task::spawn_blocking(move || {
-            let db = app
-                .db
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Pure SELECT on the hottest path in the daemon: a pool
+            // reader, never the write mutex (D93).
+            let db = app.readers.get();
             resolve(&db, peer.ip(), &headers, now_unix())
         })
         .await

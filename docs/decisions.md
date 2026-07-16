@@ -2044,3 +2044,44 @@ would silently become a race — each write surface must be audited to
 row-level guards before it leaves the mutex, a per-surface follow-up,
 not a default); per-drone Executors (recompiles every component per
 thread for no isolation win).
+
+*Amendment (same day, D93 landed):* the build surfaced two latent
+race classes and settled the shape that prevents them. (1) The claim
+transaction was DEFERRED — a read-then-write whose upgrade returns
+SQLITE_BUSY without consulting the busy handler, latent since D71 for
+daemon+CLI, constant under drones. Ruling refinement, made MECHANICAL
+rather than audited-for: every read-write connection sets its
+DEFAULT transaction behavior to IMMEDIATE at open
+(`set_transaction_behavior`), so `transaction()` and
+`unchecked_transaction()` cannot mint the deferred-upgrade class at
+all; `Db::cache_write_tx`/`state_write_tx` remain the self-
+documenting spelling. Safe to flip wholesale because pure-read
+TRANSACTIONS on rw connections don't exist here — reads ride the
+read-only pool or bare statements (verified: the grounding fixpoint
+uses temp-table batches, no transaction). The audit that preceded
+the flip also converted the read-then-write sites it found (invite
+acceptance, dat unification) and hardened the migration ladder
+against concurrent first-opens (re-check the stamp inside each
+IMMEDIATE step).
+(2) Cross-thread signaling follows condvar discipline: everything a
+sleeper can be woken FOR lives under the condvar's own mutex (the
+prime's inbox) — a signal flag outside it reproduced the classic
+lost-wake, caught as a once-per-many-runs e2e flake. Also landed:
+tray notes report fleet-wide provenance deltas (a drone's positives
+must not vanish from the prime's job); job completion gates on
+fleet-idle-or-queue-empty; seek quarantine writes are best-effort
+(cache-grade by their own schema comment) so read-only serving
+connections stay serving. The worker formula
+was also revised on challenge: `max(⌈n/2⌉, n−2)` is core-
+proportional, but cores are not the binding constraint — nice(19)
+already protects the request path, the claim lock serializes small
+items (throughput plateaus at a handful of workers), preflate's
+split state is ~70 MiB worst-case per ACTIVE worker (a core-count
+fleet on 32 cores ≈ 2 GiB of ceiling), and interleaving many
+sequential NFS readers can sink aggregate throughput below one on
+spinning arrays. Landed default: `⌈n/2⌉.clamp(1, 6)` — memory- and
+IO-shaped, not CPU-shaped; big iron overrides the molten knob. What
+remains vigilance, named: write handlers still choose the write
+mutex by hand — the per-surface audit that would let writes pool
+(row-guarded check-then-act) is future work, and until then the
+mutex is the named argument.

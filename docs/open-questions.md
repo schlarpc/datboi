@@ -507,6 +507,29 @@ two things were seen and deliberately deferred:
 
 ## Next sessions (pick up here)
 
+**Position as of 2026-07-16 (D93 — fearless concurrency, ruled and
+built same day)**: refine drains are multi-threaded by default (prime
++ drones, default ⌈n/2⌉ clamped to 6 after the formula challenge —
+memory/IO-shaped, not CPU-shaped, see the D93 amendment; molten
+`refine:workers`; leases ARE the dispatcher; one shared Sync
+executor); request-path reads left the
+write mutex for a READ-ONLY connection pool (flags-level fence — a
+misclassified handler errors loudly); every read-write connection
+defaults to IMMEDIATE transactions at open (mechanical — the
+deferred-upgrade class is unrepresentable, not audited-for), with
+`Db::*_write_tx` as the self-documenting spelling. The hunt that
+followed the drone build caught and fixed, in order: the BUSY
+upgrade, a maintenance-after-refinement ordering race (drone finishes
+after the prime's drain → maintenance_due signal), a textbook
+lost-wake (signal flag outside the condvar mutex → folded into the
+prime's inbox), and lying tray notes (now fleet-wide provenance
+deltas + a completion gate). Soaked: repeated full-workspace runs
+green. OWED from D93: the per-surface write audit that would let
+writes pool (row-guarded check-then-act; until then the write mutex
+is the named argument), `refine:workers` is boot-time (live reload
+if anyone cares), and drone bursts hold the prime's family job open
+across families (cosmetic lingering, bounded by burst length).
+
 **Position as of 2026-07-15, later (build session)**: **D91 AND D92
 ARE BUILT** — the same-day landing of the morning's rulings, seven
 commits, 378 tests green. D92: cache schema v6

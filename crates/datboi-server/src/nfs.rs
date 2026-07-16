@@ -350,10 +350,7 @@ impl NFSFileSystem for NfsFs {
             let bytes = if want == 0 {
                 Vec::new()
             } else {
-                let db = app
-                    .db
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let db = app.readers.get();
                 app.exec
                     .serve_range(&db, &row.hash, start, want)
                     .map_err(|_| nfsstat3::NFS3ERR_IO)?

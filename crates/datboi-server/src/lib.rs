@@ -63,11 +63,56 @@ pub struct Config {
     pub refine: bool,
 }
 
-/// Shared server state. One SQLite handle behind a mutex serializes
-/// index reads and recipe execution across requests — correct first;
-/// per-worker read connections are a measured-need optimization.
+/// Read-only connection count. Reads are short and WAL readers never
+/// block each other or the writer; four absorbs one slow read without
+/// serializing the rest. Molten later if a surface measures a need.
+const READ_POOL_SIZE: usize = 4;
+
+/// D93: the request path's READ-ONLY connections. `get` try-locks
+/// round-robin and only blocks when every reader is busy. Read-only
+/// is enforced at the sqlite flags level ([`Db::open_read_only`]):
+/// a misclassified handler errors loudly instead of corrupting.
+pub(crate) struct ReadPool {
+    conns: Vec<Mutex<Db>>,
+    rotor: std::sync::atomic::AtomicUsize,
+}
+
+impl ReadPool {
+    fn open(db_dir: &std::path::Path, size: usize) -> anyhow::Result<Self> {
+        let conns = (0..size)
+            .map(|_| Ok(Mutex::new(Db::open_read_only(db_dir)?)))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok(Self {
+            conns,
+            rotor: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    pub(crate) fn get(&self) -> std::sync::MutexGuard<'_, Db> {
+        let start = self
+            .rotor
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        for i in 0..self.conns.len() {
+            if let Ok(guard) = self.conns[(start + i) % self.conns.len()].try_lock() {
+                return guard;
+            }
+        }
+        self.conns[start % self.conns.len()]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Shared server state (D93 shape). ONE write connection behind the
+/// mutex — its named serialization argument: check-then-act flows
+/// (invite redemption, session mint) get their atomicity from doing
+/// both halves under one hold. Reads go through the READ-ONLY pool:
+/// WAL gives readers snapshot isolation against the writer, and the
+/// flags-level read-only fence makes a misclassified handler error
+/// loudly instead of corrupting quietly.
 pub(crate) struct App {
     pub(crate) db: Mutex<Db>,
+    pub(crate) readers: ReadPool,
     pub(crate) exec: Executor<'static>,
     pub(crate) store: &'static Store,
     /// Decoded manifests by snapshot hash. Immutable objects, so
@@ -131,8 +176,13 @@ impl App {
         let refiner = config
             .refine
             .then(|| refine::Refiner::spawn(config.db_dir.clone(), store, Arc::clone(&jobs)));
+        // After the read-write open: migrations have run, so the
+        // read-only pool sees the current schema.
+        let readers =
+            ReadPool::open(&config.db_dir, READ_POOL_SIZE).context("read-only pool")?;
         Ok(Arc::new(App {
             db: Mutex::new(db),
+            readers,
             exec,
             store,
             manifests: Mutex::new(HashMap::new()),

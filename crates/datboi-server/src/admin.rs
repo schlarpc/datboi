@@ -37,6 +37,11 @@ fn lock_db(app: &App) -> std::sync::MutexGuard<'_, datboi_index::Db> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Read-only pool connection (D93) — see api.rs's twin.
+fn read_db(app: &App) -> std::sync::MutexGuard<'_, datboi_index::Db> {
+    app.readers.get()
+}
+
 // ---- GET /v1/admin/users ----
 
 pub(crate) async fn users(
@@ -46,7 +51,7 @@ pub(crate) async fn users(
     run_blocking(move || {
         require_owner(&caller)?;
         let now = auth::now_unix();
-        let db = lock_db(&app);
+        let db = read_db(&app);
         let users = db.list_users().map_err(internal)?;
         let mut grants: HashMap<i64, Vec<String>> = HashMap::new();
         for (user_id, view) in db.all_grants().map_err(internal)? {

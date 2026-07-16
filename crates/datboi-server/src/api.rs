@@ -76,6 +76,13 @@ fn lock_db(app: &App) -> std::sync::MutexGuard<'_, Db> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// A read-only pool connection (D93): the shape for handlers that
+/// never write. The sqlite-level read-only flag is the fence — a
+/// write through this guard errors loudly.
+fn read_db(app: &App) -> std::sync::MutexGuard<'_, Db> {
+    app.readers.get()
+}
+
 // ---- the 4-state entry vocabulary (web spec §7) ----
 
 /// The UI's per-entry state, derived from the D39 rollup: `verified` =
@@ -223,7 +230,7 @@ pub(crate) async fn systems(
 /// durable identity is provider/system). Counts derive from the same
 /// entry_audit rollup `datboi audit` reads.
 fn systems_body(app: &App) -> Result<SystemsResponse, Response> {
-    let db = lock_db(app);
+    let db = read_db(app);
     // Which stored ViewDefs reference each source.
     let mut views_by_source: HashMap<(String, String), Vec<String>> = HashMap::new();
     for name in datboi_catalog::list_views(&db).map_err(internal)? {
@@ -372,7 +379,7 @@ pub(crate) async fn system_entries(
 }
 
 fn entries_body(app: &App, source_id: i64, page: &Page) -> Result<EntriesPage, Response> {
-    let db = lock_db(app);
+    let db = read_db(app);
     let conn = db.cache();
     let Some(revision_id) = resolve_revision(conn, source_id)? else {
         // Source exists but nothing imported yet: an empty audit, not a
@@ -479,7 +486,7 @@ fn entry_body(app: &App, source_id: i64, name: &str) -> Result<EntryDetail, Resp
     let mut pin_targets: Vec<(usize, Blake3)> = Vec::new();
     let mut roms: Vec<RomClaim> = Vec::new();
     let mut detail = {
-        let db = lock_db(app);
+        let db = read_db(app);
         let conn = db.cache();
         let Some(revision_id) = resolve_revision(conn, source_id)? else {
             return Err(err(ErrorCode::NotFound, "no such entry"));
@@ -758,7 +765,7 @@ pub(crate) async fn views(
 fn views_body(app: &App, caller: &Caller) -> Result<ViewsResponse, Response> {
     let mut items: BTreeMap<String, (Option<Blake3>, Option<ViewDef>)> = BTreeMap::new();
     {
-        let db = lock_db(app);
+        let db = read_db(app);
         for (tag, hash) in db.list_tags().map_err(internal)? {
             if let Some(view) = tag.strip_prefix("view/") {
                 items.entry(view.to_owned()).or_default().0 = Some(hash);
@@ -865,7 +872,7 @@ pub(crate) async fn view_detail(
 
 fn view_detail_body(app: &App, caller: &Caller, name: &str) -> Result<ViewDetail, Response> {
     let (snapshot, def, image_minted) = {
-        let db = lock_db(app);
+        let db = read_db(app);
         // View-scoped resource: denial answers exactly like a miss
         // (auth.rs convention) so probing learns nothing.
         if !auth::view_allowed(&db, caller, name) {
@@ -950,7 +957,7 @@ fn view_files_body(
     {
         // View-scoped resource: denial answers exactly like a miss
         // (auth.rs convention) so probing learns nothing.
-        let db = lock_db(app);
+        let db = read_db(app);
         if !auth::view_allowed(&db, caller, name) {
             return Err(err(ErrorCode::NotFound, "no such view"));
         }
@@ -1007,7 +1014,7 @@ pub(crate) async fn storage(
 /// run ledger is jobs-registry work (docs/open-questions.md, raised
 /// 2026-07-11).
 fn storage_body(app: &App) -> Result<StorageResponse, Response> {
-    let db = lock_db(app);
+    let db = read_db(app);
     let conn = db.cache();
     // residency codes: 0 resident, 1 evicted-covered, 2 absent.
     let (blob_count, on_disk, represented) = conn
@@ -1151,7 +1158,7 @@ fn by_source_sql() -> String {
 }
 
 fn breakdown_body(app: &App) -> Result<StorageBreakdown, Response> {
-    let db = lock_db(app);
+    let db = read_db(app);
     let conn = db.cache();
     // by_class: every (namespace, residency) cell that exists. NULL
     // sizes sum as 0; the sizeless count keeps the 0 honest.
@@ -1372,7 +1379,7 @@ pub(crate) async fn blobs(
 }
 
 fn blobs_body(app: &App, page: &BlobsQuery) -> Result<BlobsPage, Response> {
-    let db = lock_db(app);
+    let db = read_db(app);
     let conn = db.cache();
     // Prefix match by substr equality, not LIKE — `%`/`_` in q must
     // not wildcard. Non-hex input just matches nothing.
@@ -1639,7 +1646,7 @@ fn sniff_blob(app: &App, hash: &Blake3) -> Option<String> {
 
 fn blob_detail_body(app: &App, hash: &Blake3) -> Result<BlobDetail, Response> {
     let mut detail = {
-        let db = lock_db(app);
+        let db = read_db(app);
         let conn = db.cache();
         let Some((blob_id, size, ns, residency, verified_at)) = conn
             .query_row(

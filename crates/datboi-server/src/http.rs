@@ -316,10 +316,7 @@ async fn view_image(
 ) -> Response {
     run_blocking(move || {
         let row = {
-            let db = app
-                .db
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let db = app.readers.get();
             // View-scoped resource: denial answers exactly like a miss
             // (auth.rs convention) so probing learns nothing. Errors
             // wear the typed /v1 shape (D69) — this is a /v1 route,
@@ -412,10 +409,7 @@ async fn serve_tree(
         let (idx, immutable, url_base) = match &tree {
             TreeRef::View(name) => {
                 let allowed = {
-                    let db = app
-                        .db
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let db = app.readers.get();
                     auth::view_allowed(&db, &caller, name)
                 };
                 if !allowed {
@@ -433,10 +427,7 @@ async fn serve_tree(
                     .parse()
                     .map_err(|_| text(StatusCode::BAD_REQUEST, "not a snapshot hash"))?;
                 let allowed = {
-                    let db = app
-                        .db
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let db = app.readers.get();
                     auth::snap_allowed(&db, &caller, &hash)
                 };
                 if !allowed {
@@ -605,10 +596,7 @@ pub(crate) fn file_response(
         // Small enough to answer in one verified read — and to report
         // failures as proper statuses instead of a broken stream.
         let result = {
-            let db = app
-                .db
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let db = app.readers.get();
             app.exec.serve_range(&db, &row.hash, start, span)
         };
         return match result {
@@ -651,10 +639,7 @@ fn feed_windows(
     // as-is.
     if row.seek == 2 {
         let resident = {
-            let db = app
-                .db
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let db = app.readers.get();
             match db.blob_by_hash(&row.hash) {
                 Ok(Some(blob)) => blob.residency == datboi_index::Residency::Resident,
                 Ok(None) => false,
@@ -665,10 +650,7 @@ fn feed_windows(
             }
         };
         if !resident {
-            let db = app
-                .db
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let db = app.readers.get();
             if let Err(e) = app.exec.materialize(&db, &row.hash) {
                 let _ = tx.blocking_send(Err(std::io::Error::other(e.to_string())));
                 return;
@@ -679,10 +661,7 @@ fn feed_windows(
     while off < end {
         let want = WINDOW.min(end - off);
         let result = {
-            let db = app
-                .db
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let db = app.readers.get();
             app.exec.serve_range(&db, &row.hash, off, want)
         };
         match result {

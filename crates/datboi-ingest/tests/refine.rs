@@ -178,3 +178,58 @@ fn preflate_split_mints_rebuild_recipes_and_records_negatives() {
     let rest = sweep_all(&mut db, &store, &mut analyzer, 1000);
     assert_eq!(rest.analyzed, 0, "fixpoint at rest");
 }
+
+/// D93: N workers over ONE leased queue — claims are atomic under
+/// WAL, so concurrent drains never duplicate an analysis (leases are
+/// dedup; at-least-once only re-runs after a lease EXPIRES, which
+/// this test never waits for). The workers share one executor
+/// (`Executor` is `Sync`) and own private `Db` connections — the
+/// exact daemon drone shape.
+#[test]
+fn concurrent_drains_share_the_queue_without_duplication() {
+    use datboi_ingest::refine::{NoObserver, NoopAnalyzer, process_round, refresh_queue};
+
+    let (dir, store, mut db) = world();
+    const BLOBS: usize = 40;
+    for i in 0..BLOBS {
+        put(&store, &db, format!("d93 blob {i}").as_bytes());
+    }
+    let enqueued = refresh_queue(&mut db, &NoopAnalyzer).expect("refresh");
+    assert_eq!(enqueued, BLOBS);
+
+    let exec =
+        datboi_exec::Executor::new(&store, datboi_exec::ExecConfig::default()).expect("executor");
+    std::thread::scope(|s| {
+        for _ in 0..2 {
+            s.spawn(|| {
+                let mut db = Db::open(dir.path()).expect("drone db");
+                let bytes = Logical::new(&store, &exec);
+                let mut analyzer = NoopAnalyzer;
+                loop {
+                    let report =
+                        process_round(&mut db, &store, &bytes, &mut analyzer, 4, &mut NoObserver)
+                            .expect("round");
+                    assert!(report.errors.is_empty(), "{:?}", report.errors);
+                    if report.analyzed == 0 {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+
+    // Exactly-once: one provenance row per blob, an empty queue.
+    let rows: i64 = db
+        .cache()
+        .query_row("SELECT COUNT(*) FROM analysis", [], |r| r.get(0))
+        .expect("q");
+    assert_eq!(rows as usize, BLOBS, "no duplicates, no losses");
+    assert_eq!(
+        db.sweep_queue_len(&{
+            use datboi_ingest::refine::Analyzer as _;
+            NoopAnalyzer.id()
+        })
+        .expect("q"),
+        0
+    );
+}

@@ -2,15 +2,21 @@
 //! serve mode — immediately for freshly-ingested content, ambiently
 //! for the rest of the corpus — instead of waiting for a CLI sweep.
 //!
-//! Shape: ONE dedicated worker thread for the daemon's lifetime,
-//! niced to the lowest CPU priority (it is optimization, never the
-//! product; on Linux `nice` also steers bfq's io priority — an
-//! explicit `ioprio_set` has no safe wrapper and waits for a measured
-//! need). The worker owns a PRIVATE `Db` connection so a minutes-long
-//! preflate split never holds the request path's `Mutex<Db>`; SQLite
-//! WAL + busy_timeout arbitrate the two connections, and every index
-//! write in the sweep path is a short transaction between long
-//! byte-crunching stretches.
+//! Shape (D93): a PRIME worker plus a fleet of DRONES, all niced to
+//! the lowest CPU priority (optimization, never the product; on Linux
+//! `nice` also steers bfq's io priority — an explicit `ioprio_set`
+//! has no safe wrapper and waits for a measured need). The prime owns
+//! everything coordination-shaped — wake handling, queue refresh (the
+//! per-wake grounding fixpoint), the tray job per family drain, lease
+//! amnesty at startup, and ALL maintenance phases — while drones do
+//! nothing but claim-analyze-complete loops. The D71 lease column is
+//! the work distribution: claims are atomic, at-least-once absorbs
+//! every race, so worker count is pure scheduling. Every worker owns
+//! a PRIVATE `Db` connection (a minutes-long preflate split never
+//! holds anyone else's lock; WAL + busy_timeout arbitrate) and shares
+//! ONE `Executor` (it is `Sync` — pinned by test — so compiled
+//! components cache once). Worker count is the D93 formula
+//! max(⌈n/2⌉, n−2), molten as `refine:workers` (read at start).
 //!
 //! Scheduling is three tiers of one queue (datboi-index consts):
 //! fresh-ingest > dat-matched > ambient backlog — D47 intact (tiers
@@ -65,6 +71,14 @@ const ERROR_BACKOFF: Duration = Duration::from_secs(60);
 /// the next item boundary, not after a long batch.
 const ROUND: usize = 1;
 
+/// Drone batch per family pass — modest, so a drone re-visits earlier
+/// families (the dependency order) instead of camping on one queue.
+const DRONE_ROUND: usize = 8;
+
+/// Drones also wake on this clock with no signal: CLI-side enqueues
+/// and expired error-leases arrive outside the prime's wake path.
+const DRONE_POLL: Duration = Duration::from_secs(120);
+
 /// Handle held by the daemon: wake the worker, feed the fresh tier.
 /// Dropping it does not stop the worker — the thread lives as long as
 /// the process, same posture as ingest jobs.
@@ -72,9 +86,33 @@ pub(crate) struct Refiner {
     shared: Arc<Shared>,
 }
 
+/// Everything the prime can be woken FOR, under the one mutex its
+/// condvar is tied to — signal state outside this struct would
+/// reintroduce the lost-wake window (check flag → drone sets flag and
+/// notifies into the void → prime sleeps a full ambient period on a
+/// stale decision). Correct by construction: you cannot signal the
+/// prime without holding the inbox.
+#[derive(Default)]
+struct PrimeInbox {
+    /// Just-ingested blob ids for the fresh tier.
+    fresh: Vec<i64>,
+    /// Drone → prime: a drain burst finished real work, so the routes
+    /// it minted are waiting on a maintenance pass (the drop-a-zip →
+    /// auto-evict one-wake motion).
+    maintenance_due: bool,
+}
+
 struct Shared {
-    pending: Mutex<Vec<i64>>,
+    inbox: Mutex<PrimeInbox>,
     wake: Condvar,
+    /// Drones currently inside a drain burst. The prime's family job
+    /// stays open while this is nonzero and its queue is nonempty —
+    /// completion must not race a drone holding the last item.
+    active_drones: std::sync::atomic::AtomicUsize,
+    /// D93 drone signal: the prime bumps the generation after every
+    /// enqueue pass; drones drain when it moves (or on DRONE_POLL).
+    drone_gen: Mutex<u64>,
+    drone_wake: Condvar,
 }
 
 impl Refiner {
@@ -86,11 +124,14 @@ impl Refiner {
         jobs: Arc<Registry>,
     ) -> Self {
         let shared = Arc::new(Shared {
-            pending: Mutex::new(Vec::new()),
+            inbox: Mutex::new(PrimeInbox::default()),
             wake: Condvar::new(),
+            active_drones: std::sync::atomic::AtomicUsize::new(0),
+            drone_gen: Mutex::new(0),
+            drone_wake: Condvar::new(),
         });
         let worker_shared = Arc::clone(&shared);
-        std::thread::spawn(move || worker(&db_dir, store, &jobs, &worker_shared));
+        std::thread::spawn(move || worker(db_dir, store, &jobs, worker_shared));
         Self { shared }
     }
 
@@ -101,7 +142,7 @@ impl Refiner {
         if blob_ids.is_empty() {
             return;
         }
-        lock(&self.shared.pending).extend(blob_ids);
+        lock(&self.shared.inbox).fresh.extend(blob_ids);
         self.shared.wake.notify_one();
     }
 }
@@ -124,13 +165,45 @@ fn families() -> Vec<Box<dyn Analyzer>> {
     ]
 }
 
-fn worker(db_dir: &std::path::Path, store: &'static Store, jobs: &Registry, shared: &Shared) {
+/// D93 worker count: `refine:workers` ("auto" or a number ≥ 1; 1
+/// restores the single-worker shape). Auto = ⌈n/2⌉ clamped to 6.
+///
+/// Why not scale with cores: nice(19) already protects the request
+/// path, so CPU count is NOT the binding constraint — three other
+/// ceilings are. (1) Claims serialize on the IMMEDIATE write lock,
+/// so small-item throughput plateaus around a handful of workers.
+/// (2) Preflate's split state is ~70 MiB worst-case per active
+/// worker (4 MiB window + 32 MiB plaintext limit + pending frame) —
+/// six workers is ~0.4 GiB of ceiling, acceptable on a NAS-adjacent
+/// daemon; thirty would not be. (3) The corpus lives on NFS, where
+/// interleaving many sequential readers can sink aggregate
+/// throughput below one reader on spinning arrays. A 32-core box
+/// with NVMe and RAM to spare overrides the molten knob; the DEFAULT
+/// serves the deployment the docs actually target.
+fn worker_count(db: &Db) -> usize {
+    if let Ok(Some(raw)) = db.config_get("refine:workers")
+        && let Ok(text) = std::str::from_utf8(&raw)
+        && let Ok(n) = text.trim().parse::<usize>()
+        && n >= 1
+    {
+        return n;
+    }
+    let n = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    n.div_ceil(2).clamp(1, 6)
+}
+
+fn worker(
+    db_dir: std::path::PathBuf,
+    store: &'static Store,
+    jobs: &Registry,
+    shared: Arc<Shared>,
+) {
     // Lowest CPU priority for THIS thread (Linux niceness is per-task,
     // so the request path is untouched). Best-effort everywhere else.
     if let Err(e) = rustix::process::nice(19) {
         warn!("refine worker: nice(19) failed ({e}); running at normal priority");
     }
-    let mut db = match Db::open(db_dir) {
+    let mut db = match Db::open(&db_dir) {
         Ok(db) => db,
         Err(e) => {
             error!("refine worker: cannot open databases: {e} — ambient refinement is OFF");
@@ -153,17 +226,31 @@ fn worker(db_dir: &std::path::Path, store: &'static Store, jobs: &Registry, shar
     // spill through this executor. Losing it means no byte source at
     // all, the same severity as losing the databases.
     let exec = match datboi_exec::Executor::new(store, datboi_exec::ExecConfig::default()) {
-        Ok(exec) => exec,
+        Ok(exec) => Arc::new(exec),
         Err(e) => {
             error!("refine worker: executor: {e} — ambient refinement is OFF");
             return;
         }
     };
+    // D93: spawn the drone fleet AFTER lease amnesty (a drone claiming
+    // pre-amnesty would only duplicate a pure function — dedup grade —
+    // but there is no reason to invite it).
+    let workers = worker_count(&db);
+    for ix in 1..workers {
+        let db_dir = db_dir.clone();
+        let exec = Arc::clone(&exec);
+        let shared = Arc::clone(&shared);
+        std::thread::spawn(move || drone(ix, &db_dir, store, &exec, &shared));
+    }
+    info!(
+        "refinement: {workers} worker(s) (1 prime + {} drone(s))",
+        workers - 1
+    );
     let bytes = Logical::new(store, &exec);
     let mut analyzers = families();
     // The D72/D73 maintenance phases ride this same thread (one
     // background writer). Losing them degrades to refine-only, loudly.
-    let maintainer = match crate::maintain::Maintainer::new(store, db_dir) {
+    let maintainer = match crate::maintain::Maintainer::new(store, &db_dir) {
         Ok(m) => Some(m),
         Err(e) => {
             warn!("refine worker: maintenance disabled (executor: {e})");
@@ -175,15 +262,25 @@ fn worker(db_dir: &std::path::Path, store: &'static Store, jobs: &Registry, shar
     let mut next_ambient = Instant::now();
 
     loop {
-        let fresh = std::mem::take(&mut *lock(&shared.pending));
+        // Take the whole inbox in one lock hold; when it is empty and
+        // the ambient clock is idle, WAIT UNDER THE SAME HOLD — the
+        // re-check-then-sleep is atomic against every signaler, so a
+        // wake cannot be lost between the decision and the sleep.
+        let (fresh, drone_work_done) = {
+            let mut inbox = lock(&shared.inbox);
+            let ambient_due = Instant::now() >= next_ambient;
+            if inbox.fresh.is_empty() && !inbox.maintenance_due && !ambient_due {
+                let timeout = next_ambient.saturating_duration_since(Instant::now());
+                drop(shared.wake.wait_timeout(inbox, timeout));
+                continue;
+            }
+            (
+                std::mem::take(&mut inbox.fresh),
+                std::mem::take(&mut inbox.maintenance_due),
+            )
+        };
         let ambient_due = Instant::now() >= next_ambient;
-        if fresh.is_empty() && !ambient_due {
-            // Nothing to do: sleep until a wake or the ambient clock.
-            let timeout = next_ambient.saturating_duration_since(Instant::now());
-            let guard = lock(&shared.pending);
-            drop(shared.wake.wait_timeout(guard, timeout));
-            continue;
-        }
+        let _ = drone_work_done; // consumed: this pass runs maintenance below.
         if let Err(e) = enqueue(&mut db, &mut analyzers, &fresh, ambient_due) {
             warn!("refine worker: enqueue: {e}");
             std::thread::sleep(ERROR_BACKOFF);
@@ -192,8 +289,13 @@ fn worker(db_dir: &std::path::Path, store: &'static Store, jobs: &Registry, shar
         if ambient_due {
             next_ambient = Instant::now() + AMBIENT_RESCAN;
         }
+        // Wake the drones: the queues just gained (or regained) work.
+        {
+            *lock(&shared.drone_gen) += 1;
+            shared.drone_wake.notify_all();
+        }
         for analyzer in &mut analyzers {
-            drain_family(&mut db, store, &bytes, jobs, shared, analyzer.as_mut());
+            drain_family(&mut db, store, &bytes, jobs, &shared, analyzer.as_mut());
         }
         // Maintenance AFTER refinement: licensing wants the routes the
         // drains just minted (the "drop a zip → evictable" motion).
@@ -229,6 +331,95 @@ fn enqueue(
         }
     }
     Ok(())
+}
+
+/// A D93 drone: claim-analyze-complete and nothing else. No tray
+/// jobs (the prime's per-family job tracks progress by queue depth,
+/// which drone completions shrink), no maintenance, no enqueueing —
+/// pure drain bandwidth over the same leased queue.
+fn drone(
+    ix: usize,
+    db_dir: &std::path::Path,
+    store: &'static Store,
+    exec: &datboi_exec::Executor<'static>,
+    shared: &Shared,
+) {
+    if let Err(e) = rustix::process::nice(19) {
+        warn!("refine drone {ix}: nice(19) failed ({e}); running at normal priority");
+    }
+    let mut db = match Db::open(db_dir) {
+        Ok(db) => db,
+        Err(e) => {
+            warn!("refine drone {ix}: cannot open databases: {e} — drone off");
+            return;
+        }
+    };
+    let bytes = Logical::new(store, exec);
+    let mut analyzers = families();
+    let mut seen = 0u64;
+    loop {
+        {
+            let generation = lock(&shared.drone_gen);
+            let generation = if *generation == seen {
+                shared
+                    .drone_wake
+                    .wait_timeout(generation, DRONE_POLL)
+                    .map(|(g, _)| g)
+                    .unwrap_or_else(|e| e.into_inner().0)
+            } else {
+                generation
+            };
+            seen = *generation;
+        }
+        // Drain until nothing claims: leased/settled items make the
+        // claim come back empty, so error backoff (items keep their
+        // lease) can't hot-spin this loop. The activity bracket is
+        // what lets the prime's job completion wait for us.
+        shared
+            .active_drones
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut did_work = false;
+        loop {
+            let mut progressed = false;
+            for analyzer in &mut analyzers {
+                match process_round(
+                    &mut db,
+                    store,
+                    &bytes,
+                    analyzer.as_mut(),
+                    DRONE_ROUND,
+                    &mut datboi_ingest::refine::NoObserver,
+                ) {
+                    Ok(report) => {
+                        progressed |= report.analyzed > 0;
+                        for (hash, error) in &report.errors {
+                            debug!("refine drone {ix}: {hash}: {error}");
+                        }
+                    }
+                    Err(e) => {
+                        warn!("refine drone {ix}: {e}");
+                        std::thread::sleep(ERROR_BACKOFF);
+                    }
+                }
+            }
+            did_work |= progressed;
+            if !progressed {
+                break;
+            }
+        }
+        shared
+            .active_drones
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        // The routes this burst minted want a maintenance pass NOW
+        // (licensing → watermark is the one-wake motion). Signal
+        // UNDER the inbox lock: the prime's sleep decision holds the
+        // same lock, so this wake cannot fall into the gap between
+        // its check and its wait.
+        if did_work {
+            lock(&shared.inbox).maintenance_due = true;
+            shared.wake.notify_one();
+        }
+    }
 }
 
 /// Names the blob under the knife in the tray ("current" line).
@@ -272,16 +463,20 @@ fn drain_family(
         "refine job {job}: {} — {queued} item(s) queued",
         analyzer.name()
     );
-    let (mut done, mut positive, mut negative, mut failed) = (0u64, 0u64, 0u64, 0u64);
+    // Fleet-wide outcome baseline (D93): the note reports what the
+    // WHOLE drain concluded — drones included — as a provenance-table
+    // delta, never this worker's private counters.
+    let (pos0, neg0) = db.analysis_counts(&id).unwrap_or((0, 0));
+    let (mut done, mut failed) = (0u64, 0u64);
     loop {
         // Mid-drain ingests jump the line: their ids enter the fresh
         // tier now, and the per-item claim picks them up next.
-        let fresh = std::mem::take(&mut *lock(&shared.pending));
+        let fresh = std::mem::take(&mut lock(&shared.inbox).fresh);
         if !fresh.is_empty()
             && let Err(e) = db.enqueue_fresh(&id, &fresh, now_unix())
         {
             // Re-stage for the outer loop rather than losing them.
-            lock(&shared.pending).extend(fresh);
+            lock(&shared.inbox).fresh.extend(fresh);
             warn!("refine worker: fresh enqueue: {e}");
         }
         let mut observer = TrayObserver { jobs, job };
@@ -297,8 +492,6 @@ fn drain_family(
             break; // operator flipped the family off mid-drain
         }
         done += report.analyzed as u64;
-        positive += report.positive as u64;
-        negative += report.negative as u64;
         for (hash, error) in &report.errors {
             failed += 1;
             debug!("refine job {job}: {hash}: {error}");
@@ -307,16 +500,38 @@ fn drain_family(
         let remaining = db.sweep_queue_len(&id).unwrap_or(0);
         jobs.refine_progress(job, done, done + remaining);
         if report.analyzed == 0 && report.errors.is_empty() {
-            break; // nothing claimable: drained (or all leased out)
+            // Nothing claimable. If a drone is mid-burst and this
+            // family still has leased items, the drain is NOT done —
+            // finishing now would under-report the note and flash a
+            // false "done" (the race the ingest e2e caught). Error-
+            // leased leftovers with an idle fleet break out as before.
+            let leased = db.sweep_queue_len(&id).unwrap_or(0);
+            let fleet_busy = shared
+                .active_drones
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > 0;
+            if leased == 0 || !fleet_busy {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
         }
     }
+    let (pos1, neg1) = db.analysis_counts(&id).unwrap_or((0, 0));
     jobs.push_note(
         job,
-        format!("{positive} rebuildable, {negative} concluded negative, {failed} error(s)"),
+        format!(
+            "{} rebuildable, {} concluded negative, {failed} error(s)",
+            pos1.saturating_sub(pos0),
+            neg1.saturating_sub(neg0)
+        ),
     );
-    jobs.refine_progress(job, done, done);
+    let remaining = db.sweep_queue_len(&id).unwrap_or(0);
+    let total = queued.max(done + remaining);
+    jobs.refine_progress(job, total.saturating_sub(remaining), total);
     jobs.finish(job, now_unix());
     info!(
-        "refine job {job}: done — {done} analyzed ({positive} positive, {negative} negative, {failed} error(s))"
+        "refine job {job}: done — {done} analyzed by this worker ({} fleet-wide positive, {} negative, {failed} error(s))",
+        pos1.saturating_sub(pos0),
+        neg1.saturating_sub(neg0)
     );
 }

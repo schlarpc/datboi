@@ -293,10 +293,7 @@ impl DavFile for RangeFile {
             let app = Arc::clone(&self.app);
             let (hash, pos) = (self.hash, self.pos);
             let bytes = blocking(move || {
-                let db = app
-                    .db
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let db = app.readers.get();
                 app.exec
                     .serve_range(&db, &hash, pos, want)
                     .map_err(|_| FsError::GeneralFailure)
