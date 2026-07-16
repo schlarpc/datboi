@@ -1488,6 +1488,14 @@ pub fn status(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
             count += 1;
             bytes += size;
         }
+        if ns == Namespace::Data {
+            // Packed members (D91) are store bytes too — the walk only
+            // sees loose files.
+            for (_, size) in env.store.list_packed() {
+                count += 1;
+                bytes += size;
+            }
+        }
         ns_stats.push((ns, count, bytes));
     }
     let conn = env.db.cache();

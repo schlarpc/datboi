@@ -133,7 +133,17 @@ impl<'s> Executor<'s> {
         // file — recovery's store scan reconciles exactly that direction
         // (bytes are truth, the DB is a cache).
         self.store.evict_literal(StoreNs::Data, hash)?;
-        db.set_residency(row.blob_id, Residency::EvictedCovered)?;
+        // A blob that was BOTH loose and packed (a re-ingested duplicate
+        // of a packed piece) just lost its duplicate, not its bytes:
+        // residency stays Resident, serving continues out of the pack.
+        db.set_residency(
+            row.blob_id,
+            if self.store.has(StoreNs::Data, hash) {
+                Residency::Resident
+            } else {
+                Residency::EvictedCovered
+            },
+        )?;
         Ok(EvictOutcome::Evicted {
             bytes_reclaimed: bytes,
         })
