@@ -212,8 +212,10 @@ the record.
   an evicted container, rather than building anything new. Update
   2026-07-15: **D91 creates exactly this population** (resident
   grounding-leaf pieces — routed on paper, route-less to the D21
-  fixpoint, so the has-any-route gate mispredicts them), so the
-  trigger becomes testable once swaps run. Sequencing note:
+  fixpoint, so the has-any-route gate mispredicts them). **LANDED
+  2026-07-16** as the D59 rank-7 amendment: the gate is now
+  `is_covered_by_others` (grounded without the blob's own literal) +
+  a resident-only guard, so grounding-leaf pieces get chunked. Sequencing note:
   NARC/SDAT interior decomposition (wasm-lanes item above) should
   eat the archive-shaped near-misses exactly, before CDC takes the
   media-stream remainder (localized movies/audio — the pieces no

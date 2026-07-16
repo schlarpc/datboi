@@ -842,6 +842,23 @@ and identical content already dedups at the blob level. Containers
 remain eligible — they are literals, and that is where archive-corpus
 dedup actually lives. *Rejected:* chunk-everything (sweep I/O +
 recipe metadata for no marginal dedup).
+*Amendment (2026-07-16, rank-7):* the "NO existing covering route"
+gate was implemented as has-any-recipe, which MISPREDICTED the
+resident grounding-leaf pieces D91 creates. A decomposition piece
+carries a `container→piece` recipe row, but its container grounds via
+this very piece — so the piece is route-LESS to the D21 fixpoint
+despite the row, and its cross-variant near-misses (MKDS USA↔EUR: 8 of
+564 pieces differ, ~1.3 MiB) are exactly what CDC should dedup. The
+gate is now `is_covered_by_others` — grounded WITHOUT the blob's own
+literal, at the same non-failed trust level — which draws the "real
+route vs recipe on paper" line precisely. Paired with an explicit
+resident-only guard (chunking mints resident chunks, so an absent
+grounded blob must NOT be chunked — that would materialize it, the
+opposite of the dedup goal; this also replaces the old gate's
+incidental reliance on absent items being "routed" to skip them
+without a spill). Sequencing note preserved: NARC/SDAT interior
+decomposition should eat the archive-shaped near-misses before CDC
+takes the media-stream remainder.
 
 ## D60 — Ingest-policy config: the minimal shape (2026-07-10)
 

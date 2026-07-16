@@ -602,6 +602,23 @@ impl Db {
     pub fn is_evictable(&self, blob_id: i64) -> Result<bool, IndexError> {
         Ok(grounded(self.cache(), GroundingMode::Eviction, Some(blob_id))?.contains(&blob_id))
     }
+
+    /// Does `blob_id` have a REAL rebuild route — one that reconstructs
+    /// it from OTHER retained bytes — as opposed to merely a recipe row?
+    /// (Grounded-without-self at the `AuditClaimed` trust level: any
+    /// non-failed claim counts, matching D59's original notion of
+    /// "covered", but the route's INPUTS must actually be grounded.)
+    ///
+    /// The rank-7 D59 fix (D91): a grounding-leaf piece carries a
+    /// `container→piece` recipe row, but its container grounds via this
+    /// very piece — so without the piece the container is ungrounded and
+    /// the recipe cannot fire. The has-any-recipe test called it
+    /// "covered" (route on paper); this correctly calls it route-LESS to
+    /// the fixpoint, so the chunker will dedup its cross-variant
+    /// near-misses.
+    pub fn is_covered_by_others(&self, blob_id: i64) -> Result<bool, IndexError> {
+        Ok(grounded(self.cache(), GroundingMode::AuditClaimed, Some(blob_id))?.contains(&blob_id))
+    }
 }
 
 /// Which recipes may carry grounding (D21) for a given question.

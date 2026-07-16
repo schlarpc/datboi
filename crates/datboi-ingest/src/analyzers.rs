@@ -633,22 +633,37 @@ impl Analyzer for ChunkAnalyzer {
                 detail: Some(format!("below {CHUNK_THRESHOLD}-byte chunking threshold")),
             });
         }
-        // D59: chunking's job is making big ROUTE-LESS literals
-        // evictable via cross-image dedup. A blob with any non-failed
-        // covering recipe is already evictable through that route;
-        // chunking it would add sweep I/O + recipe metadata for no
-        // marginal dedup. Checked BEFORE bytes open: every D92-admitted
-        // absent item is grounded (routed) by definition, so this
-        // settles it without paying a spill.
-        let routed = db
-            .recipes_for_output(item.blob_id)
+        // Chunking mints RESIDENT chunks, so it only makes sense over a
+        // resident literal — chunking an absent (grounded) blob would
+        // MATERIALIZE it, the opposite of the dedup goal. Checked before
+        // bytes open, so an absent item never pays a spill.
+        let residency = db
+            .blob_by_hash(&item.hash)
             .map_err(|e| e.to_string())?
-            .iter()
-            .any(|r| r.verify != datboi_index::VerifyState::Failed);
-        if routed {
+            .map(|row| row.residency);
+        if residency != Some(Residency::Resident) {
             return Ok(AnalysisResult {
                 outcome: AnalysisOutcome::Negative,
-                detail: Some("already covered by a rebuild route (D59)".into()),
+                detail: Some("not a resident literal — chunking would materialize it".into()),
+            });
+        }
+        // D59, rank-7 amended (D91): chunking's job is making big
+        // literals evictable via cross-image dedup. A blob with a REAL
+        // rebuild route — one that grounds it from OTHER retained bytes —
+        // is already covered; chunking adds I/O + metadata for nothing.
+        // But the old has-any-recipe test MISPREDICTED D91 grounding-leaf
+        // pieces: a piece carries a `container→piece` recipe row, yet its
+        // container grounds via this very piece, so it is route-LESS to
+        // the D21 fixpoint and its cross-variant near-misses are exactly
+        // what CDC should dedup. `is_covered_by_others` (grounded without
+        // this blob's own literal) draws that line precisely.
+        if db
+            .is_covered_by_others(item.blob_id)
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(AnalysisResult {
+                outcome: AnalysisOutcome::Negative,
+                detail: Some("already covered by a grounding route (D59)".into()),
             });
         }
         let file = bytes.open(item, db, pulse)?;

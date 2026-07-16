@@ -240,22 +240,37 @@ fn chunking_skips_already_routed_blobs() {
         )
         .expect("upsert");
 
-    // Give it a covering route (row-level is enough: eligibility reads
-    // the OR-graph, it never executes the recipe).
+    // Give it a REAL covering route: big assembles from a SEPARATE
+    // resident blob, so dropping big's own bytes still leaves it
+    // reconstructible (is_covered_by_others → true). A self-referential
+    // recipe would NOT count — that is the rank-7 grounding-leaf shape
+    // the sibling test exercises. (Row-level is enough: eligibility
+    // reads the OR-graph, it never executes the recipe.)
+    let src = pattern(4096, 0x9999_AAAA_BBBB_CCCC);
+    let src_hash = Blake3::compute(&src);
+    store.put(StoreNs::Data, src_hash, src.as_slice()).expect("put src");
+    let src_id = db
+        .upsert_blob(&src_hash, Some(src.len() as u64), IndexNs::Data, Residency::Resident)
+        .expect("upsert src");
     let meta_hash = Blake3::compute(b"pretend recipe object");
     let meta_id = db
         .upsert_blob(&meta_hash, Some(32), IndexNs::Meta, Residency::Resident)
         .expect("upsert meta");
-    db.insert_recipe(&NewRecipe {
-        blob_id: meta_id,
-        op_kind: OpKind::Builtin,
-        op_name: "assemble@1",
-        seek_class: SeekClass::Affine,
-        source: RecipeSource::LocalIngest,
-        inputs: &[(0, big_id, None)],
-        outputs: &[(0, big_id, size as u64, None)],
-    })
-    .expect("insert recipe");
+    let rid = db
+        .insert_recipe(&NewRecipe {
+            blob_id: meta_id,
+            op_kind: OpKind::Builtin,
+            op_name: "assemble@1",
+            seek_class: SeekClass::Affine,
+            source: RecipeSource::LocalIngest,
+            inputs: &[(0, src_id, None)],
+            outputs: &[(0, big_id, size as u64, None)],
+        })
+        .expect("insert recipe");
+    // Real minted recipes are Verified (D4); grounding only trusts
+    // non-pending claims.
+    db.set_verify_state(rid, datboi_index::VerifyAdvance::Verified, 1)
+        .expect("verify");
 
     let blobs_before: i64 = db
         .cache()
@@ -274,5 +289,80 @@ fn chunking_skips_already_routed_blobs() {
         db.recipes_for_output(big_id).expect("recipes").len(),
         1,
         "no chunk recipe was added"
+    );
+}
+
+/// Rank-7 D59 amendment (D91): a big GROUNDING-LEAF piece — one whose
+/// only recipe derives it from an absent container that itself grounds
+/// via this very piece — IS chunked, so its cross-variant near-misses
+/// dedup. The old has-any-recipe gate mispredicted it as "covered".
+#[test]
+fn rank7_chunks_a_grounding_leaf_piece() {
+    use datboi_index::recipes::NewRecipe;
+    use datboi_index::{Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(dir.path().join("store")).expect("store");
+    let mut db = Db::open(dir.path()).expect("db");
+
+    // A 6 MiB resident piece.
+    let size = 6 << 20;
+    let piece = pattern(size, 0xABCD_1234_5678_9AB0);
+    let piece_hash = Blake3::compute(&piece);
+    store.put(StoreNs::Data, piece_hash, piece.as_slice()).expect("put");
+    let piece_id = db
+        .upsert_blob(&piece_hash, Some(size as u64), IndexNs::Data, Residency::Resident)
+        .expect("upsert piece");
+
+    // Its container is ABSENT and grounds via this piece — the D91
+    // mutual-inverse shape: container→piece (the decomposition slice)
+    // and piece→container (the rebuild). The piece is therefore a
+    // grounding leaf: route-less to the fixpoint despite two recipe rows.
+    let cont_hash = Blake3::compute(b"absent container");
+    let cont_id = db
+        .upsert_blob(&cont_hash, Some(size as u64), IndexNs::Data, Residency::Absent)
+        .expect("upsert container");
+    for (meta, input, out) in [
+        (b"slice".as_slice(), cont_id, piece_id),
+        (b"rebuild".as_slice(), piece_id, cont_id),
+    ] {
+        let meta_id = db
+            .upsert_blob(&Blake3::compute(meta), Some(32), IndexNs::Meta, Residency::Resident)
+            .expect("meta");
+        let rid = db
+            .insert_recipe(&NewRecipe {
+                blob_id: meta_id,
+                op_kind: OpKind::Builtin,
+                op_name: "assemble@1",
+                seek_class: SeekClass::Affine,
+                source: RecipeSource::LocalIngest,
+                inputs: &[(0, input, None)],
+                outputs: &[(0, out, size as u64, None)],
+            })
+            .expect("recipe");
+        db.set_verify_state(rid, datboi_index::VerifyAdvance::Verified, 1)
+            .expect("verify");
+    }
+
+    // The piece carries recipe rows but is NOT reconstructible from
+    // other bytes — the distinction the amendment turns on.
+    assert!(
+        !db.recipes_for_output(piece_id).expect("recipes").is_empty(),
+        "the piece has recipe rows (routed on paper)"
+    );
+    assert!(
+        !db.is_covered_by_others(piece_id).expect("cover"),
+        "grounding leaf: route-less to the fixpoint"
+    );
+
+    // So the chunker chunks it (the old gate would have skipped it).
+    let sweep = sweep_all(&mut db, &store, &mut ChunkAnalyzer, 10_000);
+    assert_eq!(sweep.errors.len(), 0, "{:?}", sweep.errors);
+    assert_eq!(sweep.positive, 1, "the grounding-leaf piece got chunked");
+    // A chunk-assemble recipe now covers the piece for real (the slice
+    // recipe outputs the piece too; the rebuild outputs the container).
+    assert!(
+        db.recipes_for_output(piece_id).expect("recipes").len() >= 2,
+        "the slice recipe plus the new chunk recipe"
     );
 }
