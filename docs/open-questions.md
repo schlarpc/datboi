@@ -561,8 +561,9 @@ D97 left to the build:
   lifts them into OTEL metrics/traces with no re-instrumentation. Wants its
   own D-entry when the exporter lands (which subset is metrics vs traces,
   cardinality discipline, opt-in/endpoint config in the D95 NixOS surface).
-- **CAS-fronting handler.** DONE — both halves AND bounded-memory
-  streaming. `cas::CasProvider` serves resident literals and
+- **CAS-fronting handler.** DONE — both halves, bounded-memory
+  streaming, and (D100) meta-namespace serving + the lazy-outboard
+  recovery backstop. `cas::CasProvider` serves resident literals and
   evicted/recipe-only blobs alike (D49-verified), and streams the
   get-response incrementally: bytes pull from `Executor::open_stream`
   through a forward-only `ReadAt` into the bao encoder, which writes to the
@@ -660,6 +661,37 @@ slated for change:
   packs are local, never shared.
 
 ## Next sessions (pick up here)
+
+**Position as of 2026-07-17, later — D100 RECONCILIATION BUILT**: the
+whole reconcile→fetch-diff→rebuild arc landed in six commits, workspace
+green. Ruled first (**D100**): reconcile the PLANS (affine assemble@1
+recipe-object hashes), not the piece set — recipes run ~1/container and
+once a plan is local the missing pieces are a local closure walk;
+asymmetric reveal is the privacy design (responder streams its scope,
+the initiator's set never crosses the wire). Built: `datboi_p2p::riblt`
+(the [u8;32] rateless-IBLT port, differential-tested BYTE-FOR-BYTE
+against the pinned Go reference via committed goldens —
+testdata/riblt/gen regenerates them; SipHash keys are protocol
+constants, a wire break to touch); the `datboi/recon/1` ALPN beside the
+seedbox (1-byte scope, u64 set size, 48-byte symbol stream, stop byte +
+drain cap); CasProvider now serves the META namespace (plans fetch over
+the blobs ALPN, on-the-fly outboard, root must equal the name) and
+gained the lazy-`ensure_obao` backstop (recovery-restored literals
+missing sidecars used to hard-error to peers); and `datboi_p2p::sync` —
+prior from `Db::affine_recipe_objects`, peer plans indexed
+`source=Peer` born `Pending` (D4/D8 lazy-verify; replay advances to
+ReplayedLocal or poisons), pieces import via `put_with_obao` (D98
+staging = MemStore for now; FsStore when GB-scale wholesale fetch
+arrives), wants materialize, mirror mode (wants=[]) grounds without
+materializing. Savings are first-class: `SyncReport` + named numeric
+tracing fields (D97/D81, OTEL-liftable). e2e proof: variant pair
+sharing 6 of 8 pieces — one plan + 2 pieces cross the wire, container
+rebuilds byte-true. **Pick up here**: the OPERATOR SURFACE (D96 —
+`POST /v1/p2p/sync`-shaped job + `datboi fetch --peer`, and the web
+home showing the savings summary, the web-ui.md persona moment);
+then the D34 holdings channels / swarm tiers, the recon ACL before any
+advertisement (flagged above), hash-seq requests. The previous position
+(M6 integration) is below.
 
 **Position as of 2026-07-17, M6 iroh INTEGRATED (D97 amdt 3 + D99)**:
 `datboi-p2p` is now a daemon subsystem, not a spike. It's a workspace

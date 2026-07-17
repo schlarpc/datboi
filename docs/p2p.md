@@ -253,4 +253,10 @@ standalone like the wasm components (those never link into the daemon;
 this always does). **Designed, not built:** hash-seq requests, the opt-in swarm tiers, and
 a `datboi share` / `fetch` operator surface + web home (D96). Streaming
 landed 2026-07-17 (bounded-memory, D97 amendment 4); reconciliation ruled
-2026-07-17 as **D100** (previous section).
+AND BUILT 2026-07-17 as **D100** (previous section): the riblt codec
+(differential-tested against the reference), the recon ALPN beside the
+seedbox, meta-namespace serving (plans fetch like any bytes, plus the
+lazy-outboard backstop for recovery-restored literals), and
+`datboi_p2p::sync` — reconcile → fetch-diff → rebuild, proven e2e on a
+variant pair (one plan + 2 of 8 pieces cross the wire; mirror mode
+grounds without materializing).
