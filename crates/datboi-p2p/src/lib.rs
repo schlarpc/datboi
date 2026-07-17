@@ -102,12 +102,15 @@ pub mod cas {
 
     /// An iroh protocol handler that serves the datboi logical CAS.
     ///
-    /// `Db` wraps rusqlite and is `!Sync`, so it rides a `Mutex` exactly as
-    /// the daemon shares it; the guard is dropped before any await, never
-    /// held across the wire write.
+    /// The store is `&'static` — the daemon leaks one `Store` for process
+    /// lifetime (its `Executor` borrows it), and this handler shares that
+    /// exact instance so it sees packs/evictions as they happen. `Db` wraps
+    /// rusqlite and is `!Sync`, so it rides a `Mutex` (a dedicated
+    /// read-only handle in the daemon); the guard is dropped before any
+    /// await, never held across the wire write.
     #[derive(Clone)]
     pub struct CasProvider {
-        store: Arc<Store>,
+        store: &'static Store,
         db: Arc<Mutex<Db>>,
     }
 
@@ -121,7 +124,7 @@ pub mod cas {
 
     impl CasProvider {
         #[must_use]
-        pub fn new(store: Arc<Store>, db: Arc<Mutex<Db>>) -> Self {
+        pub fn new(store: &'static Store, db: Arc<Mutex<Db>>) -> Self {
             Self { store, db }
         }
 
@@ -199,7 +202,7 @@ pub mod cas {
             // One executor per connection (holds the wasm hosts); the store
             // borrow lives for the accept loop. Per-request is the seam if
             // this ever needs a shared engine.
-            let exec = Executor::new(&self.store, ExecConfig::default())
+            let exec = Executor::new(self.store, ExecConfig::default())
                 .map_err(|e| AcceptError::from_err(std::io::Error::other(e.to_string())))?;
             // One get-request per bidirectional stream, mirroring
             // iroh-blobs' own provider loop.
@@ -250,7 +253,9 @@ mod tests {
         use datboi_store_fs::{Namespace, Store};
 
         let dir = tempfile::tempdir()?;
-        let store = Arc::new(Store::open(dir.path().join("store"))?);
+        // Leak like the daemon (its Executor borrows the store for process
+        // lifetime), so the handler can hold `&'static Store`.
+        let store: &'static Store = Box::leak(Box::new(Store::open(dir.path().join("store"))?));
         let mut db = Db::open(dir.path())?;
         let original: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
         let hash = Blake3::compute(&original);
@@ -267,7 +272,7 @@ mod tests {
         let endpoint = Endpoint::bind(presets::N0).await?;
         endpoint.online().await;
         let addr = endpoint.addr();
-        let provider = cas::CasProvider::new(store.clone(), db);
+        let provider = cas::CasProvider::new(store, db);
         let router = Router::builder(endpoint)
             .accept(iroh_blobs::ALPN, provider)
             .spawn();
@@ -306,7 +311,7 @@ mod tests {
         use flate2::write::DeflateEncoder;
 
         let dir = tempfile::tempdir()?;
-        let store = Arc::new(Store::open(dir.path().join("store"))?);
+        let store: &'static Store = Box::leak(Box::new(Store::open(dir.path().join("store"))?));
         let mut db = Db::open(dir.path())?;
 
         // member (>16 KiB so it has a real bao tree); container = "hdr" +
@@ -376,7 +381,7 @@ mod tests {
         // Materialize the member (mints its `.obao4`), then evict the
         // literal — leaving it grounded-but-virtual.
         {
-            let exec = Executor::new(&store, ExecConfig::default())?;
+            let exec = Executor::new(store, ExecConfig::default())?;
             exec.materialize(&db, &member_hash)?;
             assert!(store.has(Namespace::Data, &member_hash), "materialized");
             let out = exec.evict(&db, &member_hash)?;
@@ -397,7 +402,7 @@ mod tests {
         let endpoint = Endpoint::bind(presets::N0).await?;
         endpoint.online().await;
         let addr = endpoint.addr();
-        let provider = cas::CasProvider::new(store.clone(), db);
+        let provider = cas::CasProvider::new(store, db);
         let router = Router::builder(endpoint)
             .accept(iroh_blobs::ALPN, provider)
             .spawn();
