@@ -63,6 +63,11 @@ pub struct Config {
     /// On by default in `datboi serve`; off in tests that need a
     /// quiescent database.
     pub refine: bool,
+    /// p2p seedbox (D97): serve our holdings to peers over iroh, under the
+    /// derived iroh identity (D99). Opt-in — off by default; enabling it
+    /// opens a network endpoint and joins n0 discovery. A start failure
+    /// (e.g. offline) is logged, not fatal.
+    pub p2p: bool,
 }
 
 /// Read-only connection count. Reads are short and WAL readers never
@@ -194,6 +199,7 @@ pub(crate) struct App {
 pub struct Server {
     listener: std::net::TcpListener,
     nfs_listen: Option<SocketAddr>,
+    p2p: bool,
     app: Arc<App>,
 }
 
@@ -291,6 +297,7 @@ impl Server {
         Ok(Self {
             listener,
             nfs_listen: config.nfs_listen,
+            p2p: config.p2p,
             app,
         })
     }
@@ -331,6 +338,40 @@ impl Server {
                     }
                 });
             }
+            // p2p seedbox (D97/D99): opt-in. Serves our holdings — the
+            // whole logical CAS (D92) — to peers under the DERIVED iroh
+            // identity. A start failure (offline, discovery down) is a
+            // warning, never fatal: the daemon's local surfaces stand.
+            let seedbox = if self.p2p {
+                let identity =
+                    datboi_catalog::statesnap::load_or_create_identity(&self.app.db_dir)?;
+                // A dedicated read-only Db so serving reads never contend
+                // with the request path's pools (serving is read-only).
+                let p2p_db =
+                    Arc::new(Mutex::new(Db::open_read_only(&self.app.db_dir)?));
+                match datboi_p2p::serve_holdings(
+                    self.app.store,
+                    p2p_db,
+                    identity.iroh_secret(),
+                )
+                .await
+                {
+                    Ok(sb) => {
+                        info!(
+                            "p2p: serving holdings — iroh endpoint {} (share this as your peer id)",
+                            sb.node_id()
+                        );
+                        Some(sb)
+                    }
+                    Err(e) => {
+                        warn!("p2p: seedbox failed to start ({e}); serving locally only");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
             let listener = tokio::net::TcpListener::from_std(self.listener)?;
             let router = http::router(self.app);
             // ConnectInfo carries the peer address into the auth gate:
@@ -341,6 +382,11 @@ impl Server {
             )
             .with_graceful_shutdown(shutdown_signal())
             .await?;
+            if let Some(sb) = seedbox
+                && let Err(e) = sb.shutdown().await
+            {
+                warn!("p2p: seedbox shutdown: {e}");
+            }
             Ok(())
         })
     }

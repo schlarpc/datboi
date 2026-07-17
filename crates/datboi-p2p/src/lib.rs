@@ -65,6 +65,57 @@ pub async fn fetch(ticket: &BlobTicket) -> Result<Vec<u8>> {
     Ok(bytes.to_vec())
 }
 
+/// A running p2p seedbox: an iroh endpoint serving our holdings (the whole
+/// logical CAS, D92/D97) to peers over the blobs protocol. Held by the
+/// daemon for the process lifetime; `shutdown` closes it gracefully.
+pub struct Seedbox {
+    router: Router,
+    /// The iroh EndpointId peers reach us by and put on ACLs (D8), display
+    /// form — logged at startup so the operator can share it.
+    pub node_id: String,
+}
+
+impl Seedbox {
+    /// The iroh EndpointId (display form).
+    #[must_use]
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    /// Close the endpoint and its accept tasks.
+    pub async fn shutdown(self) -> Result<()> {
+        self.router.shutdown().await?;
+        Ok(())
+    }
+}
+
+/// Bind an iroh endpoint under the **derived** iroh identity (D99 —
+/// `identity.iroh_secret()`, never the root or the snapshot key) and serve
+/// the datboi logical CAS to peers. The daemon's one entry point: it hands
+/// over its `&'static Store` and a dedicated read-only `Db`, and gets back
+/// a handle. Returns once bound; serving continues on the router's tasks.
+///
+/// # Errors
+/// Endpoint bind failure (e.g. no network for n0 discovery — the caller
+/// logs and runs without p2p rather than aborting the daemon).
+pub async fn serve_holdings(
+    store: &'static datboi_store_fs::Store,
+    db: std::sync::Arc<std::sync::Mutex<datboi_index::Db>>,
+    iroh_secret: [u8; 32],
+) -> Result<Seedbox> {
+    let secret = iroh::SecretKey::from_bytes(&iroh_secret);
+    let node_id = secret.public().to_string();
+    let provider = cas::CasProvider::new(store, db);
+    let endpoint = Endpoint::builder(presets::N0)
+        .secret_key(secret)
+        .bind()
+        .await?;
+    let router = Router::builder(endpoint)
+        .accept(iroh_blobs::ALPN, provider)
+        .spawn();
+    Ok(Seedbox { router, node_id })
+}
+
 /// Fronting the real CAS (D97): serve iroh-blobs' get protocol straight
 /// from the datboi CAS, reusing the on-disk `.obao4` sidecar as the bao
 /// tree — no custom-store trait exists in iroh-blobs 0.103, so we answer

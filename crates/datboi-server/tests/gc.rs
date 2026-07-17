@@ -37,6 +37,7 @@ fn fixture(configure: impl FnOnce(&Db)) -> Fixture {
         nfs_listen: None,
         detectors_dir: None,
         refine: true,
+        p2p: false,
     })
     .expect("bind");
     let addr = server.local_addr().expect("addr");

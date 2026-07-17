@@ -25,6 +25,8 @@ datboi-formats.workspace = true
 datboi-index.workspace = true
 # The upload-ingest job runs the same pipeline `datboi ingest` does.
 datboi-ingest.workspace = true
+# The p2p seedbox (D97): serve holdings to peers over iroh. Opt-in.
+datboi-p2p.workspace = true
 datboi-store-fs.workspace = true
 dav-server.workspace = true
 # Response compression for the text surfaces (JSON, UI assets, DAV XML).

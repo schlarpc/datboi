@@ -39,6 +39,7 @@ fn fixture_with_refine(refine: bool) -> Fixture {
         nfs_listen: None,
         detectors_dir: None,
         refine,
+        p2p: false,
     })
     .expect("bind");
     let addr = server.local_addr().expect("addr");
@@ -713,6 +714,7 @@ fn job_history_survives_daemon_restart() {
         nfs_listen: None,
         detectors_dir: None,
         refine: false,
+        p2p: false,
     })
     .expect("bind second");
     let addr2 = second.local_addr().expect("addr");

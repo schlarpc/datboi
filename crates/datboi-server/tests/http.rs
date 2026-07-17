@@ -106,6 +106,7 @@ fn fixture() -> Fixture {
         // Tests want a quiescent database: no background analyzer
         // perturbing counts mid-assertion.
         refine: false,
+        p2p: false,
     })
     .expect("bind");
     let addr = server.local_addr().expect("addr");

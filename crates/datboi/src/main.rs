@@ -46,6 +46,11 @@ enum Command {
         /// errand. Per-family control stays `datboi analyzer`.
         #[arg(long, env = "DATBOI_NO_REFINE")]
         no_refine: bool,
+        /// Serve holdings to peers over iroh (D97): opt-in p2p seedbox
+        /// under this instance's derived iroh identity (D99). Opens a
+        /// network endpoint and joins n0 discovery; off by default.
+        #[arg(long, env = "DATBOI_P2P")]
+        p2p: bool,
     },
     /// Hash and claim content into the store (copy semantics, D40).
     Ingest {
@@ -597,6 +602,7 @@ fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
             listen,
             nfs_listen,
             no_refine,
+            p2p,
         } => {
             // D81: the daemon logs through `tracing`; the subscriber is
             // installed here — the one place a daemon starts — never in
@@ -622,6 +628,7 @@ fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
                 // ingest applies the same skipper set CLI ingest does.
                 detectors_dir: cli.global.detectors.clone(),
                 refine: !no_refine,
+                p2p,
             })?;
             Ok(ExitCode::SUCCESS)
         }

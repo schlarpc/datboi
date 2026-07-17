@@ -554,6 +554,7 @@ mod tests {
             nfs_listen: None,
             detectors_dir: None,
             refine: false,
+            p2p: false,
         })
         .expect("app");
         let fs = NfsFs::new(Arc::clone(&app));
