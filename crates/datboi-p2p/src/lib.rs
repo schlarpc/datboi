@@ -21,6 +21,7 @@
 
 #![allow(clippy::missing_errors_doc)]
 
+pub mod recon;
 pub mod riblt;
 
 use anyhow::Result;
@@ -107,6 +108,7 @@ pub async fn serve_holdings(
 ) -> Result<Seedbox> {
     let secret = iroh::SecretKey::from_bytes(&iroh_secret);
     let node_id = secret.public().to_string();
+    let reconciler = recon::ReconProvider::new(std::sync::Arc::clone(&db));
     let provider = cas::CasProvider::new(store, db);
     let endpoint = Endpoint::builder(presets::N0)
         .secret_key(secret)
@@ -114,6 +116,7 @@ pub async fn serve_holdings(
         .await?;
     let router = Router::builder(endpoint)
         .accept(iroh_blobs::ALPN, provider)
+        .accept(recon::ALPN, reconciler)
         .spawn();
     Ok(Seedbox { router, node_id })
 }

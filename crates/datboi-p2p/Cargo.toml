@@ -25,6 +25,8 @@ bao-tree.workspace = true
 blake3.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
+# D81 logging + the D97/D100 savings telemetry (named numeric fields).
+tracing.workspace = true
 # ReadAt for the forward-only adapter that lets the random-access bao
 # encoder drive the executor's sequential stream (same crate bao-tree uses).
 positioned-io = { version = "0.3", default-features = false }

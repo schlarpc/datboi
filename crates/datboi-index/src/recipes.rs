@@ -537,6 +537,26 @@ impl Db {
             .collect())
     }
 
+    /// D100 reconciliation scope: the meta-blob hashes of every
+    /// non-Failed, affine, pure-builtin assemble route — the plans the
+    /// recon ALPN advertises and reconciles. Poisoned recipes never
+    /// advertise; Pending peer claims DO re-advertise (self-limiting: a
+    /// re-shared claim verifies or poisons at the next borrower's
+    /// rebuild, D4/D100).
+    pub fn affine_recipe_objects(&self) -> Result<Vec<Blake3>, IndexError> {
+        let mut stmt = self.cache().prepare_cached(
+            "SELECT b.hash FROM recipe r
+             JOIN blob b ON b.blob_id = r.blob_id
+             WHERE r.op_kind = 0 AND r.op_name = 'assemble@1'
+               AND r.seek_class = 0 AND r.verify != 2
+             ORDER BY b.blob_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, [u8; 32]>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows.into_iter().map(Blake3).collect())
+    }
+
     /// A rebuild route's inputs in position (coverage) order, each with
     /// its sharing evidence for the D91 predicate.
     pub fn rebuild_inputs(&self, recipe_id: i64) -> Result<Vec<RebuildInput>, IndexError> {
