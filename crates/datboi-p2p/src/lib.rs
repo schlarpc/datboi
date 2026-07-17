@@ -132,10 +132,14 @@ pub async fn serve_holdings(
 ///   1 kept past eviction.
 ///
 /// A peer never learns our residency state — the wire surface is the audit
-/// surface. Spike shortcut still standing: the whole range is buffered
-/// (`serve_range(0, total)`), so 4 GB ROMs are not yet bounded-memory; the
-/// async/streaming bao encoder over `open_stream` is the owed refinement.
+/// surface. Transfers are **bounded-memory**: bytes stream from the
+/// executor's sequential `open_stream` (O(chunk) + spill, never the whole
+/// blob) through a forward-only `ReadAt` into the bao encoder, which writes
+/// incrementally to the wire over a `spawn_blocking` + bounded-channel
+/// bridge — a 4 GB ROM never sits in RAM. The encoder validates each chunk
+/// against the retained `.obao4` as it goes (D49).
 pub mod cas {
+    use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
 
     use anyhow::{Result, anyhow};
@@ -179,48 +183,28 @@ pub mod cas {
             Self { store, db }
         }
 
-        /// Answer one get-request: `size (8 LE) ‖ bao-encoded ranges`, the
-        /// exact wire shape iroh-blobs' `export_bao` produces (same
-        /// bao-tree 0.16, same 16 KiB block). The bytes come from the
-        /// executor's `serve_range` — resident or materialized-from-recipe,
-        /// always verified against the output `.obao4` — so a corrupt local
-        /// blob or a lying recipe fails here rather than shipping bad bytes.
-        fn encode_get(&self, exec: &Executor, get: &GetRequest) -> Result<Option<Vec<u8>>> {
+        /// Stream one get-request to the wire: `size (8 LE) ‖ bao-encoded
+        /// ranges`, the exact shape iroh-blobs' `export_bao` produces (same
+        /// bao-tree 0.16, same 16 KiB block), produced INCREMENTALLY.
+        ///
+        /// The sync encode runs on a blocking thread, pulling bytes from the
+        /// executor's `open_stream` (resident literal or
+        /// recipe-materialized — bounded memory) through a forward-only
+        /// `ReadAt`, and hands each encoded chunk to the async QUIC writer
+        /// over a bounded channel (backpressure = the encoder blocks). The
+        /// encoder validates every chunk against the retained `.obao4` as it
+        /// goes (D49), so a corrupt blob or lying recipe fails mid-stream
+        /// rather than shipping bad bytes — a truncated, unverifiable
+        /// response the requester rejects.
+        async fn serve(
+            &self,
+            exec: Arc<Executor<'static>>,
+            get: GetRequest,
+            send: &mut SendStream,
+        ) -> Result<()> {
+            let store = self.store;
+            let db = Arc::clone(&self.db);
             let hash = Blake3(*get.hash.as_bytes());
-            let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
-
-            // Size: a resident literal answers from the store; an evicted
-            // blob only the index knows. Unknown to both ⇒ we don't have it.
-            let total = match self.store.len(Namespace::Data, &hash)? {
-                Some(len) => len,
-                None => match db.blob_by_hash(&hash)? {
-                    Some(row) => row
-                        .size
-                        .ok_or_else(|| anyhow!("blob {hash} grounded but size unknown"))?,
-                    None => return Ok(None),
-                },
-            };
-
-            // The whole verified blob (spike buffer). serve_range unifies
-            // literal reads and recipe materialization, D49-verified.
-            let data = exec.serve_range(&db, &hash, 0, total)?;
-            drop(db); // release before the async write; nothing below needs it
-
-            // Outboard: empty for ≤ one chunk group (no sidecar exists);
-            // otherwise the retained `.obao4` (survives eviction, D49).
-            let sidecar = if outboard_size(total) == 0 {
-                Vec::new()
-            } else {
-                self.store
-                    .get_obao(Namespace::Data, &hash)?
-                    .ok_or_else(|| anyhow!("no outboard for {hash}"))?
-            };
-            let outboard = PreOrderMemOutboard {
-                root: blake3::Hash::from_bytes(hash.0),
-                tree: BaoTree::new(total, BLOCK_SIZE),
-                data: sidecar,
-            };
-
             // Root ranges (offset 0); hash-seqs (offset > 0) are later.
             let ranges = get
                 .ranges
@@ -229,20 +213,58 @@ pub mod cas {
                 .map(|(_, r)| r.clone())
                 .unwrap_or_else(bao_tree::ChunkRanges::all);
 
-            let mut out = total.to_le_bytes().to_vec();
-            encode_ranges_validated(data.as_slice(), &outboard, &ranges, &mut out)?;
-            Ok(Some(out))
-        }
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+            let encode = tokio::task::spawn_blocking(move || -> Result<()> {
+                let guard = db.lock().unwrap_or_else(|e| e.into_inner());
+                // Size: a resident literal answers from the store; an
+                // evicted blob only the index knows. Unknown to both ⇒ we
+                // drop `tx` and send nothing (the requester's fetch fails).
+                let total = match store.len(Namespace::Data, &hash)? {
+                    Some(len) => len,
+                    None => match guard.blob_by_hash(&hash)? {
+                        Some(row) => row
+                            .size
+                            .ok_or_else(|| anyhow!("blob {hash} grounded but size unknown"))?,
+                        None => return Ok(()),
+                    },
+                };
+                // Outboard: empty for ≤ one chunk group (no sidecar);
+                // otherwise the retained `.obao4` (survives eviction, D49).
+                let sidecar = if outboard_size(total) == 0 {
+                    Vec::new()
+                } else {
+                    store
+                        .get_obao(Namespace::Data, &hash)?
+                        .ok_or_else(|| anyhow!("no outboard for {hash}"))?
+                };
+                // The reader owns its executor threads; the db guard is only
+                // needed to PLAN the route — drop it before the long encode.
+                let reader = exec.open_stream(&guard, &hash)?;
+                drop(guard);
 
-        async fn serve(
-            &self,
-            exec: &Executor<'_>,
-            get: GetRequest,
-            send: &mut SendStream,
-        ) -> Result<()> {
-            if let Some(bytes) = self.encode_get(exec, &get)? {
-                send.write_all(&bytes).await?;
+                let outboard = PreOrderMemOutboard {
+                    root: blake3::Hash::from_bytes(hash.0),
+                    tree: BaoTree::new(total, BLOCK_SIZE),
+                    data: sidecar,
+                };
+                let mut writer = ChannelWriter { tx };
+                writer.write_all(&total.to_le_bytes())?;
+                encode_ranges_validated(
+                    ForwardReadAt::new(reader),
+                    &outboard,
+                    &ranges,
+                    &mut writer,
+                )?;
+                Ok(())
+            });
+
+            // Forward chunks to the wire as the encoder produces them.
+            while let Some(chunk) = rx.recv().await {
+                send.write_all(&chunk).await?;
             }
+            // Propagate encoder panics/errors; only close cleanly on success
+            // (an error leaves `send` un-finished, so the peer sees a reset).
+            encode.await??;
             send.finish()?;
             Ok(())
         }
@@ -250,11 +272,13 @@ pub mod cas {
 
     impl ProtocolHandler for CasProvider {
         async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-            // One executor per connection (holds the wasm hosts); the store
-            // borrow lives for the accept loop. Per-request is the seam if
-            // this ever needs a shared engine.
-            let exec = Executor::new(self.store, ExecConfig::default())
-                .map_err(|e| AcceptError::from_err(std::io::Error::other(e.to_string())))?;
+            // One executor per connection (holds the wasm hosts), shared
+            // across its streams via Arc so each blocking encode borrows it.
+            // The store borrow lives for the accept loop.
+            let exec = Arc::new(
+                Executor::new(self.store, ExecConfig::default())
+                    .map_err(|e| AcceptError::from_err(std::io::Error::other(e.to_string())))?,
+            );
             // One get-request per bidirectional stream, mirroring
             // iroh-blobs' own provider loop.
             while let Ok((mut send, mut recv)) = connection.accept_bi().await {
@@ -263,11 +287,97 @@ pub mod cas {
                     .map_err(AcceptError::from_err)?;
                 if let Request::Get(get) = request {
                     // anyhow isn't std::error::Error; funnel through io::Error.
-                    self.serve(&exec, get, &mut send)
+                    self.serve(Arc::clone(&exec), get, &mut send)
                         .await
                         .map_err(|e| AcceptError::from_err(std::io::Error::other(e.to_string())))?;
                 }
             }
+            Ok(())
+        }
+    }
+
+    /// A forward-only [`positioned_io::ReadAt`] over a sequential reader —
+    /// the adapter that lets the random-access bao encoder drive a streaming
+    /// source. A full or from-start encode reads strictly forward; a later
+    /// chunk range discards forward to its first offset. A backward read
+    /// (which a full-blob encode never does) is refused, not silently wrong.
+    struct ForwardReadAt {
+        inner: std::cell::RefCell<Forward>,
+    }
+
+    struct Forward {
+        reader: Box<dyn Read + Send>,
+        cursor: u64,
+        scratch: Vec<u8>,
+    }
+
+    impl ForwardReadAt {
+        fn new(reader: Box<dyn Read + Send>) -> Self {
+            Self {
+                inner: std::cell::RefCell::new(Forward {
+                    reader,
+                    cursor: 0,
+                    scratch: vec![0u8; 64 * 1024],
+                }),
+            }
+        }
+    }
+
+    impl positioned_io::ReadAt for ForwardReadAt {
+        fn read_at(&self, pos: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+            let mut f = self.inner.borrow_mut();
+            if pos < f.cursor {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "backward read on a forward-only stream",
+                ));
+            }
+            // Discard forward to `pos` (a chunk range that skips groups).
+            while f.cursor < pos {
+                let want = usize::try_from(pos - f.cursor)
+                    .unwrap_or(usize::MAX)
+                    .min(f.scratch.len());
+                let Forward {
+                    reader,
+                    cursor,
+                    scratch,
+                } = &mut *f;
+                let n = reader.read(&mut scratch[..want])?;
+                if n == 0 {
+                    return Ok(0); // EOF before reaching pos
+                }
+                *cursor += n as u64;
+            }
+            // Fill `buf` (short only at end of stream).
+            let mut filled = 0;
+            while filled < buf.len() {
+                let n = f.reader.read(&mut buf[filled..])?;
+                if n == 0 {
+                    break;
+                }
+                filled += n;
+            }
+            f.cursor += filled as u64;
+            Ok(filled)
+        }
+    }
+
+    /// A blocking [`Write`] that hands each encoded chunk to the async QUIC
+    /// writer over a bounded channel. `blocking_send` applies backpressure:
+    /// when the wire is slow the encoder blocks, capping in-flight bytes.
+    struct ChannelWriter {
+        tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    }
+
+    impl Write for ChannelWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.tx
+                .blocking_send(buf.to_vec())
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "wire closed"))?;
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
     }

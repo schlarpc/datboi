@@ -1361,6 +1361,7 @@ dependencies = [
  "flate2",
  "iroh",
  "iroh-blobs",
+ "positioned-io",
  "tempfile",
  "tokio",
 ]

@@ -25,6 +25,9 @@ bao-tree.workspace = true
 blake3.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
+# ReadAt for the forward-only adapter that lets the random-access bao
+# encoder drive the executor's sequential stream (same crate bao-tree uses).
+positioned-io = { version = "0.3", default-features = false }
 
 [dev-dependencies]
 tempfile.workspace = true
