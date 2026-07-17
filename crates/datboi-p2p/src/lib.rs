@@ -21,6 +21,8 @@
 
 #![allow(clippy::missing_errors_doc)]
 
+pub mod riblt;
+
 use anyhow::Result;
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use iroh_blobs::{BlobsProtocol, store::mem::MemStore, ticket::BlobTicket};
@@ -417,7 +419,7 @@ mod tests {
         // Leak like the daemon (its Executor borrows the store for process
         // lifetime), so the handler can hold `&'static Store`.
         let store: &'static Store = Box::leak(Box::new(Store::open(dir.path().join("store"))?));
-        let mut db = Db::open(dir.path())?;
+        let db = Db::open(dir.path())?;
         let original: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
         let hash = Blake3::compute(&original);
         store.put(Namespace::Data, hash, original.as_slice())?;

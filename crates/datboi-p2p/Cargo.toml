@@ -28,6 +28,9 @@ tokio.workspace = true
 # ReadAt for the forward-only adapter that lets the random-access bao
 # encoder drive the executor's sequential stream (same crate bao-tree uses).
 positioned-io = { version = "0.3", default-features = false }
+# The riblt coded-symbol checksum (D100): SipHash-2-4 under fixed protocol
+# keys, matching the reference implementation's checksum construction.
+siphasher = "1"
 
 [dev-dependencies]
 tempfile.workspace = true
