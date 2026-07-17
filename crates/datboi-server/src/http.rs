@@ -64,6 +64,9 @@ fn v1() -> V1Routes {
             "/v1/dats/import",
             axum::routing::post(dats::import).layer(DefaultBodyLimit::max(dats::BODY_LIMIT)),
         )
+        // Fetch resolves + downloads the dat itself, so its JSON body is
+        // tiny (a source string) — the default limit is fine.
+        .post("/v1/dats/fetch", dats::fetch)
         // Ingest uploads STREAM to staging (never buffered), so no
         // body cap — the D56-style headroom guard in the handler is
         // the real limit.

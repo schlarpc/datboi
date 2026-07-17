@@ -17,8 +17,9 @@ use axum::body::Bytes;
 use axum::extract::{RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::Response;
-use datboi_api::{DatImportResponse, ErrorCode};
-use datboi_catalog::{CatalogError, ImportOptions, import_dat};
+use datboi_api::{DatFetchResponse, DatImportResponse, ErrorCode};
+use datboi_catalog::{CatalogError, ImportOptions, ImportReport, fetch_dat, import_dat};
+use datboi_index::Db;
 
 use crate::App;
 use crate::api::{err, parse_query, require_owner};
@@ -71,48 +72,109 @@ pub(crate) async fn import(
             },
         )
         .map_err(import_err)?;
-        // The report carries only source_id; the caller never saw the
-        // dat header, so answer the resolved identity too.
-        let (provider, system) = db
-            .cache()
-            .query_row(
-                "SELECT provider, system FROM dat_source WHERE source_id = ?1",
-                [report.source_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .map_err(|e| err(ErrorCode::Internal, &e.to_string()))?;
+        let body = import_response(&db, &report)?;
         // Operator log line (stderr is the log until the durable job
         // table — see ingest.rs run_job): a dat import rewrites what
         // the catalog wants, and the response body vanishes with the
         // request.
         tracing::info!(
-            "dat import: {provider}/{system} rev {} ({} entries)",
-            report.revision_id,
-            report.entries
+            "dat import: {}/{} rev {} ({} entries)",
+            body.provider,
+            body.system,
+            body.revision_id,
+            body.entries
+        );
+        Ok(json_response(StatusCode::OK, &body))
+    })
+    .await
+}
+
+// ---- POST /v1/dats/fetch ----
+
+/// Fetch a dat over HTTP and import it (D16/D96): the same
+/// `catalog::fetch_dat` + `import_dat` the CLI `dat fetch` verb runs.
+/// The network request runs WITHOUT the db lock (a 60 s timeout must
+/// never block the pipeline writer); only the import takes it.
+pub(crate) async fn fetch(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+    crate::http::ApiJson(req): crate::http::ApiJson<datboi_api::DatFetchRequest>,
+) -> Response {
+    run_blocking(move || {
+        require_owner(&caller)?;
+        if req.source.trim().is_empty() {
+            return Err(err(ErrorCode::BadRequest, "source is required"));
+        }
+        let fetched = fetch_dat(&req.source).map_err(import_err)?;
+        // Empty overrides mean "use the dat header", same as the CLI.
+        let provider = req.provider.as_deref().filter(|s| !s.is_empty());
+        let system = req.system.as_deref().filter(|s| !s.is_empty());
+        let mut db = app
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let report = import_dat(
+            app.store,
+            &mut db,
+            &fetched.bytes,
+            &ImportOptions {
+                provider: provider.or(fetched.provider_default),
+                system,
+                imported_at: auth::now_unix(),
+            },
+        )
+        .map_err(import_err)?;
+        let import = import_response(&db, &report)?;
+        tracing::info!(
+            "dat fetch: {} -> {}/{} rev {} ({} entries)",
+            fetched.url,
+            import.provider,
+            import.system,
+            import.revision_id,
+            import.entries
         );
         Ok(json_response(
             StatusCode::OK,
-            &DatImportResponse {
-                source_id: report.source_id,
-                revision_id: report.revision_id,
-                dat_blob: report.dat_blob.to_hex(),
-                provider,
-                system,
-                entries: report.entries,
-                claims: report.claims,
-                demoted_revisions: report.demoted_revisions,
+            &DatFetchResponse {
+                url: fetched.url,
+                import,
             },
         ))
     })
     .await
 }
 
-/// A dat that won't parse is the caller's problem (400); store/index
-/// failures are ours (500). import_dat validates before storing, so a
-/// refused body leaves no blob behind.
+/// Build the import receipt: the report carries only `source_id`, but a
+/// web caller never saw the dat header, so resolve the identity too.
+fn import_response(db: &Db, report: &ImportReport) -> Result<DatImportResponse, Response> {
+    let (provider, system) = db
+        .cache()
+        .query_row(
+            "SELECT provider, system FROM dat_source WHERE source_id = ?1",
+            [report.source_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(|e| err(ErrorCode::Internal, &e.to_string()))?;
+    Ok(DatImportResponse {
+        source_id: report.source_id,
+        revision_id: report.revision_id,
+        dat_blob: report.dat_blob.to_hex(),
+        provider,
+        system,
+        entries: report.entries,
+        claims: report.claims,
+        demoted_revisions: report.demoted_revisions.clone(),
+    })
+}
+
+/// A dat that won't parse — or a fetch that failed on caller-supplied
+/// input (bad source, unreachable URL, non-datfile zip) — is the
+/// caller's problem (400); store/index failures are ours (500).
+/// import_dat validates before storing, so a refused body leaves no blob
+/// behind.
 fn import_err(e: CatalogError) -> Response {
     let code = match &e {
-        CatalogError::Parse(_) => ErrorCode::BadRequest,
+        CatalogError::Parse(_) | CatalogError::Fetch(_) => ErrorCode::BadRequest,
         _ => ErrorCode::Internal,
     };
     err(code, &e.to_string())

@@ -414,6 +414,51 @@
         "format": "binary",
         "type": "string"
       },
+      "DatFetchRequest": {
+        "description": "Fetch a dat over HTTP and import it (Redump auto-fetch, D16).",
+        "properties": {
+          "provider": {
+            "description": "Provider override; `redump/...` defaults to \"Redump\", else the\ndat header decides.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "description": "A full URL, or `redump/<system-slug>` (e.g. `redump/psx`).",
+            "type": "string"
+          },
+          "system": {
+            "description": "System override; the dat header decides when absent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "type": "object"
+      },
+      "DatFetchResponse": {
+        "description": "A fetch receipt: the resolved URL that was fetched, plus the import\noutcome (the artifact went through the normal import path — D15).",
+        "properties": {
+          "import": {
+            "$ref": "#/components/schemas/DatImportResponse",
+            "description": "The import receipt for the fetched dat."
+          },
+          "url": {
+            "description": "The URL actually fetched (a `redump/...` source resolves here).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "import"
+        ],
+        "type": "object"
+      },
       "DatImportResponse": {
         "description": "One import's receipt — the same fields `datboi dat import --json`\nprints, plus the resolved source identity (the web caller never saw\nthe dat header, so it can't derive provider/system itself).",
         "properties": {
@@ -3694,6 +3739,65 @@
         "summary": "Verify one blob right now (D80): re-hash the resident bytes,\nstamp `verified_at` on match, fail the job with evidence on\nmismatch. The second pipeline verb to graduate from CLI-only —\nverification is the product's core promise, and \"when was this\nlast checked?\" is exactly when the user must be able to act.\nResident literals only: a rebuildable blob verifies by replay,\nwhich stays CLI.",
         "tags": [
           "storage"
+        ]
+      }
+    },
+    "/v1/dats/fetch": {
+      "post": {
+        "operationId": "dat_fetch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DatFetchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatFetchResponse"
+                }
+              }
+            },
+            "description": "Fetched and imported"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Bad source, fetch failure, or unparseable dat"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Fetch a dat over HTTP and import it (Redump auto-fetch, D16/D96) —\nthe same operation as `datboi dat fetch`. The network request runs\noff the pipeline writer; the fetched artifact goes through the normal\nimport path (D15).",
+        "tags": [
+          "systems"
         ]
       }
     },

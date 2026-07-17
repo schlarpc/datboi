@@ -415,6 +415,32 @@ pub struct DatImportResponse {
     pub demoted_revisions: Vec<i64>,
 }
 
+// ---- POST /v1/dats/fetch (D16/D96 auto-fetch) ----
+
+/// Fetch a dat over HTTP and import it (Redump auto-fetch, D16).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DatFetchRequest {
+    /// A full URL, or `redump/<system-slug>` (e.g. `redump/psx`).
+    pub source: String,
+    /// Provider override; `redump/...` defaults to "Redump", else the
+    /// dat header decides.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// System override; the dat header decides when absent.
+    #[serde(default)]
+    pub system: Option<String>,
+}
+
+/// A fetch receipt: the resolved URL that was fetched, plus the import
+/// outcome (the artifact went through the normal import path — D15).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DatFetchResponse {
+    /// The URL actually fetched (a `redump/...` source resolves here).
+    pub url: String,
+    /// The import receipt for the fetched dat.
+    pub import: DatImportResponse,
+}
+
 // ---- GET /v1/views (+ detail) ----
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

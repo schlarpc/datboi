@@ -23,7 +23,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
 
 use crate::{
     AdminUsersResponse, AnalyzerConfigRequest, AnalyzerInfo, AnalyzersResponse, ApiError,
-    BlobDetail, BlobsPage, DatImportResponse, EntriesPage,
+    BlobDetail, BlobsPage, DatFetchRequest, DatFetchResponse, DatImportResponse, EntriesPage,
     EntryDetail, EntryState, EvictPlan, EvictRequest,
     GcApplyRequest, GcApplyResponse, GcConfig, GcConfigRequest,
     GcKeepRequest, GrantAddRequest,
@@ -190,6 +190,24 @@ fn system_entry() {}
     ),
 )]
 fn dat_import() {}
+
+/// Fetch a dat over HTTP and import it (Redump auto-fetch, D16/D96) —
+/// the same operation as `datboi dat fetch`. The network request runs
+/// off the pipeline writer; the fetched artifact goes through the normal
+/// import path (D15).
+#[utoipa::path(
+    post,
+    path = "/v1/dats/fetch",
+    tag = "systems",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    request_body = DatFetchRequest,
+    responses(
+        (status = 200, description = "Fetched and imported", body = DatFetchResponse),
+        (status = 400, description = "Bad source, fetch failure, or unparseable dat", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+    ),
+)]
+fn dat_fetch() {}
 
 // ---- view authoring (owner-only) ----
 
@@ -860,6 +878,7 @@ fn sweep() {}
         system_entries,
         system_entry,
         dat_import,
+        dat_fetch,
         ingest_upload,
         ingest_start,
         analyzers,

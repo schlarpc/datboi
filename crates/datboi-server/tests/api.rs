@@ -947,3 +947,45 @@ fn sweep_over_http() {
     let note = done["report"]["notes"][0].as_str().expect("note");
     assert!(note.contains("analyzed") && note.contains("queued"), "{note}");
 }
+
+/// D96: the dat fetch verb reaches the HTTP surface. A bad source is a
+/// clean 400; a real fetch pulls a bare dat from a one-shot upstream and
+/// runs it through the normal import path (D15), answering the resolved
+/// URL plus the import receipt.
+#[test]
+fn dat_fetch_over_http() {
+    use std::io::Write as _;
+    let f = fixture();
+
+    // Bad source: rejected before any network I/O.
+    let (status, _) = request(f.addr, "POST", "/v1/dats/fetch", r#"{"source":"not-a-url"}"#);
+    assert_eq!(status, 400, "bad source");
+
+    // One-shot upstream serving a bare Logiqx dat.
+    let dat = r#"<?xml version="1.0"?>
+<datafile><header><name>fetched</name></header>
+<game name="Zeta"><description>Zeta</description><rom name="Zeta.gba" size="3" crc="00000000" sha1="0000000000000000000000000000000000000000"/></game>
+</datafile>"#;
+    let body = dat.as_bytes().to_vec();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut buf = [0u8; 4096];
+        let _ = std::io::Read::read(&mut stream, &mut buf);
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(&body).unwrap();
+    });
+    let src = format!("http://127.0.0.1:{port}/datfile/");
+    let req_body = format!(r#"{{"source":"{src}","provider":"fetchprov","system":"fetchsys"}}"#);
+    let (status, v) = request(f.addr, "POST", "/v1/dats/fetch", &req_body);
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["url"], src, "{v}");
+    assert_eq!(v["import"]["provider"], "fetchprov", "{v}");
+    assert_eq!(v["import"]["system"], "fetchsys", "{v}");
+    assert!(v["import"]["entries"].as_u64().expect("entries") >= 1, "{v}");
+}
