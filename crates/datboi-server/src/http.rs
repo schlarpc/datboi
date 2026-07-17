@@ -67,6 +67,15 @@ fn v1() -> V1Routes {
         // Fetch resolves + downloads the dat itself, so its JSON body is
         // tiny (a source string) — the default limit is fine.
         .post("/v1/dats/fetch", dats::fetch)
+        .get("/v1/dats/{provider}/{system}/diff", dats::diff)
+        .get("/v1/dats/{provider}/{system}/export", dats::export)
+        // A linked clonelist is a JSON file body — small, but past the
+        // 2 MiB default for the multi-system case.
+        .post_router(
+            "/v1/dats/{provider}/{system}/clonelist",
+            axum::routing::post(dats::clonelist)
+                .layer(DefaultBodyLimit::max(dats::CLONELIST_LIMIT)),
+        )
         // Ingest uploads STREAM to staging (never buffered), so no
         // body cap — the D56-style headroom guard in the handler is
         // the real limit.

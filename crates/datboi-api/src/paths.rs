@@ -23,7 +23,8 @@ use utoipa::{Modify, OpenApi, ToSchema};
 
 use crate::{
     AdminUsersResponse, AnalyzerConfigRequest, AnalyzerInfo, AnalyzersResponse, ApiError,
-    BlobDetail, BlobsPage, DatFetchRequest, DatFetchResponse, DatImportResponse, EntriesPage,
+    BlobDetail, BlobsPage, ClonelistResponse, DatDiffResponse, DatFetchRequest, DatFetchResponse,
+    DatImportResponse, EntriesPage,
     EntryDetail, EntryState, EvictPlan, EvictRequest,
     GcApplyRequest, GcApplyResponse, GcConfig, GcConfigRequest,
     GcKeepRequest, GrantAddRequest,
@@ -208,6 +209,67 @@ fn dat_import() {}
     ),
 )]
 fn dat_fetch() {}
+
+/// Diff a source's two newest revisions (previous → current, D38/D96) —
+/// the same output as `datboi dat diff`. A pure read; an empty diff is a
+/// 200 with empty lists.
+#[utoipa::path(
+    get,
+    path = "/v1/dats/{provider}/{system}/diff",
+    tag = "systems",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    params(
+        ("provider" = String, Path, description = "Dat source provider"),
+        ("system" = String, Path, description = "Dat source system"),
+    ),
+    responses(
+        (status = 200, description = "The revision diff", body = DatDiffResponse),
+        (status = 400, description = "Source has only one materialized revision", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+        (status = 404, description = "No such source", body = ApiError),
+    ),
+)]
+fn dat_diff() {}
+
+/// Export a source's current revision as a Logiqx dat (dir2dat, D29/D96)
+/// — the same bytes `datboi export dat` writes. A raw XML download.
+#[utoipa::path(
+    get,
+    path = "/v1/dats/{provider}/{system}/export",
+    tag = "systems",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    params(
+        ("provider" = String, Path, description = "Dat source provider"),
+        ("system" = String, Path, description = "Dat source system"),
+    ),
+    responses(
+        (status = 200, description = "The dat file bytes (application/xml)", content_type = "application/xml"),
+        (status = 403, description = "Owner only", body = ApiError),
+        (status = 404, description = "No such source or no current revision", body = ApiError),
+    ),
+)]
+fn dat_export() {}
+
+/// Link a retool clonelist to a source (D57/D96) — the same operation as
+/// `datboi dat clonelist`. The body is the raw clonelist JSON.
+#[utoipa::path(
+    post,
+    path = "/v1/dats/{provider}/{system}/clonelist",
+    tag = "systems",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    params(
+        ("provider" = String, Path, description = "Dat source provider"),
+        ("system" = String, Path, description = "Dat source system"),
+    ),
+    request_body(content = DatBytes, content_type = "application/octet-stream", description = "The retool clonelist JSON"),
+    responses(
+        (status = 200, description = "Clonelist linked", body = ClonelistResponse),
+        (status = 400, description = "Empty or malformed clonelist", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+        (status = 404, description = "No such source", body = ApiError),
+    ),
+)]
+fn dat_clonelist() {}
 
 // ---- view authoring (owner-only) ----
 
@@ -879,6 +941,9 @@ fn sweep() {}
         system_entry,
         dat_import,
         dat_fetch,
+        dat_diff,
+        dat_export,
+        dat_clonelist,
         ingest_upload,
         ingest_start,
         analyzers,

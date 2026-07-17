@@ -989,3 +989,37 @@ fn dat_fetch_over_http() {
     assert_eq!(v["import"]["system"], "fetchsys", "{v}");
     assert!(v["import"]["entries"].as_u64().expect("entries") >= 1, "{v}");
 }
+
+/// D96: the dat diff / export / clonelist verbs reach the HTTP surface.
+/// Export streams the current revision as XML; diff needs two revisions
+/// (the fixture has one → 400) and 404s an unknown source; clonelist
+/// links a retool JSON body.
+#[test]
+fn dat_diff_export_clonelist_over_http() {
+    let f = fixture();
+
+    // Export: the current revision as an XML download.
+    let resp = get_raw(f.addr, "/v1/dats/no-intro/gba/export", None);
+    assert_eq!(resp.status(), 200);
+    assert!(
+        resp.header("content-type").unwrap_or("").contains("xml"),
+        "content type"
+    );
+    let xml = String::from_utf8(body_bytes(resp)).expect("utf8");
+    assert!(xml.contains("Alpha"), "{xml}");
+
+    // Export of an unknown source is a 404 (JSON error).
+    assert_eq!(get(f.addr, "/v1/dats/no-intro/nope/export").0, 404);
+
+    // Diff: only one revision materialized → 400 with the helpful text.
+    assert_eq!(get(f.addr, "/v1/dats/no-intro/gba/diff").0, 400);
+    // Unknown source → 404.
+    assert_eq!(get(f.addr, "/v1/dats/no-intro/nope/diff").0, 404);
+
+    // Clonelist: link a minimal retool clonelist (one non-regex term).
+    let cl = br#"{"variants":[{"group":"Alpha","titles":[{"searchTerm":"Alpha (USA)"}]}]}"#;
+    let (status, v) = post_bytes(f.addr, "/v1/dats/no-intro/gba/clonelist", cl);
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["terms"], 1, "{v}");
+    assert_eq!(v["hash"].as_str().expect("hash").len(), 64, "{v}");
+}

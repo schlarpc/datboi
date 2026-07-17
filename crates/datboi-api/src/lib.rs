@@ -441,6 +441,51 @@ pub struct DatFetchResponse {
     pub import: DatImportResponse,
 }
 
+// ---- GET /v1/dats/{provider}/{system}/diff (D38/D96) ----
+
+/// An entry name that changed across revisions: `from` → `to`. For
+/// `renamed` the content is identical and only the name moved; for
+/// `rehashed` the claim content changed (and `from == to` when only the
+/// content, not the name, differs).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DatNameChange {
+    pub from: String,
+    pub to: String,
+}
+
+/// The diff of a source's two newest revisions (previous → current, D38).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DatDiffResponse {
+    pub provider: String,
+    pub system: String,
+    pub revision_old: i64,
+    pub revision_new: i64,
+    pub entries_old: u64,
+    pub entries_new: u64,
+    /// Entry names present only in the new revision.
+    pub added: Vec<String>,
+    /// Entry names present only in the old revision.
+    pub removed: Vec<String>,
+    /// Same content, new name.
+    pub renamed: Vec<DatNameChange>,
+    /// Matched entries whose claim content changed.
+    pub rehashed: Vec<DatNameChange>,
+}
+
+// ---- POST /v1/dats/{provider}/{system}/clonelist (D57/D96) ----
+
+/// A linked retool clonelist's receipt (D57): the stored blob and the
+/// mapping counts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ClonelistResponse {
+    /// blake3 of the stored clonelist blob, lowercase hex.
+    pub hash: String,
+    /// searchTerm → group mappings usable by selection.
+    pub terms: u64,
+    /// Entries skipped (regex nameType, malformed rows).
+    pub skipped: u64,
+}
+
 // ---- GET /v1/views (+ detail) ----
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

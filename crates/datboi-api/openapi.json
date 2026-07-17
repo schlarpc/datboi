@@ -381,6 +381,33 @@
         ],
         "type": "object"
       },
+      "ClonelistResponse": {
+        "description": "A linked retool clonelist's receipt (D57): the stored blob and the\nmapping counts.",
+        "properties": {
+          "hash": {
+            "description": "blake3 of the stored clonelist blob, lowercase hex.",
+            "type": "string"
+          },
+          "skipped": {
+            "description": "Entries skipped (regex nameType, malformed rows).",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "terms": {
+            "description": "searchTerm → group mappings usable by selection.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "hash",
+          "terms",
+          "skipped"
+        ],
+        "type": "object"
+      },
       "Counts": {
         "description": "The D39 entry-audit rollup, bucketed into the 4-state vocabulary.",
         "properties": {
@@ -413,6 +440,76 @@
         "description": "Marker schema for the dat-import upload body: the raw dat file\nbytes, not JSON (and not multipart — one file IS the request).",
         "format": "binary",
         "type": "string"
+      },
+      "DatDiffResponse": {
+        "description": "The diff of a source's two newest revisions (previous → current, D38).",
+        "properties": {
+          "added": {
+            "description": "Entry names present only in the new revision.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "entries_new": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "entries_old": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "rehashed": {
+            "description": "Matched entries whose claim content changed.",
+            "items": {
+              "$ref": "#/components/schemas/DatNameChange"
+            },
+            "type": "array"
+          },
+          "removed": {
+            "description": "Entry names present only in the old revision.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "renamed": {
+            "description": "Same content, new name.",
+            "items": {
+              "$ref": "#/components/schemas/DatNameChange"
+            },
+            "type": "array"
+          },
+          "revision_new": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "revision_old": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "system": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "system",
+          "revision_old",
+          "revision_new",
+          "entries_old",
+          "entries_new",
+          "added",
+          "removed",
+          "renamed",
+          "rehashed"
+        ],
+        "type": "object"
       },
       "DatFetchRequest": {
         "description": "Fetch a dat over HTTP and import it (Redump auto-fetch, D16).",
@@ -539,6 +636,22 @@
           "provider",
           "system",
           "entries"
+        ],
+        "type": "object"
+      },
+      "DatNameChange": {
+        "description": "An entry name that changed across revisions: `from` → `to`. For\n`renamed` the content is identical and only the name moved; for\n`rehashed` the claim content changed (and `from == to` when only the\ncontent, not the name, differs).",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
         ],
         "type": "object"
       },
@@ -3879,6 +3992,240 @@
           }
         ],
         "summary": "Import a dat file — the same operation as `datboi dat import`. The\nbody is the raw dat bytes in any supported format (Logiqx,\nClrMamePro, RomCenter, MAME XML / software list); format detection\nand the provider/system defaults come from the bytes themselves.",
+        "tags": [
+          "systems"
+        ]
+      }
+    },
+    "/v1/dats/{provider}/{system}/clonelist": {
+      "post": {
+        "operationId": "dat_clonelist",
+        "parameters": [
+          {
+            "description": "Dat source provider",
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Dat source system",
+            "in": "path",
+            "name": "system",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "$ref": "#/components/schemas/DatBytes"
+              }
+            }
+          },
+          "description": "The retool clonelist JSON",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClonelistResponse"
+                }
+              }
+            },
+            "description": "Clonelist linked"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Empty or malformed clonelist"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "No such source"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Link a retool clonelist to a source (D57/D96) — the same operation as\n`datboi dat clonelist`. The body is the raw clonelist JSON.",
+        "tags": [
+          "systems"
+        ]
+      }
+    },
+    "/v1/dats/{provider}/{system}/diff": {
+      "get": {
+        "operationId": "dat_diff",
+        "parameters": [
+          {
+            "description": "Dat source provider",
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Dat source system",
+            "in": "path",
+            "name": "system",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatDiffResponse"
+                }
+              }
+            },
+            "description": "The revision diff"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Source has only one materialized revision"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "No such source"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Diff a source's two newest revisions (previous → current, D38/D96) —\nthe same output as `datboi dat diff`. A pure read; an empty diff is a\n200 with empty lists.",
+        "tags": [
+          "systems"
+        ]
+      }
+    },
+    "/v1/dats/{provider}/{system}/export": {
+      "get": {
+        "operationId": "dat_export",
+        "parameters": [
+          {
+            "description": "Dat source provider",
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Dat source system",
+            "in": "path",
+            "name": "system",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/xml": {}
+            },
+            "description": "The dat file bytes (application/xml)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "No such source or no current revision"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Export a source's current revision as a Logiqx dat (dir2dat, D29/D96)\n— the same bytes `datboi export dat` writes. A raw XML download.",
         "tags": [
           "systems"
         ]
