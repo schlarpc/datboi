@@ -512,7 +512,37 @@ two things were seen and deliberately deferred:
 
 ## Next sessions (pick up here)
 
-**Position as of 2026-07-16, newest (D96 backend pass — COMPLETE, every
+**Position as of 2026-07-16, newest (D96 web-UI pass — COMPLETE)**: the
+deferred web surfaces landed in seven commits, all building on the
+settled backend contract, workspace + web green, `nix build .#web`
+hermetic. Every new capability now has a web home, following
+web-ui.md (management-by-exception, one-canonical-home, product
+vocabulary, wuchale-extracted copy):
+  - **Storage** owns maintenance and grew live triggers: Scrub run
+    (POST /v1/scrub, tray-followed), a Backup row (POST /v1/snapshot,
+    "restore point"), an Eviction panel reading the live watermark with
+    tune (GET/PUT /v1/gc/config) + manual reclaim-now (dry-run plan →
+    guarded Gc job), and an Optimization panel (analyzer enable/disable
+    over PUT /v1/analyzers/{family} + per-family sweep via POST /v1/sweep).
+    All power controls sit behind a "tune" toggle — quiet until looked at.
+  - **Blob page**: a non-resident blob with a rebuild route gains
+    "bring on disk" (POST …/materialize), refetching to flip residency.
+  - **Library**: a fetch input beside the drop-zone (POST /v1/dats/fetch,
+    URL or redump/<slug>), receipt in the same import log.
+  - **Audit**: the placeholder "diff" scaffold became real (GET …/diff,
+    inline added/removed/renamed/rehashed), plus "export dat" (download
+    anchor to …/export) and a "clonelist" file-picker (POST …/clonelist).
+  Client fns + type aliases per verb in `web/src/lib/api/`; every route
+  got mock-api support (incl. a `readJsonBody` helper) and component
+  tests (227 vitest green). Deliberately left CLI-only / future: dat
+  revision history + revision picker (no API), scrub sample-% and
+  per-family sweep limits (power options), analyzer opaque params
+  (no UI need yet). **The D96 arc is fully closed: serve + web are the
+  complete surface.** NEXT is open — no D96 debt remains; candidates are
+  the older backlog (M6 iroh friends-plane, quarantine-review design,
+  fuzz targets for wild-byte parsers, the NARC/SDAT wasm lanes).
+
+**Position as of 2026-07-16 (D96 backend pass — COMPLETE, every
 CLI verb reaches serve)**: the dat lifecycle (punch-list item 5) landed
 in three commits, closing the backend parity pass. `dat fetch`'s D16
 orchestration (redump-slug resolution + the polite ureq request +
