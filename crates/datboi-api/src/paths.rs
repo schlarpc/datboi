@@ -28,7 +28,7 @@ use crate::{
     GcKeepRequest, GrantAddRequest,
     IngestRequest, IngestStartResponse, InviteAcceptRequest, InviteMintRequest, InviteMintResponse,
     JobDetail, JobStartResponse, JobsResponse, LoginRequest, OkResponse, OrphansResponse,
-    ResidencyState, ScrubRequest,
+    ResidencyState, ScrubRequest, SnapshotResponse,
     SessionResponse, SessionsRevokedResponse, StorageBreakdown, StorageResponse, SystemsResponse,
     UploadResponse, VerifyStartResponse, ViewDefineRequest, ViewDefineResponse, ViewDetail,
     ViewFilesPage, ViewProfilesResponse, ViewsResponse, WhoamiResponse,
@@ -788,6 +788,22 @@ fn gc_config_set() {}
 )]
 fn scrub() {}
 
+/// Mint a state snapshot on demand (D75/D96, owner-only): the manual
+/// trigger beside the daemon's dirty-triggered auto-cadence — the same
+/// `datboi snapshot` mint. Synchronous; answers the mint report.
+#[utoipa::path(
+    post,
+    path = "/v1/snapshot",
+    tag = "storage",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    responses(
+        (status = 200, description = "Snapshot minted", body = SnapshotResponse),
+        (status = 403, description = "Owner only", body = ApiError),
+        (status = 500, description = "Mint failed (index/store I/O, sequence race)", body = ApiError),
+    ),
+)]
+fn snapshot() {}
+
 #[derive(OpenApi)]
 #[openapi(
 
@@ -840,6 +856,7 @@ fn scrub() {}
         gc_config_get,
         gc_config_set,
         scrub,
+        snapshot,
     ),
     modifiers(&SecurityAddon),
 )]

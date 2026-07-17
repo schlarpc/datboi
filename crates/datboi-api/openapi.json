@@ -1971,6 +1971,53 @@
         ],
         "type": "object"
       },
+      "SnapshotResponse": {
+        "description": "The report of one minted state snapshot — the same numbers `datboi\nsnapshot` prints. Content-dedup means an unchanged shard costs no new\nbatch blob, so `new_batch_blobs` is the actual write amplification.",
+        "properties": {
+          "alias_rows": {
+            "description": "Alias rows batched across the shard fanout.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "analysis_rows": {
+            "description": "Analysis rows batched.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "hash": {
+            "description": "The minted snapshot object's blake3 (64 hex chars).",
+            "type": "string"
+          },
+          "new_batch_blobs": {
+            "description": "Batch blobs newly written this mint (unchanged shards dedup away).",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sequence": {
+            "description": "Monotonic snapshot sequence number.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "sources": {
+            "description": "Dat sources captured.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "hash",
+          "sequence",
+          "sources",
+          "alias_rows",
+          "analysis_rows",
+          "new_batch_blobs"
+        ],
+        "type": "object"
+      },
       "SourceBytes": {
         "description": "Data-namespace bytes attributed to one dat source via identity\nlinks (identity_blob → rom_claim → entry → the source's CURRENT\ndat_revision). A blob claimed by several sources counts in EACH\nrow — the column does not sum to the store. Blobs with no identity\nlink at all fold into the `(unattributed)` row.",
         "properties": {
@@ -4156,6 +4203,55 @@
           }
         ],
         "summary": "Scrub the corpus (owner-only, D96): verify bytes against their names,\nback-fill aliases + `verified_at`, check pack integrity, and\noptionally rehabilitate poisoned recipes — the same walk `datboi\nscrub` runs. Long-running, so it answers a job id.",
+        "tags": [
+          "storage"
+        ]
+      }
+    },
+    "/v1/snapshot": {
+      "post": {
+        "operationId": "snapshot",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotResponse"
+                }
+              }
+            },
+            "description": "Snapshot minted"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Mint failed (index/store I/O, sequence race)"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Mint a state snapshot on demand (D75/D96, owner-only): the manual\ntrigger beside the daemon's dirty-triggered auto-cadence — the same\n`datboi snapshot` mint. Synchronous; answers the mint report.",
         "tags": [
           "storage"
         ]

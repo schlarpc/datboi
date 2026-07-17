@@ -1740,6 +1740,43 @@ fn run_scrub(app: &App, job: i64, sample_pct: u8, rehabilitate: bool) {
     );
 }
 
+// ---- POST /v1/snapshot ----
+
+/// Mint a state snapshot on demand (D75/D96): the same `statesnap::mint`
+/// `datboi snapshot` runs — the manual trigger beside the daemon's
+/// dirty-triggered auto-cadence (D75). Synchronous under the pipeline
+/// writer (the mint is the CLI's own bounded write; a snapshot is not
+/// yet a byte-level job kind — open-questions) and owner-only.
+pub(crate) async fn snapshot(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+) -> Response {
+    run_blocking(move || {
+        require_owner(&caller)?;
+        // The daemon signs with the instance identity — the same key the
+        // ambient auto-cadence rider (maintain.rs) and `datboi snapshot`
+        // use; one definition, one signature.
+        let identity =
+            datboi_catalog::statesnap::load_or_create_identity(&app.db_dir).map_err(internal)?;
+        let db = lock_db(&app);
+        let report = datboi_catalog::statesnap::mint(app.store, &db, &identity, auth::now_unix())
+            .map_err(internal)?;
+        tracing::info!("snapshot: {} (seq {})", report.hash, report.sequence);
+        Ok(json_response(
+            StatusCode::OK,
+            &datboi_api::SnapshotResponse {
+                hash: report.hash.to_hex(),
+                sequence: report.sequence,
+                sources: report.sources as u64,
+                alias_rows: report.alias_rows,
+                analysis_rows: report.analysis_rows,
+                new_batch_blobs: report.new_batch_blobs,
+            },
+        ))
+    })
+    .await
+}
+
 /// The claims a blob satisfies: identity links of any evidence grade
 /// (explanation, not the D39 holdings rollup) → rom_claim → entry,
 /// restricted to each source's CURRENT revision. DISTINCT because an

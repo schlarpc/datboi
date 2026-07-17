@@ -937,6 +937,27 @@ pub struct ScrubRequest {
     pub rehabilitate: Option<bool>,
 }
 
+// ---- POST /v1/snapshot (D75/D96 manual trigger) ----
+
+/// The report of one minted state snapshot — the same numbers `datboi
+/// snapshot` prints. Content-dedup means an unchanged shard costs no new
+/// batch blob, so `new_batch_blobs` is the actual write amplification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SnapshotResponse {
+    /// The minted snapshot object's blake3 (64 hex chars).
+    pub hash: String,
+    /// Monotonic snapshot sequence number.
+    pub sequence: i64,
+    /// Dat sources captured.
+    pub sources: u64,
+    /// Alias rows batched across the shard fanout.
+    pub alias_rows: u64,
+    /// Analysis rows batched.
+    pub analysis_rows: u64,
+    /// Batch blobs newly written this mint (unchanged shards dedup away).
+    pub new_batch_blobs: u64,
+}
+
 // ---- GET /v1/jobs (+ /{id}) ----
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

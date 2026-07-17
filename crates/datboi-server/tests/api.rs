@@ -865,3 +865,17 @@ fn scrub_over_http() {
     assert!(summary.contains("0 corrupt, 0 missing"), "{summary}");
     assert!(summary.contains("refreshed"), "{summary}");
 }
+
+/// D96: the snapshot verb reaches the HTTP surface. `POST /v1/snapshot`
+/// mints on demand (the manual trigger beside D75's auto-cadence) and
+/// answers the mint report — a real sequence and the object hash.
+#[test]
+fn snapshot_over_http() {
+    let f = fixture();
+    let (status, v) = request(f.addr, "POST", "/v1/snapshot", "");
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["hash"].as_str().expect("hash").len(), 64, "{v}");
+    assert!(v["sequence"].as_i64().expect("sequence") >= 1, "{v}");
+    // The fixture imported one dat source.
+    assert_eq!(v["sources"], 1, "{v}");
+}
