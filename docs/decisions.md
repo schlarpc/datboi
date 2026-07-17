@@ -2431,6 +2431,25 @@ source), streaming instead of whole-blob buffering (the spike reads the
 blob into memory; the fsm/async bao encoder + executor spill is the real
 path for 4 GB ROMs), and hash-seq requests (offset > 0).
 
+*Amendment (same day, 2): the VIRTUAL half landed too.* `CasProvider`
+now holds `Arc<Store>` + `Arc<Mutex<Db>>` (the daemon's `!Sync`-DB sharing
+pattern) and serves EVERY request through `Executor::serve_range` — the one
+seam that already unifies both halves and is D49-verified: resident
+literals read from the store; grounded-but-evicted blobs materialize on
+demand through their recipe, verified against the `.obao4` that D49 rule 1
+kept past eviction. Proven end-to-end: a blob whose literal was evicted
+(a `deflate-decompress` recipe + retained outboard, nothing on disk) is
+rebuilt on the fly and the STOCK iroh-blobs requester fetches and
+blake3-verifies it — the peer cannot tell it wasn't resident, which IS the
+D92/D97 "wire surface is the audit surface" claim, now demonstrated. Still
+owed (unchanged): bounded-memory streaming — `serve_range(0, total)` still
+buffers the whole blob, so the fsm/async encoder over `open_stream` + spill
+is the 4 GB path; hash-seq requests; and per-request the executor rebuilds
+its wasm hosts (per-connection today) — a shared engine is the seam if it
+matters. `datboi-p2p` now path-depends on `datboi-exec` + `datboi-index`
+(wasmtime + SQLite), so the excluded-leaf isolation is doing real work
+keeping that weight off the host lockfile.
+
 ## D98 — The receive path stages partials in iroh's store; our CAS only ever ingests complete, verified blobs (2026-07-16)
 
 Ruled before the M6 fetch path is built, because it is a re-litigable

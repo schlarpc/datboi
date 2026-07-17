@@ -528,13 +528,13 @@ D97 left to the build:
   piece manifest (the strict-view fetch-list shape, D57) leaks less.
   Likely: manifests ride the D34 channel, want-lists drive fetch. Needs a
   privacy pass before public swarms.
-- **CAS-fronting handler.** LITERAL half DONE in the spike
-  (`cas::CasProvider` — get protocol from `Store::get` + `.obao`, stock
-  requester verifies). Remaining: the VIRTUAL half (evicted/recipe-only
-  blobs through the executor verified stream, D92 — same bao encode,
-  byte source is a materialization not a file), streaming instead of the
-  spike's whole-blob buffer (fsm/async bao encoder + spill for 4 GB ROMs),
-  hash-seq requests, and D49 serve-side verify wired through explicitly.
+- **CAS-fronting handler.** BOTH halves DONE in the spike
+  (`cas::CasProvider` serves every request through `Executor::serve_range`
+  — resident literals and evicted/recipe-only blobs alike, D49-verified;
+  stock requester fetches + verifies, can't tell residency). Remaining:
+  streaming instead of the spike's whole-blob buffer (fsm/async bao encoder
+  over `open_stream` + spill for 4 GB ROMs), hash-seq requests (offset > 0),
+  and a shared wasm engine (per-connection executor today).
 - **Identity wiring.** The on-disk ed25519 seed → iroh `SecretKey`
   (`datboi-core::identity` already earmarks it; just plumb it).
 - **Workspace/nix integration.** `datboi-p2p` is an excluded leaf today
@@ -632,12 +632,17 @@ docs/p2p.md § "M6 design"; posture + literal-handler amendment under D97.
 Since ruled: the outboard sidecar is `.obao4` not `.obao` (D52 amendment —
 the name now states the 16 KiB chunk group), and the receive path stages
 partials in iroh's store and imports completions into our CAS (D98 —
-complete-blobs-only invariant preserved). **Pick up here**: the VIRTUAL
-half — serve grounded-but-evicted blobs by materializing through the
-executor (D92); it is the same bao encode with a materialization as the
-byte source instead of a file, and it wants the async/streaming bao encoder
-(the spike buffers whole blobs) so 4 GB ROMs stay bounded-memory. Then
-piece-set reconciliation. The previous position (D96 web-UI pass) is below.
+complete-blobs-only invariant preserved). The CAS-fronting handler is now
+COMPLETE for correctness (both literal and virtual halves — D97 amendment
+2): `serve_range` unifies them, the virtual test evicts a blob and serves
+it rebuilt-from-recipe + verified over the wire. **Pick up here**: either
+(a) **piece-set reconciliation** — the novel dedup-aware-transfer bit, D97,
+over the D91 pieces; or (b) **bounded-memory streaming** — swap the
+whole-blob `serve_range(0,total)` buffer for the fsm/async bao encoder over
+`open_stream` + spill, so 4 GB ROMs don't sit in RAM (correctness is done;
+this is the scale hardening). Reconciliation is the more interesting;
+streaming is the more load-bearing for real ROM sizes. The previous
+position (D96 web-UI pass) is below.
 
 
 **Position as of 2026-07-16, newest (D96 web-UI pass — COMPLETE)**: the
