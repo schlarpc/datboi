@@ -15,6 +15,8 @@
    * - Orphans: the D73 review gate — list, keep, two-click apply.
    */
   import {
+    analyzerConfig,
+    analyzers as fetchAnalyzers,
     evict as startEvict,
     evictPlan,
     gcApply,
@@ -26,8 +28,11 @@
     snapshot as saveSnapshot,
     storage as fetchStorage,
     storageBreakdown,
+    sweep as startSweep,
   } from '../lib/api/client';
   import type {
+    AnalyzerInfo,
+    AnalyzersBody,
     EvictPlanBody,
     GcConfigBody,
     GcConfigParams,
@@ -195,6 +200,64 @@
       },
     );
   };
+
+  // Optimization = the analyzer families that find rebuild recipes (they
+  // are what turns NOT-YET-OPTIMIZED bytes into rebuildable ones). The
+  // panel enables/disables a family and runs a sweep on demand.
+  let analyzers = $state<Remote<AnalyzersBody>>(loading());
+  const refreshAnalyzers = () => settle(fetchAnalyzers(), (value) => (analyzers = value));
+  $effect(refreshAnalyzers);
+  let optOpen = $state(false);
+  let optError = $state<string | null>(null);
+  /** Per-family in-flight guards: toggling config, and a running sweep. */
+  let toggling = $state<Record<string, boolean>>({});
+  let sweeping = $state<Record<string, boolean>>({});
+
+  const toggleFamily = (a: AnalyzerInfo) => {
+    if (toggling[a.family] === true) return;
+    toggling[a.family] = true;
+    optError = null;
+    // The PUT sets the whole config (D60), so preserve the params.
+    analyzerConfig(a.family, { enabled: !a.enabled, params_hex: a.params_hex }).then(
+      () => {
+        toggling[a.family] = false;
+        refreshAnalyzers();
+      },
+      (e: unknown) => {
+        toggling[a.family] = false;
+        optError = errorText(e);
+      },
+    );
+  };
+
+  const runSweep = (family: string) => {
+    if (sweeping[family] === true) return;
+    sweeping[family] = true;
+    optError = null;
+    startSweep(family).then(
+      async (started) => {
+        jobsSignal.bump();
+        try {
+          await followJob(started.job, { alive: () => alive });
+        } catch {
+          // The tray still tracks it.
+        }
+        jobsSignal.bump();
+        if (alive) {
+          sweeping[family] = false;
+          refreshStats(); // a sweep may have shrunk the store
+        }
+      },
+      (e: unknown) => {
+        sweeping[family] = false;
+        optError = errorText(e);
+      },
+    );
+  };
+
+  const activeAnalyzers = $derived(
+    analyzers.st !== 'ready' ? 0 : analyzers.data.analyzers.filter((a) => a.enabled).length,
+  );
   /** Two-click delete: first click arms, second applies (D73's human
    * gate deserves more than one tap, less than a modal). */
   let applyArmed = $state(false);
@@ -427,6 +490,55 @@
           </div>
           {#if evictError !== null}
             <p class="panel-error">{evictError}</p>
+          {/if}
+        </div>
+      {/if}
+      <div class="maint-row">
+        <span class="maint-label"><!-- @wc-context: shrinking the store -->Optimization</span>
+        <span class="maint-copy">
+          {#if analyzers.st === 'ready'}
+            {activeAnalyzers}/{analyzers.data.analyzers.length} active — finds rebuild recipes that shrink the store
+          {:else}
+            finds rebuild recipes that shrink the store
+          {/if}
+        </span>
+        <button class="pill" aria-expanded={optOpen} onclick={() => (optOpen = !optOpen)}>
+          <!-- @wc-context: open the optimization settings panel -->tune
+        </button>
+      </div>
+      {#if optOpen}
+        <div class="panel">
+          {#if analyzers.st === 'error'}
+            <LoadError msg={analyzers.msg} onretry={refreshAnalyzers} />
+          {:else if analyzers.st === 'loading'}
+            <span class="panel-hint">loading…</span>
+          {:else}
+            {#each analyzers.data.analyzers as a (a.family)}
+              <div class="opt-row">
+                <span class="opt-name">{a.family}</span>
+                <button
+                  class="pill"
+                  aria-pressed={a.enabled}
+                  disabled={toggling[a.family] === true}
+                  onclick={() => toggleFamily(a)}
+                >
+                  {#if a.enabled}<!-- @wc-context: analyzer is on -->on{:else}<!-- @wc-context: analyzer is off -->off{/if}
+                </button>
+                <button
+                  class="pill"
+                  disabled={!a.enabled || sweeping[a.family] === true}
+                  onclick={() => runSweep(a.family)}
+                >
+                  {#if sweeping[a.family] === true}<!-- @wc-context: sweep running -->running…{:else}<!-- @wc-context: run one analyzer -->run{/if}
+                </button>
+              </div>
+            {/each}
+            <p class="panel-hint">
+              a run analyzes what's not yet optimized; disabled families are skipped
+            </p>
+          {/if}
+          {#if optError !== null}
+            <p class="panel-error">{optError}</p>
           {/if}
         </div>
       {/if}
@@ -766,6 +878,25 @@
     align-items: center;
     gap: 12px;
     margin-top: 4px;
+  }
+
+  .opt-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .opt-name {
+    flex: 1;
+    min-width: 0;
+    font: 400 0.78125rem var(--font-data);
+    color: var(--text);
+  }
+
+  /* The on/off pill reads pressed when the family is enabled. */
+  .opt-row .pill[aria-pressed='true'] {
+    border-color: var(--ok);
+    color: var(--okT);
   }
 
   .cards {

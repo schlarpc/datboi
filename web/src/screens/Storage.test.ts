@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen, within } from '@testing-library/svelte';
 import { loadLocale } from 'wuchale/load-utils';
 import { afterEach, expect, test, vi } from 'vitest';
 import '../locales/main.loader.svelte.js';
@@ -174,7 +174,8 @@ test('eviction row shows the live watermark and opens the tuning panel', async (
 
   // The copy reads the live config, not a hard-coded watermark.
   expect(await screen.findByText(/automatic at 92%/)).toBeTruthy();
-  await fireEvent.click(screen.getByText('tune'));
+  // Two rows carry a "tune" button (eviction, optimization); eviction is first.
+  await fireEvent.click(screen.getAllByText('tune')[0]);
   // The panel seeds its fields from the current policy.
   expect((screen.getByPlaceholderText('90%') as HTMLInputElement).value).toBe('92%');
   expect((screen.getByPlaceholderText('85%') as HTMLInputElement).value).toBe('80%');
@@ -196,7 +197,7 @@ test('manual reclaim previews the plan, then confirms the drop', async () => {
   });
   render(Storage);
   await screen.findByText('BLOBS');
-  await fireEvent.click(screen.getByText('tune'));
+  await fireEvent.click(screen.getAllByText('tune')[0]); // eviction
 
   await fireEvent.click(screen.getByText('reclaim space now…'));
   // The dry-run plan surfaces what would be freed before any drop.
@@ -216,6 +217,40 @@ test('backup row saves a restore point', async () => {
   await fireEvent.click(screen.getByText('save now'));
   // The receipt line confirms the point number and the short hash.
   expect(await screen.findByText(/point 42/)).toBeTruthy();
+});
+
+test('optimization panel toggles a family and runs a sweep', async () => {
+  installFetch({
+    storage: stats,
+    analyzers: {
+      analyzers: [
+        { family: 'preflate', enabled: true, params_hex: null },
+        { family: 'ecm', enabled: false, params_hex: null },
+      ],
+    },
+    sweepJob: 9,
+    jobTimeline: [
+      {
+        id: 9, name: 'refine — preflate', kind: 'refine', state: 'done', progress: 100, started_at: 1, finished_at: 2,
+        files_total: 0, files_done: 0, bytes_total: 0, bytes_done: 0,
+        current: null, report: { files_scanned: 0, files_unchanged: 0, files_stored: 0, files_already_present: 0, chd_v5: 0, members_claimed: 0, members_extracted: 0, detector_hits: 0, skipper_skipped_large: 0, dats_imported: [], errors: [], member_skips: [], notes: [] },
+        matched: [], matched_total: 0, error: null,
+      },
+    ],
+  });
+  render(Storage);
+  await screen.findByText('BLOBS');
+
+  // The row summarizes active analyzers; the panel lists them.
+  expect(await screen.findByText(/1\/2 active/)).toBeTruthy();
+  await fireEvent.click(screen.getAllByText('tune')[1]); // optimization is the 2nd tune
+  expect(await screen.findByText('preflate')).toBeTruthy();
+  expect(screen.getByText('ecm')).toBeTruthy();
+
+  // preflate is enabled → run it (scoped to its row, not the scrub run).
+  const preflateRow = screen.getByText('preflate').closest('.opt-row') as HTMLElement;
+  await fireEvent.click(within(preflateRow).getByText('run'));
+  expect(await within(preflateRow).findByText('running…')).toBeTruthy();
 });
 
 test('orphans empty state: one quiet maintenance line, no card', async () => {

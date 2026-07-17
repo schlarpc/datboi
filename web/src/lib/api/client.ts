@@ -19,6 +19,9 @@ import type { EntryState } from '../state';
 import type { operations, paths } from './schema';
 import type {
   AdminUsersBody,
+  AnalyzerConfigParams,
+  AnalyzerInfo,
+  AnalyzersBody,
   BlobDetail,
   BlobsBody,
   BlobsParams,
@@ -324,6 +327,23 @@ export const scrub = async (body: ScrubParams = {}): Promise<JobStarted> =>
  * manual trigger beside the daemon's auto-cadence. */
 export const snapshot = async (): Promise<SnapshotBody> =>
   unwrap(await client.POST('/v1/snapshot'));
+
+/** GET /v1/analyzers — the analyzer families and their enable/params. */
+export const analyzers = async (): Promise<AnalyzersBody> =>
+  unwrap(await client.GET('/v1/analyzers'));
+
+/** PUT /v1/analyzers/{family} — set a family's full config; answers the
+ * updated row. `params_hex` must be preserved by the caller (the body
+ * sets the whole config, D60). */
+export const analyzerConfig = async (
+  family: string,
+  body: AnalyzerConfigParams,
+): Promise<AnalyzerInfo> =>
+  unwrap(await client.PUT('/v1/analyzers/{family}', { params: { path: { family } }, body }));
+
+/** POST /v1/sweep — run one analyzer sweep round; poll the Refine job. */
+export const sweep = async (analyzer: string): Promise<JobStarted> =>
+  unwrap(await client.POST('/v1/sweep', { body: { analyzer } }));
 
 // ---- ingest ----
 

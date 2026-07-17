@@ -12,6 +12,8 @@
 import { vi } from 'vitest';
 import type {
   AdminUsersBody,
+  AnalyzerConfigParams,
+  AnalyzersBody,
   BlobDetail,
   BlobRow,
   DatImportBody,
@@ -57,6 +59,10 @@ export interface MockUniverse {
   evictPlan?: EvictPlanBody;
   /** POST /v1/evict (real) job id; defaults to 1. */
   evictJob?: number;
+  /** GET /v1/analyzers list; defaults empty. */
+  analyzers?: AnalyzersBody;
+  /** POST /v1/sweep job id; defaults to 1. */
+  sweepJob?: number;
   /** Entries pages with offset ≥ this answer 500 (0 = every page) —
    * exercises rows-only errors and the load-more rejection path. */
   entriesFailFromOffset?: number;
@@ -303,6 +309,21 @@ export function installFetch(universe: MockUniverse) {
           return json(200, universe.evictPlan ?? { evictable: 0, reclaimable_bytes: 0, blocked: [] });
         }
         return json(202, { job: universe.evictJob ?? 1 });
+      }
+      if (path === '/v1/analyzers' && method === 'GET') {
+        return json(200, universe.analyzers ?? { analyzers: [] });
+      }
+      const analyzerMatch = path.match(/^\/v1\/analyzers\/([^/]+)$/);
+      if (analyzerMatch && method === 'PUT') {
+        const body = (await readJsonBody(input, init)) as AnalyzerConfigParams;
+        return json(200, {
+          family: analyzerMatch[1],
+          enabled: body.enabled,
+          params_hex: body.params_hex ?? null,
+        });
+      }
+      if (path === '/v1/sweep' && method === 'POST') {
+        return json(202, { job: universe.sweepJob ?? 1 });
       }
       if (path === '/v1/scrub' && method === 'POST') {
         return json(202, { job: universe.scrubJob ?? 1 });

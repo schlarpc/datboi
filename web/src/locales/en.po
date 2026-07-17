@@ -101,6 +101,7 @@ msgstr "something went wrong — {0}"
 #: src/screens/Shelves.svelte
 #: src/screens/Storage.svelte
 #: src/screens/Storage.svelte
+#: src/screens/Storage.svelte
 #: src/screens/Views.svelte
 #: src/screens/Views.svelte
 msgid "loading…"
@@ -1754,3 +1755,46 @@ msgstr "{0} blob(s) · {1} can be freed and rebuilt on demand"
 #: src/screens/Storage.svelte
 msgid "thresholds take a percentage (\"90%\"), an absolute size, or \"off\" to disarm"
 msgstr "thresholds take a percentage (\"90%\"), an absolute size, or \"off\" to disarm"
+
+#: src/screens/Storage.svelte
+msgctxt "shrinking the store"
+msgid "Optimization"
+msgstr "Optimization"
+
+#. 0: activeAnalyzers; 1: analyzers.data.analyzers.length
+#: src/screens/Storage.svelte
+msgid "{0}/{1} active — finds rebuild recipes that shrink the store"
+msgstr "{0}/{1} active — finds rebuild recipes that shrink the store"
+
+#: src/screens/Storage.svelte
+msgid "finds rebuild recipes that shrink the store"
+msgstr "finds rebuild recipes that shrink the store"
+
+#: src/screens/Storage.svelte
+msgctxt "open the optimization settings panel"
+msgid "tune"
+msgstr "tune"
+
+#: src/screens/Storage.svelte
+msgctxt "analyzer is on"
+msgid "on"
+msgstr "on"
+
+#: src/screens/Storage.svelte
+msgctxt "analyzer is off"
+msgid "off"
+msgstr "off"
+
+#: src/screens/Storage.svelte
+msgctxt "sweep running"
+msgid "running…"
+msgstr "running…"
+
+#: src/screens/Storage.svelte
+msgctxt "run one analyzer"
+msgid "run"
+msgstr "run"
+
+#: src/screens/Storage.svelte
+msgid "a run analyzes what's not yet optimized; disabled families are skipped"
+msgstr "a run analyzes what's not yet optimized; disabled families are skipped"

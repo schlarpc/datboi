@@ -141,6 +141,13 @@ export type GcConfigParams = Schemas['GcConfigRequest'];
 export type EvictParams = Schemas['EvictRequest'];
 /** POST /v1/evict dry-run plan (what would drop). */
 export type EvictPlanBody = Schemas['EvictPlan'];
+/** GET /v1/analyzers — analyzer families + their config. */
+export type AnalyzersBody = Schemas['AnalyzersResponse'];
+export type AnalyzerInfo = Schemas['AnalyzerInfo'];
+/** PUT /v1/analyzers/{family} body. */
+export type AnalyzerConfigParams = Schemas['AnalyzerConfigRequest'];
+/** POST /v1/sweep body (analyzer name + optional limit). */
+export type SweepParams = Schemas['SweepRequest'];
 
 // ---- /v1/admin/* ----
 
