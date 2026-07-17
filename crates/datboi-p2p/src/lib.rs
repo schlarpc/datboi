@@ -65,6 +65,123 @@ pub async fn fetch(ticket: &BlobTicket) -> Result<Vec<u8>> {
     Ok(bytes.to_vec())
 }
 
+/// Fronting the real CAS (D97): serve iroh-blobs' get protocol straight
+/// from a `datboi-store-fs::Store`, reusing the on-disk `.obao` sidecar as
+/// the bao tree — no custom-store trait exists in iroh-blobs 0.103, so we
+/// answer the wire protocol ourselves and iroh-blobs stays the requester.
+///
+/// Iteration 2 serves LITERAL blobs (loose files + D91 packed windows fall
+/// through `Store::get` transparently). The virtual half — grounded-but-
+/// evicted blobs materialized through the executor (D92) — slots in at the
+/// same seam: produce the bytes some other way, encode the same tree.
+pub mod cas {
+    use std::sync::Arc;
+
+    use anyhow::Result;
+    use bao_tree::BaoTree;
+    use bao_tree::io::outboard::PreOrderMemOutboard;
+    use bao_tree::io::sync::encode_ranges_validated;
+    use datboi_core::hash::Blake3;
+    use datboi_store_fs::obao::BLOCK_SIZE;
+    use datboi_store_fs::{Namespace, Store};
+    use iroh::endpoint::{Connection, SendStream};
+    use iroh::protocol::{AcceptError, ProtocolHandler};
+    use iroh_blobs::protocol::{GetRequest, Request};
+
+    /// An iroh protocol handler that serves blobs from the datboi CAS.
+    #[derive(Clone)]
+    pub struct CasProvider {
+        store: Arc<Store>,
+    }
+
+    // ProtocolHandler requires Debug; the Store isn't Debug (nor should a
+    // whole CAS be) — the handler has no state worth printing.
+    impl std::fmt::Debug for CasProvider {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("CasProvider").finish_non_exhaustive()
+        }
+    }
+
+    impl CasProvider {
+        #[must_use]
+        pub fn new(store: Arc<Store>) -> Self {
+            Self { store }
+        }
+
+        /// Answer one get-request: `size (8 LE) ‖ bao-encoded ranges`, the
+        /// exact wire shape iroh-blobs' `export_bao` produces (same
+        /// bao-tree 0.16, same 16 KiB block). The requested chunk ranges
+        /// verify against our `.obao` as they encode, so a corrupt local
+        /// blob fails the encode rather than shipping bad bytes.
+        fn encode_get(&self, get: &GetRequest) -> Result<Option<Vec<u8>>> {
+            let hash = Blake3(*get.hash.as_bytes());
+            let Some(len) = self.store.len(Namespace::Data, &hash)? else {
+                return Ok(None);
+            };
+            // The root ranges (offset 0). Hash-seqs (offset > 0) are a
+            // later iteration; a plain blob only has a root entry.
+            let ranges = get
+                .ranges
+                .iter_non_empty_infinite()
+                .next()
+                .map(|(_, r)| r.clone())
+                .unwrap_or_else(bao_tree::ChunkRanges::all);
+
+            // Whole-blob read is the spike shortcut; streaming/spill is the
+            // executor path (D92) the virtual half already implies.
+            let mut data = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
+            let mut blob = self
+                .store
+                .get(Namespace::Data, &hash)?
+                .expect("len() saw the blob; single-writer tree");
+            std::io::Read::read_to_end(&mut blob, &mut data)?;
+
+            let sidecar = self
+                .store
+                .get_obao(Namespace::Data, &hash)?
+                .unwrap_or_default();
+            let tree = BaoTree::new(len, BLOCK_SIZE);
+            let outboard = PreOrderMemOutboard {
+                root: blake3::Hash::from_bytes(hash.0),
+                tree,
+                data: sidecar,
+            };
+
+            let mut out = Vec::new();
+            out.extend_from_slice(&len.to_le_bytes());
+            encode_ranges_validated(data.as_slice(), &outboard, &ranges, &mut out)?;
+            Ok(Some(out))
+        }
+
+        async fn serve(&self, get: GetRequest, send: &mut SendStream) -> Result<()> {
+            if let Some(bytes) = self.encode_get(&get)? {
+                send.write_all(&bytes).await?;
+            }
+            send.finish()?;
+            Ok(())
+        }
+    }
+
+    impl ProtocolHandler for CasProvider {
+        async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+            // One get-request per bidirectional stream, mirroring
+            // iroh-blobs' own provider loop.
+            while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+                let (request, _read) = Request::read_async(&mut recv)
+                    .await
+                    .map_err(AcceptError::from_err)?;
+                if let Request::Get(get) = request {
+                    // anyhow isn't std::error::Error; funnel through io::Error.
+                    self.serve(get, &mut send)
+                        .await
+                        .map_err(|e| AcceptError::from_err(std::io::Error::other(e.to_string())))?;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,6 +196,42 @@ mod tests {
         let received = fetch(&ticket).await?;
         assert_eq!(received, original, "bytes survived the round trip");
         provider.router.shutdown().await?;
+        Ok(())
+    }
+
+    /// D97 fronting: a provider backed by a REAL on-disk
+    /// `datboi-store-fs::Store` (loose blob + its `.obao` sidecar) serves
+    /// the stock iroh-blobs requester, which fetches and blake3-verifies.
+    /// No bytes are copied into an iroh store — they stream from our CAS,
+    /// encoded against the sidecar we already wrote at ingest.
+    #[tokio::test]
+    async fn provider_fronts_the_real_cas() -> Result<()> {
+        use std::sync::Arc;
+
+        use datboi_core::hash::Blake3;
+        use datboi_store_fs::{Namespace, Store};
+
+        let dir = tempfile::tempdir()?;
+        let store = Arc::new(Store::open(dir.path().join("store"))?);
+        let original: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let hash = Blake3::compute(&original);
+        store.put(Namespace::Data, hash, original.as_slice())?;
+        store.ensure_obao(Namespace::Data, &hash)?; // the sidecar we serve from
+
+        let endpoint = Endpoint::bind(presets::N0).await?;
+        endpoint.online().await;
+        let addr = endpoint.addr();
+        let provider = cas::CasProvider::new(store.clone());
+        let router = Router::builder(endpoint)
+            .accept(iroh_blobs::ALPN, provider)
+            .spawn();
+
+        let iroh_hash = iroh_blobs::Hash::from_bytes(hash.0);
+        let ticket = BlobTicket::new(addr, iroh_hash, iroh_blobs::BlobFormat::Raw);
+        let received = fetch(&ticket).await?;
+        assert_eq!(received, original, "bytes came verified from the real CAS");
+
+        router.shutdown().await?;
         Ok(())
     }
 

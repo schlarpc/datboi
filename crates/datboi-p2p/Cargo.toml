@@ -24,12 +24,21 @@ iroh = "1"
 iroh-blobs = "0.103"
 anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+# Front the REAL CAS: serve blobs + their .obao sidecars straight from
+# the sharded loose-file store. Path deps across the workspace-exclude
+# boundary (these crates are root-workspace members; their inheritance
+# resolves against the root, not us).
+datboi-core = { path = "../datboi-core" }
+datboi-store-fs = { path = "../datboi-store-fs" }
+# The bao encoder for the get-response — same 0.16 line iroh-blobs 0.103
+# links, so our encoded ranges are wire-identical.
+bao-tree = { version = "0.16", default-features = false, features = ["validate"] }
+# blake3::Hash to seed the outboard root from our blob hash.
+blake3 = "1"
 
 [dev-dependencies]
-# The block size iroh serves at, to build an outboard the same way our
-# store does and check it against the D52 golden.
-bao-tree = { version = "0.16", default-features = false }
 blake3 = "1"
+tempfile = "3"
 
 [lints.rust]
 unsafe_code = "warn"
