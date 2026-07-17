@@ -510,7 +510,50 @@ two things were seen and deliberately deferred:
   resident); this is the general fix and the most foundational step
   of the decomposition arc in the position note below.
 
+## Flagged for build-time (raised 2026-07-16, M6 iroh spike)
+
+The spike (`crates/datboi-p2p`) stood iroh up and moved a verified blob
+between two instances; **D97** ratified the posture (stack, obao reuse,
+our-handler-over-logical-CAS, dedup-aware transfer, opt-in swarm). What
+D97 left to the build:
+
+- **Reconciliation algorithm.** Rateless IBLT (one-round, near-optimal,
+  adversary-robust; the "set sketch") vs Willow-style range-based
+  reconciliation (multi-round, simpler, already in the iroh ecosystem).
+  Decide against the real piece-count distributions once the handler
+  exists — a MAME-scale piece corpus is a different regime than a
+  variant-pair diff of 8.
+- **Piece-manifest privacy.** Reconciling against a peer's *advertised*
+  piece inventory reveals holdings; reconciling against a *want-target's*
+  piece manifest (the strict-view fetch-list shape, D57) leaks less.
+  Likely: manifests ride the D34 channel, want-lists drive fetch. Needs a
+  privacy pass before public swarms.
+- **CAS-fronting handler.** Our `ProtocolHandler` serving literal
+  (`Store::get`) + virtual (executor verified stream, D92) blobs with the
+  retained `.obao`, under D49 serve-side verify. The bulk of the build.
+- **Identity wiring.** The on-disk ed25519 seed → iroh `SecretKey`
+  (`datboi-core::identity` already earmarks it; just plumb it).
+- **Workspace/nix integration.** `datboi-p2p` is an excluded leaf today
+  (own Cargo.lock, heavy iroh tree isolated from the host lockfile and
+  `nix build .#datboi`, mirroring the wasm-component pattern). Folding it
+  in — deciding whether iroh belongs in the hermetic build at all, and
+  the crane vendoring — is deferred until the handler is real.
+- **Operator surface.** `datboi share` / `fetch` and the web equivalents,
+  per D96 (serve+web is the complete surface). `available-from-peer(X)`
+  (D34/D39) is the completeness state the friend surface already anticipates.
+
 ## Next sessions (pick up here)
+
+**Position as of 2026-07-16, M6 iroh spike (D97 — spike green, design
+landed)**: `crates/datboi-p2p` (excluded leaf workspace, iroh 1.0.2 +
+iroh-blobs 0.103) proves the two load-bearing facts — two instances
+exchange a verified blob over the real n0 discovery/relay path, and our
+D52 `.obao` is byte-for-byte iroh's `.obao4`. Design in docs/p2p.md § "M6
+design"; posture ruled as D97. **Pick up here**: build the CAS-fronting
+`ProtocolHandler` (literal + virtual/D92, D49-verified) — that unblocks
+everything else, and the reconciliation/privacy/swarm forks above resolve
+against it. The previous position (D96 web-UI pass) is below.
+
 
 **Position as of 2026-07-16, newest (D96 web-UI pass — COMPLETE)**: the
 deferred web surfaces landed in seven commits, all building on the

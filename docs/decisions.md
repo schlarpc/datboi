@@ -2312,3 +2312,76 @@ now" (that is the divergence D96 exists to forbid — descent into a shared
 crate is mandatory, not deferrable); exposing `recover`/bootstrap-token over
 HTTP (they precede the trust the HTTP surface assumes); making the CLI
 authoritative-but-mirrored (two systems of record is the disease).
+
+## D97 — M6 iroh: our own handler over the logical CAS; the recipe graph makes transfer dedup-aware (2026-07-16)
+
+Ratified after the M6 spike (`crates/datboi-p2p`) stood iroh up and moved
+a verified blob between two instances. Four rulings, three of them
+correcting older assumptions now that the real iroh 1.0 surface is known.
+
+**Stack.** iroh **1.0.2** + iroh-blobs **0.103**. iroh 1.0 froze the v1
+wire protocol (the decades-scale commitment R4 wanted); iroh-blobs stays
+0.x but its *format* is fixed and identical to ours (blake3 + bao,
+`.obao4` at 16 KiB groups), so the 0.x churn is API surface, not at-rest
+bytes. The ed25519 instance key (D8/D15) IS the iroh `SecretKey` — one
+secret, no second identity. Note the 1.0 rename `NodeId → EndpointId`,
+`NodeAddr → EndpointAddr` (older docs say NodeId).
+
+**obao reuse proven, not assumed (amends D52's "PENDING" hedge for the
+p2p direction).** The spike checks an outboard built at iroh's block size
+over the D52 golden input against the byte-for-byte golden the store
+committed — they match. A resident blob's `.obao` (kept past eviction by
+D49 rule 1) is already the exact tree iroh serves verified ranges from; we
+publish to a peer computing nothing extra, and peer-supplied outboards
+stay self-authenticating (D49). The two stores' outboards are one artifact.
+
+**Fronting is our own `ProtocolHandler`, not a store trait (overturns
+D14's "speak iroh-blobs' irpc store protocol").** iroh-blobs 0.103 exposes
+no public store trait — the store is a concrete actor API — so datboi's
+sharded loose-file CAS cannot be handed over by implementing an interface.
+M6 serves the blobs protocol from OUR handler, reusing iroh-blobs' wire
+`protocol` types + `get` downloader, storage backend ours. It serves the
+**logical CAS (D92)**, not just resident literals: literal blobs stream
+from `Store::get` (packed windows included) with the resident `.obao`;
+**virtual** blobs — grounded-but-evicted, recipe-only — materialize
+through the executor's verified stream (D25/D49) against the retained
+`.obao`. A peer never learns our residency state; the wire surface is the
+audit surface ("existence is groundedness"). D49's serve-side verify
+carries over unchanged — a bad seek/recipe refuses the transfer, never
+ships bad bytes.
+
+**The recipe graph makes transfer dedup-aware — the reason M6 is ours.**
+Stock iroh-blobs transfers one blake3 at a time (with free verified
+partial/resume/multi-source *within* a blob) but is blind to cross-blob
+structure. datboi factors ROMs into pieces (D91 sealed packs, D59 chunks,
+D83/D94 interior members) that are shared across variants: MKDS USA↔EUR
+share 556/564 pieces. Ruling: partial transfer reconciles the **piece /
+grounding-leaf set** between peers (candidate algorithms: Rateless IBLT —
+SIGCOMM 2024, the "set sketch" — or Willow-style range-based
+reconciliation; choice deferred), fetches only the differing pieces as
+ordinary bao blobs, and rebuilds the container from the affine `assemble`
+recipe the receiver already holds. "Send me Mario Kart EUR" becomes "send
+me these 8 pieces" (~1.3 MiB not ~64 MiB). Per-hash blob protocols can't
+express this; our recipe graph makes it structural.
+
+**Swarming is opt-in and tiered.** Friends plane first (D8/D34 holdings
+channels over an EndpointId ACL, direct/n0 discovery, no public
+advertisement). Public content discovery (pkarr/Mainline DHT announcing
+served roots — "join the public iroh swarm") is a per-instance opt-in AND
+honors the sensitive-blob advertisement policy flagged since D12/D26 (keys
+never advertised). Stranger *mapping* trust (dat-hash → blake3 without a
+signer) remains the waddup ZKP slot (D8 tier 2, M7+). Availability
+announcement never implies willingness to serve sensitive content or
+accept pushes.
+
+*Rejected:* implementing an iroh-blobs store trait (none exists in 0.103 —
+the D14 seam is gone); a separate p2p identity key (the snapshot key is
+already an ed25519 keypair = a SecretKey); serving only resident literals
+(would leak residency and contradict D92's logical-CAS line); whole-blob-
+only transfer as the M6 ceiling (throws away the piece-level dedup that is
+datboi's whole storage thesis); default/implicit public advertisement
+(D12/D26 — a private collection must never leak to strangers by default).
+*Deferred to build:* the handler itself, the reconciliation algorithm
+pick, folding `datboi-p2p` into the host workspace + nix vendoring (it is
+an excluded leaf today, like the wasm components), and the `datboi share` /
+`fetch` operator surface (serve+web home per D96).
