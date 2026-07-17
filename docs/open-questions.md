@@ -512,6 +512,32 @@ two things were seen and deliberately deferred:
 
 ## Next sessions (pick up here)
 
+**Position as of 2026-07-16, newest (D96 backend pass — on-demand
+maintenance COMPLETE)**: punch-list item 4 is done in five commits.
+The scrub corpus walk (store walk + `scrub_pack` + rehabilitation)
+descended out of `cmds.rs` into `Executor::scrub` (new
+`datboi-exec/src/scrub.rs`, returning a `ScrubReport`); the CLI keeps
+only the printer. Then the four maintenance verbs reached serve, each
+integration-tested over a live daemon (`crates/datboi-server/tests/api.rs`):
+`POST /v1/scrub` (Scrub job, private connection so the walk never holds
+the pipeline mutex; byte disproofs stay findings, not failures — D81),
+`POST /v1/evict` (`dry_run` → the D27 plan preview synchronously;
+real → D72-guarded Gc job, busy guard is a 503 not a stillborn job),
+`POST /v1/sweep` (Refine job over the logical CAS; the name→analyzer
+factory descended to `datboi_ingest::analyzers::analyzer_for` +
+`SWEEP_ANALYZERS`, shared with the CLI), `POST /v1/snapshot`
+(synchronous `statesnap::mint`, signed with the instance identity).
+`App` gained `db_dir` for private-connection maintenance jobs. Workspace
+green, clippy clean, web `npm run check` clean (schema.d.ts regenerated).
+NEXT: **punch-list item 5 — the dat lifecycle** (fetch / diff /
+clonelist / export). `dat fetch`'s ureq+redump+zip-unwrap logic descends
+out of `cmds.rs` first, same descend-then-graduate discipline. After the
+backend contract fully settles, the deferred web-UI pass (define form,
+analyzer & gc-policy config panels, materialize/scrub/evict/sweep/
+snapshot triggers) builds against it. Hermetic `nix build .#datboi` NOT
+run this session (no flake/build.rs/deps changes; new source files were
+git-added so cargo/flake see them) — run it before a release if paranoid.
+
 **Position as of 2026-07-16, latest (D96 — serve+web is the complete
 surface, CLI is convenience)**: parity audit done; posture INVERTED and
 ruled as **D96**. Every capability must reach the HTTP+web surface;
@@ -535,18 +561,18 @@ the settled contract). Punch list with landed status:
      `PUT /v1/analyzers/{family}` (family list descended to
      `refine::FAMILIES`); `GET`/`PUT /v1/gc/config` (watermark
      parse/Display/setters descended to `policy`, CLI now shares them).
-  4. **On-demand maintenance** — IN PROGRESS. Done:
-     `POST /v1/blobs/{hash}/materialize` (synchronous). TODO: evict
-     (D72 guard; likely a Gc job), sweep (trigger a refine drain →
-     Refine job), snapshot (`statesnap::mint`; daemon has the identity),
-     and **scrub** — its corpus walk (`cmds.rs` ~1387–1513: store
-     walks, `scrub_pack`, rehabilitation) must move OUT of `cmds.rs`
-     into a library crate (candidate: `datboi-exec` or new
-     `datboi-maintain`) so daemon+CLI share it; then the verify
-     endpoint's "run `datboi scrub`" deep-link (api.rs ~1054, ~1520)
-     goes away. Scrub is the one real "descend logic" job left — give
-     it a fresh session.
-  5. **Dat lifecycle** — TODO: fetch / diff / clonelist / export.
+  4. **On-demand maintenance** — DONE. `POST /v1/blobs/{hash}/materialize`
+     (synchronous), then the four verbs landed 2026-07-16 (below):
+     `POST /v1/scrub` (Scrub job; corpus walk descended to
+     `Executor::scrub`), `POST /v1/evict` (dry-run plan + guarded Gc job),
+     `POST /v1/sweep` (Refine job; name→analyzer factory descended to
+     `datboi_ingest::analyzers::analyzer_for`), `POST /v1/snapshot`
+     (synchronous `statesnap::mint`). The verify endpoint's stale
+     `datboi scrub` deep-link now points at materialize. No new
+     `JobKind` (scrub→Scrub, evict→Gc, sweep→Refine), so the web
+     exhaustive switch is untouched.
+  5. **Dat lifecycle** — TODO (the remaining pick-up): fetch / diff /
+     clonelist / export.
      `dat fetch`'s ureq+redump+zip-unwrap logic descends out of
      `cmds.rs` first.
   Explicit CLI-first exceptions (NOT gaps): `recover`, bootstrap
