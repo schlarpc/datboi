@@ -145,6 +145,9 @@ db_enum! {
         Eval = 4,
         /// FAT32 image mint for a view (D62/D96).
         Mint = 5,
+        /// P2p sync against one peer (D100/D101): reconcile plans,
+        /// fetch the diff, rebuild wants.
+        Sync = 6,
     }
 }
 

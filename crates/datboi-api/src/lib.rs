@@ -1086,6 +1086,62 @@ pub struct EvictPlan {
     pub blocked: Vec<EvictBlocked>,
 }
 
+// ---- GET /v1/p2p + POST /v1/p2p/sync (D97/D100/D101) ----
+
+/// The daemon's p2p plane (D97: opt-in via `--p2p`). `endpoint_id` is
+/// the iroh EndpointId peers dial — the "share this as your peer id"
+/// string the daemon logs at startup, surfaced so the web can show it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct P2pStatusResponse {
+    /// Whether the seedbox is live (started with `--p2p` AND bound).
+    pub enabled: bool,
+    /// Our iroh EndpointId (z-base-32); null when p2p is off.
+    pub endpoint_id: Nullable<String>,
+}
+
+/// Reconcile with a peer and fetch the diff (D100 flow, D101 surface):
+/// plans reconcile via the rateless-IBLT sketch, missing pieces fetch as
+/// verified blobs, explicit wants rebuild locally. Long-running
+/// (network), so it answers a `JobStartResponse`; the finished Sync
+/// job's `sync` detail carries the savings summary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct P2pSyncRequest {
+    /// The peer's iroh EndpointId (z-base-32, as their daemon logs it).
+    pub peer: String,
+    /// Container hashes to rebuild locally (blake3, 64 hex chars).
+    /// Empty or absent = mirror mode (D100): ground everything the
+    /// peer's plans describe — leaves fetched, nothing materialized.
+    #[serde(default)]
+    pub wants: Option<Vec<String>>,
+}
+
+/// What one sync moved, held back, and rebuilt (D97: the savings ARE
+/// the result). All counters are u64 so the summary stays exact; the
+/// headline percentage is derived client-side as
+/// `100 * (1 - bytes_fetched / bytes_rebuilt)` — never baked into
+/// prose server-side (D101).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SyncSummary {
+    /// The peer's iroh EndpointId this sync ran against.
+    pub peer: String,
+    /// Recipe objects (plans) fetched and indexed from the peer.
+    pub recipes_fetched: u64,
+    pub recipe_bytes_fetched: u64,
+    /// Grounding leaves fetched (the D91 pieces we lacked).
+    pub pieces_fetched: u64,
+    pub piece_bytes_fetched: u64,
+    /// Leaves the plans needed that we already held — the dedup win.
+    pub pieces_already_held: u64,
+    pub bytes_already_held: u64,
+    /// Explicit wants materialized locally.
+    pub containers_rebuilt: u64,
+    pub bytes_rebuilt: u64,
+    /// Reconciliation overhead (sketch header + coded symbols).
+    pub sketch_wire_bytes: u64,
+    /// Total bytes pulled off the wire (sketch + plans + pieces).
+    pub bytes_fetched: u64,
+}
+
 // ---- GET /v1/jobs (+ /{id}) ----
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1114,6 +1170,10 @@ pub enum JobKind {
     Eval,
     /// A FAT32 image mint for a view (D62/D96): the CLI's `view image`.
     Mint,
+    /// A p2p sync against one peer (D100/D101): reconcile plans, fetch
+    /// the diff, rebuild wants. The finished detail's `sync` field
+    /// carries the savings summary.
+    Sync,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1172,6 +1232,11 @@ pub struct JobDetail {
     /// Infrastructure failure only; per-file refusals live in the
     /// report.
     pub error: Nullable<String>,
+    /// The savings summary of a finished Sync job (D101); absent for
+    /// every other kind and while the sync is still running. `default`
+    /// so pre-D101 ledger rows still hydrate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<SyncSummary>,
 }
 
 // ---- GET /v1/gc/orphans (+ keep / apply) ----
@@ -1605,12 +1670,17 @@ mod tests {
             }],
             matched_total: 1,
             error: None.into(),
+            sync: None,
         };
         let v = serde_json::to_value(&detail).expect("json");
         assert_eq!(v["id"], 3, "flattened, not nested under job");
         assert_eq!(v["state"], "running");
         assert_eq!(v["kind"], "ingest");
         assert!(v.get("current").is_none(), "between files: omitted");
+        assert!(
+            v.get("sync").is_none(),
+            "non-sync jobs omit the savings summary entirely (D101)"
+        );
         assert_eq!(v["finished_at"], serde_json::Value::Null);
         assert_eq!(v["error"], serde_json::Value::Null);
         assert_eq!(v["report"]["files_stored"], 0);

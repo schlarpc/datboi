@@ -17,7 +17,7 @@ use std::sync::Mutex;
 
 use datboi_api::{
     IngestErrorItem, IngestMemberSkipItem, IngestReportBody, Job, JobDetail, JobKind, JobRunState,
-    MatchedEntry,
+    MatchedEntry, SyncSummary,
 };
 use datboi_index::jobs::{JobRow, LEDGER_KEEP};
 use datboi_index::{Db, JobKind as LedgerKind, JobState as LedgerState};
@@ -40,6 +40,7 @@ fn to_ledger(kind: JobKind) -> LedgerKind {
         JobKind::Scrub => LedgerKind::Scrub,
         JobKind::Eval => LedgerKind::Eval,
         JobKind::Mint => LedgerKind::Mint,
+        JobKind::Sync => LedgerKind::Sync,
     }
 }
 
@@ -51,6 +52,7 @@ fn from_ledger(kind: LedgerKind) -> JobKind {
         LedgerKind::Scrub => JobKind::Scrub,
         LedgerKind::Eval => JobKind::Eval,
         LedgerKind::Mint => JobKind::Mint,
+        LedgerKind::Sync => JobKind::Sync,
     }
 }
 
@@ -85,6 +87,8 @@ struct JobState {
     /// them after the closing relink/rollup pass.
     matched: Vec<MatchedEntry>,
     matched_total: u64,
+    /// The savings summary of a Sync job (D101), set at completion.
+    sync: Option<SyncSummary>,
     error: Option<String>,
     started_at: i64,
     finished_at: Option<i64>,
@@ -221,6 +225,7 @@ impl Registry {
             report: IngestReportBody::default(),
             matched: Vec::new(),
             matched_total: 0,
+            sync: None,
             error: None,
             started_at: now,
             finished_at: None,
@@ -282,6 +287,21 @@ impl Registry {
     /// missing inputs, then mint), summarized in the closing note.
     pub(crate) fn create_mint(&self, view: &str, now: i64) -> i64 {
         self.push_job(JobKind::Mint, format!("mint — {view}"), 0, 0, now)
+    }
+
+    /// A p2p sync job (D101): opaque like eval — the network phases
+    /// report no intra-op progress; the savings summary lands via
+    /// [`Registry::set_sync`] at completion. `peer` is shown in the D82
+    /// hash short form (the full id is in the detail's summary).
+    pub(crate) fn create_sync(&self, peer: &str, now: i64) -> i64 {
+        let short = peer.get(..8).unwrap_or(peer);
+        self.push_job(JobKind::Sync, format!("sync — peer {short}…"), 0, 0, now)
+    }
+
+    /// The finished sync's savings summary (D97/D101): structured wire
+    /// data on the detail, never prose.
+    pub(crate) fn set_sync(&self, id: i64, summary: SyncSummary) {
+        self.with_job(id, |j| j.sync = Some(summary));
     }
 
     /// Refine drain progress: `done` items finished, `total` = done +
@@ -455,6 +475,7 @@ fn detail_of(j: &JobState) -> JobDetail {
         matched: j.matched.clone(),
         matched_total: j.matched_total,
         error: j.error.clone().into(),
+        sync: j.sync.clone(),
     }
 }
 
@@ -493,6 +514,7 @@ fn hydrate(row: JobRow) -> JobState {
         report: IngestReportBody::default(),
         matched: Vec::new(),
         matched_total: 0,
+        sync: None,
         error,
         started_at: row.started_at,
         finished_at: row.finished_at,
@@ -506,6 +528,7 @@ fn hydrate(row: JobRow) -> JobState {
         job.matched = d.matched;
         job.matched_total = d.matched_total;
         job.error = job.error.or(d.error.into_inner());
+        job.sync = d.sync;
     }
     job
 }

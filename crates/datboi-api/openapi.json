@@ -1491,6 +1491,17 @@
               "report": {
                 "$ref": "#/components/schemas/IngestReportBody",
                 "description": "Cumulative across completed files — grows while running, final\nwhen done."
+              },
+              "sync": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SyncSummary",
+                    "description": "The savings summary of a finished Sync job (D101); absent for\nevery other kind and while the sync is still running. `default`\nso pre-D101 ledger rows still hydrate."
+                  }
+                ]
               }
             },
             "required": [
@@ -1516,7 +1527,8 @@
           "gc",
           "scrub",
           "eval",
-          "mint"
+          "mint",
+          "sync"
         ],
         "type": "string"
       },
@@ -1825,6 +1837,47 @@
           "orphans",
           "reclaimable_bytes",
           "grace_secs"
+        ],
+        "type": "object"
+      },
+      "P2pStatusResponse": {
+        "description": "The daemon's p2p plane (D97: opt-in via `--p2p`). `endpoint_id` is\nthe iroh EndpointId peers dial — the \"share this as your peer id\"\nstring the daemon logs at startup, surfaced so the web can show it.",
+        "properties": {
+          "enabled": {
+            "description": "Whether the seedbox is live (started with `--p2p` AND bound).",
+            "type": "boolean"
+          },
+          "endpoint_id": {
+            "$ref": "#/components/schemas/Nullable_String",
+            "description": "Our iroh EndpointId (z-base-32); null when p2p is off."
+          }
+        },
+        "required": [
+          "enabled",
+          "endpoint_id"
+        ],
+        "type": "object"
+      },
+      "P2pSyncRequest": {
+        "description": "Reconcile with a peer and fetch the diff (D100 flow, D101 surface):\nplans reconcile via the rateless-IBLT sketch, missing pieces fetch as\nverified blobs, explicit wants rebuild locally. Long-running\n(network), so it answers a `JobStartResponse`; the finished Sync\njob's `sync` detail carries the savings summary.",
+        "properties": {
+          "peer": {
+            "description": "The peer's iroh EndpointId (z-base-32, as their daemon logs it).",
+            "type": "string"
+          },
+          "wants": {
+            "description": "Container hashes to rebuild locally (blake3, 64 hex chars).\nEmpty or absent = mirror mode (D100): ground everything the\npeer's plans describe — leaves fetched, nothing materialized.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "peer"
         ],
         "type": "object"
       },
@@ -2367,6 +2420,85 @@
         },
         "required": [
           "analyzer"
+        ],
+        "type": "object"
+      },
+      "SyncSummary": {
+        "description": "What one sync moved, held back, and rebuilt (D97: the savings ARE\nthe result). All counters are u64 so the summary stays exact; the\nheadline percentage is derived client-side as\n`100 * (1 - bytes_fetched / bytes_rebuilt)` — never baked into\nprose server-side (D101).",
+        "properties": {
+          "bytes_already_held": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "bytes_fetched": {
+            "description": "Total bytes pulled off the wire (sketch + plans + pieces).",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "bytes_rebuilt": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "containers_rebuilt": {
+            "description": "Explicit wants materialized locally.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "peer": {
+            "description": "The peer's iroh EndpointId this sync ran against.",
+            "type": "string"
+          },
+          "piece_bytes_fetched": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pieces_already_held": {
+            "description": "Leaves the plans needed that we already held — the dedup win.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pieces_fetched": {
+            "description": "Grounding leaves fetched (the D91 pieces we lacked).",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "recipe_bytes_fetched": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "recipes_fetched": {
+            "description": "Recipe objects (plans) fetched and indexed from the peer.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sketch_wire_bytes": {
+            "description": "Reconciliation overhead (sketch header + coded symbols).",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "peer",
+          "recipes_fetched",
+          "recipe_bytes_fetched",
+          "pieces_fetched",
+          "piece_bytes_fetched",
+          "pieces_already_held",
+          "bytes_already_held",
+          "containers_rebuilt",
+          "bytes_rebuilt",
+          "sketch_wire_bytes",
+          "bytes_fetched"
         ],
         "type": "object"
       },
@@ -4766,6 +4898,114 @@
         "summary": "One job with counters and its (growing, then final) ingest report.",
         "tags": [
           "jobs"
+        ]
+      }
+    },
+    "/v1/p2p": {
+      "get": {
+        "operationId": "p2p_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/P2pStatusResponse"
+                }
+              }
+            },
+            "description": "P2p status (enabled + our endpoint id)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "The daemon's p2p plane (D97/D101): whether the seedbox is live, and\nthe EndpointId to share with friends. Owner-only — the endpoint id\nis the capability peers dial (D8), not public data.",
+        "tags": [
+          "p2p"
+        ]
+      }
+    },
+    "/v1/p2p/sync": {
+      "post": {
+        "operationId": "p2p_sync",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/P2pSyncRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStartResponse"
+                }
+              }
+            },
+            "description": "Sync job started; poll GET /v1/jobs/{id}"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Malformed peer id or want hash"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "P2p is disabled — start the daemon with --p2p (D101)"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Reconcile with a peer and fetch the diff (D100/D101, owner-only):\ndedup-aware transfer — plans reconcile via the sketch, only missing\npieces cross the wire, explicit wants rebuild locally (empty wants =\nmirror mode). Long-running (network), so it starts a Sync job; the\nfinished job's `sync` detail is the savings summary.",
+        "tags": [
+          "p2p"
         ]
       }
     },

@@ -867,6 +867,46 @@ fn scrub_over_http() {
     assert!(summary.contains("refreshed"), "{summary}");
 }
 
+/// D101: the p2p surface on a daemon WITHOUT `--p2p` — status honestly
+/// says disabled (null endpoint id), and sync is a clean typed 503
+/// before any job is created (outbound rides the seedbox endpoint;
+/// no seedbox, no lane). The enabled path is proven end-to-end in
+/// datboi-p2p's own sync tests over real QUIC.
+#[test]
+fn p2p_surface_without_p2p() {
+    let f = fixture();
+
+    let (status, v) = get(f.addr, "/v1/p2p");
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["enabled"], serde_json::Value::Bool(false), "{v}");
+    assert!(v["endpoint_id"].is_null(), "{v}");
+
+    let (status, v) = request(
+        f.addr,
+        "POST",
+        "/v1/p2p/sync",
+        r#"{"peer":"pretend-peer-id"}"#,
+    );
+    assert_eq!(status, 503, "{v}");
+    assert_eq!(v["code"], "busy", "{v}");
+    assert!(
+        v["error"].as_str().expect("detail").contains("--p2p"),
+        "{v}"
+    );
+
+    // No stillborn job rows from the refusal.
+    let (status, v) = get(f.addr, "/v1/jobs");
+    assert_eq!(status, 200);
+    assert!(
+        v["jobs"]
+            .as_array()
+            .expect("jobs")
+            .iter()
+            .all(|j| j["kind"] != "sync"),
+        "{v}"
+    );
+}
+
 /// D96: the snapshot verb reaches the HTTP surface. `POST /v1/snapshot`
 /// mints on demand (the manual trigger beside D75's auto-cadence) and
 /// answers the mint report — a real sequence and the object hash.

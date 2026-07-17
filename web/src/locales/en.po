@@ -1869,3 +1869,8 @@ msgstr "rehashed · {0}"
 #: src/screens/Audit.svelte
 msgid "revision {0} → {1}"
 msgstr "revision {0} → {1}"
+
+#: src/screens/Activity.svelte
+msgctxt "job kind"
+msgid "sync"
+msgstr "sync"

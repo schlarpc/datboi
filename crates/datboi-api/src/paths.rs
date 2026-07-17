@@ -30,6 +30,7 @@ use crate::{
     GcKeepRequest, GrantAddRequest,
     IngestRequest, IngestStartResponse, InviteAcceptRequest, InviteMintRequest, InviteMintResponse,
     JobDetail, JobStartResponse, JobsResponse, LoginRequest, OkResponse, OrphansResponse,
+    P2pStatusResponse, P2pSyncRequest,
     ResidencyState, ScrubRequest, SnapshotResponse, SweepRequest,
     SessionResponse, SessionsRevokedResponse, StorageBreakdown, StorageResponse, SystemsResponse,
     UploadResponse, VerifyStartResponse, ViewDefineRequest, ViewDefineResponse, ViewDetail,
@@ -921,6 +922,41 @@ fn evict() {}
 )]
 fn sweep() {}
 
+/// The daemon's p2p plane (D97/D101): whether the seedbox is live, and
+/// the EndpointId to share with friends. Owner-only — the endpoint id
+/// is the capability peers dial (D8), not public data.
+#[utoipa::path(
+    get,
+    path = "/v1/p2p",
+    tag = "p2p",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    responses(
+        (status = 200, description = "P2p status (enabled + our endpoint id)", body = P2pStatusResponse),
+        (status = 403, description = "Owner only", body = ApiError),
+    ),
+)]
+fn p2p_status() {}
+
+/// Reconcile with a peer and fetch the diff (D100/D101, owner-only):
+/// dedup-aware transfer — plans reconcile via the sketch, only missing
+/// pieces cross the wire, explicit wants rebuild locally (empty wants =
+/// mirror mode). Long-running (network), so it starts a Sync job; the
+/// finished job's `sync` detail is the savings summary.
+#[utoipa::path(
+    post,
+    path = "/v1/p2p/sync",
+    tag = "p2p",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    request_body = P2pSyncRequest,
+    responses(
+        (status = 202, description = "Sync job started; poll GET /v1/jobs/{id}", body = JobStartResponse),
+        (status = 400, description = "Malformed peer id or want hash", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+        (status = 503, description = "P2p is disabled — start the daemon with --p2p (D101)", body = ApiError),
+    ),
+)]
+fn p2p_sync() {}
+
 #[derive(OpenApi)]
 #[openapi(
 
@@ -980,6 +1016,8 @@ fn sweep() {}
         snapshot,
         evict,
         sweep,
+        p2p_status,
+        p2p_sync,
     ),
     modifiers(&SecurityAddon),
 )]

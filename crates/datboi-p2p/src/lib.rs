@@ -86,10 +86,63 @@ impl Seedbox {
         &self.node_id
     }
 
+    /// An outbound handle riding the seedbox's OWN endpoint (D101: one
+    /// iroh identity per daemon — the initiator connects from the same
+    /// key the seedbox serves on, so a future recon ACL sees the friend
+    /// key, and no second endpoint fights this one for the discovery
+    /// record).
+    #[must_use]
+    pub fn client(&self) -> P2pClient {
+        P2pClient {
+            endpoint: self.router.endpoint().clone(),
+            node_id: self.node_id.clone(),
+        }
+    }
+
     /// Close the endpoint and its accept tasks.
     pub async fn shutdown(self) -> Result<()> {
         self.router.shutdown().await?;
         Ok(())
+    }
+}
+
+/// Parse a peer's EndpointId display string into a dialable address
+/// (discovery resolves the rest). The surface's 400-validation lives
+/// here so the id format stays this crate's business.
+pub fn parse_peer(s: &str) -> Result<iroh::EndpointAddr> {
+    let id: iroh::EndpointId = s
+        .trim()
+        .parse()
+        .map_err(|e| anyhow::anyhow!("not an iroh endpoint id: {e}"))?;
+    Ok(id.into())
+}
+
+/// The daemon's outbound p2p handle (cloned out of [`Seedbox::client`]):
+/// cheap to clone, one per sync job.
+#[derive(Clone)]
+pub struct P2pClient {
+    endpoint: Endpoint,
+    node_id: String,
+}
+
+impl P2pClient {
+    /// Our own EndpointId (display form) — the "share this" string.
+    #[must_use]
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    /// Run one D100 sync against `peer` (a display-form EndpointId):
+    /// reconcile plans, fetch the diff, rebuild `wants` (empty = mirror
+    /// mode). See [`sync::sync`].
+    pub async fn sync(
+        &self,
+        peer: &str,
+        store: &'static datboi_store_fs::Store,
+        db: std::sync::Arc<std::sync::Mutex<datboi_index::Db>>,
+        wants: &[datboi_core::hash::Blake3],
+    ) -> Result<sync::SyncReport> {
+        sync::sync(&self.endpoint, parse_peer(peer)?, store, db, wants).await
     }
 }
 

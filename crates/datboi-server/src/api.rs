@@ -2011,6 +2011,129 @@ pub(crate) async fn snapshot(
     .await
 }
 
+// ---- GET /v1/p2p + POST /v1/p2p/sync (D101) ----
+
+/// The p2p plane's status: whether the seedbox is live and the
+/// EndpointId to share with friends — the web's "share this id"
+/// moment, so the daemon log stops being its only home (D101).
+pub(crate) async fn p2p_status(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+) -> Response {
+    match require_owner(&caller) {
+        Ok(()) => {
+            let client = app.p2p.get();
+            json_response(
+                StatusCode::OK,
+                &datboi_api::P2pStatusResponse {
+                    enabled: client.is_some(),
+                    endpoint_id: Nullable(client.map(|c| c.node_id().to_owned())),
+                },
+            )
+        }
+        Err(resp) => resp,
+    }
+}
+
+/// Reconcile with a peer and fetch the diff (D100/D101): a Sync job on
+/// the daemon runtime — network-length work — over a PRIVATE write
+/// connection (a sync must never hold the pipeline mutex). Clean 503
+/// without `--p2p`: outbound rides the seedbox's own endpoint, one
+/// identity per daemon (D99/D101).
+pub(crate) async fn p2p_sync(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+    crate::http::ApiJson(req): crate::http::ApiJson<datboi_api::P2pSyncRequest>,
+) -> Response {
+    if let Err(resp) = require_owner(&caller) {
+        return resp;
+    }
+    let Some(client) = app.p2p.get().cloned() else {
+        return err(
+            ErrorCode::Busy,
+            "p2p is disabled — start the daemon with --p2p",
+        );
+    };
+    if let Err(e) = datboi_p2p::parse_peer(&req.peer) {
+        return err(ErrorCode::BadRequest, &e.to_string());
+    }
+    let mut wants = Vec::new();
+    for want in req.wants.as_deref().unwrap_or_default() {
+        let Ok(hash) = want.to_lowercase().parse::<Blake3>() else {
+            return err(
+                ErrorCode::BadRequest,
+                &format!("not a blake3 hex hash: {want}"),
+            );
+        };
+        wants.push(hash);
+    }
+    let peer = req.peer.trim().to_owned();
+    let job = app.jobs.create_sync(&peer, auth::now_unix());
+    tokio::spawn(run_sync(Arc::clone(&app), client, job, peer, wants));
+    json_response(StatusCode::ACCEPTED, &datboi_api::JobStartResponse { job })
+}
+
+/// The sync worker: the D100 flow, then relink + rollups so fetched
+/// content lights the shelf immediately — the same at-end lesson ingest
+/// learned. The savings summary lands on the detail as structured data;
+/// prose stays out of it (D101).
+async fn run_sync(
+    app: Arc<App>,
+    client: datboi_p2p::P2pClient,
+    job: i64,
+    peer: String,
+    wants: Vec<Blake3>,
+) {
+    let db = match Db::open(&app.db_dir) {
+        Ok(db) => Arc::new(std::sync::Mutex::new(db)),
+        Err(e) => {
+            app.jobs
+                .fail(job, &format!("sync: open db: {e}"), auth::now_unix());
+            return;
+        }
+    };
+    match client.sync(&peer, app.store, Arc::clone(&db), &wants).await {
+        Ok(report) => {
+            let relink = tokio::task::spawn_blocking(move || {
+                let mut db = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                datboi_catalog::relink_all(&db)
+                    .and_then(|()| datboi_catalog::refresh_rollups(&mut db, auth::now_unix()))
+            })
+            .await;
+            match relink {
+                Ok(Ok(_)) => {}
+                // The bytes landed; a stale shelf self-heals at the next
+                // eval/ingest, so this degrades to a warning, not a fail.
+                Ok(Err(e)) => tracing::warn!("sync job {job}: relink after sync: {e}"),
+                Err(e) => tracing::warn!("sync job {job}: relink task: {e}"),
+            }
+            app.jobs.set_sync(job, sync_summary(&peer, &report));
+            app.jobs.finish(job, auth::now_unix());
+        }
+        Err(e) => {
+            tracing::warn!("sync job {job}: FAILED — {e:#}");
+            app.jobs.fail(job, &format!("{e:#}"), auth::now_unix());
+        }
+    }
+}
+
+/// Flatten a [`datboi_p2p::sync::SyncReport`] onto the wire shape.
+fn sync_summary(peer: &str, r: &datboi_p2p::sync::SyncReport) -> datboi_api::SyncSummary {
+    datboi_api::SyncSummary {
+        peer: peer.to_owned(),
+        recipes_fetched: r.recipes_fetched,
+        recipe_bytes_fetched: r.recipe_bytes_fetched,
+        pieces_fetched: r.pieces_fetched,
+        piece_bytes_fetched: r.piece_bytes_fetched,
+        pieces_already_held: r.pieces_already_held,
+        bytes_already_held: r.bytes_already_held,
+        containers_rebuilt: r.rebuilt.len() as u64,
+        bytes_rebuilt: r.bytes_rebuilt,
+        sketch_wire_bytes: r.sketch_wire_bytes,
+        bytes_fetched: r.bytes_fetched(),
+    }
+}
+
 /// The claims a blob satisfies: identity links of any evidence grade
 /// (explanation, not the D39 holdings rollup) → rom_claim → entry,
 /// restricted to each source's CURRENT revision. DISTINCT because an

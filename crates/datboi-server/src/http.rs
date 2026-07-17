@@ -105,6 +105,8 @@ fn v1() -> V1Routes {
         .post("/v1/snapshot", api::snapshot)
         .post("/v1/evict", api::evict)
         .post("/v1/sweep", api::sweep)
+        .get("/v1/p2p", api::p2p_status)
+        .post("/v1/p2p/sync", api::p2p_sync)
         .get("/v1/jobs", api::jobs)
         .get("/v1/jobs/{id}", api::job_detail)
         .get("/v1/gc/orphans", crate::gc::orphans)

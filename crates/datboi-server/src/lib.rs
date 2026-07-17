@@ -192,6 +192,10 @@ pub(crate) struct App {
     /// Ambient refinement worker handle (D71); `None` when disabled.
     /// Ingest completion feeds it fresh blob ids.
     pub(crate) refiner: Option<refine::Refiner>,
+    /// Outbound p2p handle (D101), set once by `serve()` when the
+    /// seedbox binds — sync rides the seedbox's own endpoint/identity,
+    /// so no seedbox means a clean 503 on `POST /v1/p2p/sync`.
+    pub(crate) p2p: std::sync::OnceLock<datboi_p2p::P2pClient>,
 }
 
 /// A bound-but-not-yet-serving daemon, so callers (and tests) can learn
@@ -261,6 +265,7 @@ impl App {
             jobs,
             detectors,
             refiner,
+            p2p: std::sync::OnceLock::new(),
         }))
     }
 }
@@ -361,6 +366,10 @@ impl Server {
                             "p2p: serving holdings — iroh endpoint {} (share this as your peer id)",
                             sb.node_id()
                         );
+                        // Outbound sync (D101) rides this same endpoint;
+                        // set-once, and requests can't race it (axum
+                        // hasn't started serving yet).
+                        let _ = self.app.p2p.set(sb.client());
                         Some(sb)
                     }
                     Err(e) => {
