@@ -29,6 +29,7 @@ use axum::response::Response;
 use datboi_api::{
     BlobDetail, BlobDigests, BlobInfo, BlobRow, BlobsPage, ClaimRef, ClaimState, ClassBytes,
     Counts, Definition, Endpoints, EntriesPage, EntryDetail, EntryRow, EntryState, ErrorCode,
+    EvictBlocked, EvictPlan, EvictRequest,
     FileRow, HashRef, ImageStatus, JobsResponse, Nullable, ProvenanceRow, ProvenanceViaRow,
     Quarantine, QuarantineItem, ResidencyState, Revision, RomClaim, RomHashes, RootRef,
     RootRelation, RouteEdge, RouteInfo, RouteVerify, SourceBytes, StorageBreakdown,
@@ -37,7 +38,7 @@ use datboi_api::{
 };
 use datboi_catalog::ViewDef;
 use datboi_core::hash::Blake3;
-use datboi_index::{AliasAlgo, Db, Namespace, Residency, VerifyState};
+use datboi_index::{AliasAlgo, Db, GuardHolder, Namespace, Residency, VerifyState};
 use rusqlite::OptionalExtension as _;
 
 use crate::App;
@@ -1738,6 +1739,129 @@ fn run_scrub(app: &App, job: i64, sample_pct: u8, rehabilitate: bool) {
         report.checked,
         report.refreshed
     );
+}
+
+// ---- POST /v1/evict ----
+
+/// Reclaim resident bytes by evicting recipe-covered literals (D72/D96).
+/// `dry_run` answers the plan synchronously (a read — the D27 preview
+/// surface); a real run claims the D72 singleton guard up front (a busy
+/// guard is a clean 503, never a failed job) and drops on a background
+/// Gc job with a private connection — the CLI `evict` verb, over serve.
+pub(crate) async fn evict(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+    crate::http::ApiJson(req): crate::http::ApiJson<EvictRequest>,
+) -> Response {
+    run_blocking(move || {
+        require_owner(&caller)?;
+        let license = req.license.unwrap_or(false);
+        if req.dry_run.unwrap_or(false) {
+            return evict_plan(&app);
+        }
+        // Claim the D72 guard before answering: this endpoint racing the
+        // daemon's watermark eviction or a gc apply is exactly the
+        // jointly-stranded-pair hazard the guard exists for, and a busy
+        // guard should surface as a retryable 503, not as a job that
+        // starts and immediately dies.
+        let mut bytes = [0u8; 16];
+        getrandom::getrandom(&mut bytes)
+            .map_err(|e| err(ErrorCode::Internal, &format!("entropy: {e}")))?;
+        let holder = GuardHolder(bytes);
+        if !crate::maintain::claim_guard(&lock_db(&app), &holder) {
+            return Err(err(
+                ErrorCode::Busy,
+                "gc guard busy (an eviction or apply is running); retry shortly",
+            ));
+        }
+        let job = app
+            .jobs
+            .create_gc("evict — on demand", 0, auth::now_unix());
+        let app = Arc::clone(&app);
+        std::thread::spawn(move || run_evict(&app, job, req.target_bytes, license, holder));
+        Ok(json_response(
+            StatusCode::ACCEPTED,
+            &datboi_api::JobStartResponse { job },
+        ))
+    })
+    .await
+}
+
+/// The dry-run plan (read-only, no guard): what would drop at the
+/// current target, and every held-back candidate with its D25/D27
+/// reasons — the same numbers `datboi evict --dry-run` prints.
+fn evict_plan(app: &App) -> Result<Response, Response> {
+    let db = read_db(app);
+    let mut evictable: u64 = 0;
+    let mut reclaimable_bytes: u64 = 0;
+    let mut blocked: Vec<EvictBlocked> = Vec::new();
+    for candidate in db.list_eviction_candidates().map_err(internal)? {
+        if db.is_evictable(candidate.blob_id).map_err(internal)? {
+            evictable += 1;
+            reclaimable_bytes += candidate.size.unwrap_or(0);
+        } else {
+            blocked.push(EvictBlocked {
+                hash: candidate.hash.to_hex(),
+                reasons: app
+                    .exec
+                    .explain_eviction(&db, &candidate.hash)
+                    .map_err(internal)?,
+            });
+        }
+    }
+    Ok(json_response(
+        StatusCode::OK,
+        &EvictPlan {
+            evictable,
+            reclaimable_bytes,
+            blocked,
+        },
+    ))
+}
+
+/// The eviction worker: a private connection (the corpus-scale drop must
+/// not hold the pipeline mutex), then release the guard on the shared
+/// connection (holder-keyed, so the connection is immaterial) and fold
+/// the report into the job. The guard's TTL is the backstop if this
+/// thread dies mid-drop.
+fn run_evict(app: &App, job: i64, target_bytes: u64, license: bool, holder: GuardHolder) {
+    let db = match Db::open(&app.db_dir) {
+        Ok(db) => db,
+        Err(e) => {
+            let _ = lock_db(app).release_gc_guard(&holder);
+            app.jobs
+                .fail(job, &format!("evict: open db: {e}"), auth::now_unix());
+            return;
+        }
+    };
+    let result = app.exec.evict_covered(&db, target_bytes, license);
+    let _ = lock_db(app).release_gc_guard(&holder);
+    match result {
+        Ok(report) => {
+            let evicted = report.evicted as u64;
+            app.jobs.refine_progress(job, evicted, evicted);
+            app.jobs.push_note(
+                job,
+                format!(
+                    "{} blob(s) evicted, {} byte(s) reclaimed, {} licensing replay(s), {} blocked",
+                    report.evicted,
+                    report.bytes_reclaimed,
+                    report.replays,
+                    report.blocked.len()
+                ),
+            );
+            app.jobs.finish(job, auth::now_unix());
+            tracing::info!(
+                "evict job {job}: {} evicted, {} byte(s)",
+                report.evicted,
+                report.bytes_reclaimed
+            );
+        }
+        Err(e) => {
+            tracing::warn!("evict job {job}: FAILED — {e}");
+            app.jobs.fail(job, &e.to_string(), auth::now_unix());
+        }
+    }
 }
 
 // ---- POST /v1/snapshot ----

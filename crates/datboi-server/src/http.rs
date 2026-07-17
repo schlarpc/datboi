@@ -91,6 +91,7 @@ fn v1() -> V1Routes {
         .post("/v1/blobs/{hash}/materialize", api::blob_materialize)
         .post("/v1/scrub", api::scrub)
         .post("/v1/snapshot", api::snapshot)
+        .post("/v1/evict", api::evict)
         .get("/v1/jobs", api::jobs)
         .get("/v1/jobs/{id}", api::job_detail)
         .get("/v1/gc/orphans", crate::gc::orphans)

@@ -678,6 +678,84 @@
         ],
         "type": "string"
       },
+      "EvictBlocked": {
+        "description": "One candidate the plan cannot drop right now, with the D25/D27 reasons\nspelled out (a residency planner that says \"0 evicted\" without saying\nwhy loses trust).",
+        "properties": {
+          "hash": {
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "hash",
+          "reasons"
+        ],
+        "type": "object"
+      },
+      "EvictPlan": {
+        "description": "The dry-run eviction plan: what would drop, and what is held back.",
+        "properties": {
+          "blocked": {
+            "description": "Candidates held back, each with its reasons.",
+            "items": {
+              "$ref": "#/components/schemas/EvictBlocked"
+            },
+            "type": "array"
+          },
+          "evictable": {
+            "description": "Blobs that would be evicted at the current target.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reclaimable_bytes": {
+            "description": "Bytes those evictions would reclaim.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evictable",
+          "reclaimable_bytes",
+          "blocked"
+        ],
+        "type": "object"
+      },
+      "EvictRequest": {
+        "description": "Reclaim resident bytes by evicting recipe-covered literals (D25/D72).\n`dry_run` reports the plan without deleting (the preview surface);\notherwise the drop runs under the D72 singleton guard as a background\nGc job — a 202 with a job id, or a 503 if the guard is already held.",
+        "properties": {
+          "dry_run": {
+            "description": "Report the plan without deleting anything. Defaults to false.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "license": {
+            "description": "License (replay) covered routes first, so routes that have not\nyet replayed on this host become evictable too. Defaults to false.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "target_bytes": {
+            "description": "Evict until at most this many resident bytes remain.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_bytes"
+        ],
+        "type": "object"
+      },
       "FileRow": {
         "properties": {
           "hash": {
@@ -3677,6 +3755,75 @@
         "summary": "Import a dat file — the same operation as `datboi dat import`. The\nbody is the raw dat bytes in any supported format (Logiqx,\nClrMamePro, RomCenter, MAME XML / software list); format detection\nand the provider/system defaults come from the bytes themselves.",
         "tags": [
           "systems"
+        ]
+      }
+    },
+    "/v1/evict": {
+      "post": {
+        "operationId": "evict",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvictRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvictPlan"
+                }
+              }
+            },
+            "description": "Dry-run plan (dry_run=true)"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStartResponse"
+                }
+              }
+            },
+            "description": "Eviction job started; poll GET /v1/jobs/{id}"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "GC guard busy (eviction in progress); retry"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Reclaim resident bytes by evicting recipe-covered literals (D72/D96,\nowner-only). `dry_run` answers the plan (200); a real run starts a\nguarded background Gc job (202) or is refused if the guard is busy\n(503).",
+        "tags": [
+          "storage"
         ]
       }
     },

@@ -958,6 +958,45 @@ pub struct SnapshotResponse {
     pub new_batch_blobs: u64,
 }
 
+// ---- POST /v1/evict (D72/D96 on-demand eviction) ----
+
+/// Reclaim resident bytes by evicting recipe-covered literals (D25/D72).
+/// `dry_run` reports the plan without deleting (the preview surface);
+/// otherwise the drop runs under the D72 singleton guard as a background
+/// Gc job — a 202 with a job id, or a 503 if the guard is already held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct EvictRequest {
+    /// Evict until at most this many resident bytes remain.
+    pub target_bytes: u64,
+    /// License (replay) covered routes first, so routes that have not
+    /// yet replayed on this host become evictable too. Defaults to false.
+    #[serde(default)]
+    pub license: Option<bool>,
+    /// Report the plan without deleting anything. Defaults to false.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+}
+
+/// One candidate the plan cannot drop right now, with the D25/D27 reasons
+/// spelled out (a residency planner that says "0 evicted" without saying
+/// why loses trust).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct EvictBlocked {
+    pub hash: String,
+    pub reasons: Vec<String>,
+}
+
+/// The dry-run eviction plan: what would drop, and what is held back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct EvictPlan {
+    /// Blobs that would be evicted at the current target.
+    pub evictable: u64,
+    /// Bytes those evictions would reclaim.
+    pub reclaimable_bytes: u64,
+    /// Candidates held back, each with its reasons.
+    pub blocked: Vec<EvictBlocked>,
+}
+
 // ---- GET /v1/jobs (+ /{id}) ----
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

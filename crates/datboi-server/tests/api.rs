@@ -879,3 +879,40 @@ fn snapshot_over_http() {
     // The fixture imported one dat source.
     assert_eq!(v["sources"], 1, "{v}");
 }
+
+/// D96: the evict verb reaches the HTTP surface. The fixture's one blob
+/// is a plain literal with no rebuild route, so nothing is evictable —
+/// the dry-run plan is empty, and a real run finishes clean (0 dropped)
+/// under the D72 guard. Both the preview and the guarded job path.
+#[test]
+fn evict_over_http() {
+    use std::time::{Duration, Instant};
+    let f = fixture();
+
+    // Dry-run: the D27 preview surface, a synchronous read.
+    let (status, plan) = request(f.addr, "POST", "/v1/evict", r#"{"target_bytes":0,"dry_run":true}"#);
+    assert_eq!(status, 200, "{plan}");
+    assert_eq!(plan["evictable"], 0, "no rebuildable literals: {plan}");
+    assert!(plan["blocked"].is_array(), "{plan}");
+    assert!(plan["reclaimable_bytes"].is_u64(), "{plan}");
+
+    // Real run: claims the guard, starts a Gc job, finishes with nothing
+    // to drop (the literal has no route, so it is never a candidate).
+    let (status, v) = request(f.addr, "POST", "/v1/evict", r#"{"target_bytes":0}"#);
+    assert_eq!(status, 202, "{v}");
+    let job = v["job"].as_i64().expect("job id");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let done = loop {
+        let (status, v) = get(f.addr, &format!("/v1/jobs/{job}"));
+        assert_eq!(status, 200, "{v}");
+        if v["state"] != "running" {
+            break v;
+        }
+        assert!(Instant::now() < deadline, "evict never finished: {v}");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(done["state"], "done", "{done}");
+    assert_eq!(done["kind"], "gc", "{done}");
+    let note = done["report"]["notes"][0].as_str().expect("note");
+    assert!(note.starts_with("0 blob(s) evicted"), "{note}");
+}

@@ -24,7 +24,8 @@ use utoipa::{Modify, OpenApi, ToSchema};
 use crate::{
     AdminUsersResponse, AnalyzerConfigRequest, AnalyzerInfo, AnalyzersResponse, ApiError,
     BlobDetail, BlobsPage, DatImportResponse, EntriesPage,
-    EntryDetail, EntryState, GcApplyRequest, GcApplyResponse, GcConfig, GcConfigRequest,
+    EntryDetail, EntryState, EvictPlan, EvictRequest,
+    GcApplyRequest, GcApplyResponse, GcConfig, GcConfigRequest,
     GcKeepRequest, GrantAddRequest,
     IngestRequest, IngestStartResponse, InviteAcceptRequest, InviteMintRequest, InviteMintResponse,
     JobDetail, JobStartResponse, JobsResponse, LoginRequest, OkResponse, OrphansResponse,
@@ -804,6 +805,25 @@ fn scrub() {}
 )]
 fn snapshot() {}
 
+/// Reclaim resident bytes by evicting recipe-covered literals (D72/D96,
+/// owner-only). `dry_run` answers the plan (200); a real run starts a
+/// guarded background Gc job (202) or is refused if the guard is busy
+/// (503).
+#[utoipa::path(
+    post,
+    path = "/v1/evict",
+    tag = "storage",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    request_body = EvictRequest,
+    responses(
+        (status = 200, description = "Dry-run plan (dry_run=true)", body = EvictPlan),
+        (status = 202, description = "Eviction job started; poll GET /v1/jobs/{id}", body = JobStartResponse),
+        (status = 403, description = "Owner only", body = ApiError),
+        (status = 503, description = "GC guard busy (eviction in progress); retry", body = ApiError),
+    ),
+)]
+fn evict() {}
+
 #[derive(OpenApi)]
 #[openapi(
 
@@ -857,6 +877,7 @@ fn snapshot() {}
         gc_config_set,
         scrub,
         snapshot,
+        evict,
     ),
     modifiers(&SecurityAddon),
 )]
