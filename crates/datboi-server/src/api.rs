@@ -1030,10 +1030,10 @@ pub(crate) async fn storage(
 
 /// Storage stats from the blob index (`datboi status` walks the store
 /// directories for its numbers; per-request the index projection is
-/// the same truth without an NFS metadata walk). No last-scrub field:
-/// the index records per-blob `verified_at`, never a scrub run — a
-/// run ledger is jobs-registry work (docs/open-questions.md, raised
-/// 2026-07-11).
+/// the same truth without an NFS metadata walk). The last-scrub readout
+/// rides the D74 job ledger, not a per-blob column: `verified_at` still
+/// records per-blob freshness, while `last_scrub` names the newest
+/// finished Scrub RUN (CLI or the daemon's `POST /v1/scrub`).
 fn storage_body(app: &App) -> Result<StorageResponse, Response> {
     let db = read_db(app);
     let conn = db.cache();
@@ -1072,7 +1072,8 @@ fn storage_body(app: &App) -> Result<StorageResponse, Response> {
     // D49 rule 3: components whose seek path produced bad bytes.
     let quarantined = db.list_seek_quarantined().map_err(internal)?;
     // The scrub-run readout (D74): newest finished scrub row, whichever
-    // side ran it (CLI stamps terminal rows; a daemon scrub would too).
+    // side ran it — the CLI stamps terminal rows, and the daemon's
+    // `POST /v1/scrub` finishes a Scrub job into the same ledger (D96).
     let last_scrub = db
         .latest_finished_job_of_kind(datboi_index::JobKind::Scrub)
         .map_err(internal)?
@@ -1517,7 +1518,8 @@ pub(crate) async fn blob_verify(
             if row.residency != Residency::Resident {
                 return Err(err(
                     ErrorCode::BadRequest,
-                    "blob is not on disk — rebuildable blobs verify by replay (datboi scrub)",
+                    "blob is not on disk — rebuildable blobs verify by replay \
+                     (POST /v1/blobs/{hash}/materialize first, which re-verifies as it rebuilds)",
                 ));
             }
             (row.blob_id, row.namespace)
@@ -1628,6 +1630,114 @@ pub(crate) async fn blob_materialize(
         Ok(json_response(StatusCode::OK, &datboi_api::OkResponse { ok: true }))
     })
     .await
+}
+
+// ---- POST /v1/scrub ----
+
+/// Trigger a corpus scrub (D96): the same walk `datboi scrub` runs,
+/// descended to `Executor::scrub`. Long-running, so it starts a Scrub
+/// job on a background thread with a PRIVATE db connection (a
+/// minutes-long corpus walk must never hold the pipeline write mutex —
+/// the D71 refiner posture) and answers the job id.
+pub(crate) async fn scrub(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+    crate::http::ApiJson(req): crate::http::ApiJson<datboi_api::ScrubRequest>,
+) -> Response {
+    run_blocking(move || {
+        require_owner(&caller)?;
+        let sample_pct = req.sample_pct.unwrap_or(100);
+        if sample_pct > 100 {
+            return Err(err(ErrorCode::BadRequest, "sample_pct must be 0..=100"));
+        }
+        let rehabilitate = req.rehabilitate.unwrap_or(false);
+        let now = auth::now_unix();
+        let job = app
+            .jobs
+            .create_scrub(&format!("scrub — {sample_pct}% sample"), 0, now);
+        let app = Arc::clone(&app);
+        std::thread::spawn(move || run_scrub(&app, job, sample_pct, rehabilitate));
+        Ok(json_response(
+            StatusCode::ACCEPTED,
+            &datboi_api::JobStartResponse { job },
+        ))
+    })
+    .await
+}
+
+/// The scrub worker. A byte disproof is a report finding, not an error
+/// (D81), so a run that finds corruption still FINISHES (never fails) —
+/// the note carries the counts and a bounded list, and a WARN logs the
+/// bad bytes for the operator. Only an environmental error fails the job.
+fn run_scrub(app: &App, job: i64, sample_pct: u8, rehabilitate: bool) {
+    // How many corrupt/missing hashes to spell out in the note before
+    // deferring to the logs — a rotten pack could name thousands.
+    const LIST_CAP: usize = 20;
+    let db = match Db::open(&app.db_dir) {
+        Ok(db) => db,
+        Err(e) => {
+            app.jobs
+                .fail(job, &format!("scrub: open db: {e}"), auth::now_unix());
+            return;
+        }
+    };
+    let report = match app.exec.scrub(&db, sample_pct, rehabilitate, auth::now_unix()) {
+        Ok(report) => report,
+        Err(e) => {
+            app.jobs.fail(job, &e.to_string(), auth::now_unix());
+            return;
+        }
+    };
+    let mut note = format!(
+        "checked {} blob(s), {} row(s) refreshed; {} corrupt, {} missing",
+        report.checked,
+        report.refreshed,
+        report.corrupt.len(),
+        report.missing.len()
+    );
+    if rehabilitate {
+        note.push_str(&format!(
+            "; {} recipe(s) rehabilitated, {} still poisoned",
+            report.rehabilitated.len(),
+            report.still_failed.len()
+        ));
+    }
+    app.jobs.push_note(job, note);
+    if !report.is_clean() {
+        let bad: Vec<&String> = report
+            .corrupt
+            .iter()
+            .chain(report.missing.iter())
+            .take(LIST_CAP)
+            .collect();
+        let more = (report.corrupt.len() + report.missing.len()).saturating_sub(LIST_CAP);
+        app.jobs.push_note(
+            job,
+            format!(
+                "problem bytes: {}{}",
+                bad.iter().map(|h| h.as_str()).collect::<Vec<_>>().join(", "),
+                if more > 0 {
+                    format!(" (+{more} more — see the daemon log)")
+                } else {
+                    String::new()
+                }
+            ),
+        );
+        tracing::warn!(
+            "scrub job {job}: {} corrupt, {} missing — {:?} {:?}",
+            report.corrupt.len(),
+            report.missing.len(),
+            report.corrupt,
+            report.missing
+        );
+    }
+    app.jobs.refine_progress(job, report.checked, report.checked);
+    app.jobs.finish(job, auth::now_unix());
+    tracing::info!(
+        "scrub job {job}: {} checked, {} refreshed",
+        report.checked,
+        report.refreshed
+    );
 }
 
 /// The claims a blob satisfies: identity links of any evidence grade

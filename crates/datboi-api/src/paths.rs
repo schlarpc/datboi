@@ -28,7 +28,7 @@ use crate::{
     GcKeepRequest, GrantAddRequest,
     IngestRequest, IngestStartResponse, InviteAcceptRequest, InviteMintRequest, InviteMintResponse,
     JobDetail, JobStartResponse, JobsResponse, LoginRequest, OkResponse, OrphansResponse,
-    ResidencyState,
+    ResidencyState, ScrubRequest,
     SessionResponse, SessionsRevokedResponse, StorageBreakdown, StorageResponse, SystemsResponse,
     UploadResponse, VerifyStartResponse, ViewDefineRequest, ViewDefineResponse, ViewDetail,
     ViewFilesPage, ViewProfilesResponse, ViewsResponse, WhoamiResponse,
@@ -770,6 +770,24 @@ fn gc_config_get() {}
 )]
 fn gc_config_set() {}
 
+/// Scrub the corpus (owner-only, D96): verify bytes against their names,
+/// back-fill aliases + `verified_at`, check pack integrity, and
+/// optionally rehabilitate poisoned recipes — the same walk `datboi
+/// scrub` runs. Long-running, so it answers a job id.
+#[utoipa::path(
+    post,
+    path = "/v1/scrub",
+    tag = "storage",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    request_body = ScrubRequest,
+    responses(
+        (status = 202, description = "Scrub job started; poll GET /v1/jobs/{id}", body = JobStartResponse),
+        (status = 400, description = "sample_pct out of range", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+    ),
+)]
+fn scrub() {}
+
 #[derive(OpenApi)]
 #[openapi(
 
@@ -821,6 +839,7 @@ fn gc_config_set() {}
         gc_apply,
         gc_config_get,
         gc_config_set,
+        scrub,
     ),
     modifiers(&SecurityAddon),
 )]

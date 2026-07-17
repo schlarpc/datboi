@@ -828,3 +828,40 @@ fn admin_crud_round_trip() {
     let (_, v) = get(f.addr, "/v1/admin/users");
     assert_eq!(v["invites"], serde_json::json!([]));
 }
+
+/// D96: the scrub verb reaches the HTTP surface. A full-sample scrub
+/// over the fixture's one resident blob starts a Scrub job, runs the
+/// descended `Executor::scrub` on a private connection, and finishes
+/// clean — the note carrying the checked/refreshed counts.
+#[test]
+fn scrub_over_http() {
+    use std::time::{Duration, Instant};
+    let f = fixture();
+
+    // Bad sample is a typed 400, before any job is created.
+    let (status, _) = request(f.addr, "POST", "/v1/scrub", r#"{"sample_pct":150}"#);
+    assert_eq!(status, 400, "sample_pct out of range");
+
+    // Defaults ({} → 100% sample, no rehab): a 202 with a job id.
+    let (status, v) = request(f.addr, "POST", "/v1/scrub", "{}");
+    assert_eq!(status, 202, "{v}");
+    let job = v["job"].as_i64().expect("job id");
+
+    // Poll to completion (one small blob is near-instant).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let done = loop {
+        let (status, v) = get(f.addr, &format!("/v1/jobs/{job}"));
+        assert_eq!(status, 200, "{v}");
+        if v["state"] != "running" {
+            break v;
+        }
+        assert!(Instant::now() < deadline, "scrub never finished: {v}");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(done["state"], "done", "{done}");
+    assert_eq!(done["kind"], "scrub", "{done}");
+    let notes = done["report"]["notes"].as_array().expect("notes");
+    let summary = notes[0].as_str().expect("summary note");
+    assert!(summary.contains("0 corrupt, 0 missing"), "{summary}");
+    assert!(summary.contains("refreshed"), "{summary}");
+}

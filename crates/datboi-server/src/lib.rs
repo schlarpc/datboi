@@ -170,6 +170,11 @@ pub(crate) struct App {
     pub(crate) readers: ReadPool,
     pub(crate) exec: Executor<'static>,
     pub(crate) store: &'static Store,
+    /// The databases directory — opened as a fresh PRIVATE connection by
+    /// on-demand maintenance jobs (scrub/evict/sweep/snapshot), so a
+    /// minutes-long corpus walk never holds the pipeline write mutex (the
+    /// refiner's D71 posture, reused for request-triggered maintenance).
+    pub(crate) db_dir: PathBuf,
     /// Decoded manifests by snapshot hash. Immutable objects, so
     /// entries never invalidate; bounded by wholesale clear.
     pub(crate) manifests: Mutex<HashMap<Blake3, Arc<vfs::ViewIndex>>>,
@@ -245,6 +250,7 @@ impl App {
             readers,
             exec,
             store,
+            db_dir: config.db_dir.clone(),
             manifests: Mutex::new(HashMap::new()),
             jobs,
             detectors,

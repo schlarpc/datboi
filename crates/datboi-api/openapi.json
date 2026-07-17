@@ -1293,7 +1293,7 @@
         "type": "string"
       },
       "JobStartResponse": {
-        "description": "A started background job (D96 view verbs: eval, mint). Poll `GET\n/v1/jobs/{id}` for progress; the finished job's report carries the\noutcome, a failed one carries `error`.",
+        "description": "A started background job (D96 view verbs: eval, mint; maintenance\nverbs: scrub). Poll `GET /v1/jobs/{id}` for progress; the finished\njob's report carries the outcome, a failed one carries `error`.",
         "properties": {
           "job": {
             "format": "int64",
@@ -1908,6 +1908,28 @@
           "replayed_local"
         ],
         "type": "string"
+      },
+      "ScrubRequest": {
+        "description": "Trigger a corpus scrub over serve — the same walk `datboi scrub`\nruns (verify bytes against names, back-fill aliases + `verified_at`,\npack integrity, optional recipe rehabilitation). Long-running, so it\nanswers a `JobStartResponse`; the finished Scrub job's notes carry\nthe checked/refreshed/corrupt/missing summary.",
+        "properties": {
+          "rehabilitate": {
+            "description": "Re-execute poisoned (Failed) recipes; a verified re-replay clears\nthe poison. Defaults to false.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "sample_pct": {
+            "description": "Percentage of loose blobs to check (deterministic sample by hash\nprefix); packs are always scrubbed whole when this is non-zero.\nDefaults to 100 (a full pass), matching the CLI.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       },
       "SessionResponse": {
         "description": "A fresh login/acceptance answer: whoami-shaped plus the session\nexpiry. The session token itself rides the `Set-Cookie` header\n(HttpOnly), never the body.",
@@ -4077,6 +4099,65 @@
         "summary": "One job with counters and its (growing, then final) ingest report.",
         "tags": [
           "jobs"
+        ]
+      }
+    },
+    "/v1/scrub": {
+      "post": {
+        "operationId": "scrub",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScrubRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStartResponse"
+                }
+              }
+            },
+            "description": "Scrub job started; poll GET /v1/jobs/{id}"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "sample_pct out of range"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Scrub the corpus (owner-only, D96): verify bytes against their names,\nback-fill aliases + `verified_at`, check pack integrity, and\noptionally rehabilitate poisoned recipes — the same walk `datboi\nscrub` runs. Long-running, so it answers a job id.",
+        "tags": [
+          "storage"
         ]
       }
     },

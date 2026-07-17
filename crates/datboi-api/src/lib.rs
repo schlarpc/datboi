@@ -909,12 +909,32 @@ pub struct VerifyStartResponse {
     pub job: i64,
 }
 
-/// A started background job (D96 view verbs: eval, mint). Poll `GET
-/// /v1/jobs/{id}` for progress; the finished job's report carries the
-/// outcome, a failed one carries `error`.
+/// A started background job (D96 view verbs: eval, mint; maintenance
+/// verbs: scrub). Poll `GET /v1/jobs/{id}` for progress; the finished
+/// job's report carries the outcome, a failed one carries `error`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct JobStartResponse {
     pub job: i64,
+}
+
+// ---- POST /v1/scrub (D96 maintenance) ----
+
+/// Trigger a corpus scrub over serve — the same walk `datboi scrub`
+/// runs (verify bytes against names, back-fill aliases + `verified_at`,
+/// pack integrity, optional recipe rehabilitation). Long-running, so it
+/// answers a `JobStartResponse`; the finished Scrub job's notes carry
+/// the checked/refreshed/corrupt/missing summary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ScrubRequest {
+    /// Percentage of loose blobs to check (deterministic sample by hash
+    /// prefix); packs are always scrubbed whole when this is non-zero.
+    /// Defaults to 100 (a full pass), matching the CLI.
+    #[serde(default)]
+    pub sample_pct: Option<u8>,
+    /// Re-execute poisoned (Failed) recipes; a verified re-replay clears
+    /// the poison. Defaults to false.
+    #[serde(default)]
+    pub rehabilitate: Option<bool>,
 }
 
 // ---- GET /v1/jobs (+ /{id}) ----
