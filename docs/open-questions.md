@@ -517,27 +517,44 @@ surface, CLI is convenience)**: parity audit done; posture INVERTED and
 ruled as **D96**. Every capability must reach the HTTP+web surface;
 both surfaces call one shared library fn per verb (correct-by-
 construction), and stranded entrypoint logic descends into a library
-crate before it graduates. Punch list, in order (biggest persona hole
-first, foundations where a descent unblocks several verbs):
-  1. **Read-model de-dup** (foundational, correctness): collapse the
-     bespoke inline SQL in `api.rs` (systems/storage) onto the shared
-     `datboi-catalog` `audit()`/`status` queries the CLI already calls.
-  2. **View authoring** (the big hole): `define` / `eval` / image
-     `mint` / `profiles` over HTTP+UI. Shared fns exist (`define_view`,
-     `evaluate_view`, `mint_image`, `PROFILES`); eval+mint register in
-     the jobs.rs ledger like ingest.
-  3. **Config surfaces**: analyzer enable/disable/params, GC policy
-     (watermarks/grace — today `gc.rs` reads grace but can't set it).
-  4. **On-demand maintenance**: evict / sweep / materialize / snapshot,
-     and **scrub** — scrub's corpus walk must move OUT of `cmds.rs`
+crate before it graduates. **Backend-first pass underway** (web UI for
+the new endpoints is deferred to a focused UI session — build against
+the settled contract). Punch list with landed status:
+  1. **Read-model de-dup** — DONE (core): the 4-state entry vocabulary
+     (verified/claimed/missing/nodump) descended to
+     `datboi_catalog::state` (`RollupState` + `STATE_CASE_SQL`, proven
+     equal by a sqlite-vs-Rust test); server bridges to the wire enum.
+     (The SUM-in-SQL per-source counts stay — a perf choice — now over
+     the shared fragment. A fuller `source_counts()` shared fn is
+     optional polish, not required.)
+  2. **View authoring** — DONE: `GET /v1/view-profiles`,
+     `PUT /v1/views/{name}` (define), `POST …/eval` and `POST …/image`
+     (both jobs; new `JobKind::Eval`/`Mint` in the shared ledger). New
+     server `views.rs` module.
+  3. **Config surfaces** — DONE: `GET /v1/analyzers` +
+     `PUT /v1/analyzers/{family}` (family list descended to
+     `refine::FAMILIES`); `GET`/`PUT /v1/gc/config` (watermark
+     parse/Display/setters descended to `policy`, CLI now shares them).
+  4. **On-demand maintenance** — IN PROGRESS. Done:
+     `POST /v1/blobs/{hash}/materialize` (synchronous). TODO: evict
+     (D72 guard; likely a Gc job), sweep (trigger a refine drain →
+     Refine job), snapshot (`statesnap::mint`; daemon has the identity),
+     and **scrub** — its corpus walk (`cmds.rs` ~1387–1513: store
+     walks, `scrub_pack`, rehabilitation) must move OUT of `cmds.rs`
      into a library crate (candidate: `datboi-exec` or new
-     `datboi-maintain`) so daemon+CLI share it; verify endpoint stops
-     deep-linking `datboi scrub`.
-  5. **Dat lifecycle**: fetch / diff / clonelist / export — `dat
-     fetch`'s ureq+redump+zip-unwrap logic descends out of `cmds.rs`.
+     `datboi-maintain`) so daemon+CLI share it; then the verify
+     endpoint's "run `datboi scrub`" deep-link (api.rs ~1054, ~1520)
+     goes away. Scrub is the one real "descend logic" job left — give
+     it a fresh session.
+  5. **Dat lifecycle** — TODO: fetch / diff / clonelist / export.
+     `dat fetch`'s ureq+redump+zip-unwrap logic descends out of
+     `cmds.rs` first.
   Explicit CLI-first exceptions (NOT gaps): `recover`, bootstrap
   identity/token minting. `view sync` stays local-fs CLI, but its
   verified-write primitive is shared library code.
+  Web deferred: the Activity screen learned `eval`/`mint` kinds (forced
+  by the exhaustive switch); everything else — define form, analyzer &
+  gc-policy config panels, materialize button — awaits the UI session.
 
 **Position as of 2026-07-16, later (loose-thread + decomposition-arc
 sweep — all nine items landed, workspace green, clippy clean)**: the
