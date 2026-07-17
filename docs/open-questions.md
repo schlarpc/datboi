@@ -565,13 +565,16 @@ D97 left to the build:
   streaming instead of the spike's whole-blob buffer (fsm/async bao encoder
   over `open_stream` + spill for 4 GB ROMs), hash-seq requests (offset > 0),
   and a shared wasm engine (per-connection executor today).
-- **Identity wiring.** The on-disk ed25519 seed → iroh `SecretKey`
-  (`datboi-core::identity` already earmarks it; just plumb it).
-- **Workspace/nix integration.** `datboi-p2p` is an excluded leaf today
-  (own Cargo.lock, heavy iroh tree isolated from the host lockfile and
-  `nix build .#datboi`, mirroring the wasm-component pattern). Folding it
-  in — deciding whether iroh belongs in the hermetic build at all, and
-  the crane vendoring — is deferred until the handler is real.
+- ~~**Identity wiring.**~~ DONE (D99): the on-disk seed is a KDF root;
+  `identity.iroh_secret()` derives the iroh `SecretKey`, distinct from the
+  snapshot key. The seedbox binds to it.
+- ~~**Workspace/nix integration.**~~ DONE (D97 amendment 3, 2026-07-17):
+  `datboi-p2p` is a workspace member and daemon subsystem; iroh joined the
+  host lockfile + hermetic build deliberately (it is core). The exclusion
+  was spike scaffolding, NOT the wasm-component fate. Watch item: the
+  `nix build .#datboi` sandbox now compiles iroh's crypto crates
+  (ring/aws-lc); if that needs extra native build inputs it's a flake
+  tweak, not a design question.
 - **Operator surface.** `datboi share` / `fetch` and the web equivalents,
   per D96 (serve+web is the complete surface). `available-from-peer(X)`
   (D34/D39) is the completeness state the friend surface already anticipates.
@@ -650,29 +653,30 @@ slated for change:
 
 ## Next sessions (pick up here)
 
-**Position as of 2026-07-16, M6 iroh spike (D97 — spike green, literal
-fronting proven)**: `crates/datboi-p2p` (excluded leaf workspace, iroh
-1.0.2 + iroh-blobs 0.103) now proves THREE load-bearing facts — two
-instances exchange a verified blob over the real n0 discovery/relay path;
-our D52 `.obao` is byte-for-byte iroh's `.obao4`; and `cas::CasProvider`
-serves iroh's get protocol straight from a real `datboi-store-fs::Store`
-+ its `.obao` (no store trait — iroh-blobs 0.103 has none — no byte copy),
-which the stock iroh-blobs requester fetches and verifies. Design in
-docs/p2p.md § "M6 design"; posture + literal-handler amendment under D97.
-Since ruled: the outboard sidecar is `.obao4` not `.obao` (D52 amendment —
-the name now states the 16 KiB chunk group), and the receive path stages
-partials in iroh's store and imports completions into our CAS (D98 —
-complete-blobs-only invariant preserved). The CAS-fronting handler is now
-COMPLETE for correctness (both literal and virtual halves — D97 amendment
-2): `serve_range` unifies them, the virtual test evicts a blob and serves
-it rebuilt-from-recipe + verified over the wire. **Pick up here**: either
-(a) **piece-set reconciliation** — the novel dedup-aware-transfer bit, D97,
-over the D91 pieces; or (b) **bounded-memory streaming** — swap the
-whole-blob `serve_range(0,total)` buffer for the fsm/async bao encoder over
-`open_stream` + spill, so 4 GB ROMs don't sit in RAM (correctness is done;
-this is the scale hardening). Reconciliation is the more interesting;
-streaming is the more load-bearing for real ROM sizes. The previous
-position (D96 web-UI pass) is below.
+**Position as of 2026-07-17, M6 iroh INTEGRATED (D97 amdt 3 + D99)**:
+`datboi-p2p` is now a daemon subsystem, not a spike. It's a workspace
+member (iroh 1.0.2 + iroh-blobs 0.103 in the host lockfile + hermetic
+build), and `datboi serve --p2p` spawns the `CasProvider` seedbox
+(`datboi_p2p::serve_holdings`) over the daemon's leaked `&'static Store` +
+a dedicated read-only `Db`, bound to the DERIVED iroh identity. Proven
+along the way: two instances exchange a verified blob; our `.obao4` is
+byte-for-byte iroh's; the handler serves BOTH resident literals and
+grounded-but-evicted (recipe-materialized, D49-verified) blobs — a peer
+can't tell residency. Ruled this arc: `.obao4` rename (D52 amdt); receive
+path stages partials in iroh's store, imports completions into our CAS
+(D98); identity is a root secret deriving purpose-scoped keys, snapshot
+and iroh never share a key (D99); observability of savings is a design
+requirement (structured tracing → OTEL). Research settled: no good Rust
+rateless-IBLT exists (lone crate is an O(d²) PoC, no formal proof
+anywhere) — we build our own ~500-LOC port of the Go reference,
+differential-tested against it.
+**Pick up here** (the user's order): (1) **bounded-memory streaming** —
+swap the whole-blob `serve_range(0,total)` buffer for the fsm/async bao
+encoder over `open_stream` + spill, so 4 GB ROMs don't sit in RAM
+(correctness is done; this is scale hardening); then (2) **piece-set
+reconciliation** — the novel rateless-IBLT protocol on a custom ALPN, the
+dedup-aware-transfer payoff. The previous position (D96 web-UI pass) is
+below.
 
 
 **Position as of 2026-07-16, newest (D96 web-UI pass — COMPLETE)**: the

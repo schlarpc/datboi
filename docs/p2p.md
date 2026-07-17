@@ -207,11 +207,14 @@ byte copy): a resident literal reads from the store, and a
 grounded-but-evicted blob (recipe + retained `.obao4`, nothing on disk) is
 materialized on the fly and D49-verified — the stock iroh-blobs requester
 fetches and blake3-verifies both, unable to tell which was resident.
-**Designed, not built:** streaming instead of whole-blob buffering (the
-fsm/async encoder over `open_stream` + spill, for 4 GB ROMs), hash-seq
-requests, piece-set reconciliation, the opt-in swarm tiers.
-**Deferred to integration:** folding `datboi-p2p` into the host workspace
-+ nix vendoring (it is an excluded leaf today so the heavy iroh tree never
-churns the host lockfile or `nix build .#datboi`); wiring the iroh
-`SecretKey` to the on-disk identity; a `datboi share` / `datboi fetch`
-operator surface (the serve+web home per D96).
+**Integrated (2026-07-17, D97 amendment 3):** `datboi-p2p` is a daemon
+subsystem — folded into the host workspace, iroh in the hermetic build,
+and `datboi serve --p2p` spawns the seedbox under the derived iroh key
+(D99). It was an *excluded spike* only so the churny iroh tree wouldn't
+touch the host lockfile before the design settled — never a permanent
+standalone like the wasm components (those never link into the daemon;
+this always does). **Designed, not built:** streaming instead of
+whole-blob buffering (the fsm/async encoder over `open_stream` + spill,
+for 4 GB ROMs), hash-seq requests, the receive/fetch path (D98), piece-set
+reconciliation, the opt-in swarm tiers, and a `datboi share` / `fetch`
+operator surface + web home (D96).

@@ -2450,6 +2450,23 @@ matters. `datboi-p2p` now path-depends on `datboi-exec` + `datboi-index`
 (wasmtime + SQLite), so the excluded-leaf isolation is doing real work
 keeping that weight off the host lockfile.
 
+*Amendment (2026-07-17, 3): integrated — `datboi-p2p` is a daemon
+subsystem now, no longer excluded.* Folded into the host workspace; iroh
+joined the host `Cargo.lock` and the hermetic build DELIBERATELY (it is
+core, not a spike). `datboi serve --p2p` (env `DATBOI_P2P`, opt-in, off by
+default) spawns the `CasProvider` seedbox via `datboi_p2p::serve_holdings`,
+bound to the DERIVED iroh key (D99 `identity.iroh_secret()`), over the
+daemon's one leaked `&'static Store` and a dedicated read-only `Db` (so
+serving reads never contend with the request path); a bind failure
+(offline / no discovery) warns and the daemon serves locally, never
+aborts. **Framing correction (D97's own earlier prose):** the exclusion
+was SPIKE SCAFFOLDING to keep the churny iroh tree off the host lockfile
+until the design settled — NOT the permanent-standalone fate of the wasm
+components. Those stay excluded forever for a different reason (different
+compile target + the D54 reproducibility boundary); they never link into
+the daemon. `datboi-p2p` always did. Owed: the `datboi share` / `fetch`
+operator surface and the web home (D96).
+
 ## D98 — The receive path stages partials in iroh's store; our CAS only ever ingests complete, verified blobs (2026-07-16)
 
 Ruled before the M6 fetch path is built, because it is a re-litigable
