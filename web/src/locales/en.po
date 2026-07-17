@@ -505,9 +505,8 @@ msgstr "REPRESENTED"
 #~ msgid "shrinkable"
 #~ msgstr "shrinkable"
 
-#: src/screens/Storage.svelte
-msgid "re-hash stored blobs and report corruption:"
-msgstr "re-hash stored blobs and report corruption:"
+#~ msgid "re-hash stored blobs and report corruption:"
+#~ msgstr "re-hash stored blobs and report corruption:"
 
 #: src/screens/Storage.svelte
 msgid "Scrub"
@@ -516,9 +515,8 @@ msgstr "Scrub"
 #~ msgid "no scrub ledger yet — the index records per-blob verify dates, not runs"
 #~ msgstr "no scrub ledger yet — the index records per-blob verify dates, not runs"
 
-#: src/screens/Storage.svelte
-msgid "run via CLI"
-msgstr "run via CLI"
+#~ msgid "run via CLI"
+#~ msgstr "run via CLI"
 
 #: src/screens/Storage.svelte
 msgctxt "bad components, not people"
@@ -1638,3 +1636,37 @@ msgstr "eval"
 msgctxt "job kind"
 msgid "mint"
 msgstr "mint"
+
+#. 0: scrubError
+#: src/screens/Storage.svelte
+msgid "couldn't start — {0}"
+msgstr "couldn't start — {0}"
+
+#: src/screens/Storage.svelte
+msgctxt "scrub job state"
+msgid "running…"
+msgstr "running…"
+
+#: src/screens/Storage.svelte
+msgctxt "start a scrub"
+msgid "run"
+msgstr "run"
+
+#: src/screens/Storage.svelte
+msgctxt "catalog restore point"
+msgid "Backup"
+msgstr "Backup"
+
+#: src/screens/Storage.svelte
+msgid "auto-saved after every change — the restore point recover rebuilds from"
+msgstr "auto-saved after every change — the restore point recover rebuilds from"
+
+#: src/screens/Storage.svelte
+msgctxt "backup in progress"
+msgid "saving…"
+msgstr "saving…"
+
+#: src/screens/Storage.svelte
+msgctxt "force a backup"
+msgid "save now"
+msgstr "save now"

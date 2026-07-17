@@ -20,6 +20,7 @@ import type {
   Job,
   JobDetailBody,
   MintedInvite,
+  SnapshotBody,
   StorageBody,
   StorageBreakdownBody,
   System,
@@ -66,6 +67,10 @@ export interface MockUniverse {
   ingestJob?: number;
   /** POST /v1/blobs/{hash}/verify answer (D80); defaults to job 1. */
   verifyJob?: number;
+  /** POST /v1/scrub answer (D96 maintenance); defaults to job 1. */
+  scrubJob?: number;
+  /** POST /v1/snapshot receipt (D96); default is a minimal one. */
+  snapshot?: SnapshotBody;
   /** POST /v1/ingest rejects (unknown token shape). */
   ingestFail?: boolean;
   /** Full detail bodies; the list endpoint serves the same objects
@@ -259,6 +264,22 @@ export function installFetch(universe: MockUniverse) {
       }
       if (path === '/v1/gc/orphans/apply' && method === 'POST') {
         return json(200, { deleted: 0, bytes_reclaimed: 0, skipped: 0 });
+      }
+      if (path === '/v1/scrub' && method === 'POST') {
+        return json(202, { job: universe.scrubJob ?? 1 });
+      }
+      if (path === '/v1/snapshot' && method === 'POST') {
+        return json(
+          200,
+          universe.snapshot ?? {
+            hash: '0'.repeat(64),
+            sequence: 1,
+            sources: 0,
+            alias_rows: 0,
+            analysis_rows: 0,
+            new_batch_blobs: 0,
+          },
+        );
       }
       if (path === '/v1/jobs') {
         if (universe.jobsFail === true) {

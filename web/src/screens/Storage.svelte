@@ -18,6 +18,8 @@
     gcApply,
     gcKeep,
     gcOrphans,
+    scrub as startScrub,
+    snapshot as saveSnapshot,
     storage as fetchStorage,
     storageBreakdown,
   } from '../lib/api/client';
@@ -25,17 +27,72 @@
   import CliHint from '../lib/components/CliHint.svelte';
   import Link from '../lib/components/Link.svelte';
   import { fmtDate, fmtSize, shortHash } from '../lib/format';
+  import { followJob, jobsSignal } from '../lib/jobs.svelte';
   import { residencyLabel } from '../lib/residency.svelte';
   import { errorText, loading, settle, type Remote } from '../lib/remote';
   import LoadError from '../lib/components/LoadError.svelte';
+
+  // Unmount stops any job-follow loop — the tray owns job visibility.
+  let alive = true;
+  $effect(() => () => {
+    alive = false;
+  });
 
   // Three independent resources, three Remotes: a failed orphan refresh
   // (say, after a keep toggle) must never blank fully-rendered stats.
   let stats = $state<Remote<StorageBody>>(loading());
   let breakdown = $state<Remote<StorageBreakdownBody>>(loading());
   let orphans = $state<Remote<OrphansBody>>(loading());
-  let scrubHint = $state(false);
   let evictHint = $state(false);
+
+  // Scrub runs as a background job (the corpus walk is long); the tray
+  // carries the progress bar, and the last-run line refreshes when it
+  // finishes. A full pass by default — a sample % is a power option (CLI).
+  let scrubbing = $state(false);
+  let scrubError = $state<string | null>(null);
+  const runScrub = () => {
+    if (scrubbing) return;
+    scrubbing = true;
+    scrubError = null;
+    startScrub().then(
+      async (started) => {
+        jobsSignal.bump(); // wake the tray now, not on its own cadence
+        try {
+          await followJob(started.job, { alive: () => alive });
+        } catch {
+          // Lost contact: the tray still tracks it; nothing to show here.
+        }
+        jobsSignal.bump();
+        scrubbing = false;
+        if (alive) refreshStats(); // the last-scrub line just changed
+      },
+      (e: unknown) => {
+        scrubbing = false;
+        scrubError = errorText(e);
+      },
+    );
+  };
+
+  // Catalog backup (D75 state snapshot): auto-saved after every change,
+  // but a manual "save now" is the force-a-restore-point action.
+  // Synchronous — the receipt line confirms it.
+  let saving = $state(false);
+  let savedNote = $state<string | null>(null);
+  const saveNow = () => {
+    if (saving) return;
+    saving = true;
+    savedNote = null;
+    saveSnapshot().then(
+      (rep) => {
+        saving = false;
+        savedNote = `saved ${shortHash(rep.hash)} · point ${rep.sequence}`;
+      },
+      (e: unknown) => {
+        saving = false;
+        savedNote = errorText(e);
+      },
+    );
+  };
   /** Two-click delete: first click arms, second applies (D73's human
    * gate deserves more than one tap, less than a modal). */
   let applyArmed = $state(false);
@@ -168,19 +225,33 @@
       <div class="maint-row">
         <span class="maint-label">Scrub</span>
         <span class="maint-copy">
-          {#if s.last_scrub !== null}
+          {#if scrubError !== null}
+            <span class="row-error">couldn't start — {scrubError}</span>
+          {:else if s.last_scrub !== null}
             last: {fmtDate(s.last_scrub.finished_at)} · {s.last_scrub.name}
           {:else}
             never run
           {/if}
         </span>
-        <button class="pill" aria-expanded={scrubHint} onclick={() => (scrubHint = !scrubHint)}>run via CLI</button>
+        <!-- Re-hash every stored blob against its name and report
+             corruption; runs in the jobs tray. -->
+        <button class="pill" disabled={scrubbing} onclick={runScrub}>
+          {#if scrubbing}<!-- @wc-context: scrub job state -->running…{:else}<!-- @wc-context: start a scrub -->run{/if}
+        </button>
       </div>
-      {#if scrubHint}
-        <CliHint command={'datboi scrub [--sample <pct>]'}>
-          re-hash stored blobs and report corruption:
-        </CliHint>
-      {/if}
+      <div class="maint-row">
+        <span class="maint-label"><!-- @wc-context: catalog restore point -->Backup</span>
+        <span class="maint-copy">
+          {#if savedNote !== null}
+            {savedNote}
+          {:else}
+            auto-saved after every change — the restore point recover rebuilds from
+          {/if}
+        </span>
+        <button class="pill" disabled={saving} onclick={saveNow}>
+          {#if saving}<!-- @wc-context: backup in progress -->saving…{:else}<!-- @wc-context: force a backup -->save now{/if}
+        </button>
+      </div>
       <div class="maint-row">
         <span class="maint-label"><!-- @wc-context: storage eviction -->Eviction</span>
         <!-- D72: watermark eviction is automatic and REVERSIBLE by
@@ -462,6 +533,10 @@
   .maint-copy {
     flex: 1;
     min-width: 0;
+  }
+
+  .row-error {
+    color: var(--bad);
   }
 
   .cards {

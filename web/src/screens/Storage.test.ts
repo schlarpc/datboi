@@ -143,19 +143,52 @@ test('empty breakdown renders no tables but keeps the tiles', async () => {
   expect(screen.queryByText('no-intro/gba')).toBeNull();
 });
 
-test('scrub and eviction maintenance rows reveal verified CLI hints', async () => {
-  installFetch({ storage: stats });
+test('scrub row runs a background job, then refreshes the last-run line', async () => {
+  installFetch({
+    storage: stats,
+    scrubJob: 7,
+    // followJob polls this: one terminal poll → the run resolves.
+    jobTimeline: [
+      {
+        id: 7, name: 'scrub — 100% sample', kind: 'scrub', state: 'done', progress: 100, started_at: 1, finished_at: 2,
+        files_total: 0, files_done: 0, bytes_total: 0, bytes_done: 0,
+        current: null, report: { files_scanned: 0, files_unchanged: 0, files_stored: 0, files_already_present: 0, chd_v5: 0, members_claimed: 0, members_extracted: 0, detector_hits: 0, skipper_skipped_large: 0, dats_imported: [], errors: [], member_skips: [], notes: [] },
+        matched: [], matched_total: 0, error: null,
+      },
+    ],
+  });
   render(Storage);
   await screen.findByText('BLOBS');
 
-  await fireEvent.click(screen.getByText('run via CLI'));
-  expect(screen.getByText(/datboi scrub/)).toBeTruthy();
+  // Scrub is a real trigger now, not a CLI hint.
   expect(screen.getByText('never run')).toBeTruthy();
+  await fireEvent.click(screen.getByText('run'));
+  // The button flips to a running label while the job follows.
+  expect(await screen.findByText('running…')).toBeTruthy();
+});
+
+test('eviction maintenance row reveals a verified CLI hint', async () => {
+  installFetch({ storage: stats });
+  render(Storage);
+  await screen.findByText('BLOBS');
 
   // D72: eviction is automatic and reversible; the row tunes, not plans.
   expect(screen.getByText(/automatic at the watermark/)).toBeTruthy();
   await fireEvent.click(screen.getByText('tune via CLI'));
   expect(screen.getByText(/datboi gc config --high-water/)).toBeTruthy();
+});
+
+test('backup row saves a restore point', async () => {
+  installFetch({
+    storage: stats,
+    snapshot: { hash: 'ab'.repeat(32), sequence: 42, sources: 3, alias_rows: 10, analysis_rows: 5, new_batch_blobs: 2 },
+  });
+  render(Storage);
+  await screen.findByText('BLOBS');
+
+  await fireEvent.click(screen.getByText('save now'));
+  // The receipt line confirms the point number and the short hash.
+  expect(await screen.findByText(/point 42/)).toBeTruthy();
 });
 
 test('orphans empty state: one quiet maintenance line, no card', async () => {

@@ -33,13 +33,16 @@ import type {
   InviteAcceptParams,
   JobDetailBody,
   JobsBody,
+  JobStarted,
   LoginParams,
   MintedInvite,
   MintInviteParams,
   OkBody,
   OrphansBody,
   RevokedSessions,
+  ScrubParams,
   SessionInfo,
+  SnapshotBody,
   StorageBody,
   StorageBreakdownBody,
   SystemsBody,
@@ -285,6 +288,17 @@ export const gcKeep = async (hash: string, keep: boolean): Promise<OkBody> =>
 /** Absent hashes = every reviewable, non-kept candidate. */
 export const gcApply = async (hashes?: string[]): Promise<GcApplyReport> =>
   unwrap(await client.POST('/v1/gc/orphans/apply', { body: hashes ? { hashes } : {} }));
+
+// ---- maintenance (D96) ----
+
+/** POST /v1/scrub — corpus scrub; poll the returned job for the report. */
+export const scrub = async (body: ScrubParams = {}): Promise<JobStarted> =>
+  unwrap(await client.POST('/v1/scrub', { body }));
+
+/** POST /v1/snapshot — mint a state snapshot now (synchronous); the
+ * manual trigger beside the daemon's auto-cadence. */
+export const snapshot = async (): Promise<SnapshotBody> =>
+  unwrap(await client.POST('/v1/snapshot'));
 
 // ---- ingest ----
 

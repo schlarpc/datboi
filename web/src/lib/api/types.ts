@@ -125,6 +125,15 @@ export type JobsBody = Schemas['JobsResponse'];
 export type JobDetailBody = Schemas['JobDetail'];
 export type MatchedEntry = Schemas['MatchedEntry'];
 
+// ---- maintenance (D96) ----
+
+/** A started background job (scrub, sweep, evict): poll GET /v1/jobs/{id}. */
+export type JobStarted = Schemas['JobStartResponse'];
+/** POST /v1/scrub body — both fields optional (full pass, no rehab). */
+export type ScrubParams = Schemas['ScrubRequest'];
+/** POST /v1/snapshot receipt (synchronous mint). */
+export type SnapshotBody = Schemas['SnapshotResponse'];
+
 // ---- /v1/admin/* ----
 
 export type AdminUser = Schemas['UserRow'];
