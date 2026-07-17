@@ -1365,6 +1365,7 @@ dependencies = [
  "siphasher",
  "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
