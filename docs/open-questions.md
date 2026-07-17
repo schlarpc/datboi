@@ -528,9 +528,13 @@ D97 left to the build:
   piece manifest (the strict-view fetch-list shape, D57) leaks less.
   Likely: manifests ride the D34 channel, want-lists drive fetch. Needs a
   privacy pass before public swarms.
-- **CAS-fronting handler.** Our `ProtocolHandler` serving literal
-  (`Store::get`) + virtual (executor verified stream, D92) blobs with the
-  retained `.obao`, under D49 serve-side verify. The bulk of the build.
+- **CAS-fronting handler.** LITERAL half DONE in the spike
+  (`cas::CasProvider` — get protocol from `Store::get` + `.obao`, stock
+  requester verifies). Remaining: the VIRTUAL half (evicted/recipe-only
+  blobs through the executor verified stream, D92 — same bao encode,
+  byte source is a materialization not a file), streaming instead of the
+  spike's whole-blob buffer (fsm/async bao encoder + spill for 4 GB ROMs),
+  hash-seq requests, and D49 serve-side verify wired through explicitly.
 - **Identity wiring.** The on-disk ed25519 seed → iroh `SecretKey`
   (`datboi-core::identity` already earmarks it; just plumb it).
 - **Workspace/nix integration.** `datboi-p2p` is an excluded leaf today
@@ -544,15 +548,21 @@ D97 left to the build:
 
 ## Next sessions (pick up here)
 
-**Position as of 2026-07-16, M6 iroh spike (D97 — spike green, design
-landed)**: `crates/datboi-p2p` (excluded leaf workspace, iroh 1.0.2 +
-iroh-blobs 0.103) proves the two load-bearing facts — two instances
-exchange a verified blob over the real n0 discovery/relay path, and our
-D52 `.obao` is byte-for-byte iroh's `.obao4`. Design in docs/p2p.md § "M6
-design"; posture ruled as D97. **Pick up here**: build the CAS-fronting
-`ProtocolHandler` (literal + virtual/D92, D49-verified) — that unblocks
-everything else, and the reconciliation/privacy/swarm forks above resolve
-against it. The previous position (D96 web-UI pass) is below.
+**Position as of 2026-07-16, M6 iroh spike (D97 — spike green, literal
+fronting proven)**: `crates/datboi-p2p` (excluded leaf workspace, iroh
+1.0.2 + iroh-blobs 0.103) now proves THREE load-bearing facts — two
+instances exchange a verified blob over the real n0 discovery/relay path;
+our D52 `.obao` is byte-for-byte iroh's `.obao4`; and `cas::CasProvider`
+serves iroh's get protocol straight from a real `datboi-store-fs::Store`
++ its `.obao` (no store trait — iroh-blobs 0.103 has none — no byte copy),
+which the stock iroh-blobs requester fetches and verifies. Design in
+docs/p2p.md § "M6 design"; posture + literal-handler amendment under D97.
+**Pick up here**: the VIRTUAL half — serve grounded-but-evicted blobs by
+materializing through the executor (D92); it is the same bao encode with a
+materialization as the byte source instead of a file, and it wants the
+async/streaming bao encoder (the spike buffers whole blobs) so 4 GB ROMs
+stay bounded-memory. Then piece-set reconciliation. The previous position
+(D96 web-UI pass) is below.
 
 
 **Position as of 2026-07-16, newest (D96 web-UI pass — COMPLETE)**: the

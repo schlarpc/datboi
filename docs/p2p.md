@@ -182,11 +182,16 @@ moving a head into a subscriber's storage) stays a later feature.
 ### Spike status
 
 **Proven:** two instances exchange a verified blob (real n0 discovery +
-relay path, not just loopback); our obao == iroh's obao byte-for-byte.
-**Designed, not built:** the CAS-fronting `ProtocolHandler` (literal +
-virtual), piece-set reconciliation, the opt-in swarm tiers. **Deferred to
-integration:** folding `datboi-p2p` into the host workspace + nix
-vendoring (it is an excluded leaf today so the heavy iroh tree never
+relay path, not just loopback); our obao == iroh's obao byte-for-byte;
+**the literal CAS-fronting handler** — `cas::CasProvider` serves iroh's
+get protocol straight from a real `datboi-store-fs::Store` + its `.obao`
+(no store trait, no byte copy), and the stock iroh-blobs requester fetches
+and verifies it. **Designed, not built:** the handler's VIRTUAL half
+(evicted/recipe-only blobs through the executor, D92 — same encode,
+different byte source), streaming instead of whole-blob buffering,
+hash-seq requests, piece-set reconciliation, the opt-in swarm tiers.
+**Deferred to integration:** folding `datboi-p2p` into the host workspace
++ nix vendoring (it is an excluded leaf today so the heavy iroh tree never
 churns the host lockfile or `nix build .#datboi`); wiring the iroh
 `SecretKey` to the on-disk identity; a `datboi share` / `datboi fetch`
 operator surface (the serve+web home per D96).

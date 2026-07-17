@@ -2385,3 +2385,22 @@ datboi's whole storage thesis); default/implicit public advertisement
 pick, folding `datboi-p2p` into the host workspace + nix vendoring (it is
 an excluded leaf today, like the wasm components), and the `datboi share` /
 `fetch` operator surface (serve+web home per D96).
+
+*Amendment (same day):* the LITERAL half of the handler landed in the
+spike and is proven. `datboi_p2p::cas::CasProvider` implements iroh's
+`ProtocolHandler`, reads a `GetRequest` off the wire (`Request::read_async`),
+and answers `size(8 LE) ‖ encode_ranges_validated(data, obao, ranges)` —
+bao-tree 0.16, the exact version and 16 KiB block iroh-blobs 0.103 links,
+so the bytes are wire-identical and the STOCK iroh-blobs requester
+(`store.remote().fetch`) fetches and blake3-verifies with no changes. It
+reads from a real `datboi-store-fs::Store` — loose files and D91 packed
+windows fall through `Store::get` transparently — reusing the on-disk
+`.obao` as the tree; nothing is copied into an iroh store. Confirmed
+along the way: iroh-blobs' provider fns bind the concrete `api::Store`
+(no trait — the D14 seam really is gone), but the wire codec (`Request`,
+`ChunkRangesSeq`) and get client are public, which is all the handler
+needs. Still owed on the handler: the VIRTUAL half (grounded-but-evicted
+blobs materialized through the executor, D92 — same encode, different byte
+source), streaming instead of whole-blob buffering (the spike reads the
+blob into memory; the fsm/async bao encoder + executor spill is the real
+path for 4 GB ROMs), and hash-seq requests (offset > 0).
