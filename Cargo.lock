@@ -848,7 +848,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing-subscriber",
- "ureq",
 ]
 
 [[package]]
@@ -878,6 +877,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+ "ureq",
 ]
 
 [[package]]

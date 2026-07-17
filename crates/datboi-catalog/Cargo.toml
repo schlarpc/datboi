@@ -12,6 +12,9 @@ blake3.workspace = true
 datboi-core.workspace = true
 datboi-formats.workspace = true
 datboi-index.workspace = true
+# D16 dat auto-fetch (fetch.rs) unwraps zipped datfiles through the D35
+# zip walker — the same primitive zipped-dat ingest uses.
+datboi-ingest.workspace = true
 datboi-store-fs.workspace = true
 positioned-io = { version = "0.3", default-features = false }
 quick-xml.workspace = true
@@ -20,9 +23,11 @@ serde_json.workspace = true
 thiserror.workspace = true
 # D81 daemon logging: events only; no subscriber in library code.
 tracing.workspace = true
+# D16 dat auto-fetch: one blocking HTTP request (client verbs stay
+# blocking — the same ureq the CLI used before the descent).
+ureq.workspace = true
 
 [dev-dependencies]
-datboi-ingest.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 

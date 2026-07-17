@@ -20,6 +20,7 @@ pub mod clonelist;
 pub mod diff;
 pub mod export;
 pub mod fat32;
+pub mod fetch;
 pub mod image;
 pub mod import;
 pub mod mame;
@@ -35,6 +36,7 @@ pub use audit::{AuditReport, EntryAudit, audit};
 pub use clonelist::{ClonelistReport, import_clonelist, load_clonelist};
 pub use diff::{DatDiff, diff_source};
 pub use export::export_dat;
+pub use fetch::{FetchedDat, fetch_dat};
 pub use image::{ImageParams, ImageReport, mint_image, missing_inputs};
 pub use import::{ImportOptions, ImportReport, import_dat};
 pub use mame::MameMode;
@@ -75,6 +77,8 @@ pub enum CatalogError {
     Mame(String),
     #[error("export: {0}")]
     Export(String),
+    #[error("dat fetch: {0}")]
+    Fetch(String),
     #[error("unknown profile {0} (see `datboi view profiles`)")]
     UnknownProfile(String),
     #[error("unknown dat source {provider}/{system}")]
