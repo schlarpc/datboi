@@ -16,8 +16,15 @@
    *   still go to the server; both compose there exactly like the
    *   prototype, §5.1.
    */
-  import { entryDetail, systemEntries, systems as fetchSystems } from '../lib/api/client';
-  import type { EntryDetail, EntryRow, System } from '../lib/api/types';
+  import {
+    datClonelist,
+    datDiff,
+    datExportUrl,
+    entryDetail,
+    systemEntries,
+    systems as fetchSystems,
+  } from '../lib/api/client';
+  import type { DatDiffBody, EntryDetail, EntryRow, System } from '../lib/api/types';
   import { bandFor } from '../lib/bands';
   import EntryDrawer from '../lib/components/EntryDrawer.svelte';
   import StackedBar from '../lib/components/StackedBar.svelte';
@@ -67,6 +74,52 @@
   /** A failed export must say so — the button silently re-enabling
    * reads as "maybe it worked". */
   let exportError = $state<string | null>(null);
+
+  // Dat-source actions (D38/D57/D96): the revision diff (previous →
+  // current) and linking a retool clonelist. Both key on the source's
+  // provider/system, which the header already resolved.
+  let diffOpen = $state(false);
+  let diff = $state<Remote<DatDiffBody> | null>(null);
+  function toggleDiff() {
+    diffOpen = !diffOpen;
+    if (diffOpen && diff === null && system.st === 'ready') {
+      diff = loading();
+      settle(
+        datDiff(system.data.provider, system.data.system),
+        (value) => (diff = value),
+        () => diffOpen,
+      );
+    }
+  }
+
+  let clonelistInput = $state<HTMLInputElement | null>(null);
+  let clonelisting = $state(false);
+  let clonelistNote = $state<string | null>(null);
+  async function onClonelistPick() {
+    if (clonelistInput?.files == null || clonelistInput.files.length === 0) return;
+    if (system.st !== 'ready') return;
+    const file = clonelistInput.files[0];
+    clonelistInput.value = '';
+    clonelisting = true;
+    clonelistNote = null;
+    try {
+      const report = await datClonelist(system.data.provider, system.data.system, file);
+      clonelistNote = `linked ${report.terms.toLocaleString()} clone term(s)`;
+    } catch (e) {
+      clonelistNote = errorText(e);
+    } finally {
+      clonelisting = false;
+    }
+  }
+
+  const diffEmpty = $derived(
+    diff === null || diff.st !== 'ready'
+      ? false
+      : diff.data.added.length === 0 &&
+          diff.data.removed.length === 0 &&
+          diff.data.renamed.length === 0 &&
+          diff.data.rehashed.length === 0,
+  );
 
   /** Bumped by the error lines' retry — both load effects re-run. */
   let attempt = $state(0);
@@ -190,8 +243,6 @@
   // @wc-include
   const historyTitle = 'dat revision history — future';
   // @wc-include
-  const diffTitle = 'dat revision diff — future';
-  // @wc-include
   const searchPlaceholder = 'filter names…';
   // @wc-include
   const searchLabel = 'search';
@@ -269,19 +320,43 @@
         <span class="sub">
           {sys.provider}{#if sys.revision?.version}
             · {sys.revision.version}{/if}
-          <!-- Revision picker + history/diff: dat-history screens were
-               never designed (spec §8 unresolved) — disabled, future. -->
+          <!-- Revision picker + history: dat-history screens were never
+               designed (spec §8 unresolved) — disabled, future. Diff
+               graduated (D38/D96) and is a real action below. -->
           <span class="future" title={historyTitle}>▾</span>
           ·
           <span class="future" title={historyTitle}>history</span>
           ·
-          <span class="future" title={diffTitle}>diff</span>
+          <button class="linkish" aria-expanded={diffOpen} onclick={toggleDiff}>
+            <!-- @wc-context: show what changed between dat revisions -->diff
+          </button>
         </span>
-        <button class="missing-list" onclick={exportMissing} disabled={exporting}>
-          ⬇ missing-list
-        </button>
+        <div class="actions">
+          <!-- The current revision as a Logiqx dat: an owner-only
+               download served with Content-Disposition, so a plain
+               anchor (the browser saves it). -->
+          <a class="action" href={datExportUrl(sys.provider, sys.system)} download>
+            <!-- @wc-context: download the dat file -->export dat
+          </a>
+          <button class="action" disabled={clonelisting} onclick={() => clonelistInput?.click()}>
+            {#if clonelisting}<!-- @wc-context: linking a clonelist -->linking…{:else}<!-- @wc-context: attach a retool clonelist -->clonelist{/if}
+          </button>
+          <button class="missing-list" onclick={exportMissing} disabled={exporting}>
+            ⬇ missing-list
+          </button>
+        </div>
+        <input
+          bind:this={clonelistInput}
+          type="file"
+          accept=".json"
+          hidden
+          onchange={onClonelistPick}
+        />
         {#if exportError !== null}
           <span class="export-error">export failed — {exportError}</span>
+        {/if}
+        {#if clonelistNote !== null}
+          <span class="export-error">{clonelistNote}</span>
         {/if}
       </div>
       <div class="row2">
@@ -297,6 +372,55 @@
           <span class="c-faint">{plural(sys.counts.nodump, ['# no dump', '# no dump'])}</span>
         </span>
       </div>
+      {#if diffOpen && diff !== null}
+        <div class="diff">
+          {#if diff.st === 'loading'}
+            <span class="diff-hint">loading…</span>
+          {:else if diff.st === 'error'}
+            <span class="diff-hint">{diff.msg}</span>
+          {:else if diffEmpty}
+            <span class="diff-hint">no changes since revision {diff.data.revision_old}</span>
+          {:else}
+            <span class="diff-hint">
+              revision {diff.data.revision_old} → {diff.data.revision_new}
+            </span>
+            <div class="diff-lists">
+              {#if diff.data.added.length > 0}
+                <div class="diff-col">
+                  <span class="diff-label c-ok">added · {diff.data.added.length.toLocaleString()}</span>
+                  {#each diff.data.added.slice(0, 50) as name (name)}
+                    <span class="diff-name">{name}</span>
+                  {/each}
+                </div>
+              {/if}
+              {#if diff.data.removed.length > 0}
+                <div class="diff-col">
+                  <span class="diff-label c-bad">removed · {diff.data.removed.length.toLocaleString()}</span>
+                  {#each diff.data.removed.slice(0, 50) as name (name)}
+                    <span class="diff-name">{name}</span>
+                  {/each}
+                </div>
+              {/if}
+              {#if diff.data.renamed.length > 0}
+                <div class="diff-col">
+                  <span class="diff-label">renamed · {diff.data.renamed.length.toLocaleString()}</span>
+                  {#each diff.data.renamed.slice(0, 50) as r (r.from + r.to)}
+                    <span class="diff-name">{r.from} → {r.to}</span>
+                  {/each}
+                </div>
+              {/if}
+              {#if diff.data.rehashed.length > 0}
+                <div class="diff-col">
+                  <span class="diff-label c-warn">rehashed · {diff.data.rehashed.length.toLocaleString()}</span>
+                  {#each diff.data.rehashed.slice(0, 50) as r (r.from + r.to)}
+                    <span class="diff-name">{r.from === r.to ? r.from : `${r.from} → ${r.to}`}</span>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {/if}
     </div>
 
     <div class="table">
@@ -459,9 +583,46 @@
     opacity: 0.7;
   }
 
+  /* Inline "diff" toggle that reads as part of the sub line. */
+  .linkish {
+    all: unset;
+    cursor: pointer;
+    color: var(--faint);
+    text-decoration: underline;
+    text-decoration-color: var(--dim);
+    text-underline-offset: 2px;
+  }
+
+  .linkish:hover,
+  .linkish[aria-expanded='true'] {
+    color: var(--text);
+  }
+
+  .actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .action {
+    all: unset;
+    border: 1.5px solid var(--dim);
+    border-radius: var(--r-pill);
+    padding: 4px 12px;
+    background: var(--panel);
+    font: 600 0.71875rem var(--font-data);
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .action:disabled {
+    color: var(--faint);
+    cursor: progress;
+  }
+
   .missing-list {
     all: unset;
-    margin-left: auto;
     border: 2px solid var(--ink);
     border-radius: var(--r-pill);
     padding: 4px 14px;
@@ -581,6 +742,47 @@
   .export-error {
     font: 400 0.71875rem var(--font-data);
     color: var(--bad);
+  }
+
+  .diff {
+    margin: 0 0 16px;
+    padding: 12px 16px;
+    border: 1px dashed var(--hair);
+    border-radius: var(--r-sub);
+    background: var(--panel);
+  }
+
+  .diff-hint {
+    font: 400 0.75rem var(--font-data);
+    color: var(--faint);
+  }
+
+  .diff-lists {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-top: 10px;
+  }
+
+  .diff-col {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .diff-label {
+    font: 700 0.71875rem var(--font-display);
+    letter-spacing: 0.02em;
+    margin-bottom: 4px;
+  }
+
+  .diff-name {
+    font: 400 0.71875rem var(--font-data);
+    color: var(--mut);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .drawer-fallback {

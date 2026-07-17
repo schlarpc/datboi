@@ -16,6 +16,8 @@ import type {
   AnalyzersBody,
   BlobDetail,
   BlobRow,
+  ClonelistBody,
+  DatDiffBody,
   DatImportBody,
   EntryDetail,
   EntryRow,
@@ -105,6 +107,12 @@ export interface MockUniverse {
   datImportFail?: boolean;
   /** POST /v1/dats/fetch answers 400 — exercises the failed-fetch line. */
   datFetchFail?: boolean;
+  /** GET /v1/dats/{p}/{s}/diff body; default is an empty diff. */
+  datDiff?: DatDiffBody;
+  /** GET .../diff answers this status (e.g. 400 one-revision, 404). */
+  datDiffStatus?: number;
+  /** POST .../clonelist receipt; default links 0 terms. */
+  clonelist?: ClonelistBody;
   /** Grant/revoke answer 500 — exercises the optimistic revert. */
   grantFail?: boolean;
   /** Grant/revoke wait on this before answering — lets a test observe
@@ -396,6 +404,31 @@ export function installFetch(universe: MockUniverse) {
             demoted_revisions: [],
           },
         );
+      }
+      const datDiffMatch = path.match(/^\/v1\/dats\/([^/]+)\/([^/]+)\/diff$/);
+      if (datDiffMatch && method === 'GET') {
+        if (universe.datDiffStatus !== undefined) {
+          return json(universe.datDiffStatus, { error: 'no previous revision' });
+        }
+        return json(
+          200,
+          universe.datDiff ?? {
+            provider: datDiffMatch[1],
+            system: datDiffMatch[2],
+            revision_old: 1,
+            revision_new: 2,
+            entries_old: 0,
+            entries_new: 0,
+            added: [],
+            removed: [],
+            renamed: [],
+            rehashed: [],
+          },
+        );
+      }
+      const cloneMatch = path.match(/^\/v1\/dats\/([^/]+)\/([^/]+)\/clonelist$/);
+      if (cloneMatch && method === 'POST') {
+        return json(200, universe.clonelist ?? { hash: '0'.repeat(64), terms: 0, skipped: 0 });
       }
       if (path === '/v1/dats/fetch' && method === 'POST') {
         if (universe.datFetchFail === true) {

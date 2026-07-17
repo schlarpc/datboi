@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen, within } from '@testing-library/svelte';
 import { loadLocale } from 'wuchale/load-utils';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import '../locales/main.loader.svelte.js';
@@ -243,3 +243,41 @@ test('a failed page fetch keeps everything loaded and says why', async () => {
 });
 
 // Density pref deleted per D78 — rows ship at one fixed height.
+
+test('the diff action shows what changed between the two newest revisions', async () => {
+  installFetch({
+    ...universe,
+    datDiff: {
+      provider: 'no-intro', system: 'gba', revision_old: 1, revision_new: 2,
+      entries_old: 4, entries_new: 5,
+      added: ['Delta (USA)'], removed: ['Gamma (USA)'], renamed: [], rehashed: [],
+    },
+  });
+  render(Audit, { systemId: '3' });
+  await screen.findByText('Alpha (USA)');
+
+  await fireEvent.click(screen.getByText('diff'));
+  expect(await screen.findByText(/revision 1 → 2/)).toBeTruthy();
+  // Scope to the diff panel — "Gamma (USA)" is also a real row.
+  const panel = document.querySelector('.diff') as HTMLElement;
+  expect(within(panel).getByText('Delta (USA)')).toBeTruthy();
+  expect(within(panel).getByText('Gamma (USA)')).toBeTruthy();
+});
+
+test('diff on a one-revision source reads a friendly message, not an error page', async () => {
+  installFetch({ ...universe, datDiffStatus: 400 });
+  render(Audit, { systemId: '3' });
+  await screen.findByText('Alpha (USA)');
+  await fireEvent.click(screen.getByText('diff'));
+  expect(await screen.findByText(/no previous revision/)).toBeTruthy();
+});
+
+test('linking a clonelist reports the term count', async () => {
+  installFetch({ ...universe, clonelist: { hash: 'ab'.repeat(32), terms: 7, skipped: 1 } });
+  render(Audit, { systemId: '3' });
+  await screen.findByText('Alpha (USA)');
+
+  const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+  await fireEvent.change(input!, { target: { files: [new File(['{"variants":[]}'], 'gba.json')] } });
+  expect(await screen.findByText(/linked 7 clone term/)).toBeTruthy();
+});

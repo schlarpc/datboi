@@ -94,6 +94,7 @@ msgstr "something went wrong — {0}"
 #: src/screens/Audit.svelte
 #: src/screens/Audit.svelte
 #: src/screens/Audit.svelte
+#: src/screens/Audit.svelte
 #: src/screens/Blob.svelte
 #: src/screens/Browse.svelte
 #: src/screens/Library.svelte
@@ -111,15 +112,13 @@ msgstr "loading…"
 msgid "dat revision history — future"
 msgstr "dat revision history — future"
 
-#: src/screens/Audit.svelte
-msgid "dat revision diff — future"
-msgstr "dat revision diff — future"
+#~ msgid "dat revision diff — future"
+#~ msgstr "dat revision diff — future"
 
 #: src/screens/Audit.svelte
 msgid "history"
 msgstr "history"
 
-#: src/screens/Audit.svelte
 #: src/screens/Views.svelte
 msgid "diff"
 msgstr "diff"
@@ -1820,3 +1819,53 @@ msgstr "fetching…"
 msgctxt "fetch a dat from a url"
 msgid "fetch"
 msgstr "fetch"
+
+#: src/screens/Audit.svelte
+msgctxt "show what changed between dat revisions"
+msgid "diff"
+msgstr "diff"
+
+#: src/screens/Audit.svelte
+msgctxt "download the dat file"
+msgid "export dat"
+msgstr "export dat"
+
+#: src/screens/Audit.svelte
+msgctxt "linking a clonelist"
+msgid "linking…"
+msgstr "linking…"
+
+#: src/screens/Audit.svelte
+msgctxt "attach a retool clonelist"
+msgid "clonelist"
+msgstr "clonelist"
+
+#. 0: diff.data.revision_old
+#: src/screens/Audit.svelte
+msgid "no changes since revision {0}"
+msgstr "no changes since revision {0}"
+
+#. 0: diff.data.added.length.toLocaleString()
+#: src/screens/Audit.svelte
+msgid "added · {0}"
+msgstr "added · {0}"
+
+#. 0: diff.data.removed.length.toLocaleString()
+#: src/screens/Audit.svelte
+msgid "removed · {0}"
+msgstr "removed · {0}"
+
+#. 0: diff.data.renamed.length.toLocaleString()
+#: src/screens/Audit.svelte
+msgid "renamed · {0}"
+msgstr "renamed · {0}"
+
+#. 0: diff.data.rehashed.length.toLocaleString()
+#: src/screens/Audit.svelte
+msgid "rehashed · {0}"
+msgstr "rehashed · {0}"
+
+#. 0: diff.data.revision_old; 1: diff.data.revision_new
+#: src/screens/Audit.svelte
+msgid "revision {0} → {1}"
+msgstr "revision {0} → {1}"
