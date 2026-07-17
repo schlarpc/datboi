@@ -64,6 +64,21 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Fetch from a peer over iroh (D100/D101): reconcile plans, pull
+    /// only the pieces we lack, rebuild wants locally from shared bytes.
+    Fetch {
+        /// The peer's iroh EndpointId (their daemon logs it when started
+        /// with --p2p: "share this as your peer id").
+        #[arg(long, value_name = "ENDPOINT_ID")]
+        peer: String,
+        /// Container hashes (blake3, 64 hex chars) to rebuild locally.
+        /// None = mirror mode: ground everything the peer's plans
+        /// describe without materializing (D100).
+        #[arg(value_name = "HASH")]
+        wants: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Dat operations.
     #[command(subcommand)]
     Dat(DatCommand),
@@ -523,6 +538,10 @@ fn ledger_stamp(command: &Command) -> Option<(datboi_index::JobKind, String)> {
         Command::Scrub { sample, .. } => {
             Some((JobKind::Scrub, format!("cli: scrub — {sample}% sample")))
         }
+        Command::Fetch { peer, .. } => Some((
+            JobKind::Sync,
+            format!("cli: sync — peer {}…", peer.get(..8).unwrap_or(peer)),
+        )),
 
         // ---- not jobs: reads, config, auth, serving ----
         // Dry-run evict plans; gc list/keep/config mutate policy rows,
@@ -633,6 +652,9 @@ fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Ingest { paths, mv, json } => cmds::ingest(cli.global.open()?, &paths, mv, json),
+        Command::Fetch { peer, wants, json } => {
+            cmds::fetch_peer(cli.global.open()?, &peer, &wants, json)
+        }
         Command::Dat(DatCommand::Import {
             file,
             provider,

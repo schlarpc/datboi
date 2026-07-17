@@ -120,6 +120,88 @@ fn print_ingest(r: &IngestReport) {
     }
 }
 
+// ---- fetch (p2p sync, D100/D101) ----
+
+/// `datboi fetch --peer`: the D96 convenience lane for the D100 sync —
+/// a direct library call over the local store/db (the daemon surface is
+/// `POST /v1/p2p/sync`, and it, not this, is where recon ACLs will
+/// live). No wants = mirror mode.
+pub fn fetch_peer(env: Env, peer: &str, wants: &[String], json: bool) -> anyhow::Result<ExitCode> {
+    let wants = wants
+        .iter()
+        .map(|w| {
+            w.to_lowercase()
+                .parse::<datboi_core::hash::Blake3>()
+                .map_err(|_| anyhow::anyhow!("not a blake3 hex hash: {w}"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let Env { store, db, .. } = env;
+    // The sync engine holds `&'static Store` (the daemon's shape); a
+    // process-lifetime leak expresses the same thing for a CLI run.
+    let store: &'static datboi_store_fs::Store = Box::leak(Box::new(store));
+    let db = std::sync::Arc::new(std::sync::Mutex::new(db));
+    let report = datboi_p2p::sync_blocking(peer, store, std::sync::Arc::clone(&db), &wants)?;
+    {
+        // Fetched content lights the shelf immediately — the same
+        // finish-the-thought pair ingest runs.
+        let mut db = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        datboi_catalog::relink_all(&db)?;
+        datboi_catalog::refresh_rollups(&mut db, now_unix())?;
+    }
+    if json {
+        println!(
+            "{}",
+            json!({
+                "peer": peer,
+                "recipes_fetched": report.recipes_fetched,
+                "recipe_bytes_fetched": report.recipe_bytes_fetched,
+                "pieces_fetched": report.pieces_fetched,
+                "piece_bytes_fetched": report.piece_bytes_fetched,
+                "pieces_already_held": report.pieces_already_held,
+                "bytes_already_held": report.bytes_already_held,
+                "rebuilt": report.rebuilt.iter()
+                    .map(|(hash, size)| json!({"hash": hash.to_hex(), "bytes": size}))
+                    .collect::<Vec<_>>(),
+                "bytes_rebuilt": report.bytes_rebuilt,
+                "sketch_wire_bytes": report.sketch_wire_bytes,
+                "bytes_fetched": report.bytes_fetched(),
+                "savings_pct": report.savings_pct(),
+            })
+        );
+    } else {
+        println!(
+            "plans fetched      {:>12} ({} bytes)",
+            report.recipes_fetched, report.recipe_bytes_fetched
+        );
+        println!(
+            "pieces fetched     {:>12} ({} bytes)",
+            report.pieces_fetched, report.piece_bytes_fetched
+        );
+        println!(
+            "already held       {:>12} ({} bytes)",
+            report.pieces_already_held, report.bytes_already_held
+        );
+        for (hash, size) in &report.rebuilt {
+            println!("rebuilt: {} ({size} bytes)", hash.to_hex());
+        }
+        println!(
+            "wire total         {:>12} bytes (sketch {})",
+            report.bytes_fetched(),
+            report.sketch_wire_bytes
+        );
+        if report.bytes_rebuilt > 0 {
+            // The D97 persona line: the dedup win, spelled out.
+            println!(
+                "{} of {} rebuilt bytes came from pieces already on disk — {:.1}% saved",
+                report.bytes_rebuilt.saturating_sub(report.bytes_fetched()),
+                report.bytes_rebuilt,
+                report.savings_pct()
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 // ---- dat import / list ----
 
 pub fn dat_import(

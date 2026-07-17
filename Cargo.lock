@@ -1213,6 +1213,7 @@ dependencies = [
  "datboi-formats",
  "datboi-index",
  "datboi-ingest",
+ "datboi-p2p",
  "datboi-server",
  "datboi-store-fs",
  "flate2",

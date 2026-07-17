@@ -175,6 +175,30 @@ pub async fn serve_holdings(
     Ok(Seedbox { router, node_id })
 }
 
+/// The CLI convenience lane (`datboi fetch --peer`, D101): one sync on
+/// a private runtime under an EPHEMERAL endpoint identity — deliberately
+/// NOT the derived key, because a `--p2p` daemon may be live on it and
+/// two publishers under one key corrupt the discovery record. When recon
+/// ACLs land, the CLI defers to the daemon API (the friend key lives
+/// there).
+pub fn sync_blocking(
+    peer: &str,
+    store: &'static datboi_store_fs::Store,
+    db: std::sync::Arc<std::sync::Mutex<datboi_index::Db>>,
+    wants: &[datboi_core::hash::Blake3],
+) -> Result<sync::SyncReport> {
+    let peer = parse_peer(peer)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let endpoint = Endpoint::bind(presets::N0).await?;
+        let report = sync::sync(&endpoint, peer, store, db, wants).await;
+        endpoint.close().await;
+        report
+    })
+}
+
 /// Fronting the real CAS (D97): serve iroh-blobs' get protocol straight
 /// from the datboi CAS, reusing the on-disk `.obao4` sidecar as the bao
 /// tree — no custom-store trait exists in iroh-blobs 0.103, so we answer

@@ -20,6 +20,8 @@ getrandom.workspace = true
 datboi-formats.workspace = true
 datboi-index.workspace = true
 datboi-ingest.workspace = true
+# `datboi fetch --peer` (D101): the direct-library convenience lane.
+datboi-p2p.workspace = true
 datboi-server.workspace = true
 datboi-store-fs.workspace = true
 serde_json.workspace = true
