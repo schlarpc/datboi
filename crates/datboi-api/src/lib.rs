@@ -937,6 +937,24 @@ pub struct ScrubRequest {
     pub rehabilitate: Option<bool>,
 }
 
+// ---- POST /v1/sweep (D96 on-demand refinement) ----
+
+/// Run one analyzer sweep round on demand — the manual equivalent of the
+/// ambient refiner's per-family drain (D71). Long-running (a preflate
+/// split is minutes), so it answers a `JobStartResponse`; the finished
+/// Refine job's note carries the enqueued/analyzed/positive/negative
+/// counts and the remaining queue depth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SweepRequest {
+    /// Analyzer name (canonical or CLI alias): noop, chunk, preflate,
+    /// ecm, nds, narc.
+    pub analyzer: String,
+    /// Maximum items to analyze this round. Defaults to 10000 (the CLI
+    /// default).
+    #[serde(default)]
+    pub limit: Option<u64>,
+}
+
 // ---- POST /v1/snapshot (D75/D96 manual trigger) ----
 
 /// The report of one minted state snapshot — the same numbers `datboi

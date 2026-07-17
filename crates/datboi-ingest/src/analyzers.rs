@@ -51,6 +51,31 @@ const SPLIT_PLAINTEXT_LIMIT: usize = 32 * 1024 * 1024;
 /// rebuild recipe.
 const SKELETON_LIMIT: u64 = 64 * 1024 * 1024;
 
+/// The analyzer names a manual sweep accepts (canonical form) — one
+/// list for the CLI `sweep` verb and the daemon's `POST /v1/sweep`
+/// available-list. Broader than [`crate::refine::FAMILIES`]: `narc` is
+/// its own sweep analyzer but shares the `nds` config family, so the two
+/// vocabularies are deliberately distinct.
+pub const SWEEP_ANALYZERS: &[&str] = &["noop", "chunk", "preflate", "ecm", "nds", "narc"];
+
+/// Construct a sweep analyzer by name — the shared factory both the CLI
+/// and `POST /v1/sweep` build from, so the accepted vocabulary lives in
+/// ONE place (D96). Each family's canonical name and its CLI aliases
+/// resolve; an unknown name is `None` (the caller owns the error message,
+/// spelling out [`SWEEP_ANALYZERS`]).
+#[must_use]
+pub fn analyzer_for(name: &str) -> Option<Box<dyn Analyzer>> {
+    Some(match name {
+        "noop" | "noop/1" => Box::new(crate::refine::NoopAnalyzer),
+        "chunk" | "fastcdc" => Box::new(ChunkAnalyzer),
+        "preflate" | "preflate-split" => Box::new(PreflateZipAnalyzer::new()),
+        "ecm" => Box::new(EcmAnalyzer::new()),
+        "nds" | "nds-split" => Box::new(NdsAnalyzer),
+        "narc" | "narc-split" => Box::new(NarcAnalyzer),
+        _ => return None,
+    })
+}
+
 /// Wild-zip rebuild discovery + minting (D24/D45/D53): split every
 /// DEFLATE member into plaintext + a framed preflate corrections blob,
 /// mint one `xf-preflate recreate` recipe per member and one `assemble@1`

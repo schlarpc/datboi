@@ -1864,6 +1864,116 @@ fn run_evict(app: &App, job: i64, target_bytes: u64, license: bool, holder: Guar
     }
 }
 
+// ---- POST /v1/sweep ----
+
+/// Run one analyzer sweep round on demand (D71/D96): the manual
+/// equivalent of the ambient refiner's per-family drain. The name is
+/// validated up front (unknown → 400 before any job); the drain runs on
+/// a background Refine job over a private connection (a preflate split
+/// is minutes-long and must not hold the pipeline mutex). Leases make a
+/// manual sweep and the ambient refiner claiming the same family safe.
+pub(crate) async fn sweep(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+    crate::http::ApiJson(req): crate::http::ApiJson<datboi_api::SweepRequest>,
+) -> Response {
+    run_blocking(move || {
+        require_owner(&caller)?;
+        // Validate here so an unknown name is a clean 400; the worker
+        // builds its own analyzer (trait objects stay thread-local).
+        let Some(probe) = datboi_ingest::analyzers::analyzer_for(&req.analyzer) else {
+            return Err(err(
+                ErrorCode::BadRequest,
+                &format!(
+                    "unknown analyzer {:?} (available: {})",
+                    req.analyzer,
+                    datboi_ingest::analyzers::SWEEP_ANALYZERS.join(", ")
+                ),
+            ));
+        };
+        let family = probe.family().to_owned();
+        drop(probe);
+        let limit = usize::try_from(req.limit.unwrap_or(10_000)).unwrap_or(usize::MAX);
+        let job = app.jobs.create_refine(&family, 0, auth::now_unix());
+        let app = Arc::clone(&app);
+        let name = req.analyzer;
+        std::thread::spawn(move || run_sweep_job(&app, job, &name, limit));
+        Ok(json_response(
+            StatusCode::ACCEPTED,
+            &datboi_api::JobStartResponse { job },
+        ))
+    })
+    .await
+}
+
+/// The sweep worker: a private connection, then one `run_sweep` round
+/// over the logical CAS (D92 — the executor serves absent-but-grounded
+/// items), folding the outcome counts into the Refine job.
+fn run_sweep_job(app: &App, job: i64, analyzer_name: &str, limit: usize) {
+    let mut db = match Db::open(&app.db_dir) {
+        Ok(db) => db,
+        Err(e) => {
+            app.jobs
+                .fail(job, &format!("sweep: open db: {e}"), auth::now_unix());
+            return;
+        }
+    };
+    // Validated in the handler; a None here would be a logic error.
+    let Some(mut analyzer) = datboi_ingest::analyzers::analyzer_for(analyzer_name) else {
+        app.jobs
+            .fail(job, "sweep: analyzer vanished between validate and run", auth::now_unix());
+        return;
+    };
+    let bytes = datboi_ingest::refine::Logical::new(app.store, &app.exec);
+    let report =
+        match datboi_ingest::refine::run_sweep(&mut db, app.store, &bytes, analyzer.as_mut(), limit)
+        {
+            Ok(report) => report,
+            Err(e) => {
+                app.jobs.fail(job, &e.to_string(), auth::now_unix());
+                return;
+            }
+        };
+    if report.disabled {
+        // A disabled family (D60) is a policy state, not a failure — the
+        // note says so and the job finishes cleanly.
+        app.jobs.push_note(
+            job,
+            format!(
+                "analyzer family {:?} is disabled (D60): enable it via PUT /v1/analyzers/{}",
+                analyzer.family(),
+                analyzer.family()
+            ),
+        );
+        app.jobs.finish(job, auth::now_unix());
+        return;
+    }
+    let remaining = db.sweep_queue_len(&analyzer.id()).unwrap_or(0);
+    for (hash, error) in &report.errors {
+        app.jobs.refine_error(job, &hash.to_hex(), error);
+    }
+    let analyzed = report.analyzed as u64;
+    app.jobs.refine_progress(job, analyzed, analyzed + remaining);
+    app.jobs.push_note(
+        job,
+        format!(
+            "{} enqueued, {} analyzed ({} positive, {} negative), {} error(s), {} still queued",
+            report.enqueued,
+            report.analyzed,
+            report.positive,
+            report.negative,
+            report.errors.len(),
+            remaining
+        ),
+    );
+    app.jobs.finish(job, auth::now_unix());
+    tracing::info!(
+        "sweep job {job}: {} analyzed ({} positive), {remaining} queued",
+        report.analyzed,
+        report.positive
+    );
+}
+
 // ---- POST /v1/snapshot ----
 
 /// Mint a state snapshot on demand (D75/D96): the same `statesnap::mint`

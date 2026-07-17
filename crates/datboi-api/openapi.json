@@ -2190,6 +2190,28 @@
         ],
         "type": "object"
       },
+      "SweepRequest": {
+        "description": "Run one analyzer sweep round on demand — the manual equivalent of the\nambient refiner's per-family drain (D71). Long-running (a preflate\nsplit is minutes), so it answers a `JobStartResponse`; the finished\nRefine job's note carries the enqueued/analyzed/positive/negative\ncounts and the remaining queue depth.",
+        "properties": {
+          "analyzer": {
+            "description": "Analyzer name (canonical or CLI alias): noop, chunk, preflate,\necm, nds, narc.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum items to analyze this round. Defaults to 10000 (the CLI\ndefault).",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "analyzer"
+        ],
+        "type": "object"
+      },
       "System": {
         "description": "A \"system\" is a `dat_source` row. `id` is a cache.db surrogate —\nstable while the cache lives, re-minted by `datboi recover`;\nclients treat it as a handle, not an identity (the durable identity\nis provider/system).",
         "properties": {
@@ -4477,6 +4499,65 @@
           }
         ],
         "summary": "Where the bytes live: per-(namespace, residency) accounting,\ndat-source attribution (a blob claimed by several sources counts in\neach; unlinked blobs fold into `(unattributed)`), and the 50\nlargest data blobs.",
+        "tags": [
+          "storage"
+        ]
+      }
+    },
+    "/v1/sweep": {
+      "post": {
+        "operationId": "sweep",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SweepRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStartResponse"
+                }
+              }
+            },
+            "description": "Sweep job started; poll GET /v1/jobs/{id}"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Unknown analyzer name"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Run one analyzer sweep round on demand (D71/D96, owner-only): the\nmanual equivalent of the ambient refiner's per-family drain. Long-\nrunning, so it starts a background Refine job.",
         "tags": [
           "storage"
         ]

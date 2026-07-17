@@ -29,7 +29,7 @@ use crate::{
     GcKeepRequest, GrantAddRequest,
     IngestRequest, IngestStartResponse, InviteAcceptRequest, InviteMintRequest, InviteMintResponse,
     JobDetail, JobStartResponse, JobsResponse, LoginRequest, OkResponse, OrphansResponse,
-    ResidencyState, ScrubRequest, SnapshotResponse,
+    ResidencyState, ScrubRequest, SnapshotResponse, SweepRequest,
     SessionResponse, SessionsRevokedResponse, StorageBreakdown, StorageResponse, SystemsResponse,
     UploadResponse, VerifyStartResponse, ViewDefineRequest, ViewDefineResponse, ViewDetail,
     ViewFilesPage, ViewProfilesResponse, ViewsResponse, WhoamiResponse,
@@ -824,6 +824,23 @@ fn snapshot() {}
 )]
 fn evict() {}
 
+/// Run one analyzer sweep round on demand (D71/D96, owner-only): the
+/// manual equivalent of the ambient refiner's per-family drain. Long-
+/// running, so it starts a background Refine job.
+#[utoipa::path(
+    post,
+    path = "/v1/sweep",
+    tag = "storage",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    request_body = SweepRequest,
+    responses(
+        (status = 202, description = "Sweep job started; poll GET /v1/jobs/{id}", body = JobStartResponse),
+        (status = 400, description = "Unknown analyzer name", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+    ),
+)]
+fn sweep() {}
+
 #[derive(OpenApi)]
 #[openapi(
 
@@ -878,6 +895,7 @@ fn evict() {}
         scrub,
         snapshot,
         evict,
+        sweep,
     ),
     modifiers(&SecurityAddon),
 )]

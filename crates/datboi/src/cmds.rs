@@ -845,21 +845,14 @@ pub fn sweep(
     limit: usize,
     json: bool,
 ) -> anyhow::Result<ExitCode> {
-    let mut analyzer: Box<dyn datboi_ingest::refine::Analyzer> = match analyzer_name {
-        "noop" | "noop/1" => Box::new(datboi_ingest::refine::NoopAnalyzer),
-        "chunk" | "fastcdc" => Box::new(datboi_ingest::analyzers::ChunkAnalyzer),
-        "preflate" | "preflate-split" => {
-            Box::new(datboi_ingest::analyzers::PreflateZipAnalyzer::new())
-        }
-        "ecm" => Box::new(datboi_ingest::analyzers::EcmAnalyzer::new()),
-        "nds" | "nds-split" => Box::new(datboi_ingest::analyzers::NdsAnalyzer),
-        "narc" | "narc-split" => Box::new(datboi_ingest::analyzers::NarcAnalyzer),
-        other => {
-            anyhow::bail!(
-                "unknown analyzer {other:?} (available: noop, chunk, preflate, ecm, nds, narc)"
-            )
-        }
-    };
+    // The name → analyzer factory descended to datboi-ingest (D96) so
+    // the daemon's `POST /v1/sweep` accepts exactly this vocabulary.
+    let mut analyzer = datboi_ingest::analyzers::analyzer_for(analyzer_name).with_context(|| {
+        format!(
+            "unknown analyzer {analyzer_name:?} (available: {})",
+            datboi_ingest::analyzers::SWEEP_ANALYZERS.join(", ")
+        )
+    })?;
     // D92: sweeps read the logical CAS — the executor serves
     // absent-but-grounded items through a bounded spill.
     let exec = datboi_exec::Executor::new(&env.store, datboi_exec::ExecConfig::default())?;

@@ -916,3 +916,34 @@ fn evict_over_http() {
     let note = done["report"]["notes"][0].as_str().expect("note");
     assert!(note.starts_with("0 blob(s) evicted"), "{note}");
 }
+
+/// D96: the sweep verb reaches the HTTP surface. An unknown analyzer is
+/// a clean 400; a `noop` sweep over the fixture's one blob runs as a
+/// background Refine job and finishes with its outcome counts — the same
+/// vocabulary the CLI `sweep` verb accepts, from the shared factory.
+#[test]
+fn sweep_over_http() {
+    use std::time::{Duration, Instant};
+    let f = fixture();
+
+    let (status, _) = request(f.addr, "POST", "/v1/sweep", r#"{"analyzer":"bogus"}"#);
+    assert_eq!(status, 400, "unknown analyzer");
+
+    let (status, v) = request(f.addr, "POST", "/v1/sweep", r#"{"analyzer":"noop","limit":100}"#);
+    assert_eq!(status, 202, "{v}");
+    let job = v["job"].as_i64().expect("job id");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let done = loop {
+        let (status, v) = get(f.addr, &format!("/v1/jobs/{job}"));
+        assert_eq!(status, 200, "{v}");
+        if v["state"] != "running" {
+            break v;
+        }
+        assert!(Instant::now() < deadline, "sweep never finished: {v}");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(done["state"], "done", "{done}");
+    assert_eq!(done["kind"], "refine", "{done}");
+    let note = done["report"]["notes"][0].as_str().expect("note");
+    assert!(note.contains("analyzed") && note.contains("queued"), "{note}");
+}
