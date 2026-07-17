@@ -2729,3 +2729,66 @@ as a report note (prose freezes numbers away from the UI and the
 translator); a dedicated nav tab; requiring explicit wants (mirror mode
 is D100's subscriber shape, and the fetch card's default "everything
 they have that I lack" is the honest reading of a friend link).
+
+## D102 — Mirror completeness is a roots scope; channels stay the naming layer (2026-07-17)
+
+Resolves the protocol-completeness gate the use-case audit raised (p2p.md
+§ Use-case coverage audit): friend mirror was blind to exactly the
+content nothing has decomposed — never-analyzed loose ROMs, D24
+preflate-refused containers — because the one recon scope advertises
+plans and plan-less blobs are invisible.
+
+**The ruling: completeness is two planes, not one layer.** Mirror
+("everything you share") is a HASH-SET question, and it stays on the
+recon plane: a second scope, `RootBlobs` (wire byte 1), over the
+responder's resident Data-namespace blobs with **no non-Failed producing
+route** — the ur-literals. That set is the minimal cover: every held
+blob is either underived (in the roots scope, fetched whole) or derived
+(reachable from an advertised plan, grounded by the closure walk), so
+the Ingest card's "fetches everything they share that you lack" becomes
+true BY CONSTRUCTION, not by effort. The structural bonus: a young
+library is nearly all roots; as analysis decomposes it, blobs migrate
+out of the roots scope and under plan coverage — the audit's
+invisibility class shrinks to zero by definition. The D34 holdings
+channels remain owed, but as what they are: the NAMING/DISCOVERY layer
+for entry-shaped journeys (dat gap-fill's entry→blake3 translation,
+curated-view subscription) — journeys recon cannot serve by
+construction, in either scope. They are not mirror's completeness
+dependency, so mirror does not wait on the channel design or the recon
+ACL it is gated behind.
+
+**Mechanics.** Mirror mode reconciles both scopes over the same recon
+connection (the responder's per-stream snapshot shape generalizes — the
+scope enum picks the query); remote-only roots join the walk roots,
+where the walk is already the dedup filter: a "root" the initiator
+holds, or can derive via its own routes, resolves Supported and fetches
+nothing — so the initiator's prior for the roots recon is simply its own
+roots set, and spurious diff entries (peer roots we hold as non-roots)
+cost index reads, not wire bytes. Wants mode is untouched — explicit
+hashes never needed a scope. Fetched roots count as fetched leaves in
+the `SyncReport`; sketch bytes/symbols sum across the two reconciles (no
+API shape change).
+
+**The soundness invariant, stated.** "No producing route" (rather than
+"no groundable route") is the honest minimal cover only while every
+non-Failed route's inputs are locally groundable — true in the additive
+v1 world because decomposition mints plans over pieces it stores at mint
+time, and ReplayedLocal is the only license to drop a literal (D25:
+EvictedCovered blobs are non-resident, excluded from roots, and their
+covering route replays from held inputs). Real eviction work must
+revisit the roots query alongside CasProvider's serve-the-derivable
+story (both halves of "advertised but unservable" — the walk's
+`pieces_unavailable` deferral is the runtime backstop either way).
+
+*Rejected:* holdings channels as the mirror completeness layer (wrong
+plane — couples a structural set question to a publication/curation
+surface that doesn't exist yet, is gated behind the recon ACL, and
+needs recon for dedup transfer anyway: a dependency added, not saved);
+advertising the full resident set (destroys the point of reconciling
+plans — pieces AND containers in one scope balloons every diff);
+widening the recipe scope to opaque recipes (re-rejected from the
+audit: their outputs re-derive locally from covered inputs); a
+groundability-checked roots query (one-level input checks false-root
+chained derivations — aggregates — and full transitive grounding in SQL
+re-solves the walk on the responder; the invariant above makes the
+cheap query the correct one).

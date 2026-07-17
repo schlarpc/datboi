@@ -167,6 +167,15 @@ pieces are a *local* closure walk (recipe inputs ∉ my grounded set,
 recursing through usable local routes). Reconcile the plans; the parts
 follow by local math. The fetched diff is still the D91 pieces.
 
+Two scopes behind the 1-byte tag (the completeness ruling, **D102**):
+`AffineRecipes` (0) is the transfer-optimization plane above;
+`RootBlobs` (1) is the completeness plane — the responder's resident
+Data-namespace blobs with no non-Failed producing route, the
+ur-literals. Together they cover the responder's holdings by
+construction: every blob is either underived (a root, fetched whole) or
+derived (reachable from an advertised plan). Mirror mode reconciles
+both; wants mode needs neither widened.
+
 - **Codec**: `datboi_p2p::riblt` — our `[u8;32]`-specialized port of the
   SIGCOMM 2024 reference Go implementation (no viable Rust crate exists),
   SipHash-2-4 keyed checksum, streaming decoder. Differential-tested
@@ -347,18 +356,22 @@ Per journey:
    with D100; the responder-memory half of that worry is now closed by
    the streaming amendment).
 
-Options for closing the mirror-coverage gap (ruling owed, not made
-here):
-- **Roots scope**: a second recon scope over the hashes of blobs with
-  no non-Failed producing route — the ur-literals (loose ROMs +
-  containers), the minimal set that, with the plans, derives
+Options weighed for closing the mirror-coverage gap — RULED 2026-07-17
+as **D102** (roots scope; see decisions.md for the full argument):
+- **Roots scope** — CHOSEN: a second recon scope over the hashes of
+  blobs with no non-Failed producing route — the ur-literals (loose
+  ROMs + containers), the minimal set that, with the plans, derives
   everything. Count ~ #ingested files; the streaming responder makes
   the responder side O(block) regardless, and the initiator's decoder
   prior (~72 B/element) is paid by the party choosing to mirror.
-- **Holdings channels as the completeness layer** (D34): mirror =
-  channel enumeration for names + recon for dedup transfer. More
-  design, but it is ALSO what journeys 3 and 4 need — one layer serves
-  three journeys.
+  Mirror is a hash-set question and stays on the recon plane;
+  completeness becomes structural (underived ∪ derived = held).
+- **Holdings channels as the completeness layer** (D34) — rejected for
+  THIS gap: wrong plane (couples a set question to a
+  publication/curation surface gated behind the recon ACL, and needs
+  recon for dedup transfer anyway). The channels remain owed as the
+  NAMING layer journeys 3 and 4 actually need (entry→blake3,
+  view-snapshot discovery) — recon cannot serve those in any scope.
 - Rejected out of hand: widening the recipe scope to opaque recipes
   (their outputs arrive as literals anyway via the leaf fetch; it
   would advertise interior derivations nobody roots on).

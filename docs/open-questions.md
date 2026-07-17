@@ -584,8 +584,14 @@ D97 left to the build:
   with iroh in-graph VERIFIED green (2026-07-17) — iroh's crypto crates
   (ring/aws-lc) compiled in the sandbox with no flake changes; the hermetic
   binary carries `--p2p`.
-- **Protocol-completeness gate (raised 2026-07-17, use-case audit —
-  RULING OWED before the p2p protocol is called shipped).** The
+- ~~**Protocol-completeness gate**~~ RULED 2026-07-17 as **D102**: a
+  second recon scope, `RootBlobs` — resident Data blobs with no
+  non-Failed producing route — makes mirror complete by construction
+  (underived ∪ derived = held); D34 holdings channels stay the NAMING
+  layer for journeys 3/4 (entry→blake3, view discovery), not mirror's
+  dependency. Original framing kept below for the record.
+  (raised 2026-07-17, use-case audit —
+  RULING OWED before the p2p protocol is called shipped). The
   coverage audit (p2p.md § Use-case coverage audit) walked all six
   journeys through the built mechanics and found: explicit-wants fetch
   and curated-ticket fetch are complete; friend MIRROR is blind to
