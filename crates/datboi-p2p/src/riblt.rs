@@ -287,10 +287,84 @@ fn dedup_symbols(symbols: impl IntoIterator<Item = Symbol>) -> Vec<HashedSymbol>
         .collect()
 }
 
+/// A re-iterable, stable view of a symbol set — the streaming encoder's
+/// source (D100 amendment). Two contract halves the encoder CANNOT
+/// enforce, so every implementation must:
+///
+/// 1. **Stability**: every `for_each` call visits the same set. The
+///    sqlite implementation gets this from a read transaction held
+///    across all passes (WAL snapshot isolation); a slice is stable
+///    trivially.
+/// 2. **Distinctness**: no element visits twice within a pass. A
+///    duplicate XOR-cancels inside the sketch and corrupts it silently
+///    — the in-memory [`Encoder`] dedups at its boundary, but a
+///    streaming pass cannot without the O(n) state this trait exists to
+///    remove, so the source owes it (a structurally-DISTINCT query, a
+///    deduped slice).
+pub trait SetSnapshot {
+    type Error;
+    /// Visit every element of the set exactly once, in any order.
+    fn for_each(&mut self, f: &mut dyn FnMut(Symbol)) -> Result<(), Self::Error>;
+}
+
+/// Slices are snapshots of themselves. Callers owe distinctness (the
+/// trait contract) — test and decoder-prior shapes, where sets are
+/// deduped upstream.
+impl SetSnapshot for &[Symbol] {
+    type Error = std::convert::Infallible;
+
+    fn for_each(&mut self, f: &mut dyn FnMut(Symbol)) -> Result<(), Self::Error> {
+        for s in self.iter() {
+            f(*s);
+        }
+        Ok(())
+    }
+}
+
+/// Encode coded symbols `[start, start + out.len())` of the set's
+/// sequence in ONE pass over `set`, replaying each symbol's index
+/// mapping from zero (D100 amendment: memory is O(out.len()), never
+/// O(set)). Emits byte-identical symbols to [`Encoder`] — the
+/// differential property below pins it — so a responder can stream an
+/// unbounded sequence in exponentially growing blocks at one set-scan
+/// per block, holding only the current block.
+pub fn encode_block<S: SetSnapshot>(
+    set: &mut S,
+    start: u64,
+    out: &mut [CodedSymbol],
+) -> Result<(), S::Error> {
+    out.fill(CodedSymbol::default());
+    let end = start + out.len() as u64;
+    set.for_each(&mut |symbol| {
+        let hs = HashedSymbol::new(symbol);
+        let mut m = RandomMapping {
+            prng: hs.hash,
+            last_index: 0,
+        };
+        // A mapping's first index is 0 (before any advance), matching
+        // the incremental window's initial queue entry.
+        loop {
+            let idx = m.last_index;
+            if idx >= end {
+                break;
+            }
+            if idx >= start {
+                #[allow(clippy::cast_possible_truncation)]
+                out[(idx - start) as usize].apply(&hs, ADD);
+            }
+            m.next_index();
+        }
+    })
+}
+
 /// Incremental encoder over a fixed set: constructed from the complete
 /// set, then produces the set's coded-symbol sequence one at a time,
 /// forever. There is no way to add a symbol after coding starts — the
-/// reference's undefined-behavior contract, made unexpressible.
+/// reference's undefined-behavior contract, made unexpressible. Memory
+/// is O(set) — the daemon's recon responder streams via
+/// [`encode_block`] instead (D100 amendment); this shape remains for
+/// the decoder's windows, priors that are resident anyway, and the
+/// differential tests.
 ///
 /// The emitted sequence is a pure function of the SET: insertion order
 /// and duplicates cannot affect it (each symbol's index mapping depends
@@ -586,6 +660,34 @@ mod tests {
         assert_eq!(local.len(), 50);
     }
 
+    /// The block encoder reproduces the golden streams — pinning the
+    /// streaming path to the reference through the same artifact chain
+    /// (block == incremental == Go), here directly against the bytes.
+    #[test]
+    fn golden_encoder_streams_match_block_encoding() {
+        for (n, golden) in [
+            (1u64, &include_bytes!("../testdata/riblt/golden/encoder_1.bin")[..]),
+            (100, &include_bytes!("../testdata/riblt/golden/encoder_100.bin")[..]),
+        ] {
+            let set: Vec<Symbol> = (0..n).map(test_symbol).collect();
+            // One 256-symbol block, and ragged blocks (1, 3, 60, rest).
+            for cuts in [vec![256usize], vec![1, 3, 60, 192]] {
+                let mut stream = Vec::with_capacity(golden.len());
+                let mut start = 0u64;
+                for len in cuts {
+                    let mut block = vec![CodedSymbol::default(); len];
+                    encode_block(&mut set.as_slice(), start, &mut block)
+                        .expect("infallible source");
+                    for c in &block {
+                        stream.extend_from_slice(&c.to_bytes());
+                    }
+                    start += len as u64;
+                }
+                assert_eq!(stream, golden, "block encoding diverged over {n} symbols");
+            }
+        }
+    }
+
     #[test]
     fn coded_symbol_wire_roundtrip() {
         let mut enc = Encoder::new((0..10).map(test_symbol));
@@ -767,6 +869,35 @@ mod tests {
                     a.produce_next_coded_symbol().to_bytes(),
                     b.produce_next_coded_symbol().to_bytes()
                 );
+            }
+        }
+
+        /// The streaming responder's load-bearing property (D100
+        /// amendment): block encoding over ARBITRARY block cuts is
+        /// byte-identical to the incremental encoder — so swapping the
+        /// responder's memory shape cannot change a single wire byte.
+        #[test]
+        fn block_encoding_equals_incremental_for_any_cuts(
+            n in 0usize..60,
+            seed in any::<u64>(),
+            cuts in prop::collection::vec(1usize..24, 1..8),
+        ) {
+            let set: Vec<Symbol> =
+                (0..n as u64).map(|i| test_symbol(i.wrapping_add(seed))).collect();
+            let mut inc = Encoder::new(set.iter().copied());
+            let mut start = 0u64;
+            for len in cuts {
+                let mut block = vec![CodedSymbol::default(); len];
+                encode_block(&mut set.as_slice(), start, &mut block)
+                    .expect("infallible source");
+                for c in &block {
+                    prop_assert_eq!(
+                        c.to_bytes(),
+                        inc.produce_next_coded_symbol().to_bytes(),
+                        "diverged at coded index {}", start
+                    );
+                }
+                start += len as u64;
             }
         }
 

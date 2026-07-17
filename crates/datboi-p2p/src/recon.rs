@@ -17,6 +17,8 @@
 //! parts (D91 pieces) follow from a local closure walk (D100:
 //! "reconcile the plans, fetch the parts").
 
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, bail};
@@ -25,21 +27,28 @@ use datboi_index::Db;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 
-use crate::riblt::{self, CODED_SYMBOL_LEN, CodedSymbol};
+use crate::riblt::{self, CODED_SYMBOL_LEN, CodedSymbol, SetSnapshot, Symbol};
 
 /// The recon ALPN. Versioned: an algorithm or wire change is a new ALPN,
 /// not an in-band negotiation (D100 keeps the codec swappable this way).
 pub const ALPN: &[u8] = b"datboi/recon/1";
-
-/// Coded symbols per write — small enough to interleave stop checks,
-/// large enough that syscall overhead vanishes (64 × 48 B = 3 KiB).
-const BATCH: usize = 64;
 
 /// Responder-side drain cap: enough symbols to decode a symmetric
 /// difference approaching ~700k (at the ~1.35×d constant plus slack) —
 /// far beyond any v1 corpus — while bounding what one request can pull.
 /// Raising it is policy work, not a wire change.
 const MAX_SYMBOLS: u64 = 1 << 20;
+
+/// First encode-block size (D100 amendment): one set scan produces this
+/// many coded symbols, enough to decode a diff of ~750 — so the common
+/// small-diff reconciliation is exactly ONE pass and ~48 KiB of coded
+/// state, regardless of corpus size.
+const FIRST_BLOCK: usize = 1024;
+
+/// Block-growth ceiling: caps per-block memory at 6 MiB of coded
+/// symbols while keeping a full drain to `MAX_SYMBOLS` at O(log) set
+/// scans (doubling from `FIRST_BLOCK`, then ~8 max-size blocks).
+const MAX_BLOCK: usize = 1 << 17;
 
 /// What a responder will reconcile (the wire's first byte).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,13 +65,19 @@ impl Scope {
     }
 }
 
-/// The responder: enumerates the scope's set from a (read-only) index
-/// handle and streams its coded-symbol sequence until the initiator
-/// stops it. Stateless across requests — the encoder lives and dies
-/// with one stream.
+/// The responder: streams a scope's coded-symbol sequence until the
+/// initiator stops it, encoding off a sqlite SNAPSHOT rather than a
+/// resident set (D100 amendment) — each stream opens its own read-only
+/// connection, holds one read transaction across every encode pass
+/// (WAL snapshot isolation = the [`SetSnapshot`] stability contract),
+/// and holds only the current block in memory. Stateless across
+/// requests.
 #[derive(Clone)]
 pub struct ReconProvider {
-    db: Arc<Mutex<Db>>,
+    /// The databases directory — each stream opens a dedicated
+    /// read-only connection here (derived from the daemon's handle at
+    /// construction, so callers keep passing the handle they have).
+    db_dir: PathBuf,
 }
 
 impl std::fmt::Debug for ReconProvider {
@@ -72,17 +87,86 @@ impl std::fmt::Debug for ReconProvider {
 }
 
 impl ReconProvider {
+    /// The handle is only borrowed long enough to learn where the
+    /// databases live; serving opens per-stream read-only connections
+    /// (the D100-amendment snapshot shape), never this handle.
     #[must_use]
     pub fn new(db: Arc<Mutex<Db>>) -> Self {
-        Self { db }
+        let guard = db.lock().unwrap_or_else(|e| e.into_inner());
+        let db_dir = guard
+            .cache_path()
+            .parent()
+            .expect("cache.db lives in the db dir")
+            .to_path_buf();
+        Self { db_dir }
     }
+}
 
-    fn scope_set(&self, scope: Scope) -> Result<Vec<Blake3>> {
-        let guard = self.db.lock().unwrap_or_else(|e| e.into_inner());
-        match scope {
-            Scope::AffineRecipes => Ok(guard.affine_recipe_objects()?),
+/// [`SetSnapshot`] over a held-transaction connection: one `for_each`
+/// is one pass of the scope query. Distinctness is structural in the
+/// query; stability is the transaction the caller holds around every
+/// pass ([`stream_scope`]).
+struct DbSnapshot<'a> {
+    db: &'a Db,
+    scope: Scope,
+}
+
+impl SetSnapshot for DbSnapshot<'_> {
+    type Error = anyhow::Error;
+
+    fn for_each(&mut self, f: &mut dyn FnMut(Symbol)) -> Result<(), Self::Error> {
+        match self.scope {
+            Scope::AffineRecipes => self.db.for_each_affine_recipe_object(&mut |h| f(h.0))?,
         }
+        Ok(())
     }
+}
+
+/// The blocking half of one recon stream (D100 amendment): open the
+/// dedicated read-only connection, pin one read transaction, and send
+/// the size header + exponentially growing coded blocks through the
+/// channel until stop/cap/hang-up. A failed send means the async side
+/// hung up (initiator stop or wire death) — a normal exit. Returns
+/// (advertised set size, symbols sent).
+fn stream_scope(
+    db_dir: &Path,
+    scope: Scope,
+    stopped: &AtomicBool,
+    tx: &tokio::sync::mpsc::Sender<Vec<u8>>,
+) -> Result<(u64, u64)> {
+    let db = Db::open_read_only(db_dir).context("recon snapshot connection")?;
+    // BEGIN (deferred, read-only): the first read pins the WAL snapshot
+    // every subsequent pass sees — writers proceed, this stream's set
+    // is frozen. COMMIT (best-effort) releases the pinned WAL segment.
+    db.cache().execute_batch("BEGIN")?;
+    let result = (|| -> Result<(u64, u64)> {
+        let set_size = match scope {
+            Scope::AffineRecipes => db.affine_recipe_object_count()?,
+        };
+        if tx.blocking_send(set_size.to_le_bytes().to_vec()).is_err() {
+            return Ok((set_size, 0));
+        }
+        let mut sent = 0u64;
+        let mut block_len = FIRST_BLOCK;
+        while sent < MAX_SYMBOLS && !stopped.load(Ordering::Relaxed) {
+            let take = block_len.min(usize::try_from(MAX_SYMBOLS - sent).unwrap_or(usize::MAX));
+            let mut block = vec![CodedSymbol::default(); take];
+            let mut source = DbSnapshot { db: &db, scope };
+            riblt::encode_block(&mut source, sent, &mut block)?;
+            let mut bytes = Vec::with_capacity(take * CODED_SYMBOL_LEN);
+            for c in &block {
+                bytes.extend_from_slice(&c.to_bytes());
+            }
+            if tx.blocking_send(bytes).is_err() {
+                break;
+            }
+            sent += take as u64;
+            block_len = (block_len * 2).min(MAX_BLOCK);
+        }
+        Ok((set_size, sent))
+    })();
+    let _ = db.cache().execute_batch("COMMIT");
+    result
 }
 
 impl ProtocolHandler for ReconProvider {
@@ -97,38 +181,58 @@ impl ProtocolHandler for ReconProvider {
                 // (a newer peer probing an older responder).
                 continue;
             };
-            let set = self
-                .scope_set(scope)
-                .map_err(|e| AcceptError::from_err(std::io::Error::other(e.to_string())))?;
-            let mut enc = riblt::Encoder::new(set.iter().map(|h| h.0));
-            let set_size = enc.set_len() as u64;
 
             // The stop watcher: the initiator either sends a stop byte or
             // drops its stream (STOP_SENDING makes our write fail). Both
-            // end the stream; neither is an error.
-            let stop = tokio::spawn(async move {
-                let _ = recv.read_exact(&mut [0u8; 1]).await;
+            // raise the flag the encoder polls between blocks; stop
+            // latency is bounded by one block's encode pass.
+            let stopped = Arc::new(AtomicBool::new(false));
+            let watcher = tokio::spawn({
+                let stopped = Arc::clone(&stopped);
+                async move {
+                    let _ = recv.read_exact(&mut [0u8; 1]).await;
+                    stopped.store(true, Ordering::Relaxed);
+                }
             });
 
-            if send.write_all(&set_size.to_le_bytes()).await.is_err() {
-                stop.abort();
-                continue;
-            }
-            let mut sent = 0u64;
-            let mut batch = Vec::with_capacity(BATCH * CODED_SYMBOL_LEN);
-            while sent < MAX_SYMBOLS && !stop.is_finished() {
-                batch.clear();
-                for _ in 0..BATCH {
-                    batch.extend_from_slice(&enc.produce_next_coded_symbol().to_bytes());
-                }
-                if send.write_all(&batch).await.is_err() {
+            // spawn_blocking + bounded channel (the CasProvider bridge
+            // shape): sqlite passes happen off the async threads, and a
+            // slow wire backpressures the encoder at ≤ 2 blocks in
+            // flight.
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(2);
+            let encode = tokio::task::spawn_blocking({
+                let db_dir = self.db_dir.clone();
+                let stopped = Arc::clone(&stopped);
+                move || stream_scope(&db_dir, scope, &stopped, &tx)
+            });
+
+            while let Some(bytes) = rx.recv().await {
+                if send.write_all(&bytes).await.is_err() {
                     break;
                 }
-                sent += BATCH as u64;
             }
-            stop.abort();
-            let _ = send.finish();
-            tracing::debug!(scope = ?scope, set_size, symbols_sent = sent, "recon stream served");
+            // Dropping the receiver fails any pending blocking_send, so
+            // a dead wire stops the encoder mid-drain.
+            drop(rx);
+            stopped.store(true, Ordering::Relaxed);
+            watcher.abort();
+            match encode.await {
+                Ok(Ok((set_size, sent))) => {
+                    let _ = send.finish();
+                    tracing::debug!(
+                        scope = ?scope,
+                        set_size,
+                        symbols_sent = sent,
+                        "recon stream served"
+                    );
+                }
+                Ok(Err(e)) => {
+                    return Err(AcceptError::from_err(std::io::Error::other(e.to_string())));
+                }
+                Err(e) => {
+                    return Err(AcceptError::from_err(std::io::Error::other(e.to_string())));
+                }
+            }
         }
         Ok(())
     }
@@ -320,6 +424,38 @@ mod tests {
         assert_eq!(local_only, want, "our 5 extras, decoded locally");
 
         router.shutdown().await?;
+        Ok(())
+    }
+
+    /// The D100-amendment stability contract, exercised directly: a
+    /// read transaction held across passes sees ONE frozen set while a
+    /// writer commits a new recipe mid-stream; a fresh transaction sees
+    /// the growth. This is the property `stream_scope` rests on — if
+    /// sqlite ever stopped giving it, blocks would encode different
+    /// sets and the sketch would be garbage.
+    #[test]
+    fn held_transaction_freezes_the_scope_across_passes() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut writer = Db::open(dir.path())?;
+        for i in 0..10 {
+            insert_affine_recipe(&mut writer, &fake_hash("recipe", i), i)?;
+        }
+        let reader = Db::open_read_only(dir.path())?;
+        reader.cache().execute_batch("BEGIN")?;
+        let count = reader.affine_recipe_object_count()?; // pins the snapshot
+        insert_affine_recipe(&mut writer, &fake_hash("recipe", 99), 99)?;
+        let mut pass1 = Vec::new();
+        reader.for_each_affine_recipe_object(&mut |h| pass1.push(h))?;
+        let mut pass2 = Vec::new();
+        reader.for_each_affine_recipe_object(&mut |h| pass2.push(h))?;
+        reader.cache().execute_batch("COMMIT")?;
+        assert_eq!(count, 10);
+        assert_eq!(pass1.len(), 10, "mid-stream write invisible to the held snapshot");
+        assert_eq!(pass1, pass2, "every pass sees the identical set");
+        reader.cache().execute_batch("BEGIN")?;
+        let after = reader.affine_recipe_object_count()?;
+        reader.cache().execute_batch("COMMIT")?;
+        assert_eq!(after, 11, "a fresh transaction sees the commit");
         Ok(())
     }
 

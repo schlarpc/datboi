@@ -557,6 +557,43 @@ impl Db {
         Ok(rows.into_iter().map(Blake3).collect())
     }
 
+    /// Streaming twin of [`Self::affine_recipe_objects`]: visit each
+    /// hash without materializing the set — the recon responder's
+    /// O(block)-memory pass (D100 amendment). Distinctness is
+    /// structural (one recipe row per meta blob, unique blob hashes);
+    /// cross-pass stability is the CALLER's read transaction.
+    pub fn for_each_affine_recipe_object(
+        &self,
+        f: &mut dyn FnMut(Blake3),
+    ) -> Result<(), IndexError> {
+        let mut stmt = self.cache().prepare_cached(
+            "SELECT b.hash FROM recipe r
+             JOIN blob b ON b.blob_id = r.blob_id
+             WHERE r.op_kind = 0 AND r.op_name = 'assemble@1'
+               AND r.seek_class = 0 AND r.verify != 2
+             ORDER BY b.blob_id",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            f(Blake3(row.get::<_, [u8; 32]>(0)?));
+        }
+        Ok(())
+    }
+
+    /// Count twin — the recon wire header's advertised set size, read
+    /// under the same transaction as the passes so the two agree.
+    pub fn affine_recipe_object_count(&self) -> Result<u64, IndexError> {
+        let count: i64 = self.cache().query_row(
+            "SELECT COUNT(*) FROM recipe r
+             JOIN blob b ON b.blob_id = r.blob_id
+             WHERE r.op_kind = 0 AND r.op_name = 'assemble@1'
+               AND r.seek_class = 0 AND r.verify != 2",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(count).unwrap_or(0))
+    }
+
     /// A rebuild route's inputs in position (coverage) order, each with
     /// its sharing evidence for the D91 predicate.
     pub fn rebuild_inputs(&self, recipe_id: i64) -> Result<Vec<RebuildInput>, IndexError> {
