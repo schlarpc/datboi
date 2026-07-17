@@ -178,3 +178,85 @@ test('a refused ingest start surfaces as the failure line', async () => {
   expect(await screen.findByText(/something went wrong/)).toBeTruthy();
   expect(screen.getByText(/unknown or expired upload/)).toBeTruthy();
 });
+
+// ---- fetch from a friend (D100/D101) ----
+
+test('p2p off: the peer card teaches --p2p instead of hiding', async () => {
+  installFetch({});
+  render(Ingest);
+
+  expect(await screen.findByText(/p2p is off/)).toBeTruthy();
+  expect(screen.getByText('datboi serve --p2p')).toBeTruthy();
+  expect(screen.queryByPlaceholderText("friend's peer id")).toBeNull();
+});
+
+test('peer fetch → sync job → the savings receipt', async () => {
+  const handler = installFetch({
+    p2p: { enabled: true, endpoint_id: 'ep-our-id' },
+    p2pSyncJob: 9,
+    jobTimeline: [
+      {
+        id: 9,
+        name: 'sync — peer ep-frien…',
+        progress: 100,
+        kind: 'sync',
+        state: 'done',
+        files_total: 0,
+        files_done: 0,
+        bytes_total: 0,
+        bytes_done: 0,
+        started_at: 1000,
+        finished_at: 1005,
+        report: emptyReport,
+        matched: [],
+        matched_total: 0,
+        error: null,
+        sync: {
+          peer: 'ep-friend',
+          recipes_fetched: 1,
+          recipe_bytes_fetched: 232,
+          pieces_fetched: 2,
+          piece_bytes_fetched: 1_310_488,
+          pieces_already_held: 6,
+          bytes_already_held: 64_400_000,
+          containers_rebuilt: 1,
+          bytes_rebuilt: 65_700_000,
+          sketch_wire_bytes: 154,
+          bytes_fetched: 1_310_874,
+        },
+      },
+    ],
+  });
+  render(Ingest);
+
+  // Our shareable id renders once the status answers.
+  expect(await screen.findByText('ep-our-id')).toBeTruthy();
+
+  const input = screen.getByPlaceholderText("friend's peer id");
+  await fireEvent.input(input, { target: { value: 'ep-friend' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'fetch' }));
+
+  // The persona line: fetched vs rebuilt, and the derived percentage
+  // (1,310,874 / 65,700,000 → 98% saved), plus the dedup counts.
+  expect(await screen.findByText('98%')).toBeTruthy();
+  expect(screen.getByText(/rebuilt from shared pieces/)).toBeTruthy();
+  expect(screen.getByText(/never crossed the wire/)).toBeTruthy();
+  const starts = handler.mock.calls.filter(([input_]) => calledPath(input_) === '/v1/p2p/sync');
+  expect(starts.length).toBe(1);
+});
+
+test('a refused sync start surfaces on the card, not a dead job', async () => {
+  installFetch({
+    p2p: { enabled: true, endpoint_id: 'ep-our-id' },
+    p2pSyncFail: true,
+  });
+  render(Ingest);
+
+  await screen.findByText('ep-our-id');
+  await fireEvent.input(screen.getByPlaceholderText("friend's peer id"), {
+    target: { value: 'ep-friend' },
+  });
+  await fireEvent.click(screen.getByRole('button', { name: 'fetch' }));
+
+  expect(await screen.findByText(/couldn't start/)).toBeTruthy();
+});

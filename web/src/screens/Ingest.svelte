@@ -13,8 +13,15 @@
    * can't move your originals, only send copies. NAS-local ingest
    * (and the eventual --move) stays with the CLI.
    */
+  import { onDestroy } from 'svelte';
+  import { p2pStatus, p2pSync } from '../lib/api/client';
+  import type { JobDetailBody, P2pStatusBody } from '../lib/api/types';
   import CliHint from '../lib/components/CliHint.svelte';
+  import { copyText } from '../lib/clipboard';
+  import { fmtSize } from '../lib/format';
   import { ingestFlow } from '../lib/ingest.svelte';
+  import { followJob, jobsSignal } from '../lib/jobs.svelte';
+  import { errorText } from '../lib/remote';
   import { collectDrop, pickedFiles } from '../lib/upload';
   import { plural } from '../lib/plural';
 
@@ -60,6 +67,67 @@
   function pct(part: number, whole: number): number {
     return whole === 0 ? 0 : Math.floor((part / whole) * 100);
   }
+
+  // ---- fetch from a friend (D100/D101) ----
+  // The other way bytes arrive. The receipt is the savings moment:
+  // what the recipe graph kept off the wire (web-ui.md — show the
+  // value, not the machinery).
+  let alive = true;
+  onDestroy(() => (alive = false));
+  let p2p = $state<P2pStatusBody | null>(null);
+  $effect(() => {
+    void p2pStatus().then(
+      (s) => (p2p = s),
+      () => {}, // unreachable: the card just stays quiet
+    );
+  });
+
+  let idCopied = $state(false);
+  const copyId = () => {
+    const id = p2p?.endpoint_id;
+    if (id != null) {
+      void copyText(id).then((ok) => (idCopied = ok));
+    }
+  };
+
+  let peerInput = $state('');
+  let syncing = $state(false);
+  let syncError = $state<string | null>(null);
+  let syncLost = $state(false);
+  let syncResult = $state<JobDetailBody | null>(null);
+  const summary = $derived(syncResult?.sync ?? null);
+  /** Client-side by design (D101): the wire ships exact numbers. */
+  const savingsPct = $derived(
+    summary !== null && summary.bytes_rebuilt > 0
+      ? Math.max(0, 100 * (1 - summary.bytes_fetched / summary.bytes_rebuilt))
+      : null,
+  );
+
+  const startSync = () => {
+    const peer = peerInput.trim();
+    if (peer === '' || syncing) return;
+    syncing = true;
+    syncError = null;
+    syncLost = false;
+    syncResult = null;
+    p2pSync(peer).then(
+      async (started) => {
+        jobsSignal.bump(); // wake the tray now, not on its own cadence
+        try {
+          const done = await followJob(started.job, { alive: () => alive });
+          if (done !== null) syncResult = done;
+        } catch {
+          syncLost = true; // the tray still tracks the job
+        }
+        jobsSignal.bump();
+        syncing = false;
+      },
+      (e: unknown) => {
+        syncing = false;
+        syncError = errorText(e);
+      },
+    );
+  };
 </script>
 
 <main>
@@ -108,6 +176,81 @@
       …or pick a whole folder
     </button>
   </p>
+
+  <!-- Fetch from a friend (D100/D101): the other acquisition lane.
+       Quiet until GET /v1/p2p answers; the disabled state teaches the
+       enable move instead of hiding the capability. -->
+  {#if p2p !== null}
+    <div class="card peer">
+      <div class="caps">FETCH FROM A FRIEND</div>
+      {#if p2p.enabled && p2p.endpoint_id !== null}
+        <p class="peer-line">
+          <!-- @wc-context: our own p2p peer id, shown to share -->your peer id:
+          <code class="peer-id">{p2p.endpoint_id}</code>
+          <button class="linkish" onclick={copyId}>
+            {#if idCopied}
+              <!-- @wc-context: peer id copied to clipboard -->copied ✓
+            {:else}
+              <!-- @wc-context: copy the peer id -->copy
+            {/if}
+          </button>
+        </p>
+        <form
+          class="peer-form"
+          onsubmit={(e) => {
+            e.preventDefault();
+            startSync();
+          }}
+        >
+          <input
+            class="peer-input"
+            placeholder="friend's peer id"
+            bind:value={peerInput}
+            disabled={syncing}
+          />
+          <button class="pill" disabled={syncing || peerInput.trim() === ''}>
+            {#if syncing}
+              <!-- @wc-context: peer fetch in progress -->fetching…
+            {:else}
+              <!-- @wc-context: start a peer fetch -->fetch
+            {/if}
+          </button>
+        </form>
+        <p class="peer-note">
+          fetches everything they share that you lack — pieces you already hold stay home
+        </p>
+        {#if syncError !== null}
+          <p class="bad">couldn't start — {syncError}</p>
+        {/if}
+        {#if syncLost}
+          <p class="bad">lost contact with the job — it may still be running; check the jobs tray</p>
+        {/if}
+        {#if syncResult !== null && syncResult.state === 'failed'}
+          <p class="bad">sync failed — {syncResult.error}</p>
+        {/if}
+        {#if summary !== null}
+          <!-- The persona moment: the dedup win, spelled out. -->
+          <p class="matched-head">
+            <b>{fmtSize(summary.bytes_fetched)}</b> fetched{#if summary.bytes_rebuilt > 0},
+              <b>{fmtSize(summary.bytes_rebuilt)}</b> rebuilt from shared pieces{#if savingsPct !== null}
+                — <b>{savingsPct.toFixed(0)}%</b> saved{/if}{/if}
+          </p>
+          <p class="peer-note">
+            {plural(summary.recipes_fetched, ['# plan', '# plans'])} ·
+            {plural(summary.pieces_fetched, ['# piece fetched', '# pieces fetched'])} ·
+            {plural(summary.pieces_already_held, ['# piece', '# pieces'])} already here
+            ({fmtSize(summary.bytes_already_held)} that never crossed the wire)
+          </p>
+        {/if}
+      {:else}
+        <p class="peer-note">
+          p2p is off — serving with <code>--p2p</code> gives this instance a peer id friends can
+          fetch from, and lets you fetch from theirs:
+        </p>
+        <CliHint command={'datboi serve --p2p'}>enable the friends plane:</CliHint>
+      {/if}
+    </div>
+  {/if}
 
   <!-- Upload progress card; the report supersedes it (upload failures
        re-appear there as refusals). -->
@@ -470,6 +613,71 @@
     font: 400 0.75rem var(--font-data);
     color: var(--faint);
     line-height: 1.7;
+  }
+
+  .peer-line {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 12px;
+    font: 400 0.75rem var(--font-data);
+    color: var(--mut);
+  }
+
+  .peer-id {
+    font: 500 0.6875rem var(--font-data);
+    color: var(--text);
+    background: var(--panel2);
+    border-radius: var(--r-fill);
+    padding: 2px 6px;
+    overflow-wrap: anywhere;
+  }
+
+  .peer-form {
+    display: flex;
+    gap: 10px;
+  }
+
+  .peer-input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--dim);
+    border-radius: var(--r-fill);
+    background: var(--panel2);
+    color: var(--text);
+    font: 400 0.75rem var(--font-data);
+    padding: 6px 10px;
+  }
+
+  .pill {
+    all: unset;
+    font: 700 0.75rem var(--font-display);
+    border: 2px solid var(--ink);
+    border-radius: var(--r-fill);
+    padding: 4px 14px;
+    cursor: pointer;
+  }
+
+  .pill:disabled {
+    color: var(--faint);
+    cursor: default;
+  }
+
+  .peer-note {
+    margin: 10px 0 0;
+    font: 400 0.71875rem var(--font-data);
+    color: var(--faint);
+    line-height: 1.6;
+  }
+
+  .peer .matched-head {
+    margin-top: 14px;
+  }
+
+  .peer .bad {
+    margin: 10px 0 0;
+    font: 400 0.75rem var(--font-data);
   }
 
   @media (max-width: 720px) {

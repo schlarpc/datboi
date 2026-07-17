@@ -159,6 +159,15 @@ export type AnalyzerConfigParams = Schemas['AnalyzerConfigRequest'];
 /** POST /v1/sweep body (analyzer name + optional limit). */
 export type SweepParams = Schemas['SweepRequest'];
 
+// ---- p2p (D101) ----
+
+/** GET /v1/p2p — seedbox liveness + our shareable endpoint id. */
+export type P2pStatusBody = Schemas['P2pStatusResponse'];
+/** POST /v1/p2p/sync body (peer id + optional wants; none = mirror). */
+export type P2pSyncParams = Schemas['P2pSyncRequest'];
+/** A finished Sync job's savings summary (JobDetail.sync). */
+export type SyncSummary = Schemas['SyncSummary'];
+
 // ---- /v1/admin/* ----
 
 export type AdminUser = Schemas['UserRow'];

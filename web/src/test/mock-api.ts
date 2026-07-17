@@ -26,6 +26,7 @@ import type {
   Job,
   JobDetailBody,
   MintedInvite,
+  P2pStatusBody,
   SnapshotBody,
   StorageBody,
   StorageBreakdownBody,
@@ -87,6 +88,12 @@ export interface MockUniverse {
   materializeFail?: boolean;
   /** POST /v1/scrub answer (D96 maintenance); defaults to job 1. */
   scrubJob?: number;
+  /** GET /v1/p2p status (D101); defaults to disabled. */
+  p2p?: P2pStatusBody;
+  /** POST /v1/p2p/sync job id; defaults to 1. */
+  p2pSyncJob?: number;
+  /** POST /v1/p2p/sync answers 503 — the daemon runs without --p2p. */
+  p2pSyncFail?: boolean;
   /** POST /v1/snapshot receipt (D96); default is a minimal one. */
   snapshot?: SnapshotBody;
   /** POST /v1/ingest rejects (unknown token shape). */
@@ -344,6 +351,14 @@ export function installFetch(universe: MockUniverse) {
       }
       if (path === '/v1/scrub' && method === 'POST') {
         return json(202, { job: universe.scrubJob ?? 1 });
+      }
+      if (path === '/v1/p2p' && method === 'GET') {
+        return json(200, universe.p2p ?? { enabled: false, endpoint_id: null });
+      }
+      if (path === '/v1/p2p/sync' && method === 'POST') {
+        return universe.p2pSyncFail === true
+          ? json(503, { error: 'p2p is disabled — start the daemon with --p2p', code: 'busy' })
+          : json(202, { job: universe.p2pSyncJob ?? 1 });
       }
       if (path === '/v1/snapshot' && method === 'POST') {
         return json(

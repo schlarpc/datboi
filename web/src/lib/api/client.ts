@@ -48,6 +48,7 @@ import type {
   MintInviteParams,
   OkBody,
   OrphansBody,
+  P2pStatusBody,
   RevokedSessions,
   ScrubParams,
   SessionInfo,
@@ -405,6 +406,18 @@ export const analyzerConfig = async (
 /** POST /v1/sweep — run one analyzer sweep round; poll the Refine job. */
 export const sweep = async (analyzer: string): Promise<JobStarted> =>
   unwrap(await client.POST('/v1/sweep', { body: { analyzer } }));
+
+// ---- p2p (D101) ----
+
+/** GET /v1/p2p — is the seedbox live, and our shareable endpoint id. */
+export const p2pStatus = async (): Promise<P2pStatusBody> =>
+  unwrap(await client.GET('/v1/p2p'));
+
+/** POST /v1/p2p/sync — reconcile with a peer and fetch the diff (D100);
+ * poll the returned Sync job, whose detail's `sync` field carries the
+ * savings summary. No wants = mirror mode. */
+export const p2pSync = async (peer: string, wants: string[] = []): Promise<JobStarted> =>
+  unwrap(await client.POST('/v1/p2p/sync', { body: { peer, wants } }));
 
 // ---- ingest ----
 

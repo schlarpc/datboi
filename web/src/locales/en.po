@@ -1156,6 +1156,7 @@ msgid "can't reach the daemon"
 msgstr "can't reach the daemon"
 
 #: src/screens/Ingest.svelte
+#: src/screens/Ingest.svelte
 msgid "lost contact with the job — it may still be running; check the jobs tray"
 msgstr "lost contact with the job — it may still be running; check the jobs tray"
 
@@ -1637,7 +1638,9 @@ msgctxt "job kind"
 msgid "mint"
 msgstr "mint"
 
+#. 0: syncError
 #. 0: scrubError
+#: src/screens/Ingest.svelte
 #: src/screens/Storage.svelte
 msgid "couldn't start — {0}"
 msgstr "couldn't start — {0}"
@@ -1874,3 +1877,84 @@ msgstr "revision {0} → {1}"
 msgctxt "job kind"
 msgid "sync"
 msgstr "sync"
+
+#: src/screens/Ingest.svelte
+msgctxt "peer id copied to clipboard"
+msgid "copied ✓"
+msgstr "copied ✓"
+
+#: src/screens/Ingest.svelte
+msgctxt "copy the peer id"
+msgid "copy"
+msgstr "copy"
+
+#: src/screens/Ingest.svelte
+msgctxt "our own p2p peer id, shown to share"
+msgid "your peer id:"
+msgstr "your peer id:"
+
+#: src/screens/Ingest.svelte
+msgctxt "peer fetch in progress"
+msgid "fetching…"
+msgstr "fetching…"
+
+#: src/screens/Ingest.svelte
+msgctxt "start a peer fetch"
+msgid "fetch"
+msgstr "fetch"
+
+#. 0: syncResult.error
+#: src/screens/Ingest.svelte
+msgid "sync failed — {0}"
+msgstr "sync failed — {0}"
+
+#: src/screens/Ingest.svelte
+msgid "— <0/> saved"
+msgstr "— <0/> saved"
+
+#: src/screens/Ingest.svelte
+msgid ", <0/> rebuilt from shared pieces<1/>"
+msgstr ", <0/> rebuilt from shared pieces<1/>"
+
+#: src/screens/Ingest.svelte
+msgid "# plan"
+msgid_plural "# plans"
+msgstr[0] "# plan"
+msgstr[1] "# plans"
+
+#: src/screens/Ingest.svelte
+msgid "# piece fetched"
+msgid_plural "# pieces fetched"
+msgstr[0] "# piece fetched"
+msgstr[1] "# pieces fetched"
+
+#: src/screens/Ingest.svelte
+msgid "# piece"
+msgid_plural "# pieces"
+msgstr[0] "# piece"
+msgstr[1] "# pieces"
+
+#: src/screens/Ingest.svelte
+msgid "<0/> fetched<1/>"
+msgstr "<0/> fetched<1/>"
+
+#. 0: plural(summary.recipes_fetched, ['# plan', '# plans']); 1: plural(summary.pieces_fetched, ['# piece fetched', '# pieces fetched']); 2: plural(summary.pieces_already_held, ['# piece', '# pieces']); 3: fmtSize(summary.bytes_already_held)
+#: src/screens/Ingest.svelte
+msgid "{0} · {1} · {2} already here ({3} that never crossed the wire)"
+msgstr "{0} · {1} · {2} already here ({3} that never crossed the wire)"
+
+#: src/screens/Ingest.svelte
+msgid "fetches everything they share that you lack — pieces you already hold stay home"
+msgstr "fetches everything they share that you lack — pieces you already hold stay home"
+
+#: src/screens/Ingest.svelte
+msgid "p2p is off — serving with <0/> gives this instance a peer id friends can fetch from, and lets you fetch from theirs:"
+msgstr "p2p is off — serving with <0/> gives this instance a peer id friends can fetch from, and lets you fetch from theirs:"
+
+#: src/screens/Ingest.svelte
+msgid "enable the friends plane:"
+msgstr "enable the friends plane:"
+
+#: src/screens/Ingest.svelte
+msgid "FETCH FROM A FRIEND"
+msgstr "FETCH FROM A FRIEND"
