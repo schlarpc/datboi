@@ -384,7 +384,7 @@ impl Store {
     /// Walk one namespace's shard tree — the recovery-scan primitive
     /// (D15). Yields `(hash, size)` per blob file; foreign files come back
     /// as [`StoreError::Foreign`] items so callers can count them without
-    /// aborting the scan. `.obao` sidecars are expected store files and
+    /// aborting the scan. `.obao4` sidecars are expected store files and
     /// are skipped silently.
     pub fn list(&self, ns: Namespace) -> ListIter {
         let root = self.root.join(ns.dir());
@@ -962,7 +962,7 @@ fn classify(path: &Path) -> FileKind {
         "data" => stem
             .parse::<Blake3>()
             .map_or(FileKind::Foreign, FileKind::Blob),
-        "obao" if stem.parse::<Blake3>().is_ok() => FileKind::Sidecar,
+        "obao4" if stem.parse::<Blake3>().is_ok() => FileKind::Sidecar,
         _ => FileKind::Foreign,
     }
 }
@@ -1134,7 +1134,7 @@ mod tests {
         // Plant a silent sidecar and a foreign file next to a real blob.
         let shard = store.blob_path(Namespace::Data, &expected[0].0);
         let shard_dir = shard.parent().expect("parent");
-        fs::write(shard_dir.join(format!("{}.obao", expected[0].0)), b"tree").expect("obao");
+        fs::write(shard_dir.join(format!("{}.obao4", expected[0].0)), b"tree").expect("obao");
         fs::write(shard_dir.join("notes.txt"), b"?").expect("foreign");
 
         let mut found = Vec::new();

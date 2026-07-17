@@ -6,7 +6,7 @@
 //! 1. **Two instances exchange a verified blob.** Stock iroh-blobs over
 //!    QUIC, blake3-verified streaming — the transport datboi will front.
 //! 2. **iroh's outboard IS our outboard.** iroh serves blake3 bao trees
-//!    at a 16 KiB chunk group (`.obao4`); D52 froze our `.obao` sidecar
+//!    at a 16 KiB chunk group (`.obao4`); D52 froze our `.obao4` sidecar
 //!    at exactly that. The alignment test computes an outboard the way
 //!    our store does and checks it against the byte-for-byte golden the
 //!    store test committed — so "reuse the obao" (D14/D52) is proven,
@@ -66,7 +66,7 @@ pub async fn fetch(ticket: &BlobTicket) -> Result<Vec<u8>> {
 }
 
 /// Fronting the real CAS (D97): serve iroh-blobs' get protocol straight
-/// from a `datboi-store-fs::Store`, reusing the on-disk `.obao` sidecar as
+/// from a `datboi-store-fs::Store`, reusing the on-disk `.obao4` sidecar as
 /// the bao tree — no custom-store trait exists in iroh-blobs 0.103, so we
 /// answer the wire protocol ourselves and iroh-blobs stays the requester.
 ///
@@ -111,7 +111,7 @@ pub mod cas {
         /// Answer one get-request: `size (8 LE) ‖ bao-encoded ranges`, the
         /// exact wire shape iroh-blobs' `export_bao` produces (same
         /// bao-tree 0.16, same 16 KiB block). The requested chunk ranges
-        /// verify against our `.obao` as they encode, so a corrupt local
+        /// verify against our `.obao4` as they encode, so a corrupt local
         /// blob fails the encode rather than shipping bad bytes.
         fn encode_get(&self, get: &GetRequest) -> Result<Option<Vec<u8>>> {
             let hash = Blake3(*get.hash.as_bytes());
@@ -200,7 +200,7 @@ mod tests {
     }
 
     /// D97 fronting: a provider backed by a REAL on-disk
-    /// `datboi-store-fs::Store` (loose blob + its `.obao` sidecar) serves
+    /// `datboi-store-fs::Store` (loose blob + its `.obao4` sidecar) serves
     /// the stock iroh-blobs requester, which fetches and blake3-verifies.
     /// No bytes are copied into an iroh store — they stream from our CAS,
     /// encoded against the sidecar we already wrote at ingest.

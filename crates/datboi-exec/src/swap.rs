@@ -176,7 +176,7 @@ impl<'s> Executor<'s> {
             // replays through these pieces via the D63 carve-out, which
             // would otherwise ensure_obao them lazily ON the serving
             // thread — a stall proportional to the whole decomposition.
-            // Sidecars live beside the member (`data/…/<hex>.obao`),
+            // Sidecars live beside the member (`data/…/<hex>.obao4`),
             // never inside the immutable pack, so this "upgrades the
             // window" exactly as the landing note promised.
             for member in &to_pack {
@@ -240,7 +240,7 @@ impl<'s> Executor<'s> {
     /// (the analyzer writes them loose), so there is nothing to
     /// materialize — the pieces stream out of their own loose files into
     /// the pack, their obao is blessed over the window, and the redundant
-    /// loose `.data` is dropped (the `.obao` stays for verified serving).
+    /// loose `.data` is dropped (the `.obao4` stays for verified serving).
     /// A piece shared across sets packs with the FIRST set (first-packer-
     /// wins, like the swap); the rest see it already packed and skip it,
     /// so cross-set dedup is preserved — the global pack map resolves it
@@ -339,7 +339,7 @@ impl<'s> Executor<'s> {
             .map_err(|e| SwapSkip::Other(format!("pack write: {e}")))?;
         report.sets_packed += 1;
         // Bless obao over the window, then drop the now-redundant loose
-        // `.data` (evict_literal keeps the `.obao` for verified serving).
+        // `.data` (evict_literal keeps the `.obao4` for verified serving).
         // Residency stays Resident — a packed piece is still resident.
         for member in &to_pack {
             self.store_ref()

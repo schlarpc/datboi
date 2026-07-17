@@ -35,10 +35,16 @@ pub fn blob_path(ns: Namespace, hash: &Blake3) -> PathBuf {
 }
 
 /// Relative path of a blob's bao outboard sidecar, when one exists.
+///
+/// Extension is `.obao4`, not `.obao`: the trailing `4` is iroh-blobs'
+/// convention for a chunk-group size of 2^4 = 16 KiB (D52). Bare `.obao`
+/// denotes the standard bao format's finer 1 KiB granularity — a
+/// different tree — so naming our 16 KiB-group sidecar `.obao` would be
+/// an active misnomer (D52 amendment).
 #[must_use]
 pub fn outboard_path(ns: Namespace, hash: &Blake3) -> PathBuf {
     let mut p = blob_path(ns, hash);
-    p.set_extension("obao");
+    p.set_extension("obao4");
     p
 }
 
@@ -55,7 +61,7 @@ mod tests {
         assert_eq!(p, expected);
         assert_eq!(
             outboard_path(Namespace::Meta, &h).extension().unwrap(),
-            "obao"
+            "obao4"
         );
     }
 }
