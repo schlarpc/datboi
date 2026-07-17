@@ -156,6 +156,24 @@ reconcile against a peer's advertised piece inventory (privacy: reveals
 holdings) or against a specific want-target's piece manifest (leaks less);
 how piece manifests ride the D34 channel.
 
+### Receiving: iroh stages partials, our CAS ingests completions (D98)
+
+Fronting (above) is the SEND side — no partial state, bytes are already
+whole. The RECEIVE side is where partial state is unavoidable (a multi-GB
+ROM arrives incrementally, resumably, from several peers). Our `Store` is
+complete-blobs-only by invariant (D14 stage 1: single-writer, atomic
+rename, a file is the whole verified blob or absent) and must stay that
+way — D15/D19/D49 all lean on "a present file is whole and hash-true." So
+**iroh-blobs' own store is the staging area** (its bitfield, its
+partial→complete lifecycle, its multi-provider resume), and a blob is
+imported into our CAS only once it completes and verifies, via
+`put_with_obao` — reusing the `.obao4` iroh already built (byte-identical,
+D97). iroh owns "in flight," our CAS owns "durable and grounded"; the
+staging store is a disposable cache (D15), never authoritative. Piece-set
+reconciliation composes cleanly: differing pieces are just small blobs
+fetched into the same staging store, imported, then fed to the local
+`assemble` recipe — no special-casing.
+
 ### Swarming: opt-in, in tiers
 
 Joining a swarm is **opt-in and layered**, never a default that leaks a

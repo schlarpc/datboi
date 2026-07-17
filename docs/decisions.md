@@ -640,6 +640,21 @@ tree (4× sidecar bytes for verification granularity nothing needs),
 inline-in-DB outboards (violates D15 — the tree must survive DB loss
 with the bytes it protects).
 
+*Amendment (2026-07-16): the sidecar extension is `.obao4`, not `.obao`.*
+The M6 spike surfaced that bare `.obao` is iroh-blobs' convention for the
+STANDARD bao format's 1 KiB (2^0) granularity, while the trailing digit
+in `.obao4` names a 2^4 = 16 KiB chunk group — which is exactly the tree
+this entry froze. Our file held obao4 content under an `.obao` name: a
+misnomer by the established convention, so under correct-by-construction
+the name changes to state what the bytes are. This is a free format event
+(pre-corpus, D54 logic): no on-disk migration exists to break, and iroh
+never sees our filenames (we serve via our own handler, D97, not by
+pointing an iroh store at our tree — so this is naming honesty, not
+interop). Changed `outboard_path` + the recovery classifier + tests; the
+golden-vector (which pins the tree BYTES, not the filename) is untouched.
+Applies uniformly to loose-blob and D91 packed-member sidecars — both are
+the same `data/…/<hex>.obao4` files.
+
 ## D53 — Wild-zip rebuild rides preflate splitting, streaming @2 (2026-07-07)
 
 Ruled after the preflate spike. The deflate-rebuild path is
@@ -2404,3 +2419,51 @@ blobs materialized through the executor, D92 — same encode, different byte
 source), streaming instead of whole-blob buffering (the spike reads the
 blob into memory; the fsm/async bao encoder + executor spill is the real
 path for 4 GB ROMs), and hash-seq requests (offset > 0).
+
+## D98 — The receive path stages partials in iroh's store; our CAS only ever ingests complete, verified blobs (2026-07-16)
+
+Ruled before the M6 fetch path is built, because it is a re-litigable
+posture. The **send** side (D97) serves from our CAS directly — no partial
+state, bytes are already complete. The **receive** side is where partial
+state is unavoidable: a multi-GB ROM arrives incrementally, resumably, from
+possibly several peers, and iroh-blobs tracks that with a per-range
+**bitfield** and a partial→complete lifecycle (its "blob store design
+challenges": partial entries advance toward a verified size). Our CAS has
+no such state and MUST NOT grow one: `Store` is complete-blobs-only by
+invariant (D14 stage 1) — single-writer, tmp→fsync→atomic-rename, a file
+either is the whole verified blob or does not exist. That invariant is
+load-bearing for D15/D19/D49 (a present file is always whole and
+hash-true).
+
+Ruling: **iroh-blobs' own store is the receive staging area; our CAS
+ingests only on completion.** An incoming transfer lands in an iroh-blobs
+`FsStore` (its bitfield, its partial tracking, its multi-provider
+resume — none of which we reimplement); when a blob completes and
+verifies, it is imported into our CAS with the house discipline
+(`put_with_obao` — one atomic publish, reusing the `.obao4` iroh already
+built, since bao-tree 0.16 makes it byte-identical, D97). Clean division:
+**iroh's store owns "in flight," our CAS owns "durable and grounded."**
+Our complete-blobs-only invariant survives untouched, and we get resumable
+multi-source fetch for free. The staging store is a disposable cache (D15
+tier — nukeable, rebuildable by re-fetching), never authoritative; a crash
+mid-transfer loses only progress, never a claimed blob.
+
+Corollaries. (1) **Piece-set reconciliation composes with this** (D97): the
+differing pieces are just small blobs fetched into the same staging store,
+then imported and fed to the local `assemble` recipe — the receive path
+doesn't special-case pieces. (2) The import step is the natural home for
+the receive-side D4/D49 verification and for minting alias claims on newly
+arrived bytes (D22), so a fetched blob enters the corpus exactly as an
+ingested one does — one ingest seam, not two. (3) On-disk cost of
+double-writing (staging store then CAS import) is accepted; reflink import
+where the staging store shares a filesystem is the optimization, not the
+contract.
+
+*Rejected:* teaching our CAS partial-blob state + bitfields (reimplements
+iroh's receive machinery inside the one crate that must stay simplest and
+most durable, and punctures the complete-blobs-only invariant D15/D19/D49
+lean on); fetching straight into `data/` with a sidecar bitfield (same
+invariant breach, plus a partial file under a hash-true name is a lie the
+recovery scan would have to special-case); making the staging store
+authoritative (it is a cache — D15 forbids sole truth in a nukeable
+store).

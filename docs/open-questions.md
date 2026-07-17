@@ -557,12 +557,15 @@ serves iroh's get protocol straight from a real `datboi-store-fs::Store`
 + its `.obao` (no store trait — iroh-blobs 0.103 has none — no byte copy),
 which the stock iroh-blobs requester fetches and verifies. Design in
 docs/p2p.md § "M6 design"; posture + literal-handler amendment under D97.
-**Pick up here**: the VIRTUAL half — serve grounded-but-evicted blobs by
-materializing through the executor (D92); it is the same bao encode with a
-materialization as the byte source instead of a file, and it wants the
-async/streaming bao encoder (the spike buffers whole blobs) so 4 GB ROMs
-stay bounded-memory. Then piece-set reconciliation. The previous position
-(D96 web-UI pass) is below.
+Since ruled: the outboard sidecar is `.obao4` not `.obao` (D52 amendment —
+the name now states the 16 KiB chunk group), and the receive path stages
+partials in iroh's store and imports completions into our CAS (D98 —
+complete-blobs-only invariant preserved). **Pick up here**: the VIRTUAL
+half — serve grounded-but-evicted blobs by materializing through the
+executor (D92); it is the same bao encode with a materialization as the
+byte source instead of a file, and it wants the async/streaming bao encoder
+(the spike buffers whole blobs) so 4 GB ROMs stay bounded-memory. Then
+piece-set reconciliation. The previous position (D96 web-UI pass) is below.
 
 
 **Position as of 2026-07-16, newest (D96 web-UI pass — COMPLETE)**: the
