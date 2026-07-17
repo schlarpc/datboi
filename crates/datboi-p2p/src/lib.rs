@@ -23,6 +23,7 @@
 
 pub mod recon;
 pub mod riblt;
+pub mod sync;
 
 use anyhow::Result;
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
@@ -250,12 +251,21 @@ pub mod cas {
                 };
                 // Outboard: empty for ≤ one chunk group (no sidecar);
                 // otherwise the retained `.obao4` (survives eviction, D49).
+                // A resident literal without one (bare-NAS recovery didn't
+                // rebuild pack-member sidecars) gets the lazy `ensure_obao`
+                // backstop — one full read, then blessed for good.
                 let sidecar = if outboard_size(total) == 0 {
                     Vec::new()
                 } else {
-                    store
-                        .get_obao(Namespace::Data, &hash)?
-                        .ok_or_else(|| anyhow!("no outboard for {hash}"))?
+                    match store.get_obao(Namespace::Data, &hash)? {
+                        Some(sidecar) => sidecar,
+                        None => {
+                            store.ensure_obao(Namespace::Data, &hash)?;
+                            store
+                                .get_obao(Namespace::Data, &hash)?
+                                .ok_or_else(|| anyhow!("no outboard for {hash}"))?
+                        }
+                    }
                 };
                 // The reader owns its executor threads; the db guard is only
                 // needed to PLAN the route — drop it before the long encode.
