@@ -23,6 +23,57 @@
         ],
         "type": "object"
       },
+      "AnalyzerConfigRequest": {
+        "description": "PUT /v1/analyzers/{family}: set a family's full config. `enabled`\ntoggles the opt-out flag; `params_hex` is an even-length hex string\n(an odd or non-hex value is a 400), or null to clear.",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "params_hex": {
+            "$ref": "#/components/schemas/Nullable_String"
+          }
+        },
+        "required": [
+          "enabled",
+          "params_hex"
+        ],
+        "type": "object"
+      },
+      "AnalyzerInfo": {
+        "description": "One family's enable state and opaque params. `params_hex` is the\nanalyzer-owned params (D60: the analyzer defines the encoding),\nlowercase hex; null when unset.",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "family": {
+            "type": "string"
+          },
+          "params_hex": {
+            "$ref": "#/components/schemas/Nullable_String"
+          }
+        },
+        "required": [
+          "family",
+          "enabled",
+          "params_hex"
+        ],
+        "type": "object"
+      },
+      "AnalyzersResponse": {
+        "description": "The shipped analyzer families and their per-family config — the same\ndata the CLI's `analyzer list` prints (owner-only).",
+        "properties": {
+          "analyzers": {
+            "items": {
+              "$ref": "#/components/schemas/AnalyzerInfo"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "analyzers"
+        ],
+        "type": "object"
+      },
       "ApiError": {
         "description": "Every /v1 error body: `{\"error\": \"<message>\", \"code\": \"<code>\"}`.",
         "properties": {
@@ -2765,6 +2816,115 @@
         "summary": "Users with grants and live-session counts, plus pending invites.",
         "tags": [
           "admin"
+        ]
+      }
+    },
+    "/v1/analyzers": {
+      "get": {
+        "operationId": "analyzers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyzersResponse"
+                }
+              }
+            },
+            "description": "Analyzer families with config"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "The shipped analyzer families and their per-family config.",
+        "tags": [
+          "analyzers"
+        ]
+      }
+    },
+    "/v1/analyzers/{family}": {
+      "put": {
+        "operationId": "analyzer_config",
+        "parameters": [
+          {
+            "description": "Analyzer family name",
+            "in": "path",
+            "name": "family",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalyzerConfigRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyzerInfo"
+                }
+              }
+            },
+            "description": "Updated family config"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Unknown family or malformed params hex"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Set one family's enable state and opaque params (idempotent).",
+        "tags": [
+          "analyzers"
         ]
       }
     },

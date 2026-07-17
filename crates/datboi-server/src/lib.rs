@@ -11,6 +11,7 @@
 //! immutably.
 
 mod admin;
+mod analyzers;
 mod api;
 pub mod auth;
 mod compress;

@@ -919,9 +919,11 @@ pub fn sweep(
     })
 }
 
-/// The shipped analyzer families (D60 config keys). Adding an analyzer
-/// is adding a row here + a `family()` on its impl.
-const ANALYZER_FAMILIES: &[&str] = &["noop", "chunk", "preflate", "ecm", "nds"];
+/// The shipped analyzer families (D60 config keys) live in
+/// `datboi_ingest::refine::FAMILIES` — one source shared with the
+/// daemon's `/v1/analyzers` surface (D96). Adding an analyzer is adding
+/// a row there + a `family()` on its impl.
+use datboi_ingest::refine::FAMILIES as ANALYZER_FAMILIES;
 
 fn require_family(name: &str) -> anyhow::Result<&str> {
     ANALYZER_FAMILIES

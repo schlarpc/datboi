@@ -72,6 +72,8 @@ fn v1() -> V1Routes {
             axum::routing::post(ingest::upload).layer(DefaultBodyLimit::disable()),
         )
         .post("/v1/ingest", ingest::start)
+        .get("/v1/analyzers", crate::analyzers::list)
+        .put("/v1/analyzers/{family}", crate::analyzers::config)
         .get("/v1/view-profiles", api::view_profiles)
         .get("/v1/views", api::views)
         .put("/v1/views/{name}", crate::views::define)

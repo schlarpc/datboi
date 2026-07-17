@@ -22,7 +22,8 @@ use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder
 use utoipa::{Modify, OpenApi, ToSchema};
 
 use crate::{
-    AdminUsersResponse, ApiError, BlobDetail, BlobsPage, DatImportResponse, EntriesPage,
+    AdminUsersResponse, AnalyzerConfigRequest, AnalyzerInfo, AnalyzersResponse, ApiError,
+    BlobDetail, BlobsPage, DatImportResponse, EntriesPage,
     EntryDetail, EntryState, GcApplyRequest, GcApplyResponse, GcKeepRequest, GrantAddRequest,
     IngestRequest, IngestStartResponse, InviteAcceptRequest, InviteMintRequest, InviteMintResponse,
     JobDetail, JobStartResponse, JobsResponse, LoginRequest, OkResponse, OrphansResponse,
@@ -256,6 +257,37 @@ fn view_eval() {}
     ),
 )]
 fn view_mint() {}
+
+// ---- analyzer config (owner-only, D60/D96) ----
+
+/// The shipped analyzer families and their per-family config.
+#[utoipa::path(
+    get,
+    path = "/v1/analyzers",
+    tag = "analyzers",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    responses(
+        (status = 200, description = "Analyzer families with config", body = AnalyzersResponse),
+        (status = 403, description = "Owner only", body = ApiError),
+    ),
+)]
+fn analyzers() {}
+
+/// Set one family's enable state and opaque params (idempotent).
+#[utoipa::path(
+    put,
+    path = "/v1/analyzers/{family}",
+    tag = "analyzers",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    params(("family" = String, Path, description = "Analyzer family name")),
+    request_body = AnalyzerConfigRequest,
+    responses(
+        (status = 200, description = "Updated family config", body = AnalyzerInfo),
+        (status = 400, description = "Unknown family or malformed params hex", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+    ),
+)]
+fn analyzer_config() {}
 
 // ---- views (the friend surface: ACL-filtered, misses look alike) ----
 
@@ -712,6 +744,8 @@ fn gc_apply() {}
         dat_import,
         ingest_upload,
         ingest_start,
+        analyzers,
+        analyzer_config,
         view_profiles,
         view_define,
         view_eval,

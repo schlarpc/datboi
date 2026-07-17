@@ -568,6 +568,34 @@ pub struct ImageStatus {
     pub bytes: Option<Nullable<u64>>,
 }
 
+// ---- analyzer config (D60/D96): GET /v1/analyzers, PUT /v1/analyzers/{family} ----
+
+/// The shipped analyzer families and their per-family config — the same
+/// data the CLI's `analyzer list` prints (owner-only).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AnalyzersResponse {
+    pub analyzers: Vec<AnalyzerInfo>,
+}
+
+/// One family's enable state and opaque params. `params_hex` is the
+/// analyzer-owned params (D60: the analyzer defines the encoding),
+/// lowercase hex; null when unset.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AnalyzerInfo {
+    pub family: String,
+    pub enabled: bool,
+    pub params_hex: Nullable<String>,
+}
+
+/// PUT /v1/analyzers/{family}: set a family's full config. `enabled`
+/// toggles the opt-out flag; `params_hex` is an even-length hex string
+/// (an odd or non-hex value is a 400), or null to clear.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AnalyzerConfigRequest {
+    pub enabled: bool,
+    pub params_hex: Nullable<String>,
+}
+
 // ---- GET /v1/views/{name}/files ----
 
 /// A page of the view's CURRENT snapshot manifest — the friend browse
