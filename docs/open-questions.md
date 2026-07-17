@@ -571,10 +571,10 @@ D97 left to the build:
 - ~~**Workspace/nix integration.**~~ DONE (D97 amendment 3, 2026-07-17):
   `datboi-p2p` is a workspace member and daemon subsystem; iroh joined the
   host lockfile + hermetic build deliberately (it is core). The exclusion
-  was spike scaffolding, NOT the wasm-component fate. Watch item: the
-  `nix build .#datboi` sandbox now compiles iroh's crypto crates
-  (ring/aws-lc); if that needs extra native build inputs it's a flake
-  tweak, not a design question.
+  was spike scaffolding, NOT the wasm-component fate. `nix build .#datboi`
+  with iroh in-graph VERIFIED green (2026-07-17) — iroh's crypto crates
+  (ring/aws-lc) compiled in the sandbox with no flake changes; the hermetic
+  binary carries `--p2p`.
 - **Operator surface.** `datboi share` / `fetch` and the web equivalents,
   per D96 (serve+web is the complete surface). `available-from-peer(X)`
   (D34/D39) is the completeness state the friend surface already anticipates.
