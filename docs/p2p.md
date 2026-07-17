@@ -151,10 +151,47 @@ dedup-aware transfer that a per-hash blob protocol structurally can't
 express. This is the headline reason M6 is *ours* and not just a
 dependency bump.
 
-*Open (see open-questions):* which reconciliation algorithm; whether to
-reconcile against a peer's advertised piece inventory (privacy: reveals
-holdings) or against a specific want-target's piece manifest (leaks less);
-how piece manifests ride the D34 channel.
+*Ruled 2026-07-17 as D100 (next section):* the algorithm is rateless
+IBLT (our port); the set is the affine-RECIPE set, which dissolves the
+inventory-vs-manifest privacy question into asymmetric reveal. How
+manifests ride the D34 channel remains open with the channels work.
+
+### Reconciliation: the recon ALPN (D100)
+
+A second `ProtocolHandler` on `datboi/recon/1` beside the blobs seedbox.
+The design inverted one working assumption: the reconciled set is the
+**affine recipe set** (meta-blob hashes of non-Failed builtin
+`assemble@1` rows), not the piece set. Recipes run ~1 per container vs
+hundreds of pieces; once the initiator holds a peer's recipe, its missing
+pieces are a *local* closure walk (recipe inputs ∉ my grounded set,
+recursing through usable local routes). Reconcile the plans; the parts
+follow by local math. The fetched diff is still the D91 pieces.
+
+- **Codec**: `datboi_p2p::riblt` — our `[u8;32]`-specialized port of the
+  SIGCOMM 2024 reference Go implementation (no viable Rust crate exists),
+  SipHash-2-4 keyed checksum, streaming decoder. Differential-tested
+  byte-for-byte against committed golden vectors from the vendored Go
+  reference.
+- **Roles**: the responder streams coded symbols of its scope (a
+  stateless incremental stream); the initiator decodes against a local
+  prior that never crosses the wire and sends a stop byte when decoded.
+  Privacy is this asymmetry: the answering party is the consenting party;
+  the initiator reveals only the scope request and a diff-size bound.
+- **Wire**: request = 1-byte scope tag; response = `u64 LE` responder set
+  size, then 48-byte coded symbols (32 XOR-sum ‖ 8 SipHash-sum LE ‖
+  8 count i64 LE) in batches, stop-checked, capped responder-side.
+- **Sync flow** (`datboi_p2p::sync`): reconcile recipes → fetch missing
+  recipe blobs over the blobs ALPN (CasProvider serves Meta too; bytes
+  verify against their own hash) → `index_recipe` as `source=Peer`, born
+  `Pending` (D4/D8 lazy-verify: grounds nothing until replayed, poisons
+  itself at rebuild if lying) → local closure walk → fetch missing leaves
+  into iroh staging (D98), import `put_with_obao` → wants materialize
+  through the executor (Pending→ReplayedLocal on verified replay). Empty
+  want-list = mirror mode (fetch the whole diff, explicit never default).
+- **Savings are first-class output** (the D97 observability requirement):
+  named numeric tracing fields — set sizes, symbols received, overhead
+  ratio vs the ~d minimum, pieces/bytes fetched vs bytes rebuilt,
+  savings pct — INFO summaries, DEBUG per-piece verdicts (D81).
 
 ### Receiving: iroh stages partials, our CAS ingests completions (D98)
 
@@ -213,8 +250,7 @@ and `datboi serve --p2p` spawns the seedbox under the derived iroh key
 (D99). It was an *excluded spike* only so the churny iroh tree wouldn't
 touch the host lockfile before the design settled — never a permanent
 standalone like the wasm components (those never link into the daemon;
-this always does). **Designed, not built:** streaming instead of
-whole-blob buffering (the fsm/async encoder over `open_stream` + spill,
-for 4 GB ROMs), hash-seq requests, the receive/fetch path (D98), piece-set
-reconciliation, the opt-in swarm tiers, and a `datboi share` / `fetch`
-operator surface + web home (D96).
+this always does). **Designed, not built:** hash-seq requests, the opt-in swarm tiers, and
+a `datboi share` / `fetch` operator surface + web home (D96). Streaming
+landed 2026-07-17 (bounded-memory, D97 amendment 4); reconciliation ruled
+2026-07-17 as **D100** (previous section).

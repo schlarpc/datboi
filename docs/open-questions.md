@@ -517,17 +517,20 @@ between two instances; **D97** ratified the posture (stack, obao reuse,
 our-handler-over-logical-CAS, dedup-aware transfer, opt-in swarm). What
 D97 left to the build:
 
-- **Reconciliation algorithm.** Rateless IBLT (one-round, near-optimal,
-  adversary-robust; the "set sketch") vs Willow-style range-based
-  reconciliation (multi-round, simpler, already in the iroh ecosystem).
-  Decide against the real piece-count distributions once the handler
-  exists — a MAME-scale piece corpus is a different regime than a
-  variant-pair diff of 8.
-- **Piece-manifest privacy.** Reconciling against a peer's *advertised*
-  piece inventory reveals holdings; reconciling against a *want-target's*
-  piece manifest (the strict-view fetch-list shape, D57) leaks less.
-  Likely: manifests ride the D34 channel, want-lists drive fetch. Needs a
-  privacy pass before public swarms.
+- ~~**Reconciliation algorithm.**~~ RULED 2026-07-17 as **D100**:
+  rateless IBLT, our own differential-tested port of the Go reference —
+  and the reconciled set is the affine-RECIPE set, not the piece set
+  (recipes ~1/container; missing pieces then fall out of a local closure
+  walk). Range-based reconciliation stays the named fallback behind the
+  protocol's scope tag if real corpora embarrass the ~1.35×d constant.
+- **Piece-manifest privacy.** Largely dissolved by D100's asymmetric
+  reveal (the responder streams its scope; the initiator's set never
+  crosses the wire — the answering party is the consenting party). Still
+  open: an explicit **recon ACL before any discovery/advertisement tier**
+  (today the recon ALPN reveals the recipe inventory to anyone holding
+  the unlisted EndpointId — capability-addressed friends plane, fine
+  behind `--p2p` opt-in, not fine once announced); and how manifests ride
+  the D34 channel (with the channels work).
 - **Savings observability (raised 2026-07-17).** Every part-derived
   transfer — reconciliation, but also any recipe-graph fetch where we
   reconstruct locally instead of pulling bytes — MUST make the win legible,

@@ -2565,3 +2565,89 @@ snapshot signer while only iroh derives (smaller change, but leaves one key
 doing signer + KDF-seed duty — under a stated fear of confusion, the clean
 "root signs nothing" invariant is worth the golden churn, free pre-corpus);
 keeping the secret in `state.db` (lost on the recovery it must outlive).
+
+## D100 — Reconciliation: reconcile the plans, fetch the parts; the rateless IBLT is ours (2026-07-17)
+
+The D97 dedup-aware transfer lands as a second `ProtocolHandler` on a
+datboi ALPN (`datboi/recon/1`) beside the blobs seedbox. Four rulings.
+
+**The reconciled set is the RECIPE set, not the piece set.** The design
+pass overturned the working title: v1's one scope is the meta-blob hashes
+of non-Failed builtin `assemble@1` rows (the D63/D91 affine class — the
+recipes decomposition mints). Reconciling pieces directly is strictly
+dominated: recipes run ~1 per container vs ~10²–10³ pieces per container,
+and once the initiator holds a peer's recipe, its missing pieces are a
+LOCAL closure walk (inputs ∉ my grounded set, recursing through usable
+local routes) — no second exchange. The fetched diff is still the D91
+pieces; the reconciled set is the plans that name them. Recipes crossing
+the trust boundary is not new surface — it is D8's "recipe claims from
+friends" made concrete, and `index_recipe` already models it
+(referenced-but-missing Absent rows, `RecipeSource::Peer`). Whole-ROM
+holdings stay the D34 channel's coarser layer.
+
+**Algorithm: rateless IBLT (SIGCOMM 2024), our own port.** Research
+settled that no viable Rust implementation exists (the lone crate is an
+O(d²) PoC), so `datboi_p2p::riblt` is a ~500-LOC port of the reference Go
+implementation: `[u8;32]`-specialized symbols, SipHash-2-4 keyed checksum
+(fixed protocol constants), the mapping-heap coding window, and the
+streaming decoder with its decodable queue. The correctness proof is
+DIFFERENTIAL: the Go reference (vendored, MIT) plus a generator produce
+committed golden vectors — encoder output checked byte-for-byte, decoder
+cases checked for exact diff recovery and symbol count — so our port is
+pinned to the paper's artifact, not to our reading of it. Why not
+range-based (Willow-style): multi-round refinement pays relay-path RTTs
+per level and O(d·log n) comms, and needs an ordered domain; rateless
+IBLT is one round, ~1.35×d symbols independent of corpus size from d=1
+to millions, no tuning, adversary-robust via the keyed checksum — and the
+responder is a stateless incremental stream ("send until told to stop"),
+which is exactly QUIC's shape. The codec sits behind a 1-byte scope tag;
+if real corpora ever embarrass the constant, swapping algorithms is a
+protocol rev, not an architecture change.
+
+**Asymmetric reveal is the privacy design.** The responder streams coded
+symbols of ITS scope; the initiator decodes against a local prior that
+NEVER crosses the wire and reveals only the scope request plus a stop
+signal (a bound on the diff size). So reconciliation exposes the
+responder's recipe inventory and nothing of the initiator's — the
+open-questions manifest-privacy worry lands as: the party that answers is
+the party that consents. Acceptable today because the recon ALPN sits
+behind the `--p2p` opt-in and an unlisted EndpointId (knowing it is the
+capability, the D8 friends plane); an explicit ACL is owed before any
+discovery/advertisement tier ever turns on (open-questions, with the
+swarm tiers).
+
+**Flow, wire, and observability.** Wire: request = 1-byte scope tag;
+response = `u64 LE` set size then a stream of 48-byte coded symbols
+(32 XOR-sum ‖ 8 SipHash-sum LE ‖ 8 count i64 LE), batched, responder
+checking for the initiator's stop byte between batches, with a
+responder-side symbol cap against drain — hand-rolled fixed binary (D19
+register; a fixed-width symbol stream gains nothing from CBOR). Sync
+flow: reconcile recipes → fetch missing recipe blobs over the blobs ALPN
+(CasProvider learns to serve Meta; bytes verify against their own hash) →
+`index_recipe` as `source=Peer`, born `Pending` — the D4/D8 lazy-verify
+posture: Pending grounds nothing for audit or eviction (conservative by
+construction; audit visibility for never-rebuilt claims is D34
+available-from-peer territory, not a grounding hack), a lying recipe
+wastes replay CPU and poisons itself at rebuild, never bad bytes → local
+closure walk for missing leaves → fetch them as ordinary bao blobs into
+iroh staging (D98) and import (`put_with_obao`, Resident) → wants
+materialize through the executor (replay verifies, Pending→ReplayedLocal).
+An empty want-list is mirror mode (fetch the whole diff — the D34
+full-mirror subscriber policy, explicit never default). Savings
+observability ships with it, not after (the D97 requirement): named
+numeric tracing fields — reconcile summary (set sizes, symbols received,
+diff sizes, overhead ratio vs the ~d minimum, wire bytes) and sync
+summary (pieces/bytes fetched, recipes fetched, bytes rebuilt, bytes
+already held, savings pct), INFO at completion, DEBUG per piece (D81).
+
+*Rejected:* reconciling the piece set (dominated — larger set, no plan,
+same fetch); an existing Rust IBLT crate (none viable — O(d²) PoC, no
+proof); range-based reconciliation as v1 (kept as the named fallback
+behind the scope tag); a plain manifest-listing mode (an empty-prior
+decode costs only ~1.35–2× a plain listing — one code path until
+fresh-mirror traffic proves the constant matters); CBOR coded symbols
+(fixed-width stream, D19 register); blocking the friends plane on ACL
+machinery (the gate belongs on advertisement, not on capability-addressed
+friends); trusting peer recipes as `Verified` on arrival (grounding must
+not inflate on unreplayed claims — Pending is the honest state and the
+audit already has a vocabulary for the rest).
