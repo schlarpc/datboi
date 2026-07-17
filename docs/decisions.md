@@ -1998,6 +1998,17 @@ packing one piece just swaps one inode for another). The accepted cost
 is write amplification (chunks written loose, then re-read into the
 pack), paid on the niced maintenance thread; born-into-pack was
 rejected because it needs the whole set buffered or a second CDC pass.
+*Review (2026-07-16, M6 spike):* an outside-eye pass flagged two
+actionable reconsiderations — outboard-in-pack (a v2 footer section so
+outboard inodes are O(packs) not O(pieces), and packed-member outboards
+survive bare-NAS recovery; the eager-blessing amendment above removed the
+premise for keeping them loose) and a footer integrity check (the
+`(offset,len)` map is trusted at open, unlike a self-verifying loose
+filename) — plus three enduring watch-items (first-packer locality
+coupling, repack write-amplification under sharing, content-named-but-not-
+convergent packs). The unifying framing: position-independent member
+identity is the feature AND a two-part metadata bill. All recorded in
+open-questions.md § pack-format review.
 
 ## D92 — Analyzers consume the logical CAS (2026-07-15)
 

@@ -546,6 +546,78 @@ D97 left to the build:
   per D96 (serve+web is the complete surface). `available-from-peer(X)`
   (D34/D39) is the completeness state the friend surface already anticipates.
 
+## Flagged for ruling (raised 2026-07-16, pack-format review during the M6 spike)
+
+Outside-eye pass over the D91/D92 pack format. **Framing that unifies the
+findings**: a packed member's identity is a pure function of its own bytes
+from offset 0, *independent of where it sits in the pack*. That
+independence is the feature — it makes the pack a dumb byte arena, lets a
+piece dedup across variants, and lets p2p ship a piece as a standalone blob
+(D97/D98). It is also a two-part bill: two things a loose file gets for free
+(`path == blake3(bytes)` fuses locate-and-verify) become explicit metadata
+the pack must store and protect — **where** the bytes are (a non-self-
+verifying `(offset,len)` map) and **how to verify** them (a per-member tree
+that cannot be derived from the pack's own tree).
+
+- **Outboard-in-pack (pack format v2).** Packed pieces > 16 KiB currently
+  keep individual LOOSE `.obao4` sidecars (swap-blessed, `swap.rs`), so
+  outboard inodes are O(pieces) — undercutting D91's O(packs) inode goal —
+  and bare-NAS recovery doesn't rebuild them (`scan_packs` reads footers
+  only), leaving the lazy `ensure_obao` backstop. The original "no obao at
+  pack time" rejection assumed LAZY blessing; the D91 same-day amendment
+  made blessing EAGER (right after `put_pack`), which removes that premise.
+  Proposal: a v2 footer carries a per-member obao `(offset,len)` into an
+  outboard SECTION of the pack, making inode cost truly O(packs) AND letting
+  packed-member outboards survive recovery (kills the backstop). NOT a
+  whole-pack sidecar: blake3 is position-dependent (chunk counter + root
+  finalization), so `obao(pack)` contains no subtree equal to
+  `obao(member)` — even 16 KiB-aligning members wouldn't help — so the
+  section stores N member-rooted trees, keyed by the footer. Scope: only
+  helps > 16 KiB pieces (small pieces have no outboard at all — absence IS
+  the empty sidecar, no file, so no sentinel inode). Decide the footer body
+  encoding at the same time (hand-rolled fixed 48-byte rows vs a CBOR body:
+  CBOR buys forward-compatible field-adds — exactly this new obao field —
+  but the `[u64 len][magic]` trailer stays hand-rolled either way since
+  CBOR isn't seekable-from-end; CBOR is otherwise scoped to content-
+  addressed structured objects (D18/D89), and the footer sits in the store-
+  layout layer where fixed binary is the house style, D19).
+- **Footer integrity.** `parse_footer` bounds-checks member offsets but
+  verifies nothing cryptographically at open; a parseable-but-WRONG footer
+  (a plausible bad offset) mis-slices a member and serves wrong bytes
+  through the D4 plain-read path until a scrub or a verified read catches
+  it. A loose blob cannot have this failure (its filename IS the content
+  hash; a mis-named file just fails to resolve) — packs introduce the
+  indirection, so they should carry its check. Proposal: a footer CRC or
+  member-table hash so open-time parse detects structural rot without a
+  full-pack rehash. Today's only backstop is ZFS + `scrub_pack`
+  (whole-file rehash).
+
+## Watch items (pack format, raised 2026-07-16)
+
+Enduring D91 properties, named so they aren't rediscovered as bugs — not
+slated for change:
+
+- **First-packer-wins couples read locality to acquisition order.**
+  "Coverage order = read order" holds only for a pack's OWN decomposition.
+  A borrowing variant (EUR reading 556 shared pieces out of USA's pack)
+  reads them in USA's order, not its own — sequential-ish but not ideal.
+  The first-packer gets perfect locality; every sharer gets degraded reads.
+  Fine for a variant pair (~2 packs); watch a base shared by many regional
+  variants.
+- **Repack write-amplification is worst where sharing is highest.**
+  Dropping a variant orphans only its unique pieces, but `repack` rewrites
+  ALL shared survivors into a fresh pack — up to ~64 MiB rewritten to
+  reclaim ~1.3 MiB. `repack` is the escape hatch, not the plan; a
+  waste-threshold policy (tolerate dead members until they exceed X% of a
+  pack) is the likely tuning and isn't designed yet.
+- **Packs are content-NAMED but not content-CONVERGENT.** Membership is
+  history-dependent (whoever first-packs a shared piece), so two instances
+  holding the same ROMs produce DIFFERENT pack files with different hashes.
+  Harmless because packs are LOCAL CACHE — never a p2p unit (D97/D98 ship
+  pieces, not packs) — but it makes the pack the one hash-named artifact in
+  the system that isn't reproducible across instances. Invariant to hold:
+  packs are local, never shared.
+
 ## Next sessions (pick up here)
 
 **Position as of 2026-07-16, M6 iroh spike (D97 — spike green, literal
