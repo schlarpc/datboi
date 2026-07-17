@@ -24,6 +24,10 @@ exclude = [
   # The emu lane (D84) is standalone AND nightly-only (dust-core);
   # it builds via `nix build .#emu-ds`, never with the workspace.
   "crates/datboi-emu-ds",
+  # M6 iroh spike (docs/p2p.md): the iroh dependency tree is heavy and
+  # 0.x-churny, so it keeps its own lockfile until M6 integration
+  # decides the store-fronting seam. Built with `cargo` in its dir.
+  "crates/datboi-p2p",
 ]
 
 [workspace.package]

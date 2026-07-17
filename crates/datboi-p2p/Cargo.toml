@@ -1,0 +1,35 @@
+# M6 spike (docs/p2p.md, roadmap M6). Standalone/excluded workspace like
+# the wasm components (see root Cargo.toml exclude list): the heavy iroh
+# dependency tree gets its OWN Cargo.lock and never churns the host
+# lockfile or `nix build .#datboi`. Iteration 1 is a LEAF — it proves the
+# two hard unknowns (two-instance verified exchange; our D52 obao is
+# iroh's obao) with external deps only. Fronting the real CAS is the
+# design-doc'd follow-up (a custom ProtocolHandler — iroh-blobs 0.103 has
+# no public store trait), and it graduates into the host workspace then.
+[package]
+name = "datboi-p2p"
+description = "M6 p2p spike: iroh-blobs transport over the datboi CAS"
+version = "0.1.0"
+edition = "2024"
+authors = ["Chaz Schlarp"]
+license = "MIT"
+repository = "https://github.com/schlarpc/datboi"
+
+[dependencies]
+# iroh 1.0 QUIC transport + endpoint identity (D8: the ed25519 instance
+# key doubles as the iroh SecretKey). 1.0.2 renamed NodeId→EndpointId.
+iroh = "1"
+# blake3 + bao verified streaming — the ready-made CAS wire protocol
+# aligned with our D2 addressing and D52 obao4 outboards.
+iroh-blobs = "0.103"
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+
+[dev-dependencies]
+# The block size iroh serves at, to build an outboard the same way our
+# store does and check it against the D52 golden.
+bao-tree = { version = "0.16", default-features = false }
+blake3 = "1"
+
+[lints.rust]
+unsafe_code = "warn"
