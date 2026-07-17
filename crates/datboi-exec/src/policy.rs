@@ -63,7 +63,15 @@ impl Watermark {
     }
 
     fn parse(raw: &[u8]) -> Option<Self> {
-        let text = std::str::from_utf8(raw).ok()?.trim();
+        std::str::from_utf8(raw).ok().and_then(Self::parse_str)
+    }
+
+    /// Parse a user-supplied watermark string: `"off"`, `"NN%"`, or
+    /// absolute bytes. The ONE parser both surfaces validate against
+    /// (D96) — the same acceptance the read side ([`Self::parse`]) uses.
+    #[must_use]
+    pub fn parse_str(text: &str) -> Option<Self> {
+        let text = text.trim();
         if text.eq_ignore_ascii_case("off") {
             return Some(Self::Off);
         }
@@ -71,6 +79,19 @@ impl Watermark {
             return pct.parse::<u8>().ok().filter(|p| *p <= 100).map(Self::Pct);
         }
         text.parse::<u64>().ok().map(Self::Bytes)
+    }
+}
+
+/// Canonical string form: `off` / `NN%` / absolute bytes. Round-trips
+/// through [`Watermark::parse_str`]; this is what the config surfaces
+/// render and store (not the `{:?}` debug shape).
+impl std::fmt::Display for Watermark {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Off => f.write_str("off"),
+            Self::Pct(pct) => write!(f, "{pct}%"),
+            Self::Bytes(bytes) => write!(f, "{bytes}"),
+        }
     }
 }
 
@@ -101,6 +122,34 @@ pub fn grace_secs(db: &Db) -> Result<i64, IndexError> {
         .config_get(KEY_GRACE_SECS)?
         .and_then(|v| std::str::from_utf8(&v).ok()?.trim().parse().ok())
         .unwrap_or(DEFAULT_GRACE_SECS))
+}
+
+/// Store the high-water watermark in canonical form. The write path both
+/// the CLI's `gc config` and the daemon's `/v1/gc/config` share (D96);
+/// callers pass an already-parsed [`Watermark`], so validation happened
+/// once, at the surface's parse.
+///
+/// # Errors
+/// Index I/O.
+pub fn set_high_water(db: &Db, wm: Watermark) -> Result<(), IndexError> {
+    db.config_set(KEY_HIGH_WATER, wm.to_string().as_bytes())
+}
+
+/// Store the low-water watermark in canonical form.
+///
+/// # Errors
+/// Index I/O.
+pub fn set_low_water(db: &Db, wm: Watermark) -> Result<(), IndexError> {
+    db.config_set(KEY_LOW_WATER, wm.to_string().as_bytes())
+}
+
+/// Store the GC grace window (seconds). Callers reject negatives at the
+/// surface; a stored negative would read back as itself and is nonsense.
+///
+/// # Errors
+/// Index I/O.
+pub fn set_grace_secs(db: &Db, secs: i64) -> Result<(), IndexError> {
+    db.config_set(KEY_GRACE_SECS, secs.to_string().as_bytes())
 }
 
 /// D91 swap phase armed? Ambient like the watermarks: the predicate,

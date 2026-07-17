@@ -93,6 +93,8 @@ fn v1() -> V1Routes {
         .get("/v1/gc/orphans", crate::gc::orphans)
         .post("/v1/gc/orphans/apply", crate::gc::apply)
         .post("/v1/gc/keep", crate::gc::keep)
+        .get("/v1/gc/config", crate::gc::config_get)
+        .put("/v1/gc/config", crate::gc::config_set)
         .get("/v1/admin/users", admin::users)
         .post("/v1/admin/invites", admin::invite_create)
         .delete("/v1/admin/invites/{token_hash}", admin::invite_delete)

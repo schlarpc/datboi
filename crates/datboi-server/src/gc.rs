@@ -18,18 +18,18 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
 use datboi_api::{
-    ErrorCode, GcApplyRequest, GcApplyResponse, GcKeepRequest, OkResponse, OrphanItem,
-    OrphansResponse,
+    ErrorCode, GcApplyRequest, GcApplyResponse, GcConfig, GcConfigRequest, GcKeepRequest,
+    OkResponse, OrphanItem, OrphansResponse,
 };
 use datboi_core::hash::Blake3;
-use datboi_exec::policy;
-use datboi_index::GuardHolder;
+use datboi_exec::policy::{self, Watermark};
+use datboi_index::{Db, GuardHolder};
 use datboi_store_fs::Namespace as StoreNs;
 
 use crate::App;
 use crate::api::{err, require_owner};
 use crate::auth::{Caller, now_unix};
-use crate::http::{json_response, run_blocking};
+use crate::http::{ApiJson, json_response, run_blocking};
 use crate::maintain::claim_guard;
 
 fn internal(e: impl std::fmt::Display) -> Response {
@@ -248,4 +248,76 @@ pub(crate) async fn apply(
         Ok(json_response(StatusCode::OK, &response))
     })
     .await
+}
+
+// ---- GET /v1/gc/config ----
+
+pub(crate) async fn config_get(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+) -> Response {
+    run_blocking(move || {
+        require_owner(&caller)?;
+        let db = app.readers.get();
+        Ok(json_response(StatusCode::OK, &read_config(&db)?))
+    })
+    .await
+}
+
+// ---- PUT /v1/gc/config ----
+
+pub(crate) async fn config_set(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+    ApiJson(req): ApiJson<GcConfigRequest>,
+) -> Response {
+    run_blocking(move || {
+        require_owner(&caller)?;
+        // Validate every provided field BEFORE any write, so a bad value
+        // leaves the whole policy untouched (all-or-nothing). Watermarks
+        // parse through the shared policy parser (D96).
+        let high = parse_watermark(req.high_water.as_deref(), "high_water")?;
+        let low = parse_watermark(req.low_water.as_deref(), "low_water")?;
+        if req.grace_secs.is_some_and(|g| g < 0) {
+            return Err(err(ErrorCode::BadRequest, "grace_secs must be non-negative"));
+        }
+        let db = app
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(wm) = high {
+            policy::set_high_water(&db, wm).map_err(internal)?;
+        }
+        if let Some(wm) = low {
+            policy::set_low_water(&db, wm).map_err(internal)?;
+        }
+        if let Some(grace) = req.grace_secs {
+            policy::set_grace_secs(&db, grace).map_err(internal)?;
+        }
+        Ok(json_response(StatusCode::OK, &read_config(&db)?))
+    })
+    .await
+}
+
+/// Parse an optional watermark string, mapping a malformed value to the
+/// typed 400 (the `field` names which one for the message).
+fn parse_watermark(value: Option<&str>, field: &str) -> Result<Option<Watermark>, Response> {
+    match value {
+        Some(text) => Watermark::parse_str(text).map(Some).ok_or_else(|| {
+            err(
+                ErrorCode::BadRequest,
+                &format!("{field}: expected \"off\", \"NN%\", or absolute bytes"),
+            )
+        }),
+        None => Ok(None),
+    }
+}
+
+/// The current policy in canonical wire form (watermarks as strings).
+fn read_config(db: &Db) -> Result<GcConfig, Response> {
+    Ok(GcConfig {
+        high_water: policy::high_water(db).map_err(internal)?.to_string(),
+        low_water: policy::low_water(db).map_err(internal)?.to_string(),
+        grace_secs: policy::grace_secs(db).map_err(internal)?,
+    })
 }

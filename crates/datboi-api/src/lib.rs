@@ -1056,6 +1056,29 @@ pub struct GcApplyResponse {
     pub skipped: u64,
 }
 
+// ---- GC policy (D72/D73/D96): GET + PUT /v1/gc/config ----
+
+/// The eviction/GC policy: high/low watermarks (canonical `off` / `NN%`
+/// / absolute-bytes strings) and the orphan grace window in seconds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct GcConfig {
+    pub high_water: String,
+    pub low_water: String,
+    pub grace_secs: i64,
+}
+
+/// PUT /v1/gc/config: set any subset of the policy. Each omitted field
+/// is left unchanged; a malformed watermark or negative grace is a 400.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct GcConfigRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub high_water: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub low_water: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grace_secs: Option<i64>,
+}
+
 /// One dat entry an ingest job newly satisfied — the user-vocabulary
 /// half of the report (games, not blob counts).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

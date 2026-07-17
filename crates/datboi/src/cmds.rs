@@ -798,29 +798,24 @@ pub fn gc_config(
     grace_secs: Option<i64>,
     json: bool,
 ) -> anyhow::Result<ExitCode> {
-    use datboi_exec::policy;
-    for (key, value) in [
-        (policy::KEY_HIGH_WATER, high_water),
-        (policy::KEY_LOW_WATER, low_water),
-    ] {
+    use datboi_exec::policy::{self, Watermark};
+    // Validate + store through the shared parser/setters (D96): the same
+    // acceptance and canonical form the daemon's /v1/gc/config uses.
+    type Setter = fn(&datboi_index::Db, Watermark) -> Result<(), datboi_index::IndexError>;
+    let setters: [(Option<&str>, Setter); 2] = [
+        (high_water, policy::set_high_water as Setter),
+        (low_water, policy::set_low_water as Setter),
+    ];
+    for (value, set) in setters {
         if let Some(value) = value {
-            // Validate on write (the read side falls back to defaults
-            // rather than obeying a typo).
-            anyhow::ensure!(
-                value.eq_ignore_ascii_case("off")
-                    || value
-                        .strip_suffix('%')
-                        .is_some_and(|p| p.parse::<u8>().is_ok_and(|n| n <= 100))
-                    || value.parse::<u64>().is_ok(),
-                "{value:?}: expected \"off\", \"NN%\", or absolute bytes"
-            );
-            env.db.config_set(key, value.as_bytes())?;
+            let wm = Watermark::parse_str(value)
+                .with_context(|| format!("{value:?}: expected \"off\", \"NN%\", or absolute bytes"))?;
+            set(&env.db, wm)?;
         }
     }
     if let Some(grace) = grace_secs {
         anyhow::ensure!(grace >= 0, "grace must be non-negative");
-        env.db
-            .config_set(policy::KEY_GRACE_SECS, grace.to_string().as_bytes())?;
+        policy::set_grace_secs(&env.db, grace)?;
     }
     let (high, low, grace) = (
         policy::high_water(&env.db)?,
@@ -830,10 +825,10 @@ pub fn gc_config(
     if json {
         println!(
             "{}",
-            json!({"high_water": format!("{high:?}"), "low_water": format!("{low:?}"), "grace_secs": grace})
+            json!({"high_water": high.to_string(), "low_water": low.to_string(), "grace_secs": grace})
         );
     } else {
-        println!("high-water: {high:?}\nlow-water:  {low:?}\ngrace:      {grace}s");
+        println!("high-water: {high}\nlow-water:  {low}\ngrace:      {grace}s");
     }
     Ok(ExitCode::SUCCESS)
 }

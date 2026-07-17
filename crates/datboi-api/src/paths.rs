@@ -24,7 +24,8 @@ use utoipa::{Modify, OpenApi, ToSchema};
 use crate::{
     AdminUsersResponse, AnalyzerConfigRequest, AnalyzerInfo, AnalyzersResponse, ApiError,
     BlobDetail, BlobsPage, DatImportResponse, EntriesPage,
-    EntryDetail, EntryState, GcApplyRequest, GcApplyResponse, GcKeepRequest, GrantAddRequest,
+    EntryDetail, EntryState, GcApplyRequest, GcApplyResponse, GcConfig, GcConfigRequest,
+    GcKeepRequest, GrantAddRequest,
     IngestRequest, IngestStartResponse, InviteAcceptRequest, InviteMintRequest, InviteMintResponse,
     JobDetail, JobStartResponse, JobsResponse, LoginRequest, OkResponse, OrphansResponse,
     ResidencyState,
@@ -723,6 +724,34 @@ fn gc_keep() {}
 )]
 fn gc_apply() {}
 
+/// Read the eviction/GC policy (owner-only).
+#[utoipa::path(
+    get,
+    path = "/v1/gc/config",
+    tag = "gc",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    responses(
+        (status = 200, description = "Current GC policy", body = GcConfig),
+        (status = 403, description = "Owner only", body = ApiError),
+    ),
+)]
+fn gc_config_get() {}
+
+/// Set any subset of the eviction/GC policy (owner-only).
+#[utoipa::path(
+    put,
+    path = "/v1/gc/config",
+    tag = "gc",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    request_body = GcConfigRequest,
+    responses(
+        (status = 200, description = "Updated GC policy", body = GcConfig),
+        (status = 400, description = "Malformed watermark or negative grace", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+    ),
+)]
+fn gc_config_set() {}
+
 #[derive(OpenApi)]
 #[openapi(
 
@@ -771,6 +800,8 @@ fn gc_apply() {}
         gc_orphans,
         gc_keep,
         gc_apply,
+        gc_config_get,
+        gc_config_set,
     ),
     modifiers(&SecurityAddon),
 )]

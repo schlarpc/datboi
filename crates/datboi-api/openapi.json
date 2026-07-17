@@ -742,6 +742,52 @@
         ],
         "type": "object"
       },
+      "GcConfig": {
+        "description": "The eviction/GC policy: high/low watermarks (canonical `off` / `NN%`\n/ absolute-bytes strings) and the orphan grace window in seconds.",
+        "properties": {
+          "grace_secs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "high_water": {
+            "type": "string"
+          },
+          "low_water": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "high_water",
+          "low_water",
+          "grace_secs"
+        ],
+        "type": "object"
+      },
+      "GcConfigRequest": {
+        "description": "PUT /v1/gc/config: set any subset of the policy. Each omitted field\nis left unchanged; a malformed watermark or negative grace is a 400.",
+        "properties": {
+          "grace_secs": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "high_water": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "low_water": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "GcKeepRequest": {
         "description": "Set or clear a keep-mark (\"this is not junk\").",
         "properties": {
@@ -3482,6 +3528,102 @@
         "summary": "Import a dat file — the same operation as `datboi dat import`. The\nbody is the raw dat bytes in any supported format (Logiqx,\nClrMamePro, RomCenter, MAME XML / software list); format detection\nand the provider/system defaults come from the bytes themselves.",
         "tags": [
           "systems"
+        ]
+      }
+    },
+    "/v1/gc/config": {
+      "get": {
+        "operationId": "gc_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GcConfig"
+                }
+              }
+            },
+            "description": "Current GC policy"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Read the eviction/GC policy (owner-only).",
+        "tags": [
+          "gc"
+        ]
+      },
+      "put": {
+        "operationId": "gc_config_set",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GcConfigRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GcConfig"
+                }
+              }
+            },
+            "description": "Updated GC policy"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Malformed watermark or negative grace"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Set any subset of the eviction/GC policy (owner-only).",
+        "tags": [
+          "gc"
         ]
       }
     },
