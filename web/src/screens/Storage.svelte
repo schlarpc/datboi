@@ -15,7 +15,11 @@
    * - Orphans: the D73 review gate — list, keep, two-click apply.
    */
   import {
+    evict as startEvict,
+    evictPlan,
     gcApply,
+    gcConfig,
+    gcConfigSet,
     gcKeep,
     gcOrphans,
     scrub as startScrub,
@@ -23,13 +27,19 @@
     storage as fetchStorage,
     storageBreakdown,
   } from '../lib/api/client';
-  import type { OrphansBody, StorageBody, StorageBreakdownBody } from '../lib/api/types';
-  import CliHint from '../lib/components/CliHint.svelte';
+  import type {
+    EvictPlanBody,
+    GcConfigBody,
+    GcConfigParams,
+    OrphansBody,
+    StorageBody,
+    StorageBreakdownBody,
+  } from '../lib/api/types';
   import Link from '../lib/components/Link.svelte';
   import { fmtDate, fmtSize, shortHash } from '../lib/format';
   import { followJob, jobsSignal } from '../lib/jobs.svelte';
   import { residencyLabel } from '../lib/residency.svelte';
-  import { errorText, loading, settle, type Remote } from '../lib/remote';
+  import { errorText, loading, ready, settle, type Remote } from '../lib/remote';
   import LoadError from '../lib/components/LoadError.svelte';
 
   // Unmount stops any job-follow loop — the tray owns job visibility.
@@ -43,7 +53,8 @@
   let stats = $state<Remote<StorageBody>>(loading());
   let breakdown = $state<Remote<StorageBreakdownBody>>(loading());
   let orphans = $state<Remote<OrphansBody>>(loading());
-  let evictHint = $state(false);
+  let config = $state<Remote<GcConfigBody>>(loading());
+  const refreshConfig = () => settle(gcConfig(), (value) => (config = value));
 
   // Scrub runs as a background job (the corpus walk is long); the tray
   // carries the progress bar, and the last-run line refreshes when it
@@ -90,6 +101,97 @@
       (e: unknown) => {
         saving = false;
         savedNote = errorText(e);
+      },
+    );
+  };
+
+  // Eviction tuning (D72 watermarks) + a manual "reclaim now". Behind a
+  // "tune" toggle — automatic eviction is the default, so this stays
+  // quiet until the user goes looking (web-ui.md: management by exception).
+  let evictOpen = $state(false);
+  // Editable watermark/grace fields, seeded from config once it loads.
+  let highWater = $state('');
+  let lowWater = $state('');
+  let graceDays = $state('');
+  let seeded = false;
+  $effect(() => {
+    if (config.st === 'ready' && !seeded) {
+      seeded = true;
+      highWater = config.data.high_water;
+      lowWater = config.data.low_water;
+      graceDays = String(Math.round(config.data.grace_secs / 86_400));
+    }
+  });
+
+  let savingConfig = $state(false);
+  let configError = $state<string | null>(null);
+  let configSaved = $state(false);
+  const saveConfig = () => {
+    if (savingConfig) return;
+    savingConfig = true;
+    configError = null;
+    configSaved = false;
+    const grace = Number(graceDays);
+    const body: GcConfigParams = {
+      high_water: highWater.trim(),
+      low_water: lowWater.trim(),
+      grace_secs: Number.isFinite(grace) && graceDays.trim() !== '' ? Math.round(grace * 86_400) : null,
+    };
+    gcConfigSet(body).then(
+      (updated) => {
+        savingConfig = false;
+        configSaved = true;
+        config = ready(updated);
+      },
+      (e: unknown) => {
+        savingConfig = false;
+        configError = errorText(e);
+      },
+    );
+  };
+
+  // Manual reclaim: show the dry-run plan (everything rebuildable), then
+  // confirm the guarded drop. target 0 = evict every covered literal.
+  let plan = $state<EvictPlanBody | null>(null);
+  let planning = $state(false);
+  let evicting = $state(false);
+  let evictError = $state<string | null>(null);
+  const checkPlan = () => {
+    if (planning) return;
+    planning = true;
+    evictError = null;
+    plan = null;
+    evictPlan(0).then(
+      (p) => {
+        planning = false;
+        plan = p;
+      },
+      (e: unknown) => {
+        planning = false;
+        evictError = errorText(e);
+      },
+    );
+  };
+  const reclaimNow = () => {
+    if (evicting) return;
+    evicting = true;
+    evictError = null;
+    startEvict(0).then(
+      async (started) => {
+        jobsSignal.bump();
+        try {
+          await followJob(started.job, { alive: () => alive });
+        } catch {
+          // The tray still tracks it.
+        }
+        jobsSignal.bump();
+        evicting = false;
+        plan = null;
+        if (alive) refreshStats(); // bytes just left the disk
+      },
+      (e: unknown) => {
+        evicting = false;
+        evictError = errorText(e);
       },
     );
   };
@@ -162,6 +264,8 @@
   $effect(refreshStats);
 
   $effect(refreshOrphans);
+
+  $effect(refreshConfig);
 
   const reviewable = $derived(orphans.st !== 'ready' ? [] : orphans.data.orphans);
 
@@ -256,14 +360,75 @@
         <span class="maint-label"><!-- @wc-context: storage eviction -->Eviction</span>
         <!-- D72: watermark eviction is automatic and REVERSIBLE by
              construction — every drop has a locally-replayed rebuild
-             route. Tune or disarm via `datboi gc config`. -->
-        <span class="maint-copy">automatic at the watermark — drops only what's rebuildable</span>
-        <button class="pill" aria-expanded={evictHint} onclick={() => (evictHint = !evictHint)}>tune via CLI</button>
+             route. The panel tunes the watermarks or reclaims now. -->
+        <span class="maint-copy">
+          {#if config.st === 'ready' && config.data.high_water === 'off'}
+            disarmed — nothing is evicted automatically
+          {:else if config.st === 'ready'}
+            automatic at {config.data.high_water} — drops only what's rebuildable
+          {:else}
+            automatic at the watermark — drops only what's rebuildable
+          {/if}
+        </span>
+        <button class="pill" aria-expanded={evictOpen} onclick={() => (evictOpen = !evictOpen)}>
+          <!-- @wc-context: open the eviction settings panel -->tune
+        </button>
       </div>
-      {#if evictHint}
-        <CliHint command={'datboi gc config --high-water 90% --low-water 85%'}>
-          watermarks ("off" disarms); manual pass: datboi evict --dry-run:
-        </CliHint>
+      {#if evictOpen}
+        <div class="panel">
+          <div class="fields">
+            <label class="field">
+              <!-- @wc-context: disk-fullness threshold that starts eviction -->
+              <span class="field-label">start at</span>
+              <input class="field-input" bind:value={highWater} placeholder="90%" />
+            </label>
+            <label class="field">
+              <!-- @wc-context: disk-fullness threshold that stops eviction -->
+              <span class="field-label">down to</span>
+              <input class="field-input" bind:value={lowWater} placeholder="85%" />
+            </label>
+            <label class="field">
+              <!-- @wc-context: how long a new blob is protected from cleanup -->
+              <span class="field-label">grace (days)</span>
+              <input class="field-input" type="number" min="0" bind:value={graceDays} />
+            </label>
+            <button class="pill" disabled={savingConfig} onclick={saveConfig}>
+              {#if savingConfig}<!-- @wc-context: saving eviction settings -->saving…{:else}<!-- @wc-context: save eviction settings -->save{/if}
+            </button>
+          </div>
+          <p class="panel-hint">
+            thresholds take a percentage ("90%"), an absolute size, or "off" to disarm
+          </p>
+          {#if configSaved}
+            <p class="panel-ok">settings saved</p>
+          {/if}
+          {#if configError !== null}
+            <p class="panel-error">couldn't save — {configError}</p>
+          {/if}
+
+          <div class="reclaim">
+            {#if plan === null}
+              <button class="pill" disabled={planning || evicting} onclick={checkPlan}>
+                {#if planning}<!-- @wc-context: computing what can be freed -->checking…{:else}<!-- @wc-context: preview a manual space reclaim -->reclaim space now…{/if}
+              </button>
+            {:else if plan.evictable === 0}
+              <span class="panel-hint">nothing to reclaim — everything on disk is either needed or already rebuildable</span>
+            {:else}
+              <span class="panel-hint">
+                {plan.evictable.toLocaleString()} blob(s) · {fmtSize(plan.reclaimable_bytes)} can be freed and rebuilt on demand
+              </span>
+              <button class="pill" disabled={evicting} onclick={reclaimNow}>
+                {#if evicting}<!-- @wc-context: eviction running -->reclaiming…{:else}<!-- @wc-context: confirm the manual reclaim -->reclaim now{/if}
+              </button>
+              <button class="pill" disabled={evicting} onclick={() => (plan = null)}>
+                <!-- @wc-context: cancel the reclaim -->cancel
+              </button>
+            {/if}
+          </div>
+          {#if evictError !== null}
+            <p class="panel-error">{evictError}</p>
+          {/if}
+        </div>
       {/if}
       {#if s.quarantine.count === 0}
         <div class="maint-row">
@@ -537,6 +702,70 @@
 
   .row-error {
     color: var(--bad);
+  }
+
+  /* The eviction tuning panel: sits under its maint-row, inset to line
+     up past the label column. */
+  .panel {
+    padding: 4px 0 12px;
+    border-top: 1px dashed var(--hair);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .fields {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 12px;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .field-label {
+    font: 600 0.6875rem var(--font-data);
+    color: var(--faint);
+  }
+
+  .field-input {
+    width: 90px;
+    border: 1.5px solid var(--dim);
+    border-radius: var(--r-input);
+    padding: 4px 8px;
+    background: var(--panel);
+    font: 400 0.78125rem var(--font-data);
+    color: var(--text);
+  }
+
+  .panel-hint {
+    margin: 0;
+    font: 400 0.71875rem var(--font-data);
+    color: var(--faint);
+  }
+
+  .panel-ok {
+    margin: 0;
+    font: 400 0.71875rem var(--font-data);
+    color: var(--okT);
+  }
+
+  .panel-error {
+    margin: 0;
+    font: 400 0.71875rem var(--font-data);
+    color: var(--bad);
+  }
+
+  .reclaim {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    margin-top: 4px;
   }
 
   .cards {

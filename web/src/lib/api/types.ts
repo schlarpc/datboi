@@ -133,6 +133,14 @@ export type JobStarted = Schemas['JobStartResponse'];
 export type ScrubParams = Schemas['ScrubRequest'];
 /** POST /v1/snapshot receipt (synchronous mint). */
 export type SnapshotBody = Schemas['SnapshotResponse'];
+/** GET /v1/gc/config — watermarks (strings) + grace seconds. */
+export type GcConfigBody = Schemas['GcConfig'];
+/** PUT /v1/gc/config — any subset of the policy. */
+export type GcConfigParams = Schemas['GcConfigRequest'];
+/** POST /v1/evict body (target + license + dry_run). */
+export type EvictParams = Schemas['EvictRequest'];
+/** POST /v1/evict dry-run plan (what would drop). */
+export type EvictPlanBody = Schemas['EvictPlan'];
 
 // ---- /v1/admin/* ----
 

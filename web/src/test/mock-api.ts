@@ -17,6 +17,8 @@ import type {
   DatImportBody,
   EntryDetail,
   EntryRow,
+  EvictPlanBody,
+  GcConfigBody,
   Job,
   JobDetailBody,
   MintedInvite,
@@ -49,6 +51,12 @@ export interface MockUniverse {
   orphans?: OrphansBody;
   /** GET /v1/gc/orphans answers 500 — exercises the per-card error. */
   orphansFail?: boolean;
+  /** GET/PUT /v1/gc/config policy; PUT echoes the merged result. */
+  gcConfig?: GcConfigBody;
+  /** POST /v1/evict dry_run plan; defaults to nothing evictable. */
+  evictPlan?: EvictPlanBody;
+  /** POST /v1/evict (real) job id; defaults to 1. */
+  evictJob?: number;
   /** Entries pages with offset ≥ this answer 500 (0 = every page) —
    * exercises rows-only errors and the load-more rejection path. */
   entriesFailFromOffset?: number;
@@ -120,6 +128,18 @@ function json(status: number, body: unknown): Response {
     status,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+/** Read a request's JSON body — openapi-fetch sends a Request (body on
+ * it); the XHR-free paths may pass `init.body`. `{}` on anything unread. */
+async function readJsonBody(input: RequestInfo | URL, init?: RequestInit): Promise<unknown> {
+  try {
+    if (input instanceof Request) return await input.clone().json();
+    if (init?.body != null) return JSON.parse(String(init.body));
+  } catch {
+    // not JSON / no body
+  }
+  return {};
 }
 
 /** Derive a plausible detail body from a listing row (revision r1). */
@@ -264,6 +284,25 @@ export function installFetch(universe: MockUniverse) {
       }
       if (path === '/v1/gc/orphans/apply' && method === 'POST') {
         return json(200, { deleted: 0, bytes_reclaimed: 0, skipped: 0 });
+      }
+      const gcCfg = universe.gcConfig ?? { high_water: '90%', low_water: '85%', grace_secs: 86_400 };
+      if (path === '/v1/gc/config' && method === 'GET') {
+        return json(200, gcCfg);
+      }
+      if (path === '/v1/gc/config' && method === 'PUT') {
+        const body = (await readJsonBody(input, init)) as Partial<GcConfigBody>;
+        return json(200, {
+          high_water: body.high_water ?? gcCfg.high_water,
+          low_water: body.low_water ?? gcCfg.low_water,
+          grace_secs: body.grace_secs ?? gcCfg.grace_secs,
+        });
+      }
+      if (path === '/v1/evict' && method === 'POST') {
+        const body = (await readJsonBody(input, init)) as { dry_run?: boolean };
+        if (body.dry_run === true) {
+          return json(200, universe.evictPlan ?? { evictable: 0, reclaimable_bytes: 0, blocked: [] });
+        }
+        return json(202, { job: universe.evictJob ?? 1 });
       }
       if (path === '/v1/scrub' && method === 'POST') {
         return json(202, { job: universe.scrubJob ?? 1 });

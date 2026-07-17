@@ -28,7 +28,10 @@ import type {
   EntriesParams,
   EntryDetail,
   ErrorCode,
+  EvictPlanBody,
   GcApplyReport,
+  GcConfigBody,
+  GcConfigParams,
   IngestStarted,
   InviteAcceptParams,
   JobDetailBody,
@@ -288,6 +291,28 @@ export const gcKeep = async (hash: string, keep: boolean): Promise<OkBody> =>
 /** Absent hashes = every reviewable, non-kept candidate. */
 export const gcApply = async (hashes?: string[]): Promise<GcApplyReport> =>
   unwrap(await client.POST('/v1/gc/orphans/apply', { body: hashes ? { hashes } : {} }));
+
+/** GET /v1/gc/config — current watermark + grace policy. */
+export const gcConfig = async (): Promise<GcConfigBody> =>
+  unwrap(await client.GET('/v1/gc/config'));
+
+/** PUT /v1/gc/config — set any subset; answers the full updated policy. */
+export const gcConfigSet = async (body: GcConfigParams): Promise<GcConfigBody> =>
+  unwrap(await client.PUT('/v1/gc/config', { body }));
+
+/** POST /v1/evict dry_run — the D27 plan preview (what would drop at a
+ * target). The endpoint returns EvictPlan for dry_run; the cast pins
+ * that half of the 200|202 union. */
+export const evictPlan = async (targetBytes: number): Promise<EvictPlanBody> =>
+  unwrap(
+    await client.POST('/v1/evict', { body: { target_bytes: targetBytes, dry_run: true } }),
+  ) as EvictPlanBody;
+
+/** POST /v1/evict — the guarded real drop; poll the returned Gc job. */
+export const evict = async (targetBytes: number, license = false): Promise<JobStarted> =>
+  unwrap(
+    await client.POST('/v1/evict', { body: { target_bytes: targetBytes, license } }),
+  ) as JobStarted;
 
 // ---- maintenance (D96) ----
 

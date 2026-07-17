@@ -1081,16 +1081,14 @@ msgstr "WHERE THE BYTES LIVE"
 #~ msgid "{0}/{1} blobs <0/> <1/>"
 #~ msgstr "{0}/{1} blobs <0/> <1/>"
 
-#: src/screens/Storage.svelte
-msgid "watermarks (\"off\" disarms); manual pass: datboi evict --dry-run:"
-msgstr "watermarks (\"off\" disarms); manual pass: datboi evict --dry-run:"
+#~ msgid "watermarks (\"off\" disarms); manual pass: datboi evict --dry-run:"
+#~ msgstr "watermarks (\"off\" disarms); manual pass: datboi evict --dry-run:"
 
 #~ msgid "rebuildable literals evict automatically at the watermark — nothing unrecoverable is ever dropped"
 #~ msgstr "rebuildable literals evict automatically at the watermark — nothing unrecoverable is ever dropped"
 
-#: src/screens/Storage.svelte
-msgid "tune via CLI"
-msgstr "tune via CLI"
+#~ msgid "tune via CLI"
+#~ msgstr "tune via CLI"
 
 #: src/screens/Storage.svelte
 msgctxt "unreferenced blobs, not people"
@@ -1670,3 +1668,89 @@ msgstr "saving…"
 msgctxt "force a backup"
 msgid "save now"
 msgstr "save now"
+
+#: src/screens/Storage.svelte
+msgid "disarmed — nothing is evicted automatically"
+msgstr "disarmed — nothing is evicted automatically"
+
+#. 0: config.data.high_water
+#: src/screens/Storage.svelte
+msgid "automatic at {0} — drops only what's rebuildable"
+msgstr "automatic at {0} — drops only what's rebuildable"
+
+#: src/screens/Storage.svelte
+msgctxt "open the eviction settings panel"
+msgid "tune"
+msgstr "tune"
+
+#: src/screens/Storage.svelte
+msgctxt "disk-fullness threshold that starts eviction"
+msgid "start at"
+msgstr "start at"
+
+#: src/screens/Storage.svelte
+msgctxt "disk-fullness threshold that stops eviction"
+msgid "down to"
+msgstr "down to"
+
+#: src/screens/Storage.svelte
+msgctxt "how long a new blob is protected from cleanup"
+msgid "grace (days)"
+msgstr "grace (days)"
+
+#: src/screens/Storage.svelte
+msgctxt "saving eviction settings"
+msgid "saving…"
+msgstr "saving…"
+
+#: src/screens/Storage.svelte
+msgctxt "save eviction settings"
+msgid "save"
+msgstr "save"
+
+#: src/screens/Storage.svelte
+msgid "settings saved"
+msgstr "settings saved"
+
+#. 0: configError
+#: src/screens/Storage.svelte
+msgid "couldn't save — {0}"
+msgstr "couldn't save — {0}"
+
+#: src/screens/Storage.svelte
+msgctxt "computing what can be freed"
+msgid "checking…"
+msgstr "checking…"
+
+#: src/screens/Storage.svelte
+msgctxt "preview a manual space reclaim"
+msgid "reclaim space now…"
+msgstr "reclaim space now…"
+
+#: src/screens/Storage.svelte
+msgid "nothing to reclaim — everything on disk is either needed or already rebuildable"
+msgstr "nothing to reclaim — everything on disk is either needed or already rebuildable"
+
+#: src/screens/Storage.svelte
+msgctxt "eviction running"
+msgid "reclaiming…"
+msgstr "reclaiming…"
+
+#: src/screens/Storage.svelte
+msgctxt "confirm the manual reclaim"
+msgid "reclaim now"
+msgstr "reclaim now"
+
+#: src/screens/Storage.svelte
+msgctxt "cancel the reclaim"
+msgid "cancel"
+msgstr "cancel"
+
+#. 0: plan.evictable.toLocaleString(); 1: fmtSize(plan.reclaimable_bytes)
+#: src/screens/Storage.svelte
+msgid "{0} blob(s) · {1} can be freed and rebuilt on demand"
+msgstr "{0} blob(s) · {1} can be freed and rebuilt on demand"
+
+#: src/screens/Storage.svelte
+msgid "thresholds take a percentage (\"90%\"), an absolute size, or \"off\" to disarm"
+msgstr "thresholds take a percentage (\"90%\"), an absolute size, or \"off\" to disarm"

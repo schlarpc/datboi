@@ -167,15 +167,42 @@ test('scrub row runs a background job, then refreshes the last-run line', async 
   expect(await screen.findByText('running…')).toBeTruthy();
 });
 
-test('eviction maintenance row reveals a verified CLI hint', async () => {
-  installFetch({ storage: stats });
+test('eviction row shows the live watermark and opens the tuning panel', async () => {
+  installFetch({ storage: stats, gcConfig: { high_water: '92%', low_water: '80%', grace_secs: 172_800 } });
   render(Storage);
   await screen.findByText('BLOBS');
 
-  // D72: eviction is automatic and reversible; the row tunes, not plans.
-  expect(screen.getByText(/automatic at the watermark/)).toBeTruthy();
-  await fireEvent.click(screen.getByText('tune via CLI'));
-  expect(screen.getByText(/datboi gc config --high-water/)).toBeTruthy();
+  // The copy reads the live config, not a hard-coded watermark.
+  expect(await screen.findByText(/automatic at 92%/)).toBeTruthy();
+  await fireEvent.click(screen.getByText('tune'));
+  // The panel seeds its fields from the current policy.
+  expect((screen.getByPlaceholderText('90%') as HTMLInputElement).value).toBe('92%');
+  expect((screen.getByPlaceholderText('85%') as HTMLInputElement).value).toBe('80%');
+});
+
+test('manual reclaim previews the plan, then confirms the drop', async () => {
+  installFetch({
+    storage: stats,
+    evictPlan: { evictable: 12, reclaimable_bytes: 3 * GB, blocked: [] },
+    evictJob: 5,
+    jobTimeline: [
+      {
+        id: 5, name: 'evict — on demand', kind: 'gc', state: 'done', progress: 100, started_at: 1, finished_at: 2,
+        files_total: 0, files_done: 0, bytes_total: 0, bytes_done: 0,
+        current: null, report: { files_scanned: 0, files_unchanged: 0, files_stored: 0, files_already_present: 0, chd_v5: 0, members_claimed: 0, members_extracted: 0, detector_hits: 0, skipper_skipped_large: 0, dats_imported: [], errors: [], member_skips: [], notes: [] },
+        matched: [], matched_total: 0, error: null,
+      },
+    ],
+  });
+  render(Storage);
+  await screen.findByText('BLOBS');
+  await fireEvent.click(screen.getByText('tune'));
+
+  await fireEvent.click(screen.getByText('reclaim space now…'));
+  // The dry-run plan surfaces what would be freed before any drop.
+  expect(await screen.findByText(/12 blob\(s\) · 3.0 GB can be freed/)).toBeTruthy();
+  await fireEvent.click(screen.getByText('reclaim now'));
+  expect(await screen.findByText('reclaiming…')).toBeTruthy();
 });
 
 test('backup row saves a restore point', async () => {
