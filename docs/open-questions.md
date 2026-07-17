@@ -512,8 +512,33 @@ two things were seen and deliberately deferred:
 
 ## Next sessions (pick up here)
 
-**Position as of 2026-07-16, newest (D96 backend pass — on-demand
-maintenance COMPLETE)**: punch-list item 4 is done in five commits.
+**Position as of 2026-07-16, newest (D96 backend pass — COMPLETE, every
+CLI verb reaches serve)**: the dat lifecycle (punch-list item 5) landed
+in three commits, closing the backend parity pass. `dat fetch`'s D16
+orchestration (redump-slug resolution + the polite ureq request +
+zip-unwrap) descended out of `cmds.rs` into a new `datboi_catalog::fetch`
+module (`fetch_dat` → `FetchedDat`), the unwrap now riding
+`zip::read_sole_member` (the D35 walker) instead of an ad-hoc `.dat`
+filter; catalog gained `ureq` + a promoted `datboi-ingest` runtime dep,
+the CLI shed both now-unused deps. Then all four verbs reached serve,
+each integration-tested: `POST /v1/dats/fetch` (network off the pipeline
+writer, then normal import; `CatalogError::Fetch` → 400),
+`GET /v1/dats/{provider}/{system}/diff` (D38), `GET …/export` (raw
+Logiqx XML download, D29), `POST …/clonelist` (raw retool JSON body,
+D57). `source_err` maps unknown/revision-less sources → 404,
+one-revision/malformed → 400. **The whole D96 backend contract is now
+settled** — on-demand maintenance (item 4) + dat lifecycle (item 5) both
+done, no new `JobKind`, workspace green, clippy clean, web check clean.
+NEXT: the deferred **web-UI pass** — build against the now-settled
+contract. The owed panels/triggers: dat fetch drop-in + diff/export/
+clonelist actions on the Library screen; the analyzer & gc-policy config
+panels; and the materialize/scrub/evict/sweep/snapshot maintenance
+triggers on the Storage screen. Everything they call already exists and
+is tested. Hermetic `nix build .#datboi` run this session (Cargo.toml
+dep edges changed — see below).
+
+**Position as of 2026-07-16, D96 backend pass — on-demand maintenance
+COMPLETE**: punch-list item 4 is done in five commits.
 The scrub corpus walk (store walk + `scrub_pack` + rehabilitation)
 descended out of `cmds.rs` into `Executor::scrub` (new
 `datboi-exec/src/scrub.rs`, returning a `ScrubReport`); the CLI keeps
@@ -571,8 +596,11 @@ the settled contract). Punch list with landed status:
      `datboi scrub` deep-link now points at materialize. No new
      `JobKind` (scrub→Scrub, evict→Gc, sweep→Refine), so the web
      exhaustive switch is untouched.
-  5. **Dat lifecycle** — TODO (the remaining pick-up): fetch / diff /
-     clonelist / export.
+  5. **Dat lifecycle** — DONE (2026-07-16): `POST /v1/dats/fetch` (D16
+     auto-fetch; the redump-slug/ureq/zip-unwrap logic descended to
+     `datboi_catalog::fetch_dat`, riding `zip::read_sole_member`),
+     `GET /v1/dats/{provider}/{system}/diff` (D38),
+     `GET …/export` (raw Logiqx XML, D29), `POST …/clonelist` (D57).
      `dat fetch`'s ureq+redump+zip-unwrap logic descends out of
      `cmds.rs` first.
   Explicit CLI-first exceptions (NOT gaps): `recover`, bootstrap
