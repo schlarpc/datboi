@@ -907,7 +907,7 @@ mod tests {
         assert!(encoded.starts_with(b"datboi/statesnap/1\n"));
         assert_eq!(
             Blake3::compute(&encoded).to_hex(),
-            "be09c66d5d2f364694637d45e1750f13dedd3babb043f063281fc870d1ec6a73"
+            "5e9eea11a5c2be7e2bdc681dc677601e8fb33f6e9a0ada74d92d49b24cf607ab"
         );
 
         let batch = AliasBatch {

@@ -23,11 +23,15 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 /// A 32-byte ed25519 public key (the verifying half).
 pub type PublicKey = [u8; 32];
 
-/// blake3 KDF context strings — globally unique, purpose- and
-/// version-scoped (the derive-key convention). Changing one re-keys that
-/// purpose; they are effectively at-rest constants.
-const CTX_SNAPSHOT: &str = "datboi instance-identity 2026 snapshot-signing v1";
-const CTX_IROH: &str = "datboi instance-identity 2026 iroh-identity v1";
+/// blake3 KDF context strings — one per derived purpose, in the house
+/// `datboi/<thing>/<version>` form our other format-version identifiers
+/// use (`datboi/statesnap/1`, `datboi/pack/1`, …). The `datboi/` namespace
+/// already makes them app-unique (blake3's date-in-context advice guards
+/// against cross-APPLICATION key reuse, which can't happen — the root is
+/// ours alone); the version suffix is the re-key knob. These are at-rest
+/// constants: changing one re-derives that key.
+const CTX_SNAPSHOT: &str = "datboi/snapshot-signing/1";
+const CTX_IROH: &str = "datboi/iroh-identity/1";
 
 #[derive(Debug, thiserror::Error)]
 pub enum IdentityError {
