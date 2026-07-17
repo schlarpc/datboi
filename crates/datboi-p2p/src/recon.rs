@@ -100,12 +100,8 @@ impl ProtocolHandler for ReconProvider {
             let set = self
                 .scope_set(scope)
                 .map_err(|e| AcceptError::from_err(std::io::Error::other(e.to_string())))?;
-            let set_size = set.len() as u64;
-
-            let mut enc = riblt::Encoder::new();
-            for hash in &set {
-                enc.add_symbol(hash.0);
-            }
+            let mut enc = riblt::Encoder::new(set.iter().map(|h| h.0));
+            let set_size = enc.set_len() as u64;
 
             // The stop watcher: the initiator either sends a stop byte or
             // drops its stream (STOP_SENDING makes our write fail). Both
@@ -185,10 +181,7 @@ pub async fn reconcile(
     let remote_set = u64::from_le_bytes(header);
     let local_set = local.len() as u64;
 
-    let mut dec = riblt::Decoder::new();
-    for hash in local {
-        dec.add_symbol(hash.0);
-    }
+    let mut dec = riblt::Decoder::new(local.iter().map(|h| h.0));
 
     // The difference cannot exceed |A|+|B|, and decoding needs ~1.35×d
     // symbols (higher constants in the small-d regime) — 8× the union
@@ -209,6 +202,9 @@ pub async fn reconcile(
         dec.add_coded_symbol(CodedSymbol::from_bytes(&buf));
         symbols_received += 1;
         dec.try_decode();
+        if dec.is_malformed() {
+            bail!("peer recon stream is malformed (peeling invariant violated)");
+        }
         if dec.decoded() {
             break;
         }

@@ -8,7 +8,9 @@
 //! reference (testdata/riblt/gen) generates committed golden vectors, and
 //! the tests below pin our encoder byte-for-byte and our decoder's exact
 //! diff recovery + symbol count against them. Deviate from the reference
-//! and the goldens catch it.
+//! and the goldens catch it. The property tests then cover what goldens
+//! can't: arbitrary set shapes, insertion-order invariance, duplicate
+//! inputs, and adversarial coded streams.
 //!
 //! Shape: for any set, an infinite deterministic sequence of *coded
 //! symbols* exists (each an XOR-sum of a pseudo-random subset of the set,
@@ -20,11 +22,32 @@
 //! [`Decoder::decoded`], then tells the responder to stop (docs/p2p.md
 //! § Reconciliation).
 //!
+//! Correct-by-construction posture:
+//! - Both codec halves are built FROM a complete set ([`Encoder::new`],
+//!   [`Decoder::new`]) — the reference's "adding a symbol after coding
+//!   starts is undefined behavior" contract is unexpressible here, not
+//!   merely documented.
+//! - Inputs dedupe at the boundary: a duplicated element would XOR-cancel
+//!   inside the sketch and corrupt it silently, so the constructors take
+//!   multisets and reconcile the underlying set.
+//! - A coded stream that violates the peeling invariant (possible only
+//!   for a malformed/adversarial encoder, argued below) flips the decoder
+//!   into a terminal [`Decoder::is_malformed`] state instead of panicking
+//!   or stalling silently; the transport layer refuses the peer.
+//!
+//! Cost model (the reference's, preserved): a source symbol participates
+//! in coded index `i` with probability `1/(1+i/2)`, so encoding `m`
+//! symbols over a set of `n` costs `O(n·log m)` applications amortized
+//! (each `O(log n)` through the mapping heap), and decoding a difference
+//! of `d` peels `O(d·log m)` applications — nothing is quadratic in set
+//! size, coded-stream length, or difference size.
+//!
 //! The checksum is SipHash-2-4 under fixed protocol keys — keyed so an
 //! adversary cannot craft symbols whose checksums cancel (the paper's
 //! robustness argument rides the hash being unpredictable), fixed because
 //! both sides must sum identical checksums for peeling to cancel them.
 
+use std::collections::HashSet;
 use std::hash::Hasher as _;
 
 /// A source symbol: a bare blake3 hash, the one element type every
@@ -44,6 +67,7 @@ const REMOVE: i64 = -1;
 
 /// SipHash-2-4 of a source symbol under the protocol keys — the checksum
 /// summed into coded symbols, and the seed of the symbol's index mapping.
+#[inline]
 #[must_use]
 pub fn hash_symbol(symbol: &Symbol) -> u64 {
     let mut h = siphasher::sip::SipHasher24::new_with_keys(SIPHASH_K0, SIPHASH_K1);
@@ -51,16 +75,28 @@ pub fn hash_symbol(symbol: &Symbol) -> u64 {
     h.finish()
 }
 
+/// XOR one 32-byte symbol into another, four u64 lanes at a time (the
+/// innermost operation of the whole codec; byte loops vectorize less
+/// reliably). Endianness is irrelevant under pure XOR.
+#[inline]
+fn xor_in_place(a: &mut Symbol, b: &Symbol) {
+    for i in 0..4 {
+        let lane = u64::from_ne_bytes(a[i * 8..][..8].try_into().expect("8-byte lane"))
+            ^ u64::from_ne_bytes(b[i * 8..][..8].try_into().expect("8-byte lane"));
+        a[i * 8..][..8].copy_from_slice(&lane.to_ne_bytes());
+    }
+}
+
 /// A source symbol bundled with its checksum (reference: `HashedSymbol`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HashedSymbol {
-    pub symbol: Symbol,
-    pub hash: u64,
+struct HashedSymbol {
+    symbol: Symbol,
+    hash: u64,
 }
 
 impl HashedSymbol {
-    #[must_use]
-    pub fn new(symbol: Symbol) -> Self {
+    #[inline]
+    fn new(symbol: Symbol) -> Self {
         let hash = hash_symbol(&symbol);
         Self { symbol, hash }
     }
@@ -77,15 +113,16 @@ pub struct CodedSymbol {
 }
 
 impl CodedSymbol {
+    #[inline]
     fn apply(&mut self, s: &HashedSymbol, direction: i64) {
-        for (a, b) in self.symbol.iter_mut().zip(s.symbol.iter()) {
-            *a ^= b;
-        }
+        xor_in_place(&mut self.symbol, &s.symbol);
         self.hash ^= s.hash;
         self.count += direction;
     }
 
-    /// Fixed wire encoding (D100): symbol ‖ hash LE ‖ count LE.
+    /// Fixed wire encoding (D100): symbol ‖ hash LE ‖ count LE. A
+    /// bijection over all 48-byte strings — every wire record parses,
+    /// so untrusted input is handled by decode semantics, not framing.
     #[must_use]
     pub fn to_bytes(&self) -> [u8; CODED_SYMBOL_LEN] {
         let mut out = [0u8; CODED_SYMBOL_LEN];
@@ -115,6 +152,12 @@ impl CodedSymbol {
 /// `1/(1+i/2)`. The float update is the reference's exact expression —
 /// IEEE-754 f64 ops (mul, div, sqrt, ceil) are correctly rounded in both
 /// languages, so the sequences agree bit-for-bit (the goldens prove it).
+/// The one deviation is `saturating_add`: identical in every reachable
+/// state (indices stay far below 2^63 under any real stream length — the
+/// index grows by at most ~2^32× per step and only advances while below
+/// the coded-stream length), it only pins the astronomically unreachable
+/// tail to MAX instead of wrapping, because a wrapped index would break
+/// the monotonicity the mapping heap's ordering rests on.
 #[derive(Clone, Copy, Debug)]
 struct RandomMapping {
     prng: u64,
@@ -122,13 +165,15 @@ struct RandomMapping {
 }
 
 impl RandomMapping {
+    #[inline]
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     fn next_index(&mut self) -> u64 {
         self.prng = self.prng.wrapping_mul(0xda94_2042_e4dd_58b5);
         let r = self.prng;
-        self.last_index += (((self.last_index as f64) + 1.5)
+        let step = (((self.last_index as f64) + 1.5)
             * (((1u64 << 32) as f64) / ((r as f64) + 1.0).sqrt() - 1.0))
             .ceil() as u64;
+        self.last_index = self.last_index.saturating_add(step);
         self.last_index
     }
 }
@@ -144,6 +189,7 @@ struct SymbolMapping {
 // container/heap). Hand-rolled rather than BinaryHeap because the
 // reference mutates the head in place and re-sifts — and the port must
 // visit symbols in the identical order for byte-identical output.
+#[inline]
 fn fix_head(q: &mut [SymbolMapping]) {
     let mut curr = 0usize;
     loop {
@@ -163,6 +209,7 @@ fn fix_head(q: &mut [SymbolMapping]) {
     }
 }
 
+#[inline]
 fn fix_tail(q: &mut [SymbolMapping]) {
     let mut curr = q.len() - 1;
     while curr > 0 {
@@ -226,23 +273,47 @@ impl CodingWindow {
     }
 }
 
-/// Incremental encoder: seed it with a set, then produce the set's coded
-/// symbol sequence one at a time, forever. Adding symbols after the first
-/// `produce_next_coded_symbol` is a logic error (the emitted prefix would
-/// not include them), as in the reference.
-#[derive(Default)]
+/// Deduplicate a multiset of symbols into hashed form — the constructor
+/// boundary both codec halves share. A duplicated element would
+/// XOR-cancel inside the sketch (present-twice reads as absent, with a
+/// count residue), so set semantics are enforced here rather than
+/// assumed of the caller.
+fn dedup_symbols(symbols: impl IntoIterator<Item = Symbol>) -> Vec<HashedSymbol> {
+    let mut seen: HashSet<Symbol> = HashSet::new();
+    symbols
+        .into_iter()
+        .filter(|s| seen.insert(*s))
+        .map(HashedSymbol::new)
+        .collect()
+}
+
+/// Incremental encoder over a fixed set: constructed from the complete
+/// set, then produces the set's coded-symbol sequence one at a time,
+/// forever. There is no way to add a symbol after coding starts — the
+/// reference's undefined-behavior contract, made unexpressible.
+///
+/// The emitted sequence is a pure function of the SET: insertion order
+/// and duplicates cannot affect it (each symbol's index mapping depends
+/// only on its own checksum, and coded sums are commutative — the
+/// property tests pin this).
 pub struct Encoder {
     window: CodingWindow,
 }
 
 impl Encoder {
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(set: impl IntoIterator<Item = Symbol>) -> Self {
+        let mut window = CodingWindow::default();
+        for symbol in dedup_symbols(set) {
+            window.add_hashed_symbol(symbol);
+        }
+        Self { window }
     }
 
-    pub fn add_symbol(&mut self, s: Symbol) {
-        self.window.add_hashed_symbol(HashedSymbol::new(s));
+    /// Number of distinct symbols in the encoded set.
+    #[must_use]
+    pub fn set_len(&self) -> usize {
+        self.window.symbols.len()
     }
 
     pub fn produce_next_coded_symbol(&mut self) -> CodedSymbol {
@@ -250,13 +321,11 @@ impl Encoder {
     }
 }
 
-/// Streaming decoder: knows the local set B (the prior, fed via
-/// [`Decoder::add_symbol`] before any coded symbol arrives), consumes the
-/// remote set A's coded symbols in order, and peels until the symmetric
-/// difference is recovered — [`Decoder::remote`] is A∖B (what to fetch),
-/// [`Decoder::local`] is B∖A (never leaves this process; the D100
-/// asymmetric reveal).
-#[derive(Default)]
+/// Streaming decoder: constructed with the local set B (the prior),
+/// consumes the remote set A's coded symbols in order, and peels until
+/// the symmetric difference is recovered — [`Decoder::remote`] is A∖B
+/// (what to fetch), [`Decoder::local`] is B∖A (never leaves this
+/// process; the D100 asymmetric reveal).
 pub struct Decoder {
     /// Coded symbols received so far, mutated as decoded symbols peel off.
     cs: Vec<CodedSymbol>,
@@ -270,19 +339,51 @@ pub struct Decoder {
     /// matching checksum, or degree 0 with a zero checksum-sum).
     decodable: Vec<usize>,
     decoded: usize,
+    /// Terminal: the stream violated the peeling invariant (a decodable
+    /// entry left degree {-1, 0, 1}) — impossible for an honest encoder
+    /// (peeling only ever removes a true member from the symbols it was
+    /// actually summed into), so the stream is malformed or adversarial.
+    malformed: bool,
 }
 
 impl Decoder {
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(prior: impl IntoIterator<Item = Symbol>) -> Self {
+        let mut window = CodingWindow::default();
+        for symbol in dedup_symbols(prior) {
+            window.add_hashed_symbol(symbol);
+        }
+        Self {
+            cs: Vec::new(),
+            local: CodingWindow::default(),
+            window,
+            remote: CodingWindow::default(),
+            decodable: Vec::new(),
+            decoded: 0,
+            malformed: false,
+        }
+    }
+
+    /// Number of distinct symbols in the prior.
+    #[must_use]
+    pub fn prior_len(&self) -> usize {
+        self.window.symbols.len()
     }
 
     /// True iff every coded symbol received so far has been decoded —
     /// at which point `remote`/`local` hold the full symmetric difference.
+    /// Never true for a malformed stream.
     #[must_use]
     pub fn decoded(&self) -> bool {
-        self.decoded == self.cs.len()
+        !self.malformed && self.decoded == self.cs.len()
+    }
+
+    /// True iff the stream violated the codec's invariants (see the
+    /// field docs). Terminal: the transport should drop the peer; no
+    /// further input can repair the sketch.
+    #[must_use]
+    pub fn is_malformed(&self) -> bool {
+        self.malformed
     }
 
     /// Symbols present at the encoder but not here (A∖B).
@@ -295,13 +396,12 @@ impl Decoder {
         self.local.symbols.iter().map(|s| &s.symbol)
     }
 
-    /// Add one symbol of the local set. Must precede all coded symbols.
-    pub fn add_symbol(&mut self, s: Symbol) {
-        self.window.add_hashed_symbol(HashedSymbol::new(s));
-    }
-
     /// Consume the next coded symbol of the remote sequence, in order.
+    /// A no-op once the stream is malformed.
     pub fn add_coded_symbol(&mut self, c: CodedSymbol) {
+        if self.malformed {
+            return;
+        }
         let c = self.window.apply_window(c, REMOVE);
         let c = self.remote.apply_window(c, REMOVE);
         let c = self.local.apply_window(c, ADD);
@@ -344,6 +444,9 @@ impl Decoder {
     /// Peel every decodable coded symbol, cascading (peeling one symbol
     /// can make others decodable; the queue grows while it is walked).
     pub fn try_decode(&mut self) {
+        if self.malformed {
+            return;
+        }
         let mut didx = 0;
         while didx < self.decodable.len() {
             let cidx = self.decodable[didx];
@@ -368,13 +471,14 @@ impl Decoder {
                     self.decoded += 1;
                 }
                 0 => self.decoded += 1,
-                // The reference panics here (its invariant says this is
-                // unreachable). Coded symbols come off the wire, so we
-                // refuse instead of aborting the daemon: skipping leaves
-                // the symbol undecoded, `decoded()` stays false, and the
-                // initiator gives up by budget — a failed reconcile, not
-                // a peer-triggered crash.
-                _ => debug_assert!(false, "decodable coded symbol with degree {}", c.count),
+                // The reference panics here; its invariant argument only
+                // covers honest encoders, and coded symbols come off the
+                // wire. Refuse the stream instead of aborting the daemon.
+                _ => {
+                    self.malformed = true;
+                    self.decodable.clear();
+                    return;
+                }
             }
             didx += 1;
         }
@@ -384,6 +488,8 @@ impl Decoder {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     /// Deterministic 32-byte test symbols shared with the Go golden
@@ -397,38 +503,43 @@ mod tests {
         }
         let mut out = [0u8; 32];
         for j in 0..4u64 {
+            // Wrapping, like the generator's Go uint64 arithmetic.
             out[(j as usize) * 8..(j as usize + 1) * 8]
-                .copy_from_slice(&splitmix64(i * 4 + j).to_le_bytes());
+                .copy_from_slice(&splitmix64(i.wrapping_mul(4).wrapping_add(j)).to_le_bytes());
         }
         out
     }
 
     /// Drive one full reconciliation in memory; returns (symbols used,
     /// remote diff, local diff), the loop the reference's example runs.
-    fn reconcile(alice: &[Symbol], bob: &[Symbol]) -> (usize, Vec<Symbol>, Vec<Symbol>) {
-        let mut enc = Encoder::new();
-        for s in alice {
-            enc.add_symbol(*s);
-        }
-        let mut dec = Decoder::new();
-        for s in bob {
-            dec.add_symbol(*s);
-        }
+    /// Panics past `cap` symbols — convergence failure is a test failure.
+    fn reconcile_capped(
+        alice: &[Symbol],
+        bob: &[Symbol],
+        cap: usize,
+    ) -> (usize, Vec<Symbol>, Vec<Symbol>) {
+        let mut enc = Encoder::new(alice.iter().copied());
+        let mut dec = Decoder::new(bob.iter().copied());
         let mut used = 0;
         loop {
             dec.add_coded_symbol(enc.produce_next_coded_symbol());
             used += 1;
             dec.try_decode();
+            assert!(!dec.is_malformed(), "honest stream flagged malformed");
             if dec.decoded() {
                 break;
             }
-            assert!(used < 100_000, "reconciliation did not converge");
+            assert!(used < cap, "reconciliation did not converge in {cap}");
         }
         let mut remote: Vec<Symbol> = dec.remote().copied().collect();
         let mut local: Vec<Symbol> = dec.local().copied().collect();
         remote.sort_unstable();
         local.sort_unstable();
         (used, remote, local)
+    }
+
+    fn reconcile(alice: &[Symbol], bob: &[Symbol]) -> (usize, Vec<Symbol>, Vec<Symbol>) {
+        reconcile_capped(alice, bob, 100_000)
     }
 
     #[test]
@@ -475,6 +586,15 @@ mod tests {
         assert_eq!(local.len(), 50);
     }
 
+    #[test]
+    fn coded_symbol_wire_roundtrip() {
+        let mut enc = Encoder::new((0..10).map(test_symbol));
+        for _ in 0..100 {
+            let c = enc.produce_next_coded_symbol();
+            assert_eq!(CodedSymbol::from_bytes(&c.to_bytes()), c);
+        }
+    }
+
     // ---- Differential goldens (D100) ----
     // Generated by testdata/riblt/gen (the vendored-by-pin REFERENCE Go
     // implementation driving datboi's symbol type). These pin the port to
@@ -517,10 +637,7 @@ mod tests {
             (3, &include_bytes!("../testdata/riblt/golden/encoder_3.bin")[..]),
             (100, &include_bytes!("../testdata/riblt/golden/encoder_100.bin")[..]),
         ] {
-            let mut enc = Encoder::new();
-            for i in 0..n {
-                enc.add_symbol(test_symbol(i));
-            }
+            let mut enc = Encoder::new((0..n).map(test_symbol));
             let mut stream = Vec::with_capacity(golden.len());
             for _ in 0..256 {
                 stream.extend_from_slice(&enc.produce_next_coded_symbol().to_bytes());
@@ -579,15 +696,132 @@ mod tests {
         assert_eq!(cases, 5, "golden file shrank");
     }
 
+    // ---- Properties ----
+    // The goldens pin exact reference behavior on fixed cases; these pin
+    // the invariants on arbitrary ones.
+
+    /// Three disjoint index pools (tags keep them disjoint by
+    /// construction) → (shared, a_only, b_only) symbol groups.
+    fn set_shapes() -> impl Strategy<Value = (Vec<Symbol>, Vec<Symbol>, Vec<Symbol>)> {
+        (0usize..120, 0usize..40, 0usize..40, any::<u64>()).prop_map(
+            |(shared, a_only, b_only, seed)| {
+                let sym = move |tag: u64, i: usize| {
+                    let mut s = test_symbol(seed.wrapping_add(tag.wrapping_mul(1 << 40)));
+                    let t = test_symbol((i as u64) | (tag << 48));
+                    xor_in_place(&mut s, &t);
+                    s
+                };
+                (
+                    (0..shared).map(|i| sym(1, i)).collect(),
+                    (0..a_only).map(|i| sym(2, i)).collect(),
+                    (0..b_only).map(|i| sym(3, i)).collect(),
+                )
+            },
+        )
+    }
+
+    proptest! {
+        /// The load-bearing property: for arbitrary set shapes the
+        /// decoder recovers EXACTLY the symmetric difference, both
+        /// directions, from an honest stream.
+        #[test]
+        fn recovers_the_exact_symmetric_difference(
+            (shared, a_only, b_only) in set_shapes()
+        ) {
+            let alice: Vec<Symbol> =
+                shared.iter().chain(&a_only).copied().collect();
+            let bob: Vec<Symbol> =
+                shared.iter().chain(&b_only).copied().collect();
+            let (_used, remote, local) = reconcile_capped(&alice, &bob, 50_000);
+            let mut want_remote = a_only.clone();
+            let mut want_local = b_only.clone();
+            want_remote.sort_unstable();
+            want_local.sort_unstable();
+            prop_assert_eq!(remote, want_remote);
+            prop_assert_eq!(local, want_local);
+        }
+
+        /// The coded stream is a pure function of the SET: insertion
+        /// order and duplicated elements cannot change a single byte.
+        /// (Load-bearing for the protocol: the two peers enumerate their
+        /// sets in unrelated orders.)
+        #[test]
+        fn stream_is_a_pure_function_of_the_set(
+            n in 1usize..80,
+            seed in any::<u64>(),
+            dup in any::<prop::sample::Index>(),
+        ) {
+            let set: Vec<Symbol> =
+                (0..n as u64).map(|i| test_symbol(i.wrapping_add(seed))).collect();
+            let mut shuffled = set.clone();
+            shuffled.rotate_left(n / 3);
+            shuffled.reverse();
+            // ...and one element repeated: multiset in, set out.
+            shuffled.push(set[dup.index(n)]);
+
+            let mut a = Encoder::new(set.iter().copied());
+            let mut b = Encoder::new(shuffled.iter().copied());
+            prop_assert_eq!(a.set_len(), b.set_len());
+            for _ in 0..96 {
+                prop_assert_eq!(
+                    a.produce_next_coded_symbol().to_bytes(),
+                    b.produce_next_coded_symbol().to_bytes()
+                );
+            }
+        }
+
+        /// The wire format is a bijection on 48-byte strings.
+        #[test]
+        fn wire_encoding_is_a_bijection(bytes in prop::collection::vec(any::<u8>(), 48)) {
+            let record: [u8; 48] = bytes.as_slice().try_into().expect("48 bytes");
+            let decoded = CodedSymbol::from_bytes(&record);
+            prop_assert_eq!(decoded.to_bytes(), record);
+        }
+
+        /// Garbage coded streams never panic, never report a malformed
+        /// stream as decoded, and the decoder survives to refuse further
+        /// input. (The transport's byte-verified fetches make a LYING
+        /// stream harmless; this pins that it also can't be a crash.)
+        #[test]
+        fn adversarial_streams_never_panic(
+            prior_n in 0usize..30,
+            records in prop::collection::vec(prop::collection::vec(any::<u8>(), 48), 1..60),
+        ) {
+            let mut dec = Decoder::new((0..prior_n as u64).map(test_symbol));
+            for r in &records {
+                let record: [u8; 48] = r.as_slice().try_into().expect("48 bytes");
+                dec.add_coded_symbol(CodedSymbol::from_bytes(&record));
+                dec.try_decode();
+            }
+            if dec.is_malformed() {
+                prop_assert!(!dec.decoded(), "malformed stream claimed decoded");
+                // Terminal: more input is a no-op, not a panic.
+                dec.add_coded_symbol(CodedSymbol::default());
+                dec.try_decode();
+                prop_assert!(dec.is_malformed());
+            }
+        }
+    }
+
+    /// Scale guard (release-mode manual run: `cargo test -p datboi-p2p
+    /// --release -- --ignored stress`): 100k×100k sets with a 400-element
+    /// diff must reconcile in seconds and near the ~1.35×d constant —
+    /// a quadratic regression fails this loudly or times out.
     #[test]
-    fn coded_symbol_wire_roundtrip() {
-        let mut enc = Encoder::new();
-        for i in 0..10 {
-            enc.add_symbol(test_symbol(i));
-        }
-        for _ in 0..100 {
-            let c = enc.produce_next_coded_symbol();
-            assert_eq!(CodedSymbol::from_bytes(&c.to_bytes()), c);
-        }
+    #[ignore = "release-mode scale check"]
+    fn stress_hundred_thousand_by_hundred_thousand() {
+        let alice: Vec<Symbol> = (0..100_000).map(test_symbol).collect();
+        let bob: Vec<Symbol> = (200..100_200).map(test_symbol).collect();
+        let start = std::time::Instant::now();
+        let (used, remote, local) = reconcile_capped(&alice, &bob, 10_000);
+        let elapsed = start.elapsed();
+        assert_eq!(remote.len(), 200);
+        assert_eq!(local.len(), 200);
+        assert!(used < 400 * 3, "overhead at scale: {used} for d=400");
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "reconciliation took {elapsed:?}"
+        );
+        eprintln!("stress: d=400 over 100k×100k in {used} symbols, {elapsed:?}");
     }
 }

@@ -38,6 +38,8 @@ siphasher = "1"
 tempfile.workspace = true
 # Build a deflate container for the virtual-blob test's recipe.
 flate2.workspace = true
+# riblt invariants over arbitrary set shapes and adversarial streams.
+proptest.workspace = true
 
 [lints]
 workspace = true
