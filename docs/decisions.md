@@ -2652,6 +2652,39 @@ friends); trusting peer recipes as `Verified` on arrival (grounding must
 not inflate on unreplayed claims — Pending is the honest state and the
 audit already has a vocabulary for the rest).
 
+*Amendment (same day): the responder encodes off a sqlite snapshot, not
+a resident set.* The incremental encoder must keep every source symbol
+live (coded symbol 0 sums the ENTIRE set), so the responder's original
+shape — materialize the scope into a `Vec`, build the in-memory encoder
+— cost ~72 B/element steady plus construction transients: ~1.4 GB peak
+at a 10 M-recipe corpus, PER STREAM, on an unauthenticated-beyond-the-
+EndpointId surface. The fix is the observation that the encoder never
+needed the set resident — it needs a RE-ITERABLE, STABLE view: coded
+symbols [m, m+k) are computable in one pass over the set by replaying
+each symbol's index mapping from zero (O(k) memory, one scan per
+block). So `riblt` gains a `SetSnapshot` trait (contract: every pass
+yields the same distinct elements) and `encode_block`; the responder
+implements the trait as a sqlite CURSOR — a dedicated read-only
+connection per stream holding one read transaction across all passes,
+which makes both contract halves free: WAL snapshot isolation IS the
+stability (writers proceed; this stream sees one frozen set), and the
+scope query is structurally DISTINCT (one recipe row per meta blob,
+unique hashes). Blocks grow exponentially (1024 → ×2 → cap 131 072), so
+the common small-diff case is ONE scan and ~48 KiB of coded state, and
+a full-mirror drain is O(log) scans, never O(n/block). The wire stream
+is byte-identical (no ALPN rev): a differential property pins
+block-encode == incremental-encode on arbitrary sets and cuts, and the
+goldens pin both to the Go reference. The incremental `Encoder` stays —
+it feeds the decoder's windows and the differential tests. Accepted
+asymmetry: the INITIATOR'S decoder prior remains O(n) resident
+(~72 B/element) — that memory is spent by the party choosing to sync,
+on its own box, which is the right party to pay it.
+*Rejected (amendment):* a `PRAGMA data_version` change-detector instead
+of a held read transaction (any unrelated write — an ingest mid-stream —
+aborts every pass; the held snapshot costs only pinned WAL checkpointing
+for the stream's bounded life); caching per-symbol mapping state across
+passes (that cache is exactly the O(n) being removed).
+
 ## D101 — The p2p operator surface: sync is a job, the seedbox endpoint is the identity (2026-07-17)
 
 D96 (serve+web is the complete surface) meets D100 (the sync engine).
