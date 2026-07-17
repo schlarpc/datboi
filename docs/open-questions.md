@@ -584,9 +584,14 @@ D97 left to the build:
   with iroh in-graph VERIFIED green (2026-07-17) — iroh's crypto crates
   (ring/aws-lc) compiled in the sandbox with no flake changes; the hermetic
   binary carries `--p2p`.
-- **Operator surface.** `datboi share` / `fetch` and the web equivalents,
-  per D96 (serve+web is the complete surface). `available-from-peer(X)`
-  (D34/D39) is the completeness state the friend surface already anticipates.
+- ~~**Operator surface.**~~ BUILT 2026-07-17 as **D101**:
+  `POST /v1/p2p/sync` (a Sync job; structured `SyncSummary` savings on
+  the detail), `GET /v1/p2p` (enabled + shareable endpoint id), the
+  Ingest screen's fetch-from-a-friend card, and `datboi fetch --peer`.
+  Outbound rides the seedbox endpoint (one identity, D99); no `--p2p` →
+  clean 503. Still anticipated for the channels work:
+  `available-from-peer(X)` (D34/D39) as a completeness state on the
+  friend surface.
 
 ## Flagged for ruling (raised 2026-07-16, pack-format review during the M6 spike)
 
@@ -661,6 +666,34 @@ slated for change:
   packs are local, never shared.
 
 ## Next sessions (pick up here)
+
+**Position as of 2026-07-17, latest — D101 OPERATOR SURFACE BUILT**: the
+whole D96 surface for D100 sync landed in five commits, workspace + web
+green, hermetic build verified. Ruled first (**D101**): sync is a JOB
+(new Sync kind in the wire enum + D74 ledger, additive codes); the
+savings summary is STRUCTURED wire data (`JobDetail.sync` =
+`SyncSummary`, percentage derived client-side, never prose); outbound
+rides the seedbox's own endpoint (`Seedbox::client()` — one iroh
+identity per daemon, D99, so the future recon ACL sees the friend key),
+which makes `POST /v1/p2p/sync` without `--p2p` a clean typed 503;
+`GET /v1/p2p` answers `{enabled, endpoint_id}` (the "share this id"
+string leaves the daemon log). Built: the two endpoints + `run_sync`
+worker (private write Db, then relink+rollups so fetched content lights
+the shelf like an ingest); `datboi fetch --peer <id> [want…]`
+(direct-library lane, EPHEMERAL endpoint key on purpose — a live
+`--p2p` daemon owns the derived key's discovery record —
+`datboi_p2p::sync_blocking` keeps tokio/iroh out of the CLI crate;
+Sync ledger stamp); and the web: Ingest screen's fetch-from-a-friend
+card (share-your-id + copy, peer-id form → mirror-mode sync,
+tray-woken, followJob → the savings receipt: "X fetched, Y rebuilt from
+shared pieces — Z% saved"), disabled state teaches `datboi serve
+--p2p`; Activity learned the sync kind. **Pick up here**: the D34
+holdings channels / swarm tiers with the **recon ACL before any
+advertisement tier** (flagged above — today the recon ALPN reveals the
+recipe inventory to any holder of the EndpointId); smaller p2p
+remainders: hash-seq requests, a shared wasm engine per CasProvider,
+partial-range over-materialization. The previous position (D100
+reconciliation) is below.
 
 **Position as of 2026-07-17, later — D100 RECONCILIATION BUILT**: the
 whole reconcile→fetch-diff→rebuild arc landed in six commits, workspace

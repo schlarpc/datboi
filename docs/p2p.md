@@ -250,8 +250,9 @@ and `datboi serve --p2p` spawns the seedbox under the derived iroh key
 (D99). It was an *excluded spike* only so the churny iroh tree wouldn't
 touch the host lockfile before the design settled — never a permanent
 standalone like the wasm components (those never link into the daemon;
-this always does). **Designed, not built:** hash-seq requests, the opt-in swarm tiers, and
-a `datboi share` / `fetch` operator surface + web home (D96). Streaming
+this always does). **Designed, not built:** hash-seq requests and the
+opt-in swarm tiers (with the recon ACL owed before any advertisement
+tier, open-questions). Streaming
 landed 2026-07-17 (bounded-memory, D97 amendment 4); reconciliation ruled
 AND BUILT 2026-07-17 as **D100** (previous section): the riblt codec
 (differential-tested against the reference), the recon ALPN beside the
@@ -260,3 +261,14 @@ lazy-outboard backstop for recovery-restored literals), and
 `datboi_p2p::sync` — reconcile → fetch-diff → rebuild, proven e2e on a
 variant pair (one plan + 2 of 8 pieces cross the wire; mirror mode
 grounds without materializing).
+**Operator surface BUILT 2026-07-17 as D101** (the D96 posture: serve +
+web are the surface, CLI is convenience): `POST /v1/p2p/sync` runs a
+Sync job (new D74 ledger kind) whose detail carries the structured
+`SyncSummary` savings numbers; `GET /v1/p2p` answers
+`{enabled, endpoint_id}`. Outbound rides the seedbox's own endpoint
+(`Seedbox::client()` — one identity per daemon, D99), so a daemon
+without `--p2p` answers a clean 503. The web home is the Ingest screen's
+fetch-from-a-friend card (share-your-id + peer-id form + the savings
+receipt); `datboi fetch --peer <id> [want…]` is the direct-library lane
+under an EPHEMERAL key (deliberate: a live `--p2p` daemon owns the
+derived key's discovery record).
