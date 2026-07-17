@@ -894,8 +894,12 @@ mod tests {
     }
 
     /// FORMAT COMMITMENT for both object kinds, like the recipe golden
-    /// vector: signing is deterministic (RFC 8032), so a fixed seed over a
-    /// fixed payload yields fixed snapshot bytes.
+    /// vector: signing is deterministic (RFC 8032) and the snapshot key is
+    /// a deterministic derivation of the root (D99), so a fixed root over a
+    /// fixed payload yields fixed snapshot bytes. (This vector moved when
+    /// D99 made the signer a derived key rather than the raw root — D43
+    /// says snapshot identity stability is not sacred; the codec still gets
+    /// golden coverage.)
     #[test]
     fn golden_vector_identity() {
         let id = Identity::from_seed([42u8; 32]);
@@ -903,7 +907,7 @@ mod tests {
         assert!(encoded.starts_with(b"datboi/statesnap/1\n"));
         assert_eq!(
             Blake3::compute(&encoded).to_hex(),
-            "f7ffe0f6b7a67955780b600a7f8cef5fc72cbfa5099e3e773421371a36ee3efd"
+            "be09c66d5d2f364694637d45e1750f13dedd3babb043f063281fc870d1ec6a73"
         );
 
         let batch = AliasBatch {
