@@ -2651,3 +2651,48 @@ machinery (the gate belongs on advertisement, not on capability-addressed
 friends); trusting peer recipes as `Verified` on arrival (grounding must
 not inflate on unreplayed claims — Pending is the honest state and the
 audit already has a vocabulary for the rest).
+
+## D101 — The p2p operator surface: sync is a job, the seedbox endpoint is the identity (2026-07-17)
+
+D96 (serve+web is the complete surface) meets D100 (the sync engine).
+`POST /v1/p2p/sync` `{peer, wants[]}` starts a `sync` job — a new D74
+ledger kind, the additive code the ledger was designed for — that runs
+`datboi_p2p::sync::sync` on the daemon's runtime over a PRIVATE write
+connection (the D71/D96 posture: minutes of network never hold the
+pipeline mutex), then relinks + refreshes rollups so fetched content
+lights the shelf exactly like an ingest. Empty/absent `wants` is mirror
+mode, as in D100. The savings summary (D97) rides `JobDetail` as
+STRUCTURED wire data — a `sync` object carrying bytes fetched / rebuilt /
+already-held / savings pct — numbers the web renders in the viewer's
+locale, never server-composed prose. `GET /v1/p2p` answers
+`{enabled, endpoint_id}` so the web can say "share this id" without the
+operator grepping the daemon log.
+
+**Outbound rides the seedbox's own endpoint.** One iroh identity per
+daemon (D99): the sync initiator connects FROM the endpoint the seedbox
+serves on, so the responder sees the friend key a future recon ACL will
+check, and no second endpoint fights the first for the discovery record.
+Accepted consequence: `POST /v1/p2p/sync` on a daemon without `--p2p` is
+a clean 503 — an outbound-only lane would need its own identity story
+for a case the CLI already covers.
+
+**`datboi fetch --peer <id> [want…]`** is the D96 convenience lane:
+direct library call over the local store/db under an EPHEMERAL endpoint
+key — deliberately not the derived key, because a `--p2p` daemon may be
+live on it and two publishers under one key corrupt the discovery
+record. When recon ACLs land, the CLI defers to the daemon API (the
+friend key lives there).
+
+**The web home is the Ingest screen.** Fetching from a friend is
+acquisition — bytes in — so the peer-fetch card sits beside the
+drop-zone (one canonical home, web-ui.md; a "P2P" nav tab would be a
+CAS-admirer surface). The job receipt is the persona moment: "1.3 MiB
+fetched, 62.7 MiB rebuilt from shared pieces — 98% saved".
+
+*Rejected:* a synchronous sync endpoint (a network-length request);
+binding a fresh outbound endpoint per daemon job (works, but the friend
+key IS the coming ACL story and the seedbox already holds it); savings
+as a report note (prose freezes numbers away from the UI and the
+translator); a dedicated nav tab; requiring explicit wants (mirror mode
+is D100's subscriber shape, and the fetch card's default "everything
+they have that I lack" is the honest reading of a friend link).
