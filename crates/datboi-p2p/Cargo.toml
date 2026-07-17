@@ -24,12 +24,17 @@ iroh = "1"
 iroh-blobs = "0.103"
 anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
-# Front the REAL CAS: serve blobs + their .obao sidecars straight from
+# Front the REAL CAS: serve blobs + their .obao4 sidecars straight from
 # the sharded loose-file store. Path deps across the workspace-exclude
 # boundary (these crates are root-workspace members; their inheritance
 # resolves against the root, not us).
 datboi-core = { path = "../datboi-core" }
 datboi-store-fs = { path = "../datboi-store-fs" }
+# The executor + index: serve the LOGICAL CAS (D92/D97) — resident
+# literals AND grounded-but-evicted blobs materialized on demand — through
+# one `serve_range` seam, D49-verified against the retained .obao4.
+datboi-exec = { path = "../datboi-exec" }
+datboi-index = { path = "../datboi-index" }
 # The bao encoder for the get-response — same 0.16 line iroh-blobs 0.103
 # links, so our encoded ranges are wire-identical.
 bao-tree = { version = "0.16", default-features = false, features = ["validate"] }
@@ -39,6 +44,9 @@ blake3 = "1"
 [dev-dependencies]
 blake3 = "1"
 tempfile = "3"
+# Build a deflate container for the virtual-blob test's recipe (member =
+# deflate-decompress of the container), mirroring the exec crate's fixture.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [lints.rust]
 unsafe_code = "warn"

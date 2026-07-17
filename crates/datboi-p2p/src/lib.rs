@@ -66,36 +66,53 @@ pub async fn fetch(ticket: &BlobTicket) -> Result<Vec<u8>> {
 }
 
 /// Fronting the real CAS (D97): serve iroh-blobs' get protocol straight
-/// from a `datboi-store-fs::Store`, reusing the on-disk `.obao4` sidecar as
-/// the bao tree — no custom-store trait exists in iroh-blobs 0.103, so we
-/// answer the wire protocol ourselves and iroh-blobs stays the requester.
+/// from the datboi CAS, reusing the on-disk `.obao4` sidecar as the bao
+/// tree — no custom-store trait exists in iroh-blobs 0.103, so we answer
+/// the wire protocol ourselves and iroh-blobs stays the requester.
 ///
-/// Iteration 2 serves LITERAL blobs (loose files + D91 packed windows fall
-/// through `Store::get` transparently). The virtual half — grounded-but-
-/// evicted blobs materialized through the executor (D92) — slots in at the
-/// same seam: produce the bytes some other way, encode the same tree.
+/// This serves the **logical CAS** (D92), not just resident literals.
+/// Every request goes through `Executor::serve_range`, which handles both
+/// halves uniformly and D49-verified:
+///
+/// - **Literal** blobs (resident) read from `Store::get` — loose files and
+///   D91 packed windows fall through transparently;
+/// - **Virtual** blobs (grounded-but-evicted, recipe-only) materialize on
+///   demand through the recipe, verified against the `.obao4` that D49 rule
+///   1 kept past eviction.
+///
+/// A peer never learns our residency state — the wire surface is the audit
+/// surface. Spike shortcut still standing: the whole range is buffered
+/// (`serve_range(0, total)`), so 4 GB ROMs are not yet bounded-memory; the
+/// async/streaming bao encoder over `open_stream` is the owed refinement.
 pub mod cas {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
-    use anyhow::Result;
+    use anyhow::{Result, anyhow};
     use bao_tree::BaoTree;
     use bao_tree::io::outboard::PreOrderMemOutboard;
     use bao_tree::io::sync::encode_ranges_validated;
     use datboi_core::hash::Blake3;
-    use datboi_store_fs::obao::BLOCK_SIZE;
+    use datboi_exec::{ExecConfig, Executor};
+    use datboi_index::Db;
+    use datboi_store_fs::obao::{BLOCK_SIZE, outboard_size};
     use datboi_store_fs::{Namespace, Store};
     use iroh::endpoint::{Connection, SendStream};
     use iroh::protocol::{AcceptError, ProtocolHandler};
     use iroh_blobs::protocol::{GetRequest, Request};
 
-    /// An iroh protocol handler that serves blobs from the datboi CAS.
+    /// An iroh protocol handler that serves the datboi logical CAS.
+    ///
+    /// `Db` wraps rusqlite and is `!Sync`, so it rides a `Mutex` exactly as
+    /// the daemon shares it; the guard is dropped before any await, never
+    /// held across the wire write.
     #[derive(Clone)]
     pub struct CasProvider {
         store: Arc<Store>,
+        db: Arc<Mutex<Db>>,
     }
 
-    // ProtocolHandler requires Debug; the Store isn't Debug (nor should a
-    // whole CAS be) — the handler has no state worth printing.
+    // ProtocolHandler requires Debug; neither a whole CAS nor a DB handle
+    // is worth printing — the handler has no state to show.
     impl std::fmt::Debug for CasProvider {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.debug_struct("CasProvider").finish_non_exhaustive()
@@ -104,22 +121,53 @@ pub mod cas {
 
     impl CasProvider {
         #[must_use]
-        pub fn new(store: Arc<Store>) -> Self {
-            Self { store }
+        pub fn new(store: Arc<Store>, db: Arc<Mutex<Db>>) -> Self {
+            Self { store, db }
         }
 
         /// Answer one get-request: `size (8 LE) ‖ bao-encoded ranges`, the
         /// exact wire shape iroh-blobs' `export_bao` produces (same
-        /// bao-tree 0.16, same 16 KiB block). The requested chunk ranges
-        /// verify against our `.obao4` as they encode, so a corrupt local
-        /// blob fails the encode rather than shipping bad bytes.
-        fn encode_get(&self, get: &GetRequest) -> Result<Option<Vec<u8>>> {
+        /// bao-tree 0.16, same 16 KiB block). The bytes come from the
+        /// executor's `serve_range` — resident or materialized-from-recipe,
+        /// always verified against the output `.obao4` — so a corrupt local
+        /// blob or a lying recipe fails here rather than shipping bad bytes.
+        fn encode_get(&self, exec: &Executor, get: &GetRequest) -> Result<Option<Vec<u8>>> {
             let hash = Blake3(*get.hash.as_bytes());
-            let Some(len) = self.store.len(Namespace::Data, &hash)? else {
-                return Ok(None);
+            let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
+
+            // Size: a resident literal answers from the store; an evicted
+            // blob only the index knows. Unknown to both ⇒ we don't have it.
+            let total = match self.store.len(Namespace::Data, &hash)? {
+                Some(len) => len,
+                None => match db.blob_by_hash(&hash)? {
+                    Some(row) => row
+                        .size
+                        .ok_or_else(|| anyhow!("blob {hash} grounded but size unknown"))?,
+                    None => return Ok(None),
+                },
             };
-            // The root ranges (offset 0). Hash-seqs (offset > 0) are a
-            // later iteration; a plain blob only has a root entry.
+
+            // The whole verified blob (spike buffer). serve_range unifies
+            // literal reads and recipe materialization, D49-verified.
+            let data = exec.serve_range(&db, &hash, 0, total)?;
+            drop(db); // release before the async write; nothing below needs it
+
+            // Outboard: empty for ≤ one chunk group (no sidecar exists);
+            // otherwise the retained `.obao4` (survives eviction, D49).
+            let sidecar = if outboard_size(total) == 0 {
+                Vec::new()
+            } else {
+                self.store
+                    .get_obao(Namespace::Data, &hash)?
+                    .ok_or_else(|| anyhow!("no outboard for {hash}"))?
+            };
+            let outboard = PreOrderMemOutboard {
+                root: blake3::Hash::from_bytes(hash.0),
+                tree: BaoTree::new(total, BLOCK_SIZE),
+                data: sidecar,
+            };
+
+            // Root ranges (offset 0); hash-seqs (offset > 0) are later.
             let ranges = get
                 .ranges
                 .iter_non_empty_infinite()
@@ -127,34 +175,18 @@ pub mod cas {
                 .map(|(_, r)| r.clone())
                 .unwrap_or_else(bao_tree::ChunkRanges::all);
 
-            // Whole-blob read is the spike shortcut; streaming/spill is the
-            // executor path (D92) the virtual half already implies.
-            let mut data = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
-            let mut blob = self
-                .store
-                .get(Namespace::Data, &hash)?
-                .expect("len() saw the blob; single-writer tree");
-            std::io::Read::read_to_end(&mut blob, &mut data)?;
-
-            let sidecar = self
-                .store
-                .get_obao(Namespace::Data, &hash)?
-                .unwrap_or_default();
-            let tree = BaoTree::new(len, BLOCK_SIZE);
-            let outboard = PreOrderMemOutboard {
-                root: blake3::Hash::from_bytes(hash.0),
-                tree,
-                data: sidecar,
-            };
-
-            let mut out = Vec::new();
-            out.extend_from_slice(&len.to_le_bytes());
+            let mut out = total.to_le_bytes().to_vec();
             encode_ranges_validated(data.as_slice(), &outboard, &ranges, &mut out)?;
             Ok(Some(out))
         }
 
-        async fn serve(&self, get: GetRequest, send: &mut SendStream) -> Result<()> {
-            if let Some(bytes) = self.encode_get(&get)? {
+        async fn serve(
+            &self,
+            exec: &Executor<'_>,
+            get: GetRequest,
+            send: &mut SendStream,
+        ) -> Result<()> {
+            if let Some(bytes) = self.encode_get(exec, &get)? {
                 send.write_all(&bytes).await?;
             }
             send.finish()?;
@@ -164,6 +196,11 @@ pub mod cas {
 
     impl ProtocolHandler for CasProvider {
         async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+            // One executor per connection (holds the wasm hosts); the store
+            // borrow lives for the accept loop. Per-request is the seam if
+            // this ever needs a shared engine.
+            let exec = Executor::new(&self.store, ExecConfig::default())
+                .map_err(|e| AcceptError::from_err(std::io::Error::other(e.to_string())))?;
             // One get-request per bidirectional stream, mirroring
             // iroh-blobs' own provider loop.
             while let Ok((mut send, mut recv)) = connection.accept_bi().await {
@@ -172,7 +209,7 @@ pub mod cas {
                     .map_err(AcceptError::from_err)?;
                 if let Request::Get(get) = request {
                     // anyhow isn't std::error::Error; funnel through io::Error.
-                    self.serve(get, &mut send)
+                    self.serve(&exec, get, &mut send)
                         .await
                         .map_err(|e| AcceptError::from_err(std::io::Error::other(e.to_string())))?;
                 }
@@ -199,29 +236,38 @@ mod tests {
         Ok(())
     }
 
-    /// D97 fronting: a provider backed by a REAL on-disk
+    /// D97 fronting, LITERAL half: a provider backed by a REAL on-disk
     /// `datboi-store-fs::Store` (loose blob + its `.obao4` sidecar) serves
     /// the stock iroh-blobs requester, which fetches and blake3-verifies.
-    /// No bytes are copied into an iroh store — they stream from our CAS,
-    /// encoded against the sidecar we already wrote at ingest.
+    /// No bytes are copied into an iroh store — they stream from our CAS
+    /// through the executor's `serve_range`, encoded against the sidecar.
     #[tokio::test]
-    async fn provider_fronts_the_real_cas() -> Result<()> {
-        use std::sync::Arc;
+    async fn provider_fronts_a_resident_blob() -> Result<()> {
+        use std::sync::{Arc, Mutex};
 
         use datboi_core::hash::Blake3;
+        use datboi_index::{Db, Namespace as IndexNs, Residency};
         use datboi_store_fs::{Namespace, Store};
 
         let dir = tempfile::tempdir()?;
         let store = Arc::new(Store::open(dir.path().join("store"))?);
+        let mut db = Db::open(dir.path())?;
         let original: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
         let hash = Blake3::compute(&original);
         store.put(Namespace::Data, hash, original.as_slice())?;
         store.ensure_obao(Namespace::Data, &hash)?; // the sidecar we serve from
+        db.upsert_blob(
+            &hash,
+            Some(original.len() as u64),
+            IndexNs::Data,
+            Residency::Resident,
+        )?;
+        let db = Arc::new(Mutex::new(db));
 
         let endpoint = Endpoint::bind(presets::N0).await?;
         endpoint.online().await;
         let addr = endpoint.addr();
-        let provider = cas::CasProvider::new(store.clone());
+        let provider = cas::CasProvider::new(store.clone(), db);
         let router = Router::builder(endpoint)
             .accept(iroh_blobs::ALPN, provider)
             .spawn();
@@ -230,6 +276,142 @@ mod tests {
         let ticket = BlobTicket::new(addr, iroh_hash, iroh_blobs::BlobFormat::Raw);
         let received = fetch(&ticket).await?;
         assert_eq!(received, original, "bytes came verified from the real CAS");
+
+        router.shutdown().await?;
+        Ok(())
+    }
+
+    /// D97 fronting, VIRTUAL half (D92): a blob that is grounded but NOT
+    /// resident — its literal was evicted, only a recipe + the retained
+    /// `.obao4` remain — is served to a peer by materializing it on demand
+    /// through the executor, D49-verified. The peer can't tell it wasn't
+    /// sitting on disk. Fixture mirrors the exec crate's eviction test:
+    /// member = `deflate-decompress` of a resident container.
+    #[tokio::test]
+    async fn provider_fronts_a_virtual_evicted_blob() -> Result<()> {
+        use std::io::Write as _;
+        use std::sync::{Arc, Mutex};
+
+        use datboi_core::cbor::{self, Value};
+        use datboi_core::hash::Blake3;
+        use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe};
+        use datboi_exec::evict::EvictOutcome;
+        use datboi_exec::{ExecConfig, Executor};
+        use datboi_index::recipes::NewRecipe;
+        use datboi_index::{
+            Db, Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass,
+        };
+        use datboi_store_fs::{Namespace, Store};
+        use flate2::Compression;
+        use flate2::write::DeflateEncoder;
+
+        let dir = tempfile::tempdir()?;
+        let store = Arc::new(Store::open(dir.path().join("store"))?);
+        let mut db = Db::open(dir.path())?;
+
+        // member (>16 KiB so it has a real bao tree); container = "hdr" +
+        // deflate(member), so member = deflate-decompress(container[3..]).
+        let member: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        let member_hash = Blake3::compute(&member);
+        let compressed = {
+            let mut enc = DeflateEncoder::new(Vec::new(), Compression::default());
+            enc.write_all(&member)?;
+            enc.finish()?
+        };
+        let mut container = b"hdr".to_vec();
+        container.extend_from_slice(&compressed);
+        let container_hash = Blake3::compute(&container);
+
+        store.put(Namespace::Data, container_hash, container.as_slice())?;
+        let container_id = db.upsert_blob(
+            &container_hash,
+            Some(container.len() as u64),
+            IndexNs::Data,
+            Residency::Resident,
+        )?;
+        let member_id = db.upsert_blob(
+            &member_hash,
+            Some(member.len() as u64),
+            IndexNs::Data,
+            Residency::Absent,
+        )?;
+        let recipe = Recipe {
+            op: Op::Builtin {
+                name: "deflate-decompress".into(),
+                major: 1,
+            },
+            inputs: vec![InputRef {
+                hash: container_hash,
+                role: None,
+            }],
+            outputs: vec![OutputRef {
+                hash: member_hash,
+                size: member.len() as u64,
+                name: None,
+            }],
+            params: cbor::encode(&Value::Map(vec![
+                (1, Value::Uint(3)),
+                (2, Value::Uint(compressed.len() as u64)),
+            ]))?,
+        };
+        let encoded = recipe.encode()?;
+        let recipe_hash = Blake3::compute(&encoded);
+        store.put(Namespace::Meta, recipe_hash, encoded.as_slice())?;
+        let recipe_blob_id = db.upsert_blob(
+            &recipe_hash,
+            Some(encoded.len() as u64),
+            IndexNs::Meta,
+            Residency::Resident,
+        )?;
+        db.insert_recipe(&NewRecipe {
+            blob_id: recipe_blob_id,
+            op_kind: OpKind::Builtin,
+            op_name: "deflate-decompress@1",
+            seek_class: SeekClass::Opaque,
+            source: RecipeSource::LocalIngest,
+            inputs: &[(0, container_id, None)],
+            outputs: &[(0, member_id, member.len() as u64, None)],
+        })?;
+
+        // Materialize the member (mints its `.obao4`), then evict the
+        // literal — leaving it grounded-but-virtual.
+        {
+            let exec = Executor::new(&store, ExecConfig::default())?;
+            exec.materialize(&db, &member_hash)?;
+            assert!(store.has(Namespace::Data, &member_hash), "materialized");
+            let out = exec.evict(&db, &member_hash)?;
+            assert!(matches!(out, EvictOutcome::Evicted { .. }), "evicted: {out:?}");
+        }
+        assert!(
+            !store.has(Namespace::Data, &member_hash),
+            "literal gone — the blob is virtual now"
+        );
+        assert!(
+            store.get_obao(Namespace::Data, &member_hash)?.is_some(),
+            "outboard retained (D49 rule 1)"
+        );
+
+        // Serve the VIRTUAL member to a peer; it must arrive verified,
+        // rebuilt from its recipe on the fly.
+        let db = Arc::new(Mutex::new(db));
+        let endpoint = Endpoint::bind(presets::N0).await?;
+        endpoint.online().await;
+        let addr = endpoint.addr();
+        let provider = cas::CasProvider::new(store.clone(), db);
+        let router = Router::builder(endpoint)
+            .accept(iroh_blobs::ALPN, provider)
+            .spawn();
+
+        let ticket = BlobTicket::new(
+            addr,
+            iroh_blobs::Hash::from_bytes(member_hash.0),
+            iroh_blobs::BlobFormat::Raw,
+        );
+        let received = fetch(&ticket).await?;
+        assert_eq!(
+            received, member,
+            "evicted blob rebuilt from its recipe, verified, over the wire"
+        );
 
         router.shutdown().await?;
         Ok(())
