@@ -24,6 +24,7 @@
 pub mod evict;
 pub mod policy;
 pub mod random;
+pub mod scrub;
 pub mod swap;
 
 pub use datboi_runtime::pipe;

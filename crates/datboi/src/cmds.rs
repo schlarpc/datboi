@@ -15,7 +15,7 @@ use datboi_core::recipe::{Op, Recipe};
 use datboi_core::snapshot::{AliasBatch, AnalysisBatch, StateSnapshot};
 use datboi_index::types::{Namespace as NsRow, RecipeSource, Residency, SeekClass};
 use datboi_ingest::{IngestReport, Ingester};
-use datboi_store_fs::{Namespace, StoreError, VerifyOutcome};
+use datboi_store_fs::{Namespace, StoreError};
 use serde_json::json;
 
 use crate::config::Env;
@@ -1387,122 +1387,44 @@ pub fn scrub(
     rehabilitate: bool,
     json: bool,
 ) -> anyhow::Result<ExitCode> {
+    // The corpus walk descended to datboi-exec (D96) so the daemon's
+    // `POST /v1/scrub` runs the same code; the CLI keeps only the printer.
+    let exec = datboi_exec::Executor::new(&env.store, datboi_exec::ExecConfig::default())?;
+    let report = exec.scrub(&env.db, sample_pct, rehabilitate, now_unix())?;
     let pct = sample_pct.min(100);
-    let now = now_unix();
-    let mut checked: u64 = 0;
-    let mut refreshed: u64 = 0;
-    let mut corrupt: Vec<String> = Vec::new();
-    let mut missing: Vec<String> = Vec::new();
-    for ns in [Namespace::Data, Namespace::Meta] {
-        for item in env.store.list(ns) {
-            let (hash, size) = match item {
-                Ok(pair) => pair,
-                Err(StoreError::Foreign { .. }) => continue,
-                Err(e) => return Err(e.into()),
-            };
-            // Deterministic sampling by hash prefix: no RNG, same subset
-            // every run at a given percentage.
-            if u32::from(hash.0[0]) * 100 >= u32::from(pct) * 256 {
-                continue;
-            }
-            checked += 1;
-            // The same read computes the full alias tuple, so scrub is
-            // also fast-recovery's back-fill: blobs indexed by the
-            // metadata-only walk get aliases + verified_at here.
-            match env.store.verify_with_aliases(ns, &hash)? {
-                (VerifyOutcome::Valid, aliases) => {
-                    let ns_row = match ns {
-                        Namespace::Data => NsRow::Data,
-                        Namespace::Meta => NsRow::Meta,
-                    };
-                    let blob_id =
-                        env.db
-                            .upsert_blob(&hash, Some(size), ns_row, Residency::Resident)?;
-                    if let Some(aliases) = &aliases {
-                        env.db.insert_aliases(blob_id, aliases)?;
-                    }
-                    env.db.set_verified(blob_id, now)?;
-                    refreshed += 1;
-                }
-                (VerifyOutcome::Corrupt { .. }, _) => corrupt.push(hash.to_hex()),
-                (VerifyOutcome::Missing, _) => missing.push(hash.to_hex()),
-            }
-        }
-    }
-    // Sealed packs (D91): the loose walk above never sees packed members,
-    // so a rotting pack was invisible to scrub. Each pack carries its own
-    // identity (the filename), so re-hashing the whole file is the
-    // strongest and cheapest proof — a match certifies every member.
-    // Packs are O(decompositions) and the coverage gap this closes, so we
-    // scrub them ALL whenever sampling is active, not by hash prefix.
-    if pct > 0 {
-        for pack in env.store.list_packs() {
-            let scrub = env.store.scrub_pack(&pack)?;
-            checked += scrub.members.len() as u64;
-            if !scrub.intact {
-                corrupt.push(format!("pack {}", pack.to_hex()));
-            }
-            for member in &scrub.members {
-                match &member.aliases {
-                    Some(aliases) => {
-                        let blob_id = env.db.upsert_blob(
-                            &member.hash,
-                            Some(member.len),
-                            NsRow::Data,
-                            Residency::Resident,
-                        )?;
-                        env.db.insert_aliases(blob_id, aliases)?;
-                        env.db.set_verified(blob_id, now)?;
-                        refreshed += 1;
-                    }
-                    None => corrupt.push(member.hash.to_hex()),
-                }
-            }
-        }
-    }
-    // Rehabilitation (D54-era work item): re-execute poisoned recipes;
-    // a verified re-replay is the one sanctioned exit from Failed.
-    let mut rehabilitated: Vec<i64> = Vec::new();
-    let mut still_failed: Vec<(i64, String)> = Vec::new();
-    if rehabilitate {
-        let exec = datboi_exec::Executor::new(&env.store, datboi_exec::ExecConfig::default())?;
-        for recipe_id in env.db.list_failed_recipes()? {
-            match exec.rehabilitate(&env.db, recipe_id) {
-                Ok(_) => rehabilitated.push(recipe_id),
-                Err(e) => still_failed.push((recipe_id, e.to_string())),
-            }
-        }
-    }
 
     if json {
         println!(
             "{}",
             json!({
-                "sample_pct": pct, "checked": checked, "refreshed": refreshed,
-                "rehabilitated": rehabilitated,
-                "still_failed": still_failed.iter().map(|(id, e)| json!({"recipe": id, "error": e})).collect::<Vec<_>>(),
-                "corrupt": corrupt, "missing": missing,
+                "sample_pct": pct, "checked": report.checked, "refreshed": report.refreshed,
+                "rehabilitated": report.rehabilitated,
+                "still_failed": report.still_failed.iter().map(|(id, e)| json!({"recipe": id, "error": e})).collect::<Vec<_>>(),
+                "corrupt": report.corrupt, "missing": report.missing,
             })
         );
     } else {
-        println!("checked {checked} blobs ({pct}% sample), {refreshed} rows refreshed");
-        for id in &rehabilitated {
+        println!(
+            "checked {} blobs ({pct}% sample), {} rows refreshed",
+            report.checked, report.refreshed
+        );
+        for id in &report.rehabilitated {
             println!("rehabilitated recipe #{id}");
         }
-        for (id, e) in &still_failed {
+        for (id, e) in &report.still_failed {
             println!("recipe #{id} stays poisoned: {e}");
         }
-        for h in &corrupt {
+        for h in &report.corrupt {
             println!("CORRUPT: {h}");
         }
-        for h in &missing {
+        for h in &report.missing {
             println!("MISSING: {h}");
         }
-        if corrupt.is_empty() && missing.is_empty() {
+        if report.is_clean() {
             println!("no problems found");
         }
     }
-    Ok(if corrupt.is_empty() && missing.is_empty() {
+    Ok(if report.is_clean() {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
