@@ -103,6 +103,8 @@ export interface MockUniverse {
   datImport?: DatImportBody;
   /** Dat import answers 400 — exercises the refused-file log line. */
   datImportFail?: boolean;
+  /** POST /v1/dats/fetch answers 400 — exercises the failed-fetch line. */
+  datFetchFail?: boolean;
   /** Grant/revoke answer 500 — exercises the optimistic revert. */
   grantFail?: boolean;
   /** Grant/revoke wait on this before answering — lets a test observe
@@ -394,6 +396,22 @@ export function installFetch(universe: MockUniverse) {
             demoted_revisions: [],
           },
         );
+      }
+      if (path === '/v1/dats/fetch' && method === 'POST') {
+        if (universe.datFetchFail === true) {
+          return json(400, { error: 'bad source, or the fetch failed' });
+        }
+        const imp = universe.datImport ?? {
+          source_id: 1,
+          revision_id: 1,
+          dat_blob: '0'.repeat(64),
+          provider: 'Redump',
+          system: 'psx',
+          entries: 0,
+          claims: 0,
+          demoted_revisions: [],
+        };
+        return json(200, { url: 'http://redump.org/datfile/psx/', import: imp });
       }
       if (path === '/v1/admin/invites' && method === 'POST') {
         return json(200, universe.minted ?? { url_path: '/invite#tok-mock', expires_at: 4200 });

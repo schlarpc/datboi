@@ -25,6 +25,9 @@ import type {
   BlobDetail,
   BlobsBody,
   BlobsParams,
+  ClonelistBody,
+  DatDiffBody,
+  DatFetchBody,
   DatImportBody,
   DatImportParams,
   EntriesBody,
@@ -228,6 +231,59 @@ export const importDat = async (
   unwrap(
     await client.POST('/v1/dats/import', {
       params: { query: params },
+      body: rawBody(file),
+      bodySerializer: passthrough,
+      headers: OCTET_STREAM,
+    }),
+  );
+
+/**
+ * POST /v1/dats/fetch — fetch a dat over HTTP and import it (Redump
+ * auto-fetch, D16). `source` is a full URL or `redump/<slug>`; the
+ * receipt carries the resolved URL and the import outcome.
+ */
+export const datFetch = async (
+  source: string,
+  provider?: string,
+  system?: string,
+): Promise<DatFetchBody> =>
+  unwrap(
+    await client.POST('/v1/dats/fetch', {
+      body: {
+        source,
+        ...(provider != null && provider !== '' ? { provider } : {}),
+        ...(system != null && system !== '' ? { system } : {}),
+      },
+    }),
+  );
+
+/** GET /v1/dats/{provider}/{system}/diff — previous → current (D38). */
+export const datDiff = async (provider: string, system: string): Promise<DatDiffBody> =>
+  unwrap(
+    await client.GET('/v1/dats/{provider}/{system}/diff', {
+      params: { path: { provider, system } },
+    }),
+  );
+
+/** `/v1/dats/{provider}/{system}/export` — the current revision as a
+ * Logiqx dat download (a real anchor, not a fetch). */
+const DAT_EXPORT_PATH = '/v1/dats/{provider}/{system}/export' satisfies keyof paths;
+export const datExportUrl = (provider: string, system: string): string =>
+  DAT_EXPORT_PATH.replace('{provider}', encodeURIComponent(provider)).replace(
+    '{system}',
+    encodeURIComponent(system),
+  );
+
+/** POST /v1/dats/{provider}/{system}/clonelist — link a retool clonelist
+ * (D57); the raw JSON bytes ARE the body. */
+export const datClonelist = async (
+  provider: string,
+  system: string,
+  file: Blob,
+): Promise<ClonelistBody> =>
+  unwrap(
+    await client.POST('/v1/dats/{provider}/{system}/clonelist', {
+      params: { path: { provider, system } },
       body: rawBody(file),
       bodySerializer: passthrough,
       headers: OCTET_STREAM,

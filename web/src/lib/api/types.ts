@@ -57,6 +57,16 @@ export type EntryDetail = Schemas['EntryDetail'];
 export type DatImportParams = NonNullable<operations['dat_import']['parameters']['query']>;
 export type DatImportBody = Schemas['DatImportResponse'];
 
+// ---- dat lifecycle (D16/D38/D57/D96) ----
+
+/** POST /v1/dats/fetch body + receipt. */
+export type DatFetchParams = Schemas['DatFetchRequest'];
+export type DatFetchBody = Schemas['DatFetchResponse'];
+/** GET /v1/dats/{provider}/{system}/diff. */
+export type DatDiffBody = Schemas['DatDiffResponse'];
+/** POST /v1/dats/{provider}/{system}/clonelist receipt. */
+export type ClonelistBody = Schemas['ClonelistResponse'];
+
 // ---- GET /v1/views (+ /{name}) ----
 
 export type OneGOneR = Schemas['OneGOneR'];

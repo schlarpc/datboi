@@ -172,3 +172,41 @@ test('a refused dat logs the job-report error against the file name', async () =
   expect(screen.getByText('refused')).toBeTruthy();
   expect(screen.getByText('unknown dat format')).toBeTruthy();
 });
+
+test('fetching a dat from a source logs the receipt and refreshes the shelf', async () => {
+  const handler = installFetch({
+    systems: [gba],
+    datImport: {
+      source_id: 3, revision_id: 1, dat_blob: '0'.repeat(64),
+      provider: 'Redump', system: 'psx', entries: 1300, claims: 1300, demoted_revisions: [],
+    },
+  });
+  render(Library);
+  await screen.findByText('gba');
+
+  const input = screen.getByPlaceholderText('or fetch a dat: redump/psx, or a URL');
+  await fireEvent.input(input, { target: { value: 'redump/psx' } });
+  await fireEvent.click(screen.getByText('fetch'));
+
+  // The receipt names the resolved URL + the import outcome.
+  expect(await screen.findByText('http://redump.org/datfile/psx/')).toBeTruthy();
+  expect(screen.getByText('Redump/psx — 1,300 entries')).toBeTruthy();
+  const fetches = handler.mock.calls.filter(([i]) => calledPath(i) === '/v1/dats/fetch');
+  expect(fetches.length).toBe(1);
+  // The shelf changed → re-fetched.
+  const systemFetches = handler.mock.calls.filter(([i]) => calledPath(i) === '/v1/systems');
+  expect(systemFetches.length).toBe(2);
+});
+
+test('a failed fetch logs the error against the source', async () => {
+  installFetch({ systems: [gba], datFetchFail: true });
+  render(Library);
+  await screen.findByText('gba');
+
+  const input = screen.getByPlaceholderText('or fetch a dat: redump/psx, or a URL');
+  await fireEvent.input(input, { target: { value: 'redump/nope' } });
+  await fireEvent.click(screen.getByText('fetch'));
+
+  expect(await screen.findByText('redump/nope')).toBeTruthy();
+  expect(screen.getByText('refused')).toBeTruthy();
+});

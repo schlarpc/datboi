@@ -835,7 +835,9 @@ msgstr "{0}{1} files"
 msgid "snap {0}<0/><1/>"
 msgstr "snap {0}<0/><1/>"
 
+#. 0: receipt.import.provider; 1: receipt.import.system; 2: receipt.import.entries.toLocaleString()
 #. 0: dat.provider; 1: dat.system; 2: dat.entries.toLocaleString()
+#: src/screens/Library.svelte
 #: src/screens/Library.svelte
 msgid "{0}/{1} — {2} entries"
 msgstr "{0}/{1} — {2} entries"
@@ -1808,3 +1810,13 @@ msgstr "bringing on disk…"
 msgctxt "rebuild a blob onto disk"
 msgid "bring on disk"
 msgstr "bring on disk"
+
+#: src/screens/Library.svelte
+msgctxt "dat fetch in progress"
+msgid "fetching…"
+msgstr "fetching…"
+
+#: src/screens/Library.svelte
+msgctxt "fetch a dat from a url"
+msgid "fetch"
+msgstr "fetch"

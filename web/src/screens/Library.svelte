@@ -4,7 +4,7 @@
    * GET /v1/systems in the full cartridge register: band, 2px ink,
    * offset shadow, stacked bar with ink frame, views chips.
    */
-  import { startIngest, systems as fetchSystems, uploadRom } from '../lib/api/client';
+  import { datFetch, startIngest, systems as fetchSystems, uploadRom } from '../lib/api/client';
   import type { System } from '../lib/api/types';
   import { bandFor } from '../lib/bands';
   import Link from '../lib/components/Link.svelte';
@@ -29,6 +29,31 @@
   let dragOver = $state(false);
   let importing = $state<string | null>(null);
   let imports = $state<{ name: string; ok: boolean; detail: string }[]>([]);
+
+  // Dat auto-fetch (D16): the same import outcome, from a URL or a
+  // `redump/<slug>` source instead of a local file. Request-sized (bytes
+  // in / receipt out), so no job — the receipt lands in the same log.
+  let fetchSource = $state('');
+  let fetching = $state(false);
+  async function fetchDat(): Promise<void> {
+    const source = fetchSource.trim();
+    if (source === '' || fetching) return;
+    fetching = true;
+    try {
+      const receipt = await datFetch(source);
+      imports.push({
+        name: receipt.url,
+        ok: true,
+        detail: `${receipt.import.provider}/${receipt.import.system} — ${receipt.import.entries.toLocaleString()} entries`,
+      });
+      fetchSource = '';
+      systems = (await fetchSystems()).systems;
+    } catch (e) {
+      imports.push({ name: source, ok: false, detail: errorText(e) });
+    } finally {
+      fetching = false;
+    }
+  }
 
   // Unmount stops the follow loop — the tray owns job visibility; a
   // destroyed screen must not keep a private poll running for hours.
@@ -256,6 +281,23 @@
         <span>+ import a dat (zipped is fine) to start a new system — drop files anywhere or click to pick</span>
       {/if}
     </button>
+    <!-- Or fetch one over HTTP (Redump auto-fetch, D16): a URL or a
+         redump/<slug> source, same import outcome as a dropped file. -->
+    <div class="fetch-row">
+      <input
+        class="fetch-input"
+        placeholder="or fetch a dat: redump/psx, or a URL"
+        bind:value={fetchSource}
+        disabled={fetching}
+        onkeydown={(e) => {
+          // @wc-ignore
+          if (e.key === 'Enter') void fetchDat();
+        }}
+      />
+      <button class="fetch-btn" disabled={fetching || fetchSource.trim() === ''} onclick={fetchDat}>
+        {#if fetching}<!-- @wc-context: dat fetch in progress -->fetching…{:else}<!-- @wc-context: fetch a dat from a url -->fetch{/if}
+      </button>
+    </div>
     {#if imports.length > 0}
       <ul class="import-log">
         {#each imports as result, i (i)}
@@ -419,6 +461,40 @@
 
   .empty-card:disabled {
     cursor: progress;
+  }
+
+  .fetch-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+  }
+
+  .fetch-input {
+    flex: 1;
+    min-width: 0;
+    border: 1.5px solid var(--dim);
+    border-radius: var(--r-input);
+    padding: 8px 12px;
+    background: var(--panel);
+    font: 400 0.8125rem var(--font-data);
+    color: var(--text);
+  }
+
+  .fetch-btn {
+    all: unset;
+    flex: none;
+    border: 2px solid var(--ink);
+    border-radius: var(--r-pill);
+    padding: 6px 18px;
+    background: var(--panel);
+    font: 600 0.8125rem var(--font-data);
+    cursor: pointer;
+  }
+
+  .fetch-btn:disabled {
+    cursor: default;
+    color: var(--faint);
+    border-color: var(--dim);
   }
 
   .import-log {
