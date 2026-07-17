@@ -272,3 +272,81 @@ fetch-from-a-friend card (share-your-id + peer-id form + the savings
 receipt); `datboi fetch --peer <id> [want…]` is the direct-library lane
 under an EPHEMERAL key (deliberate: a live `--p2p` daemon owns the
 derived key's discovery record).
+
+## Use-case coverage audit (2026-07-17, pre-ship exploration)
+
+Raised in review: "it being only the recipe set is interesting and might
+cause issues later — we owe an actual use case exploration before we
+fully ship the p2p protocol." This section is that exploration: each
+journey walked through the BUILT mechanics (D100 recon scope + sync
+closure walk + CasProvider), with what falls through. The one-sentence
+verdict: **the affine-recipe scope is the right *transfer-optimization*
+plane and the wrong — never-intended — *completeness* plane; two
+journeys silently depend on a completeness layer that doesn't exist
+yet, and one mirror-resume gap is bug-shaped.**
+
+What the scope actually advertises (verified against the mint sites):
+every non-Failed `assemble@1`/affine recipe — D91 piece splits, NDS/NARC
+decompositions, chunk sets, trim aliases, stored-zip-member slices, AND
+preflate container rebuilds (minted affine). Sync then reaches: the
+OUTPUTS of fetched plans (mirror roots) plus everything reachable as
+transitive INPUTS (fetched as leaves — including opaque-derived stream
+blobs, which arrive as plain literals and re-refine locally). What is
+INVISIBLE to the scope: any blob that is neither an output nor an input
+of an affine assemble — i.e. **never-analyzed loose ROMs** (most of a
+young library) and **preflate-refused all-deflate containers** (the D24
+tax, no stored members). Mirror mode is honest about decomposed
+content and blind to exactly the content nothing has decomposed.
+
+Per journey:
+
+1. **Explicit fetch (wants mode)** — COMPLETE today. The closure walk's
+   degenerate case fetches any grounded peer blob whole by hash;
+   recon/plans only make it cheaper. Proven e2e.
+2. **Friend mirror ("everything you share")** — PARTIAL, two gaps.
+   (a) The invisibility class above: the Ingest card's copy states the
+   intent ("fetches everything they share that you lack"); the chosen
+   posture is to make the copy TRUE rather than lawyer it — see the
+   options below. (b) *Resume gap, bug-shaped*: mirror roots are the
+   outputs of NEWLY fetched plans only, so a mirror interrupted between
+   plan-indexing and piece-fetching never retries — the re-run's recon
+   diff is empty (plans already local), roots are empty, and the report
+   claims success with missing leaves still missing. Fix direction:
+   mirror roots = every local affine plan output not yet grounded, not
+   just this round's fetches.
+3. **Dat gap-fill ("complete this set from friends")** — NOT SERVED by
+   recon, by construction: the ask is entry-shaped ("who has Mario Kart
+   EUR?"), and the local index knows the WANTED hash only in the dat's
+   algebra (sha1/crc/md5) — blake3 is learned when bytes are first held
+   somewhere. Discovery must translate entry→blake3, which is exactly
+   the D34/D39 holdings-channel layer (`available-from-peer(X)`), or an
+   alias-pair reconciliation scope. Once the blake3 is known, wants
+   mode already finishes the job.
+4. **Curated-view subscription (D34 "moxfield")** — mechanically close:
+   a view snapshot is a meta blob and CasProvider serves meta, so a
+   subscriber holding the snapshot hash can pull manifest → recipes →
+   pieces today. Owed: discovery/update flow (how the hash reaches the
+   subscriber), the D34 channel design.
+5. **Disaster restore from a friend** — mechanically supported: the
+   operator's own signed state snapshot names everything they held;
+   wants derive locally and fetch by hash. Owed: the operator verb that
+   walks a snapshot into a want-list (no design risk, just work).
+6. **Swarm tiers / advertisement** — gated on the recon ACL (flagged
+   with D100; the responder-memory half of that worry is now closed by
+   the streaming amendment).
+
+Options for closing the mirror-coverage gap (ruling owed, not made
+here):
+- **Roots scope**: a second recon scope over the hashes of blobs with
+  no non-Failed producing route — the ur-literals (loose ROMs +
+  containers), the minimal set that, with the plans, derives
+  everything. Count ~ #ingested files; the streaming responder makes
+  the responder side O(block) regardless, and the initiator's decoder
+  prior (~72 B/element) is paid by the party choosing to mirror.
+- **Holdings channels as the completeness layer** (D34): mirror =
+  channel enumeration for names + recon for dedup transfer. More
+  design, but it is ALSO what journeys 3 and 4 need — one layer serves
+  three journeys.
+- Rejected out of hand: widening the recipe scope to opaque recipes
+  (their outputs arrive as literals anyway via the leaf fetch; it
+  would advertise interior derivations nobody roots on).

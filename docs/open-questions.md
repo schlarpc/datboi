@@ -584,6 +584,25 @@ D97 left to the build:
   with iroh in-graph VERIFIED green (2026-07-17) — iroh's crypto crates
   (ring/aws-lc) compiled in the sandbox with no flake changes; the hermetic
   binary carries `--p2p`.
+- **Protocol-completeness gate (raised 2026-07-17, use-case audit —
+  RULING OWED before the p2p protocol is called shipped).** The
+  coverage audit (p2p.md § Use-case coverage audit) walked all six
+  journeys through the built mechanics and found: explicit-wants fetch
+  and curated-ticket fetch are complete; friend MIRROR is blind to
+  exactly the content nothing has decomposed (never-analyzed loose
+  ROMs, preflate-refused all-deflate zips — the affine-recipe scope
+  advertises plans, and plan-less blobs are invisible); dat GAP-FILL
+  needs entry→blake3 discovery (dats speak sha1/crc) that no recon
+  scope can provide. Options on the table: a **roots scope** (blobs
+  with no producing route — the ur-literals; minimal covering set,
+  cheap on the streaming responder) vs **D34 holdings channels as the
+  completeness layer** (serves mirror + gap-fill + curation at once).
+  Also found, bug-shaped: **mirror resume** — mirror roots are only
+  the NEWLY fetched plans, so a sync interrupted between plan-indexing
+  and piece-fetch never retries (re-run's recon diff is empty, report
+  claims success); fix is rooting on every local ungrounded affine
+  plan output. The Ingest card's "fetches everything they share"
+  states intent — the posture is to make it true, not reword it.
 - ~~**Operator surface.**~~ BUILT 2026-07-17 as **D101**:
   `POST /v1/p2p/sync` (a Sync job; structured `SyncSummary` savings on
   the detail), `GET /v1/p2p` (enabled + shareable endpoint id), the
@@ -687,11 +706,18 @@ Sync ledger stamp); and the web: Ingest screen's fetch-from-a-friend
 card (share-your-id + copy, peer-id form → mirror-mode sync,
 tray-woken, followJob → the savings receipt: "X fetched, Y rebuilt from
 shared pieces — Z% saved"), disabled state teaches `datboi serve
---p2p`; Activity learned the sync kind. **Pick up here**: the D34
-holdings channels / swarm tiers with the **recon ACL before any
-advertisement tier** (flagged above — today the recon ALPN reveals the
-recipe inventory to any holder of the EndpointId); smaller p2p
-remainders: hash-seq requests, a shared wasm engine per CasProvider,
+--p2p`; Activity learned the sync kind. Same-day follow-ups: the recon
+responder now streams off a held sqlite read-transaction snapshot
+(D100 amendment — O(block) memory, was ~1.4 GB peak per stream at
+10 M recipes), and the **use-case coverage audit** landed (p2p.md
+§ Use-case coverage audit + the protocol-completeness gate flagged
+above): mirror is blind to plan-less content, gap-fill needs
+entry→blake3 discovery, mirror-resume is bug-shaped. **Pick up
+here**: rule the completeness layer (roots scope vs D34 holdings
+channels — the audit's options), fix mirror resume (root on every
+local ungrounded affine plan output), then the swarm tiers with the
+**recon ACL before any advertisement tier**; smaller p2p remainders:
+hash-seq requests, a shared wasm engine per CasProvider,
 partial-range over-materialization. The previous position (D100
 reconciliation) is below.
 
