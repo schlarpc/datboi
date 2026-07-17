@@ -528,6 +528,36 @@ D97 left to the build:
   piece manifest (the strict-view fetch-list shape, D57) leaks less.
   Likely: manifests ride the D34 channel, want-lists drive fetch. Needs a
   privacy pass before public swarms.
+- **Savings observability (raised 2026-07-17).** Every part-derived
+  transfer — reconciliation, but also any recipe-graph fetch where we
+  reconstruct locally instead of pulling bytes — MUST make the win legible,
+  two audiences:
+  - *User-facing*: show what was saved, concretely and per-transfer, not
+    buried ("Mario Kart EUR: 1.3 MiB fetched, 62.7 MiB rebuilt from shared
+    pieces — 98% saved"). This is the web-ui.md persona (show the value)
+    and D96 (serve+web is the surface). The transfer summary is a
+    first-class result, not a log line.
+  - *Operator-facing*: emit HOW and HOW WELL as **structured `tracing`
+    fields** (D81), not prose — set sizes (local/peer/diff), which pieces
+    were discarded-as-already-held vs fetched, sketch-exchange overhead
+    (coded symbols sent, rounds/symbols to decode, decode success), and the
+    efficiency ratio (bytes on wire ÷ bytes reconstructed). For rateless
+    IBLT specifically: symbols sent vs the ~d theoretical minimum, and peel
+    success rate — the telemetry that tells us whether the sketch is
+    actually paying for itself on real corpora. Design these as named
+    numeric span/event fields from day one so an OTEL layer lifts them into
+    metrics for free (below). INFO on transfer completion (the summary),
+    DEBUG per-piece verdict (D81 levels).
+- **OTEL metrics (cross-cutting, raised 2026-07-17).** The daemon logs via
+  `tracing` (D81); "OTEL metrics soon" is wanted. Not a p2p-only concern —
+  it spans ingest, sweeps, eviction, serving, reconciliation. Correct-by-
+  construction consequence for everything built between now and then: emit
+  observability as **structured, named, numeric `tracing` fields** (counters
+  as event fields, durations/sizes as histogram-shaped values), never as
+  interpolated strings — so adding a `tracing-opentelemetry` layer later
+  lifts them into OTEL metrics/traces with no re-instrumentation. Wants its
+  own D-entry when the exporter lands (which subset is metrics vs traces,
+  cardinality discipline, opt-in/endpoint config in the D95 NixOS surface).
 - **CAS-fronting handler.** BOTH halves DONE in the spike
   (`cas::CasProvider` serves every request through `Executor::serve_range`
   — resident literals and evicted/recipe-only blobs alike, D49-verified;
