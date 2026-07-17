@@ -226,12 +226,27 @@ pub mod cas {
                 // drop `tx` and send nothing (the requester's fetch fails).
                 let total = match store.len(Namespace::Data, &hash)? {
                     Some(len) => len,
-                    None => match guard.blob_by_hash(&hash)? {
-                        Some(row) => row
-                            .size
-                            .ok_or_else(|| anyhow!("blob {hash} grounded but size unknown"))?,
-                        None => return Ok(()),
-                    },
+                    None => {
+                        // Not resident data — meta objects (recipes,
+                        // snapshots) serve straight from the store before
+                        // the virtual data path: D100 fetches plans over
+                        // the blobs ALPN like any bytes. Meta blobs are
+                        // request-sized and never evicted, so an
+                        // in-memory encode with an on-the-fly outboard is
+                        // the whole job (no sidecar, no executor).
+                        if let Some(mut blob) = store.get(Namespace::Meta, &hash)? {
+                            drop(guard);
+                            let mut bytes = Vec::new();
+                            blob.read_to_end(&mut bytes)?;
+                            return encode_in_memory(&hash, &bytes, &ranges, tx);
+                        }
+                        match guard.blob_by_hash(&hash)? {
+                            Some(row) => row
+                                .size
+                                .ok_or_else(|| anyhow!("blob {hash} grounded but size unknown"))?,
+                            None => return Ok(()),
+                        }
+                    }
                 };
                 // Outboard: empty for ≤ one chunk group (no sidecar);
                 // otherwise the retained `.obao4` (survives eviction, D49).
@@ -299,6 +314,35 @@ pub mod cas {
             }
             Ok(())
         }
+    }
+
+    /// Encode a fully in-memory blob to the wire shape (`size (8 LE) ‖
+    /// bao-encoded ranges`) with an outboard computed on the fly — the
+    /// meta-namespace path (D100: recipe objects are request-sized and
+    /// never evicted, so no sidecar or executor is involved). The
+    /// computed root must equal the requested hash: wrong bytes refuse
+    /// the transfer, they never ship (D49's posture).
+    fn encode_in_memory(
+        hash: &Blake3,
+        bytes: &[u8],
+        ranges: &bao_tree::ChunkRanges,
+        tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    ) -> Result<()> {
+        let total = bytes.len() as u64;
+        let tree = BaoTree::new(total, BLOCK_SIZE);
+        let mut outboard = PreOrderMemOutboard {
+            root: blake3::Hash::from_bytes(hash.0),
+            tree,
+            data: vec![0u8; usize::try_from(tree.outboard_size()).expect("meta-sized")],
+        };
+        let root = bao_tree::io::sync::outboard(bytes, tree, &mut outboard)?;
+        if root.as_bytes() != &hash.0 {
+            return Err(anyhow!("meta blob {hash} bytes do not hash to their name"));
+        }
+        let mut writer = ChannelWriter { tx };
+        writer.write_all(&total.to_le_bytes())?;
+        encode_ranges_validated(bytes, &outboard, ranges, &mut writer)?;
+        Ok(())
     }
 
     /// A forward-only [`positioned_io::ReadAt`] over a sequential reader —
@@ -583,6 +627,46 @@ mod tests {
             received, member,
             "evicted blob rebuilt from its recipe, verified, over the wire"
         );
+
+        router.shutdown().await?;
+        Ok(())
+    }
+
+    /// D100: a META blob (a recipe-object-shaped byte string, multi-group
+    /// so the on-the-fly outboard is real) serves over the blobs ALPN and
+    /// arrives verified — no sidecar exists for it, no index row either;
+    /// the store's meta namespace is the whole source.
+    #[tokio::test]
+    async fn provider_fronts_a_meta_blob() -> Result<()> {
+        use std::sync::{Arc, Mutex};
+
+        use datboi_core::hash::Blake3;
+        use datboi_index::Db;
+        use datboi_store_fs::{Namespace, Store};
+
+        let dir = tempfile::tempdir()?;
+        let store: &'static Store = Box::leak(Box::new(Store::open(dir.path().join("store"))?));
+        let db = Db::open(dir.path())?;
+        let meta: Vec<u8> = (0..40_000u32).map(|i| (i % 249) as u8).collect();
+        let hash = Blake3::compute(&meta);
+        store.put(Namespace::Meta, hash, meta.as_slice())?;
+        let db = Arc::new(Mutex::new(db));
+
+        let endpoint = Endpoint::bind(presets::N0).await?;
+        endpoint.online().await;
+        let addr = endpoint.addr();
+        let provider = cas::CasProvider::new(store, db);
+        let router = Router::builder(endpoint)
+            .accept(iroh_blobs::ALPN, provider)
+            .spawn();
+
+        let ticket = BlobTicket::new(
+            addr,
+            iroh_blobs::Hash::from_bytes(hash.0),
+            iroh_blobs::BlobFormat::Raw,
+        );
+        let received = fetch(&ticket).await?;
+        assert_eq!(received, meta, "meta bytes verified over the wire");
 
         router.shutdown().await?;
         Ok(())
