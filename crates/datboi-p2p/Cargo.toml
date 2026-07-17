@@ -1,52 +1,35 @@
-# M6 spike (docs/p2p.md, roadmap M6). Standalone/excluded workspace like
-# the wasm components (see root Cargo.toml exclude list): the heavy iroh
-# dependency tree gets its OWN Cargo.lock and never churns the host
-# lockfile or `nix build .#datboi`. Iteration 1 is a LEAF — it proves the
-# two hard unknowns (two-instance verified exchange; our D52 obao is
-# iroh's obao) with external deps only. Fronting the real CAS is the
-# design-doc'd follow-up (a custom ProtocolHandler — iroh-blobs 0.103 has
-# no public store trait), and it graduates into the host workspace then.
+# M6 p2p subsystem (docs/p2p.md, D97/D99). A daemon background subsystem
+# under `datboi serve` — NOT a permanent standalone like the wasm
+# components; it links into datboi-server. (It began as an excluded spike
+# so the churny iroh tree wouldn't touch the host lockfile before the
+# design settled; that scaffolding is gone now that it's core.)
 [package]
 name = "datboi-p2p"
-description = "M6 p2p spike: iroh-blobs transport over the datboi CAS"
-version = "0.1.0"
-edition = "2024"
-authors = ["Chaz Schlarp"]
-license = "MIT"
-repository = "https://github.com/schlarpc/datboi"
+description = "M6 p2p: iroh-blobs transport fronting the datboi logical CAS"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
-# iroh 1.0 QUIC transport + endpoint identity (D8: the ed25519 instance
-# key doubles as the iroh SecretKey). 1.0.2 renamed NodeId→EndpointId.
-iroh = "1"
-# blake3 + bao verified streaming — the ready-made CAS wire protocol
-# aligned with our D2 addressing and D52 obao4 outboards.
-iroh-blobs = "0.103"
-anyhow = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
-# Front the REAL CAS: serve blobs + their .obao4 sidecars straight from
-# the sharded loose-file store. Path deps across the workspace-exclude
-# boundary (these crates are root-workspace members; their inheritance
-# resolves against the root, not us).
-datboi-core = { path = "../datboi-core" }
-datboi-store-fs = { path = "../datboi-store-fs" }
-# The executor + index: serve the LOGICAL CAS (D92/D97) — resident
-# literals AND grounded-but-evicted blobs materialized on demand — through
-# one `serve_range` seam, D49-verified against the retained .obao4.
-datboi-exec = { path = "../datboi-exec" }
-datboi-index = { path = "../datboi-index" }
-# The bao encoder for the get-response — same 0.16 line iroh-blobs 0.103
-# links, so our encoded ranges are wire-identical.
-bao-tree = { version = "0.16", default-features = false, features = ["validate"] }
-# blake3::Hash to seed the outboard root from our blob hash.
-blake3 = "1"
+# Front the logical CAS (D92/D97): resident literals AND grounded-but-
+# evicted blobs materialized on demand, through one `serve_range` seam.
+datboi-core.workspace = true
+datboi-store-fs.workspace = true
+datboi-exec.workspace = true
+datboi-index.workspace = true
+iroh.workspace = true
+iroh-blobs.workspace = true
+bao-tree.workspace = true
+blake3.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
-blake3 = "1"
-tempfile = "3"
-# Build a deflate container for the virtual-blob test's recipe (member =
-# deflate-decompress of the container), mirroring the exec crate's fixture.
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tempfile.workspace = true
+# Build a deflate container for the virtual-blob test's recipe.
+flate2.workspace = true
 
-[lints.rust]
-unsafe_code = "warn"
+[lints]
+workspace = true

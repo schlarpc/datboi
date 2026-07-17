@@ -24,10 +24,6 @@ exclude = [
   # The emu lane (D84) is standalone AND nightly-only (dust-core);
   # it builds via `nix build .#emu-ds`, never with the workspace.
   "crates/datboi-emu-ds",
-  # M6 iroh spike (docs/p2p.md): the iroh dependency tree is heavy and
-  # 0.x-churny, so it keeps its own lockfile until M6 integration
-  # decides the store-fronting seam. Built with `cargo` in its dir.
-  "crates/datboi-p2p",
 ]
 
 [workspace.package]
@@ -45,9 +41,20 @@ datboi-exec = { path = "crates/datboi-exec" }
 datboi-formats = { path = "crates/datboi-formats" }
 datboi-index = { path = "crates/datboi-index" }
 datboi-ingest = { path = "crates/datboi-ingest" }
+datboi-p2p = { path = "crates/datboi-p2p" }
 datboi-runtime = { path = "crates/datboi-runtime" }
 datboi-server = { path = "crates/datboi-server" }
 datboi-store-fs = { path = "crates/datboi-store-fs" }
+
+# iroh p2p (M6, D97/D99). iroh 1.0 froze the v1 wire protocol; iroh-blobs
+# stays 0.x but its FORMAT (blake3+bao, .obao4) is fixed and identical to
+# ours. Now that datboi-p2p is a daemon subsystem (not a spike), the iroh
+# tree joins the host lockfile + hermetic build deliberately.
+iroh = "1"
+iroh-blobs = "0.103"
+# The bao range encoder for the p2p get-response — same 0.16 line
+# iroh-blobs links, so our encoded ranges are wire-identical.
+bao-tree = { version = "0.16", default-features = false, features = ["validate"] }
 
 anyhow = "1"
 # Password hashing for auth v1 (D30/D68): argon2id, default params. The
