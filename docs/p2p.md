@@ -307,13 +307,25 @@ Per journey:
    (a) The invisibility class above: the Ingest card's copy states the
    intent ("fetches everything they share that you lack"); the chosen
    posture is to make the copy TRUE rather than lawyer it — see the
-   options below. (b) *Resume gap, bug-shaped*: mirror roots are the
-   outputs of NEWLY fetched plans only, so a mirror interrupted between
-   plan-indexing and piece-fetching never retries — the re-run's recon
-   diff is empty (plans already local), roots are empty, and the report
-   claims success with missing leaves still missing. Fix direction:
-   mirror roots = every local affine plan output not yet grounded, not
-   just this round's fetches.
+   options below. (b) ~~*Resume gap, bug-shaped*~~ FIXED same day:
+   mirror roots are now EVERY peer-sourced plan output
+   (`Db::peer_plan_outputs`), not this round's fetches, so an
+   interrupted sync's leaves are retried by the next run; leaves the
+   current peer can't serve defer with a `pieces_unavailable` count
+   (warn + retry-next-sync) instead of failing the sync — wants mode
+   stays fatal, an explicit want is a promise. Found and fixed WITH it:
+   the closure walk was cycle-blind — real decompositions mint plans in
+   BOTH directions (container = assemble(pieces), piece =
+   assemble(container[range])), and the old visited-set descent
+   completed the inverse pair with nothing marked missing, so mirroring
+   a two-way-decomposed corpus grounded NOTHING (the e2e fixtures had
+   only minted one direction). The walk now refuses on-path inputs as
+   route support (D21's no-circular-support, locally): rooted at a
+   container it fetches the pieces; rooted at a piece it fetches the
+   container and slices locally. Both proven e2e — resume by
+   re-syncing an interrupted state, cycles by materializing the
+   container byte-true at the mirror after fetching both plan
+   directions.
 3. **Dat gap-fill ("complete this set from friends")** — NOT SERVED by
    recon, by construction: the ask is entry-shaped ("who has Mario Kart
    EUR?"), and the local index knows the WANTED hash only in the dat's

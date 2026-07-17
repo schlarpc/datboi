@@ -1958,3 +1958,14 @@ msgstr "enable the friends plane:"
 #: src/screens/Ingest.svelte
 msgid "FETCH FROM A FRIEND"
 msgstr "FETCH FROM A FRIEND"
+
+#: src/screens/Ingest.svelte
+msgid "# piece wasn't"
+msgid_plural "# pieces weren't"
+msgstr[0] "# piece wasn't"
+msgstr[1] "# pieces weren't"
+
+#. 0: plural(summary.pieces_unavailable ?? 0, [ "# piece wasn't", "# pieces weren't", ])
+#: src/screens/Ingest.svelte
+msgid "{0} available from this friend — the next fetch retries them"
+msgstr "{0} available from this friend — the next fetch retries them"

@@ -1136,6 +1136,11 @@ pub struct SyncSummary {
     /// Explicit wants materialized locally.
     pub containers_rebuilt: u64,
     pub bytes_rebuilt: u64,
+    /// Mirror-mode leaves the peer could not serve — deferred to the
+    /// next sync, never lost (the resume roots retry them). `default`
+    /// so pre-existing ledger rows still hydrate.
+    #[serde(default)]
+    pub pieces_unavailable: u64,
     /// Reconciliation overhead (sketch header + coded symbols).
     pub sketch_wire_bytes: u64,
     /// Total bytes pulled off the wire (sketch + plans + pieces).

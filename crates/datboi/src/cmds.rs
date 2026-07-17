@@ -163,6 +163,7 @@ pub fn fetch_peer(env: Env, peer: &str, wants: &[String], json: bool) -> anyhow:
                     .map(|(hash, size)| json!({"hash": hash.to_hex(), "bytes": size}))
                     .collect::<Vec<_>>(),
                 "bytes_rebuilt": report.bytes_rebuilt,
+                "pieces_unavailable": report.pieces_unavailable,
                 "sketch_wire_bytes": report.sketch_wire_bytes,
                 "bytes_fetched": report.bytes_fetched(),
                 "savings_pct": report.savings_pct(),
@@ -183,6 +184,12 @@ pub fn fetch_peer(env: Env, peer: &str, wants: &[String], json: bool) -> anyhow:
         );
         for (hash, size) in &report.rebuilt {
             println!("rebuilt: {} ({size} bytes)", hash.to_hex());
+        }
+        if report.pieces_unavailable > 0 {
+            println!(
+                "unavailable        {:>12} (peer lacks them; the next sync retries)",
+                report.pieces_unavailable
+            );
         }
         println!(
             "wire total         {:>12} bytes (sketch {})",

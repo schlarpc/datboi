@@ -241,6 +241,15 @@
             {plural(summary.pieces_already_held, ['# piece', '# pieces'])} already here
             ({fmtSize(summary.bytes_already_held)} that never crossed the wire)
           </p>
+          {#if (summary.pieces_unavailable ?? 0) > 0}
+            <p class="peer-note">
+              {plural(summary.pieces_unavailable ?? 0, [
+                "# piece wasn't",
+                "# pieces weren't",
+              ])}
+              available from this friend — the next fetch retries them
+            </p>
+          {/if}
         {/if}
       {:else}
         <p class="peer-note">

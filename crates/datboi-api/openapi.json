@@ -2469,6 +2469,12 @@
             "minimum": 0,
             "type": "integer"
           },
+          "pieces_unavailable": {
+            "description": "Mirror-mode leaves the peer could not serve — deferred to the\nnext sync, never lost (the resume roots retry them). `default`\nso pre-existing ledger rows still hydrate.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "recipe_bytes_fetched": {
             "format": "int64",
             "minimum": 0,

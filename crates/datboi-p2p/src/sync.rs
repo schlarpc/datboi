@@ -22,7 +22,7 @@
 //! the completion event emits the same numbers as named numeric tracing
 //! fields (D81, OTEL-liftable).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -54,6 +54,11 @@ pub struct SyncReport {
     /// Wants materialized locally, with their sizes.
     pub rebuilt: Vec<(Blake3, u64)>,
     pub bytes_rebuilt: u64,
+    /// Mirror-mode leaves this peer could not serve (another peer's
+    /// plan, or content the peer dropped since advertising). They stay
+    /// ungrounded and the next mirror retries them — a count here is
+    /// deferral, never loss.
+    pub pieces_unavailable: u64,
     /// Reconciliation overhead (header + coded symbols on the wire).
     pub sketch_wire_bytes: u64,
     pub symbols_received: u64,
@@ -88,45 +93,90 @@ async fn fetch_bytes(staging: &MemStore, conn: &Connection, hash: &Blake3) -> Re
     Ok(staging.get_bytes(iroh_hash).await?.to_vec())
 }
 
+/// How one walked blob resolved: both variants are SUPPORT for the
+/// blobs above it — `Fetch` because the leaf is committed to the fetch
+/// list, so it will be resident before anything assembles from it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    /// Resident, or a route resolved (all inputs Supported/Fetch).
+    Supported,
+    /// No usable acyclic route: fetch the blob itself. The whole-blob
+    /// fallback is this same case, not a special path.
+    Fetch,
+}
+
 /// The local closure walk: from each root, descend through usable
 /// (non-Failed) routes to the grounding leaves, splitting them into
-/// already-held and missing. A blob with neither residency nor a route
-/// is itself the unit to fetch — which makes whole-blob fallback the
-/// degenerate case of the same walk, not a special path.
+/// already-held and to-fetch.
+///
+/// CYCLE-CORRECT (D100 use-case audit): real decompositions mint plans
+/// in BOTH directions — container = assemble(pieces) and piece =
+/// assemble(container[range]) — so a naive visited-set descent would
+/// complete the inverse pair with nothing marked missing and ground
+/// nothing (D21 forbids exactly that circular support). Here a route
+/// whose input is on the CURRENT PATH is unusable for that descent —
+/// rooted at a container, the pieces' slice routes point back up, fail,
+/// and the pieces resolve `Fetch` (the parts); rooted at a piece, the
+/// container's rebuild route fails at the on-path piece and the
+/// CONTAINER resolves `Fetch` (slice locally). Memoized outcomes are
+/// globally valid: `Fetch` is on the fetch list; `Supported` was proven
+/// by a route whose inputs had already resolved off-path.
 struct Walk<'a> {
     db: &'a Db,
-    visited: HashSet<Blake3>,
+    memo: HashMap<Blake3, Outcome>,
+    path: HashSet<Blake3>,
     missing: Vec<Blake3>,
     pieces_held: u64,
     bytes_held: u64,
 }
 
 impl Walk<'_> {
-    fn walk(&mut self, hash: &Blake3) -> Result<()> {
-        if !self.visited.insert(*hash) {
-            return Ok(());
+    fn walk(&mut self, hash: &Blake3) -> Result<Outcome> {
+        if let Some(outcome) = self.memo.get(hash) {
+            return Ok(*outcome);
         }
-        let Some(row) = self.db.blob_by_hash(hash)? else {
+        let outcome = self.resolve(hash)?;
+        self.memo.insert(*hash, outcome);
+        if outcome == Outcome::Fetch {
             self.missing.push(*hash);
-            return Ok(());
+        }
+        Ok(outcome)
+    }
+
+    fn resolve(&mut self, hash: &Blake3) -> Result<Outcome> {
+        let Some(row) = self.db.blob_by_hash(hash)? else {
+            return Ok(Outcome::Fetch);
         };
         if row.residency == Residency::Resident {
             self.pieces_held += 1;
             self.bytes_held += row.size.unwrap_or(0);
-            return Ok(());
+            return Ok(Outcome::Supported);
         }
-        let routes = self.db.recipes_for_output(row.blob_id)?;
-        let Some(route) = routes
-            .iter()
-            .find(|r| r.verify != VerifyState::Failed)
-        else {
-            self.missing.push(*hash);
-            return Ok(());
-        };
-        for input in self.db.recipe_inputs(route.recipe_id)? {
-            self.walk(&input.hash)?;
+        self.path.insert(*hash);
+        let supported = self.any_route_resolves(row.blob_id);
+        self.path.remove(hash);
+        Ok(if supported? {
+            Outcome::Supported
+        } else {
+            Outcome::Fetch
+        })
+    }
+
+    fn any_route_resolves(&mut self, blob_id: i64) -> Result<bool> {
+        let routes = self.db.recipes_for_output(blob_id)?;
+        'routes: for route in routes.iter().filter(|r| r.verify != VerifyState::Failed) {
+            let inputs = self.db.recipe_inputs(route.recipe_id)?;
+            for input in &inputs {
+                if self.path.contains(&input.hash) {
+                    continue 'routes; // circular support — D21's forbidden shape
+                }
+            }
+            for input in &inputs {
+                self.walk(&input.hash)?; // Supported or Fetch: both support
+            }
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
 }
 
@@ -163,7 +213,6 @@ pub async fn sync(
     let staging = MemStore::new();
     let mut recipes_fetched = 0u64;
     let mut recipe_bytes_fetched = 0u64;
-    let mut fetched_outputs: Vec<Blake3> = Vec::new();
     for hash in &recon.remote_only {
         let bytes = fetch_bytes(&staging, &blobs_conn, hash)
             .await
@@ -190,24 +239,29 @@ pub async fn sync(
                 guard.index_recipe(blob_id, &recipe, SeekClass::Affine, RecipeSource::Peer)?;
             }
         }
-        fetched_outputs.extend(recipe.outputs.iter().map(|o| o.hash));
         recipes_fetched += 1;
         recipe_bytes_fetched += bytes.len() as u64;
         tracing::debug!(%hash, outputs = recipe.outputs.len() as u64, "peer plan indexed");
     }
 
-    // 3. Name the parts: wants drive the walk; mirror mode grounds
-    //    everything the fetched plans describe.
-    let roots: Vec<Blake3> = if wants.is_empty() {
-        fetched_outputs
-    } else {
-        wants.to_vec()
-    };
+    // 3. Name the parts: wants drive the walk; mirror mode roots on
+    //    EVERY peer-sourced plan output — not just this round's fetches
+    //    — so a sync interrupted between plan-indexing and piece-fetch
+    //    is finished by the next run instead of orphaned behind an
+    //    empty recon diff (D100 use-case audit: the resume gap). The
+    //    walk is idempotent, so re-rooting settled plans costs index
+    //    reads and honestly recounts their leaves as already-held.
     let (missing, pieces_already_held, bytes_already_held) = {
         let guard = db.lock().unwrap_or_else(|e| e.into_inner());
+        let roots: Vec<Blake3> = if wants.is_empty() {
+            guard.peer_plan_outputs()?
+        } else {
+            wants.to_vec()
+        };
         let mut walk = Walk {
             db: &guard,
-            visited: HashSet::new(),
+            memo: HashMap::new(),
+            path: HashSet::new(),
             missing: Vec::new(),
             pieces_held: 0,
             bytes_held: 0,
@@ -219,11 +273,28 @@ pub async fn sync(
     };
 
     // 4. Fetch the missing leaves; import with the house discipline.
+    //    Mirror mode tolerates a leaf this peer can't serve (another
+    //    peer's plan among the resume roots, or content dropped since
+    //    advertising): warn + count, leave it ungrounded for a later
+    //    sync. An explicit want is a promise, so wants mode stays
+    //    fatal.
+    let mut pieces_fetched = 0u64;
     let mut piece_bytes_fetched = 0u64;
+    let mut pieces_unavailable = 0u64;
     for hash in &missing {
-        let bytes = fetch_bytes(&staging, &blobs_conn, hash)
-            .await
-            .with_context(|| format!("fetch piece {hash}"))?;
+        let bytes = match fetch_bytes(&staging, &blobs_conn, hash).await {
+            Ok(bytes) => bytes,
+            Err(e) if wants.is_empty() => {
+                tracing::warn!(
+                    %hash,
+                    error = format!("{e:#}"),
+                    "mirror leaf unavailable from this peer; deferred to a later sync"
+                );
+                pieces_unavailable += 1;
+                continue;
+            }
+            Err(e) => return Err(e).with_context(|| format!("fetch piece {hash}")),
+        };
         {
             let guard = db.lock().unwrap_or_else(|e| e.into_inner());
             store.put_with_obao(
@@ -239,6 +310,7 @@ pub async fn sync(
                 Residency::Resident,
             )?;
         }
+        pieces_fetched += 1;
         piece_bytes_fetched += bytes.len() as u64;
         tracing::debug!(%hash, bytes = bytes.len() as u64, "piece imported");
     }
@@ -270,12 +342,13 @@ pub async fn sync(
     let report = SyncReport {
         recipes_fetched,
         recipe_bytes_fetched,
-        pieces_fetched: missing.len() as u64,
+        pieces_fetched,
         piece_bytes_fetched,
         pieces_already_held,
         bytes_already_held,
         rebuilt,
         bytes_rebuilt,
+        pieces_unavailable,
         sketch_wire_bytes: recon.wire_bytes(),
         symbols_received: recon.symbols_received,
     };
@@ -292,6 +365,7 @@ pub async fn sync(
         bytes_already_held = report.bytes_already_held,
         containers_rebuilt = report.rebuilt.len() as u64,
         bytes_rebuilt = report.bytes_rebuilt,
+        pieces_unavailable = report.pieces_unavailable,
         sketch_wire_bytes = report.sketch_wire_bytes,
         symbols_received = report.symbols_received,
         bytes_fetched = report.bytes_fetched(),
@@ -326,6 +400,7 @@ mod tests {
         pieces: &[(Blake3, u64)],
         container: &Blake3,
         total: u64,
+        source: RecipeSource,
     ) -> Result<Blake3> {
         let params = AssembleParams {
             segments: pieces
@@ -367,9 +442,63 @@ mod tests {
             Residency::Resident,
         )?;
         if db.recipe_id_for_blob(blob_id)?.is_none() {
-            db.index_recipe(blob_id, &recipe, SeekClass::Affine, RecipeSource::LocalIngest)?;
+            db.index_recipe(blob_id, &recipe, SeekClass::Affine, source)?;
         }
         Ok(recipe_hash)
+    }
+
+    /// Mint the INVERSE direction real decompositions also mint: one
+    /// affine slice plan per piece (`piece = assemble(container[range])`,
+    /// the mint_decomposition shape) — together with the rebuild plan
+    /// this is the mutually-inverse pair D21 forbids as circular
+    /// support, and the shape the cycle-correct walk exists for.
+    fn mint_slices(
+        db: &mut Db,
+        store: &Store,
+        container: &Blake3,
+        pieces: &[(Blake3, u64)],
+        source: RecipeSource,
+    ) -> Result<()> {
+        let mut offset = 0u64;
+        for (hash, len) in pieces {
+            let recipe = Recipe {
+                op: Op::Builtin {
+                    name: "assemble".into(),
+                    major: 1,
+                },
+                inputs: vec![InputRef {
+                    hash: *container,
+                    role: None,
+                }],
+                outputs: vec![OutputRef {
+                    hash: *hash,
+                    size: *len,
+                    name: None,
+                }],
+                params: AssembleParams {
+                    segments: vec![Segment::BlobRange {
+                        input_ix: 0,
+                        offset,
+                        len: *len,
+                    }],
+                }
+                .encode()?,
+            };
+            let bytes = recipe.encode()?;
+            let recipe_hash = Blake3::compute(&bytes);
+            store.put(Namespace::Meta, recipe_hash, bytes.as_slice())?;
+            let blob_id = db.upsert_blob(
+                &recipe_hash,
+                Some(bytes.len() as u64),
+                IndexNs::Meta,
+                Residency::Resident,
+            )?;
+            if db.recipe_id_for_blob(blob_id)?.is_none() {
+                db.index_recipe(blob_id, &recipe, SeekClass::Affine, source)?;
+            }
+            offset += len;
+        }
+        Ok(())
     }
 
     fn import_piece(db: &mut Db, store: &Store, bytes: &[u8]) -> Result<(Blake3, u64)> {
@@ -414,8 +543,8 @@ mod tests {
         for p in shared.iter().chain(&extra2) {
             a_c2_pieces.push(import_piece(&mut db_a, store_a, p)?);
         }
-        mint_assemble(&mut db_a, store_a, &a_c1_pieces, &c1_hash, c1.len() as u64)?;
-        let rc2 = mint_assemble(&mut db_a, store_a, &a_c2_pieces, &c2_hash, c2.len() as u64)?;
+        mint_assemble(&mut db_a, store_a, &a_c1_pieces, &c1_hash, c1.len() as u64, RecipeSource::LocalIngest)?;
+        let rc2 = mint_assemble(&mut db_a, store_a, &a_c2_pieces, &c2_hash, c2.len() as u64, RecipeSource::LocalIngest)?;
         let db_a = Arc::new(Mutex::new(db_a));
 
         let endpoint_a = Endpoint::bind(presets::N0).await?;
@@ -435,7 +564,7 @@ mod tests {
         for p in shared.iter().chain(&extra1) {
             b_c1_pieces.push(import_piece(&mut db_b, store_b, p)?);
         }
-        mint_assemble(&mut db_b, store_b, &b_c1_pieces, &c1_hash, c1.len() as u64)?;
+        mint_assemble(&mut db_b, store_b, &b_c1_pieces, &c1_hash, c1.len() as u64, RecipeSource::LocalIngest)?;
         let db_b = Arc::new(Mutex::new(db_b));
 
         let endpoint_b = Endpoint::bind(presets::N0).await?;
@@ -500,7 +629,7 @@ mod tests {
         for p in &pieces_bytes {
             a_pieces.push(import_piece(&mut db_a, store_a, p)?);
         }
-        mint_assemble(&mut db_a, store_a, &a_pieces, &c_hash, container.len() as u64)?;
+        mint_assemble(&mut db_a, store_a, &a_pieces, &c_hash, container.len() as u64, RecipeSource::LocalIngest)?;
         let db_a = Arc::new(Mutex::new(db_a));
 
         let endpoint_a = Endpoint::bind(presets::N0).await?;
@@ -529,6 +658,133 @@ mod tests {
         for p in &pieces_bytes {
             assert!(store_b.has(Namespace::Data, &Blake3::compute(p)));
         }
+
+        router.shutdown().await?;
+        Ok(())
+    }
+
+    /// The resume gap (D100 use-case audit): a mirror interrupted
+    /// between plan-indexing and piece-fetch leaves the plan LOCAL, so
+    /// the next run's recon diff is empty — rooting only on this
+    /// round's fetches would report success while the leaves stay
+    /// missing forever. Mirror roots on every peer-sourced plan
+    /// instead: the re-run fetches the orphaned leaves.
+    #[tokio::test]
+    async fn interrupted_mirror_resumes_on_the_next_sync() -> Result<()> {
+        let pieces_bytes: Vec<Vec<u8>> = (0..4).map(piece).collect();
+        let container: Vec<u8> = pieces_bytes.iter().flatten().copied().collect();
+        let c_hash = Blake3::compute(&container);
+
+        // A: the seeder — pieces resident, plan indexed.
+        let dir_a = tempfile::tempdir()?;
+        let store_a: &'static Store = Box::leak(Box::new(Store::open(dir_a.path().join("s"))?));
+        let mut db_a = Db::open(dir_a.path())?;
+        let mut a_pieces = Vec::new();
+        for p in &pieces_bytes {
+            a_pieces.push(import_piece(&mut db_a, store_a, p)?);
+        }
+        mint_assemble(&mut db_a, store_a, &a_pieces, &c_hash, container.len() as u64, RecipeSource::LocalIngest)?;
+        let db_a = Arc::new(Mutex::new(db_a));
+
+        let endpoint_a = Endpoint::bind(presets::N0).await?;
+        endpoint_a.online().await;
+        let addr_a = endpoint_a.addr();
+        let router = Router::builder(endpoint_a)
+            .accept(iroh_blobs::ALPN, crate::cas::CasProvider::new(store_a, Arc::clone(&db_a)))
+            .accept(recon::ALPN, ReconProvider::new(db_a))
+            .spawn();
+
+        // B: the interrupted state — the PEER plan already indexed
+        // (exactly what sync step 2 commits), zero pieces on disk.
+        let dir_b = tempfile::tempdir()?;
+        let store_b: &'static Store = Box::leak(Box::new(Store::open(dir_b.path().join("s"))?));
+        let mut db_b = Db::open(dir_b.path())?;
+        let b_pieces: Vec<(Blake3, u64)> = pieces_bytes
+            .iter()
+            .map(|p| (Blake3::compute(p), p.len() as u64))
+            .collect();
+        mint_assemble(&mut db_b, store_b, &b_pieces, &c_hash, container.len() as u64, RecipeSource::Peer)?;
+        let db_b = Arc::new(Mutex::new(db_b));
+
+        let endpoint_b = Endpoint::bind(presets::N0).await?;
+        let report = sync(&endpoint_b, addr_a, store_b, Arc::clone(&db_b), &[]).await?;
+
+        assert_eq!(
+            report.recipes_fetched, 0,
+            "recon diff is empty — the plan is already local"
+        );
+        assert_eq!(report.pieces_fetched, 4, "the orphaned leaves fetched anyway");
+        assert_eq!(report.pieces_unavailable, 0);
+        for p in &pieces_bytes {
+            assert!(store_b.has(Namespace::Data, &Blake3::compute(p)));
+        }
+
+        router.shutdown().await?;
+        Ok(())
+    }
+
+    /// Real decompositions mint plans BOTH ways — container =
+    /// assemble(pieces) AND piece = assemble(container[range]) — the
+    /// mutually-inverse pair D21 forbids as circular support. A naive
+    /// visited-set walk completes the circle with nothing marked
+    /// missing and mirrors NOTHING; the cycle-correct walk fetches one
+    /// side. Proof of grounding is materialization: the container must
+    /// rebuild byte-true at B afterward.
+    #[tokio::test]
+    async fn mirror_grounds_inverse_pair_decompositions() -> Result<()> {
+        let pieces_bytes: Vec<Vec<u8>> = (0..4).map(piece).collect();
+        let container: Vec<u8> = pieces_bytes.iter().flatten().copied().collect();
+        let c_hash = Blake3::compute(&container);
+
+        // A: pieces resident + BOTH plan directions (the
+        // mint_decomposition shape).
+        let dir_a = tempfile::tempdir()?;
+        let store_a: &'static Store = Box::leak(Box::new(Store::open(dir_a.path().join("s"))?));
+        let mut db_a = Db::open(dir_a.path())?;
+        let mut a_pieces = Vec::new();
+        for p in &pieces_bytes {
+            a_pieces.push(import_piece(&mut db_a, store_a, p)?);
+        }
+        mint_assemble(&mut db_a, store_a, &a_pieces, &c_hash, container.len() as u64, RecipeSource::LocalIngest)?;
+        mint_slices(&mut db_a, store_a, &c_hash, &a_pieces, RecipeSource::LocalIngest)?;
+        let db_a = Arc::new(Mutex::new(db_a));
+
+        let endpoint_a = Endpoint::bind(presets::N0).await?;
+        endpoint_a.online().await;
+        let addr_a = endpoint_a.addr();
+        let router = Router::builder(endpoint_a)
+            .accept(iroh_blobs::ALPN, crate::cas::CasProvider::new(store_a, Arc::clone(&db_a)))
+            .accept(recon::ALPN, ReconProvider::new(db_a))
+            .spawn();
+
+        // B: empty; mirror the lot (5 plans: 1 rebuild + 4 slices).
+        let dir_b = tempfile::tempdir()?;
+        let store_b: &'static Store = Box::leak(Box::new(Store::open(dir_b.path().join("s"))?));
+        let db_b = Arc::new(Mutex::new(Db::open(dir_b.path())?));
+
+        let endpoint_b = Endpoint::bind(presets::N0).await?;
+        let report = sync(&endpoint_b, addr_a, store_b, Arc::clone(&db_b), &[]).await?;
+
+        assert_eq!(report.recipes_fetched, 5);
+        assert_eq!(report.pieces_unavailable, 0);
+        assert!(
+            report.pieces_fetched > 0,
+            "the old visited-set walk fetched NOTHING here"
+        );
+
+        // Grounding must be REAL, not circular: the container rebuilds
+        // byte-true at B through whichever side the walk fetched.
+        let exec = Executor::new(store_b, ExecConfig::default())?;
+        {
+            let guard = db_b.lock().unwrap_or_else(|e| e.into_inner());
+            exec.materialize(&guard, &c_hash)?;
+        }
+        let mut blob = store_b
+            .get(Namespace::Data, &c_hash)?
+            .expect("container materialized at B");
+        let mut got = Vec::new();
+        std::io::Read::read_to_end(&mut blob, &mut got)?;
+        assert_eq!(got, container, "rebuilt bytes match the original");
 
         router.shutdown().await?;
         Ok(())

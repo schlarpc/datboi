@@ -597,12 +597,15 @@ D97 left to the build:
   with no producing route — the ur-literals; minimal covering set,
   cheap on the streaming responder) vs **D34 holdings channels as the
   completeness layer** (serves mirror + gap-fill + curation at once).
-  Also found, bug-shaped: **mirror resume** — mirror roots are only
-  the NEWLY fetched plans, so a sync interrupted between plan-indexing
-  and piece-fetch never retries (re-run's recon diff is empty, report
-  claims success); fix is rooting on every local ungrounded affine
-  plan output. The Ingest card's "fetches everything they share"
-  states intent — the posture is to make it true, not reword it.
+  Two bug-shaped findings FIXED same day (see p2p.md § audit, journey
+  2): **mirror resume** (roots now = every peer-sourced plan output,
+  `pieces_unavailable` defers unservable leaves to the next sync) and
+  the **cycle-blind walk** (inverse plan pairs — container⇄pieces —
+  used to satisfy the walk circularly, grounding nothing; the walk now
+  refuses on-path inputs as support, per D21). Still open here: the
+  coverage ruling itself. The Ingest card's "fetches everything they
+  share" states intent — the posture is to make it true, not reword
+  it.
 - ~~**Operator surface.**~~ BUILT 2026-07-17 as **D101**:
   `POST /v1/p2p/sync` (a Sync job; structured `SyncSummary` savings on
   the detail), `GET /v1/p2p` (enabled + shareable endpoint id), the
@@ -712,10 +715,12 @@ responder now streams off a held sqlite read-transaction snapshot
 10 M recipes), and the **use-case coverage audit** landed (p2p.md
 § Use-case coverage audit + the protocol-completeness gate flagged
 above): mirror is blind to plan-less content, gap-fill needs
-entry→blake3 discovery, mirror-resume is bug-shaped. **Pick up
-here**: rule the completeness layer (roots scope vs D34 holdings
-channels — the audit's options), fix mirror resume (root on every
-local ungrounded affine plan output), then the swarm tiers with the
+entry→blake3 discovery. The audit's two bug-shaped findings are FIXED
+(mirror resume roots on every peer plan + defers unservable leaves;
+the closure walk is cycle-correct against inverse plan pairs — both
+e2e-proven). **Pick up here**: rule the completeness layer (roots
+scope vs D34 holdings channels — the audit's options), then the swarm
+tiers with the
 **recon ACL before any advertisement tier**; smaller p2p remainders:
 hash-seq requests, a shared wasm engine per CasProvider,
 partial-range over-materialization. The previous position (D100

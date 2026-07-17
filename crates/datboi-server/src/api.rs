@@ -2129,6 +2129,7 @@ fn sync_summary(peer: &str, r: &datboi_p2p::sync::SyncReport) -> datboi_api::Syn
         bytes_already_held: r.bytes_already_held,
         containers_rebuilt: r.rebuilt.len() as u64,
         bytes_rebuilt: r.bytes_rebuilt,
+        pieces_unavailable: r.pieces_unavailable,
         sketch_wire_bytes: r.sketch_wire_bytes,
         bytes_fetched: r.bytes_fetched(),
     }

@@ -594,6 +594,28 @@ impl Db {
         Ok(u64::try_from(count).unwrap_or(0))
     }
 
+    /// Outputs of every non-Failed PEER-sourced affine assemble plan —
+    /// the mirror-resume root set (D100 use-case audit): everything any
+    /// mirror ever promised to ground, so an interrupted sync's leaves
+    /// are retried by the next run instead of orphaned behind an empty
+    /// recon diff. Spans ALL peers (acquisition provenance is the
+    /// deferred open question); the mirror walk tolerates leaves the
+    /// current peer lacks.
+    pub fn peer_plan_outputs(&self) -> Result<Vec<Blake3>, IndexError> {
+        let mut stmt = self.cache().prepare_cached(
+            "SELECT DISTINCT b.hash FROM recipe r
+             JOIN recipe_output ro ON ro.recipe_id = r.recipe_id
+             JOIN blob b ON b.blob_id = ro.blob_id
+             WHERE r.op_kind = 0 AND r.op_name = 'assemble@1'
+               AND r.seek_class = 0 AND r.verify != 2 AND r.source = 1
+             ORDER BY b.blob_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, [u8; 32]>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows.into_iter().map(Blake3).collect())
+    }
+
     /// A rebuild route's inputs in position (coverage) order, each with
     /// its sharing evidence for the D91 predicate.
     pub fn rebuild_inputs(&self, recipe_id: i64) -> Result<Vec<RebuildInput>, IndexError> {
