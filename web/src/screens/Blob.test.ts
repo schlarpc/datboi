@@ -228,3 +228,24 @@ test('an unknown hash shows the undesigned error line, with the way back', async
   const back = screen.getByText('← storage').closest('a');
   expect(back?.getAttribute('href')).toBe('/storage');
 });
+
+test('a rebuildable blob offers bring-on-disk, and materialize replays it', async () => {
+  const rebuildable: BlobDetail = { ...detail, residency: 'evicted_covered', verified_at: null };
+  const handler = installFetch({ blobDetails: { [MEMBER]: rebuildable } });
+  render(Blob, { hash: MEMBER });
+  await screen.findByRole('heading', { level: 2 });
+
+  // The residency badge reads the product word, and the action is present.
+  expect(screen.getByText('rebuildable')).toBeTruthy();
+  await fireEvent.click(screen.getByText('bring on disk'));
+
+  // POST fired, and the detail refetched so the badge can flip.
+  await vi.waitFor(() => {
+    expect(
+      handler.mock.calls.some(([input]) => calledPath(input).endsWith('/materialize')),
+    ).toBe(true);
+    expect(
+      handler.mock.calls.filter(([input]) => calledPath(input) === `/v1/blobs/${MEMBER}`).length,
+    ).toBeGreaterThan(1);
+  });
+});

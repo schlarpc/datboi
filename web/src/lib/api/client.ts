@@ -283,6 +283,11 @@ export const blobDetail = async (hash: string): Promise<BlobDetail> =>
 export const blobVerify = async (hash: string): Promise<VerifyStarted> =>
   unwrap(await client.POST('/v1/blobs/{hash}/verify', { params: { path: { hash } } }));
 
+/** D96: rematerialize an evicted/absent blob by replaying its rebuild
+ * route (synchronous; an already-resident blob is a no-op success). */
+export const blobMaterialize = async (hash: string): Promise<OkBody> =>
+  unwrap(await client.POST('/v1/blobs/{hash}/materialize', { params: { path: { hash } } }));
+
 // ---- gc (D73 review/apply) ----
 
 export const gcOrphans = async (): Promise<OrphansBody> =>

@@ -8,7 +8,7 @@
    * the views pinning it (D33). Owner-only server-side like the rest
    * of the storage surface; the friend shell never routes here.
    */
-  import { blobDetail, blobVerify } from '../lib/api/client';
+  import { blobDetail, blobMaterialize, blobVerify } from '../lib/api/client';
   import type { BlobDetail, RouteEdge } from '../lib/api/types';
   import { copyText } from '../lib/clipboard';
   import Link from '../lib/components/Link.svelte';
@@ -66,6 +66,25 @@
   $effect(() => () => {
     destroyed = true;
   });
+
+  // Bring-on-disk (D96 materialize): a non-resident blob with a rebuild
+  // route replays back onto disk. Synchronous — no job; a refetch flips
+  // the residency badge to "on disk".
+  let materializing = $state(false);
+  let materializeError = $state<string | null>(null);
+  async function materializeNow() {
+    if (materializing || detail.st !== 'ready') return;
+    materializing = true;
+    materializeError = null;
+    try {
+      await blobMaterialize(detail.data.hash);
+      attempt += 1; // refetch — residency flips to resident
+    } catch (e) {
+      materializeError = errorText(e);
+    } finally {
+      materializing = false;
+    }
+  }
 
   async function verifyNow() {
     if (verifying || detail.st !== 'ready') return;
@@ -229,11 +248,20 @@
           {#if verifying}verifying…{:else}never verified — verify now{/if}
         </button>
       {:else}
-        <!-- Not on disk: verification means replay, which stays CLI. -->
         <span class="badge dim">never verified</span>
+      {/if}
+      <!-- A non-resident blob with a rebuild route can be replayed back
+           onto disk (D25/D96); a routeless one has nothing to rebuild from. -->
+      {#if d.residency !== 'resident' && d.routes_in.length > 0}
+        <button class="badge dim verify" disabled={materializing} onclick={materializeNow}>
+          {#if materializing}<!-- @wc-context: replaying a blob onto disk -->bringing on disk…{:else}<!-- @wc-context: rebuild a blob onto disk -->bring on disk{/if}
+        </button>
       {/if}
       {#if verifyError !== null}
         <span class="badge bad-badge">{verifyError}</span>
+      {/if}
+      {#if materializeError !== null}
+        <span class="badge bad-badge">{materializeError}</span>
       {/if}
     </div>
 

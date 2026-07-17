@@ -1798,3 +1798,13 @@ msgstr "run"
 #: src/screens/Storage.svelte
 msgid "a run analyzes what's not yet optimized; disabled families are skipped"
 msgstr "a run analyzes what's not yet optimized; disabled families are skipped"
+
+#: src/screens/Blob.svelte
+msgctxt "replaying a blob onto disk"
+msgid "bringing on disk…"
+msgstr "bringing on disk…"
+
+#: src/screens/Blob.svelte
+msgctxt "rebuild a blob onto disk"
+msgid "bring on disk"
+msgstr "bring on disk"

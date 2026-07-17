@@ -81,6 +81,8 @@ export interface MockUniverse {
   ingestJob?: number;
   /** POST /v1/blobs/{hash}/verify answer (D80); defaults to job 1. */
   verifyJob?: number;
+  /** POST /v1/blobs/{hash}/materialize answers 500 — no usable route. */
+  materializeFail?: boolean;
   /** POST /v1/scrub answer (D96 maintenance); defaults to job 1. */
   scrubJob?: number;
   /** POST /v1/snapshot receipt (D96); default is a minimal one. */
@@ -266,6 +268,11 @@ export function installFetch(universe: MockUniverse) {
       // /verify suffix and answer 400.
       if (/^\/v1\/blobs\/[0-9a-f]{64}\/verify$/i.test(path) && method === 'POST') {
         return json(202, { job: universe.verifyJob ?? 1 });
+      }
+      if (/^\/v1\/blobs\/[0-9a-f]{64}\/materialize$/i.test(path) && method === 'POST') {
+        return universe.materializeFail === true
+          ? json(500, { error: 'no usable route' })
+          : json(200, { ok: true });
       }
       const blobMatch = path.match(/^\/v1\/blobs\/(.+)$/);
       if (blobMatch) {
