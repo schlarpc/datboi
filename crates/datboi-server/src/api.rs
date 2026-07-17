@@ -1596,6 +1596,40 @@ fn verify_one(app: &App, job: i64, blob_id: i64, ns: Namespace, hash: &Blake3) {
     }
 }
 
+// ---- POST /v1/blobs/{hash}/materialize ----
+
+/// Rematerialize an evicted/claimed blob by replaying its cheapest
+/// rebuild route (D25/D27) — the same `exec.materialize` the CLI's
+/// `materialize` command runs. Synchronous: one blob's replay, bounded
+/// work; an already-resident blob is a no-op success.
+pub(crate) async fn blob_materialize(
+    State(app): State<Arc<App>>,
+    Extension(caller): Extension<Caller>,
+    UrlPath(hash): UrlPath<String>,
+) -> Response {
+    run_blocking(move || {
+        require_owner(&caller)?;
+        let hash: Blake3 = hash
+            .to_lowercase()
+            .parse()
+            .map_err(|_| err(ErrorCode::BadRequest, "not a blake3 hex hash"))?;
+        let db = lock_db(&app);
+        let row = db
+            .blob_by_hash(&hash)
+            .map_err(internal)?
+            .ok_or_else(|| err(ErrorCode::NotFound, "no such blob"))?;
+        if row.residency == Residency::Resident {
+            return Ok(json_response(StatusCode::OK, &datboi_api::OkResponse { ok: true }));
+        }
+        app.exec.materialize(&db, &hash).map_err(|e| {
+            err(ErrorCode::Internal, &format!("materialize failed: {e}"))
+        })?;
+        tracing::info!("materialize: {} replayed", hash.to_hex());
+        Ok(json_response(StatusCode::OK, &datboi_api::OkResponse { ok: true }))
+    })
+    .await
+}
+
 /// The claims a blob satisfies: identity links of any evidence grade
 /// (explanation, not the D39 holdings rollup) → rom_claim → entry,
 /// restricted to each source's CURRENT revision. DISTINCT because an

@@ -495,6 +495,24 @@ fn blob_detail() {}
 )]
 fn blob_verify() {}
 
+/// Rematerialize an evicted/claimed blob by replaying its rebuild route
+/// (D25/D27/D96): owner-only, synchronous, idempotent.
+#[utoipa::path(
+    post,
+    path = "/v1/blobs/{hash}/materialize",
+    tag = "storage",
+    security(("session_cookie" = []), ("bearer_token" = [])),
+    params(("hash" = String, Path, description = "blake3, 64 hex chars (case-insensitive)")),
+    responses(
+        (status = 200, description = "Blob is resident (replayed, or already was)", body = OkResponse),
+        (status = 400, description = "Not a blake3 hex hash", body = ApiError),
+        (status = 403, description = "Owner only", body = ApiError),
+        (status = 404, description = "No such blob", body = ApiError),
+        (status = 500, description = "Replay failed (no usable route, or transform error)", body = ApiError),
+    ),
+)]
+fn blob_materialize() {}
+
 /// Raw blob bytes by hash — the fetch half of the D84 BIOS-from-CAS
 /// design (emulator cores name accepted system-file hashes; the Play
 /// screen asks for each until one answers). Serves through the same
@@ -789,6 +807,7 @@ fn gc_config_set() {}
         blob_detail,
         blob_bytes,
         blob_verify,
+        blob_materialize,
         jobs,
         job_detail,
         admin_users,

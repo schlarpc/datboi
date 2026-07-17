@@ -3378,6 +3378,86 @@
         ]
       }
     },
+    "/v1/blobs/{hash}/materialize": {
+      "post": {
+        "operationId": "blob_materialize",
+        "parameters": [
+          {
+            "description": "blake3, 64 hex chars (case-insensitive)",
+            "in": "path",
+            "name": "hash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            },
+            "description": "Blob is resident (replayed, or already was)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Not a blake3 hex hash"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Owner only"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "No such blob"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Replay failed (no usable route, or transform error)"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_token": []
+          }
+        ],
+        "summary": "Rematerialize an evicted/claimed blob by replaying its rebuild route\n(D25/D27/D96): owner-only, synchronous, idempotent.",
+        "tags": [
+          "storage"
+        ]
+      }
+    },
     "/v1/blobs/{hash}/verify": {
       "post": {
         "operationId": "blob_verify",
