@@ -2467,6 +2467,17 @@ compile target + the D54 reproducibility boundary); they never link into
 the daemon. `datboi-p2p` always did. Owed: the `datboi share` / `fetch`
 operator surface and the web home (D96).
 
+*Amendment (2026-07-17, 4): bounded-memory streaming landed* (the item
+amendment 2 owed). The handler no longer buffers the whole blob: bytes
+pull from `Executor::open_stream` (O(chunk) + spill) through a forward-only
+`ReadAt` into the bao encoder, which writes to the wire over a
+`spawn_blocking` + bounded-channel bridge (backpressure = the encoder
+blocks). A 4 GB ROM streams to a peer without sitting in RAM; the encoder
+still validates every chunk against the retained `.obao4` (D49). Remaining
+minor: hash-seq requests, a shared wasm engine (per-connection today), and
+partial/resumed ranges over-materialize (stream-from-0-and-discard) — a
+`serve_range`-per-window fix if resumption traffic warrants it.
+
 ## D98 — The receive path stages partials in iroh's store; our CAS only ever ingests complete, verified blobs (2026-07-16)
 
 Ruled before the M6 fetch path is built, because it is a re-litigable

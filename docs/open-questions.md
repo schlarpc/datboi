@@ -558,13 +558,18 @@ D97 left to the build:
   lifts them into OTEL metrics/traces with no re-instrumentation. Wants its
   own D-entry when the exporter lands (which subset is metrics vs traces,
   cardinality discipline, opt-in/endpoint config in the D95 NixOS surface).
-- **CAS-fronting handler.** BOTH halves DONE in the spike
-  (`cas::CasProvider` serves every request through `Executor::serve_range`
-  — resident literals and evicted/recipe-only blobs alike, D49-verified;
-  stock requester fetches + verifies, can't tell residency). Remaining:
-  streaming instead of the spike's whole-blob buffer (fsm/async bao encoder
-  over `open_stream` + spill for 4 GB ROMs), hash-seq requests (offset > 0),
-  and a shared wasm engine (per-connection executor today).
+- **CAS-fronting handler.** DONE — both halves AND bounded-memory
+  streaming. `cas::CasProvider` serves resident literals and
+  evicted/recipe-only blobs alike (D49-verified), and streams the
+  get-response incrementally: bytes pull from `Executor::open_stream`
+  through a forward-only `ReadAt` into the bao encoder, which writes to the
+  wire over a `spawn_blocking` + bounded-channel bridge (backpressure = the
+  encoder blocks) — a 4 GB ROM never sits in RAM. Remaining minor:
+  hash-seq requests (offset > 0); a shared wasm engine (per-connection
+  today); and partial/resumed ranges over-materialize (the streaming path
+  runs `open_stream` from 0 and discards forward — fine for full fetches,
+  wasteful for a resume near the end of a huge blob; `serve_range` on the
+  window is the targeted fix if resumption traffic warrants it).
 - ~~**Identity wiring.**~~ DONE (D99): the on-disk seed is a KDF root;
   `identity.iroh_secret()` derives the iroh `SecretKey`, distinct from the
   snapshot key. The seedbox binds to it.
@@ -670,12 +675,17 @@ requirement (structured tracing → OTEL). Research settled: no good Rust
 rateless-IBLT exists (lone crate is an O(d²) PoC, no formal proof
 anywhere) — we build our own ~500-LOC port of the Go reference,
 differential-tested against it.
-**Pick up here** (the user's order): (1) **bounded-memory streaming** —
-swap the whole-blob `serve_range(0,total)` buffer for the fsm/async bao
-encoder over `open_stream` + spill, so 4 GB ROMs don't sit in RAM
-(correctness is done; this is scale hardening); then (2) **piece-set
-reconciliation** — the novel rateless-IBLT protocol on a custom ALPN, the
-dedup-aware-transfer payoff. The previous position (D96 web-UI pass) is
+Bounded-memory streaming LANDED (2026-07-17): the handler pulls from
+`open_stream` through a forward `ReadAt` and writes incrementally over a
+`spawn_blocking` + bounded-channel bridge — no whole-blob buffer.
+**Pick up here**: **piece-set reconciliation** — the novel dedup-aware
+transfer, a rateless-IBLT protocol on a custom ALPN (second
+`ProtocolHandler` beside the seedbox). Build our own ~500-LOC IBLT
+(research verdict: no viable Rust crate), differential-tested against the
+Go reference, `[u8;32]`-specialized, keyed SipHash checksum, streaming
+decoder; then the reconcile→fetch-diff→rebuild flow over the D91 pieces,
+with the D97-savings observability (structured tracing → OTEL) baked in.
+Design + D-entry before code. The previous position (D96 web-UI pass) is
 below.
 
 
