@@ -27,7 +27,6 @@ fn sweep_all(
     run_sweep(db, store, &bytes, analyzer, limit).expect("sweep")
 }
 
-
 fn pattern(len: usize, seed: u64) -> Vec<u8> {
     let mut state = seed;
     (0..len)

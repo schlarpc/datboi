@@ -29,12 +29,11 @@ use axum::response::Response;
 use datboi_api::{
     BlobDetail, BlobDigests, BlobInfo, BlobRow, BlobsPage, ClaimRef, ClaimState, ClassBytes,
     Counts, Definition, Endpoints, EntriesPage, EntryDetail, EntryRow, EntryState, ErrorCode,
-    EvictBlocked, EvictPlan, EvictRequest,
-    FileRow, HashRef, ImageStatus, JobsResponse, Nullable, ProvenanceRow, ProvenanceViaRow,
-    Quarantine, QuarantineItem, ResidencyState, Revision, RomClaim, RomHashes, RootRef,
-    RootRelation, RouteEdge, RouteInfo, RouteVerify, SourceBytes, StorageBreakdown,
-    StorageResponse, System, SystemsResponse, ViewDetail, ViewFilesPage, ViewProfile,
-    ViewProfilesResponse, ViewSummary, ViewsResponse,
+    EvictBlocked, EvictPlan, EvictRequest, FileRow, HashRef, ImageStatus, JobsResponse, Nullable,
+    ProvenanceRow, ProvenanceViaRow, Quarantine, QuarantineItem, ResidencyState, Revision,
+    RomClaim, RomHashes, RootRef, RootRelation, RouteEdge, RouteInfo, RouteVerify, SourceBytes,
+    StorageBreakdown, StorageResponse, System, SystemsResponse, ViewDetail, ViewFilesPage,
+    ViewProfile, ViewProfilesResponse, ViewSummary, ViewsResponse,
 };
 use datboi_catalog::ViewDef;
 use datboi_core::hash::Blake3;
@@ -1622,13 +1621,19 @@ pub(crate) async fn blob_materialize(
             .map_err(internal)?
             .ok_or_else(|| err(ErrorCode::NotFound, "no such blob"))?;
         if row.residency == Residency::Resident {
-            return Ok(json_response(StatusCode::OK, &datboi_api::OkResponse { ok: true }));
+            return Ok(json_response(
+                StatusCode::OK,
+                &datboi_api::OkResponse { ok: true },
+            ));
         }
-        app.exec.materialize(&db, &hash).map_err(|e| {
-            err(ErrorCode::Internal, &format!("materialize failed: {e}"))
-        })?;
+        app.exec
+            .materialize(&db, &hash)
+            .map_err(|e| err(ErrorCode::Internal, &format!("materialize failed: {e}")))?;
         tracing::info!("materialize: {} replayed", hash.to_hex());
-        Ok(json_response(StatusCode::OK, &datboi_api::OkResponse { ok: true }))
+        Ok(json_response(
+            StatusCode::OK,
+            &datboi_api::OkResponse { ok: true },
+        ))
     })
     .await
 }
@@ -1682,7 +1687,10 @@ fn run_scrub(app: &App, job: i64, sample_pct: u8, rehabilitate: bool) {
             return;
         }
     };
-    let report = match app.exec.scrub(&db, sample_pct, rehabilitate, auth::now_unix()) {
+    let report = match app
+        .exec
+        .scrub(&db, sample_pct, rehabilitate, auth::now_unix())
+    {
         Ok(report) => report,
         Err(e) => {
             app.jobs.fail(job, &e.to_string(), auth::now_unix());
@@ -1716,7 +1724,10 @@ fn run_scrub(app: &App, job: i64, sample_pct: u8, rehabilitate: bool) {
             job,
             format!(
                 "problem bytes: {}{}",
-                bad.iter().map(|h| h.as_str()).collect::<Vec<_>>().join(", "),
+                bad.iter()
+                    .map(|h| h.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 if more > 0 {
                     format!(" (+{more} more — see the daemon log)")
                 } else {
@@ -1732,7 +1743,8 @@ fn run_scrub(app: &App, job: i64, sample_pct: u8, rehabilitate: bool) {
             report.missing
         );
     }
-    app.jobs.refine_progress(job, report.checked, report.checked);
+    app.jobs
+        .refine_progress(job, report.checked, report.checked);
     app.jobs.finish(job, auth::now_unix());
     tracing::info!(
         "scrub job {job}: {} checked, {} refreshed",
@@ -1774,9 +1786,7 @@ pub(crate) async fn evict(
                 "gc guard busy (an eviction or apply is running); retry shortly",
             ));
         }
-        let job = app
-            .jobs
-            .create_gc("evict — on demand", 0, auth::now_unix());
+        let job = app.jobs.create_gc("evict — on demand", 0, auth::now_unix());
         let app = Arc::clone(&app);
         std::thread::spawn(move || run_evict(&app, job, req.target_bytes, license, holder));
         Ok(json_response(
@@ -1920,20 +1930,27 @@ fn run_sweep_job(app: &App, job: i64, analyzer_name: &str, limit: usize) {
     };
     // Validated in the handler; a None here would be a logic error.
     let Some(mut analyzer) = datboi_ingest::analyzers::analyzer_for(analyzer_name) else {
-        app.jobs
-            .fail(job, "sweep: analyzer vanished between validate and run", auth::now_unix());
+        app.jobs.fail(
+            job,
+            "sweep: analyzer vanished between validate and run",
+            auth::now_unix(),
+        );
         return;
     };
     let bytes = datboi_ingest::refine::Logical::new(app.store, &app.exec);
-    let report =
-        match datboi_ingest::refine::run_sweep(&mut db, app.store, &bytes, analyzer.as_mut(), limit)
-        {
-            Ok(report) => report,
-            Err(e) => {
-                app.jobs.fail(job, &e.to_string(), auth::now_unix());
-                return;
-            }
-        };
+    let report = match datboi_ingest::refine::run_sweep(
+        &mut db,
+        app.store,
+        &bytes,
+        analyzer.as_mut(),
+        limit,
+    ) {
+        Ok(report) => report,
+        Err(e) => {
+            app.jobs.fail(job, &e.to_string(), auth::now_unix());
+            return;
+        }
+    };
     if report.disabled {
         // A disabled family (D60) is a policy state, not a failure — the
         // note says so and the job finishes cleanly.
@@ -1953,7 +1970,8 @@ fn run_sweep_job(app: &App, job: i64, analyzer_name: &str, limit: usize) {
         app.jobs.refine_error(job, &hash.to_hex(), error);
     }
     let analyzed = report.analyzed as u64;
-    app.jobs.refine_progress(job, analyzed, analyzed + remaining);
+    app.jobs
+        .refine_progress(job, analyzed, analyzed + remaining);
     app.jobs.push_note(
         job,
         format!(

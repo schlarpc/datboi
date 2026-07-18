@@ -203,7 +203,10 @@ fn split_enqueue_and_admission_are_independent_and_idempotent() {
     refresh_admission(&db).expect("admission");
     // Re-running both is a no-op / safe: INSERT OR IGNORE means no
     // double-enqueue, and admission is a rebuild of derivable state.
-    assert_eq!(enqueue_candidates(&db, &NoopAnalyzer).expect("re-enqueue"), 0);
+    assert_eq!(
+        enqueue_candidates(&db, &NoopAnalyzer).expect("re-enqueue"),
+        0
+    );
     refresh_admission(&db).expect("admission again");
     assert_eq!(
         db.sweep_queue_len(&NoopAnalyzer.id()).expect("len"),

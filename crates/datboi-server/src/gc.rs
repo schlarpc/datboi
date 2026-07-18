@@ -279,7 +279,10 @@ pub(crate) async fn config_set(
         let high = parse_watermark(req.high_water.as_deref(), "high_water")?;
         let low = parse_watermark(req.low_water.as_deref(), "low_water")?;
         if req.grace_secs.is_some_and(|g| g < 0) {
-            return Err(err(ErrorCode::BadRequest, "grace_secs must be non-negative"));
+            return Err(err(
+                ErrorCode::BadRequest,
+                "grace_secs must be non-negative",
+            ));
         }
         let db = app
             .db

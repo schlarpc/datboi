@@ -22,8 +22,8 @@ use datboi_api::{
     ErrorCode,
 };
 use datboi_catalog::{
-    CatalogError, ImportOptions, ImportReport, diff_source, export_dat, fetch_dat, import_clonelist,
-    import_dat,
+    CatalogError, ImportOptions, ImportReport, diff_source, export_dat, fetch_dat,
+    import_clonelist, import_dat,
 };
 use datboi_index::Db;
 

@@ -829,8 +829,9 @@ pub fn gc_config(
     ];
     for (value, set) in setters {
         if let Some(value) = value {
-            let wm = Watermark::parse_str(value)
-                .with_context(|| format!("{value:?}: expected \"off\", \"NN%\", or absolute bytes"))?;
+            let wm = Watermark::parse_str(value).with_context(|| {
+                format!("{value:?}: expected \"off\", \"NN%\", or absolute bytes")
+            })?;
             set(&env.db, wm)?;
         }
     }
@@ -868,18 +869,24 @@ pub fn sweep(
 ) -> anyhow::Result<ExitCode> {
     // The name → analyzer factory descended to datboi-ingest (D96) so
     // the daemon's `POST /v1/sweep` accepts exactly this vocabulary.
-    let mut analyzer = datboi_ingest::analyzers::analyzer_for(analyzer_name).with_context(|| {
-        format!(
-            "unknown analyzer {analyzer_name:?} (available: {})",
-            datboi_ingest::analyzers::SWEEP_ANALYZERS.join(", ")
-        )
-    })?;
+    let mut analyzer =
+        datboi_ingest::analyzers::analyzer_for(analyzer_name).with_context(|| {
+            format!(
+                "unknown analyzer {analyzer_name:?} (available: {})",
+                datboi_ingest::analyzers::SWEEP_ANALYZERS.join(", ")
+            )
+        })?;
     // D92: sweeps read the logical CAS — the executor serves
     // absent-but-grounded items through a bounded spill.
     let exec = datboi_exec::Executor::new(&env.store, datboi_exec::ExecConfig::default())?;
     let bytes = datboi_ingest::refine::Logical::new(&env.store, &exec);
-    let report =
-        datboi_ingest::refine::run_sweep(&mut env.db, &env.store, &bytes, analyzer.as_mut(), limit)?;
+    let report = datboi_ingest::refine::run_sweep(
+        &mut env.db,
+        &env.store,
+        &bytes,
+        analyzer.as_mut(),
+        limit,
+    )?;
     if report.disabled {
         let family = analyzer.family();
         if json {

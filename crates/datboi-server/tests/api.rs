@@ -931,7 +931,12 @@ fn evict_over_http() {
     let f = fixture();
 
     // Dry-run: the D27 preview surface, a synchronous read.
-    let (status, plan) = request(f.addr, "POST", "/v1/evict", r#"{"target_bytes":0,"dry_run":true}"#);
+    let (status, plan) = request(
+        f.addr,
+        "POST",
+        "/v1/evict",
+        r#"{"target_bytes":0,"dry_run":true}"#,
+    );
     assert_eq!(status, 200, "{plan}");
     assert_eq!(plan["evictable"], 0, "no rebuildable literals: {plan}");
     assert!(plan["blocked"].is_array(), "{plan}");
@@ -970,7 +975,12 @@ fn sweep_over_http() {
     let (status, _) = request(f.addr, "POST", "/v1/sweep", r#"{"analyzer":"bogus"}"#);
     assert_eq!(status, 400, "unknown analyzer");
 
-    let (status, v) = request(f.addr, "POST", "/v1/sweep", r#"{"analyzer":"noop","limit":100}"#);
+    let (status, v) = request(
+        f.addr,
+        "POST",
+        "/v1/sweep",
+        r#"{"analyzer":"noop","limit":100}"#,
+    );
     assert_eq!(status, 202, "{v}");
     let job = v["job"].as_i64().expect("job id");
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -986,7 +996,10 @@ fn sweep_over_http() {
     assert_eq!(done["state"], "done", "{done}");
     assert_eq!(done["kind"], "refine", "{done}");
     let note = done["report"]["notes"][0].as_str().expect("note");
-    assert!(note.contains("analyzed") && note.contains("queued"), "{note}");
+    assert!(
+        note.contains("analyzed") && note.contains("queued"),
+        "{note}"
+    );
 }
 
 /// D96: the dat fetch verb reaches the HTTP surface. A bad source is a
@@ -999,7 +1012,12 @@ fn dat_fetch_over_http() {
     let f = fixture();
 
     // Bad source: rejected before any network I/O.
-    let (status, _) = request(f.addr, "POST", "/v1/dats/fetch", r#"{"source":"not-a-url"}"#);
+    let (status, _) = request(
+        f.addr,
+        "POST",
+        "/v1/dats/fetch",
+        r#"{"source":"not-a-url"}"#,
+    );
     assert_eq!(status, 400, "bad source");
 
     // One-shot upstream serving a bare Logiqx dat.
@@ -1028,7 +1046,10 @@ fn dat_fetch_over_http() {
     assert_eq!(v["url"], src, "{v}");
     assert_eq!(v["import"]["provider"], "fetchprov", "{v}");
     assert_eq!(v["import"]["system"], "fetchsys", "{v}");
-    assert!(v["import"]["entries"].as_u64().expect("entries") >= 1, "{v}");
+    assert!(
+        v["import"]["entries"].as_u64().expect("entries") >= 1,
+        "{v}"
+    );
 }
 
 /// D96: the dat diff / export / clonelist verbs reach the HTTP surface.

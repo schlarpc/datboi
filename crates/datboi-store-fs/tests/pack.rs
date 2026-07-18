@@ -113,7 +113,11 @@ fn member_mismatch_publishes_nothing() {
     let err = store
         .put_pack(&members, |ix| {
             // …but streams liar bytes for member 1.
-            let bytes = if ix == 0 { honest.clone() } else { liar.clone() };
+            let bytes = if ix == 0 {
+                honest.clone()
+            } else {
+                liar.clone()
+            };
             Ok(Box::new(std::io::Cursor::new(bytes)))
         })
         .expect_err("mismatch must refuse");
@@ -155,7 +159,10 @@ fn scrub_certifies_an_intact_pack_and_yields_aliases() {
     assert!(scrub.intact, "a freshly written pack re-hashes to its name");
     assert_eq!(scrub.members.len(), pieces.len());
     for (piece, member) in pieces.iter().zip(&scrub.members) {
-        let aliases = member.aliases.as_ref().expect("intact ⇒ every member verifies");
+        let aliases = member
+            .aliases
+            .as_ref()
+            .expect("intact ⇒ every member verifies");
         assert_eq!(aliases.blake3, Blake3::compute(piece));
         assert_eq!(member.len, piece.len() as u64);
     }
@@ -282,8 +289,7 @@ fn repack_dropping_every_member_deletes_the_pack() {
         })
         .expect("pack");
 
-    let drop: std::collections::HashSet<Blake3> =
-        members.iter().map(|m| m.hash).collect();
+    let drop: std::collections::HashSet<Blake3> = members.iter().map(|m| m.hash).collect();
     let outcome = store.repack(&pack, &drop).expect("repack");
     assert!(outcome.new_pack.is_none(), "whole pack reclaimed");
     assert_eq!(outcome.bytes_freed, 300);

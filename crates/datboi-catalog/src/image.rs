@@ -12,7 +12,6 @@
 //! (D49-blessed from birth) unless the caller opts out — the D63
 //! carve-out then covers serving.
 
-
 use datboi_core::assemble::{self, AssembleParams, Segment, Source};
 use datboi_core::hash::Blake3;
 use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe};
@@ -85,7 +84,10 @@ pub fn missing_inputs(db: &Db, snap: &ViewSnapshot) -> Result<Vec<Blake3>, Catal
 /// (loose or packed — `Blob` answers positioned reads either way).
 enum Src {
     Mem(Vec<u8>),
-    File { file: datboi_store_fs::Blob, len: u64 },
+    File {
+        file: datboi_store_fs::Blob,
+        len: u64,
+    },
 }
 
 impl Source for Src {

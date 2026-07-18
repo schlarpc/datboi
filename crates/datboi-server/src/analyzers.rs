@@ -36,7 +36,10 @@ pub(crate) async fn list(
         for &family in refine::FAMILIES {
             analyzers.push(read_info(&db, family)?);
         }
-        Ok(json_response(StatusCode::OK, &AnalyzersResponse { analyzers }))
+        Ok(json_response(
+            StatusCode::OK,
+            &AnalyzersResponse { analyzers },
+        ))
     })
     .await
 }
@@ -60,12 +63,18 @@ pub(crate) async fn config(
             .ok_or_else(|| {
                 err(
                     ErrorCode::BadRequest,
-                    &format!("unknown analyzer family (available: {})", refine::FAMILIES.join(", ")),
+                    &format!(
+                        "unknown analyzer family (available: {})",
+                        refine::FAMILIES.join(", ")
+                    ),
                 )
             })?;
         let params = match req.params_hex.as_deref() {
             Some(hex) => Some(decode_hex(hex).ok_or_else(|| {
-                err(ErrorCode::BadRequest, "params_hex must be an even-length hex string")
+                err(
+                    ErrorCode::BadRequest,
+                    "params_hex must be an even-length hex string",
+                )
             })?),
             None => None,
         };
@@ -78,7 +87,9 @@ pub(crate) async fn config(
         info!(
             "analyzer config: {family} {} params {}",
             if req.enabled { "enabled" } else { "disabled" },
-            params.as_ref().map_or_else(|| "cleared".into(), |p| format!("set ({} bytes)", p.len()))
+            params
+                .as_ref()
+                .map_or_else(|| "cleared".into(), |p| format!("set ({} bytes)", p.len()))
         );
         Ok(json_response(StatusCode::OK, &read_info(&db, family)?))
     })
@@ -98,10 +109,12 @@ fn read_info(db: &datboi_index::Db, family: &str) -> Result<AnalyzerInfo, Respon
 
 fn encode_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 /// Even-length ASCII hex → bytes; `None` on any malformation.

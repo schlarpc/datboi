@@ -600,9 +600,7 @@ mod tests {
         use datboi_exec::evict::EvictOutcome;
         use datboi_exec::{ExecConfig, Executor};
         use datboi_index::recipes::NewRecipe;
-        use datboi_index::{
-            Db, Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass,
-        };
+        use datboi_index::{Db, Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass};
         use datboi_store_fs::{Namespace, Store};
         use flate2::Compression;
         use flate2::write::DeflateEncoder;
@@ -682,7 +680,10 @@ mod tests {
             exec.materialize(&db, &member_hash)?;
             assert!(store.has(Namespace::Data, &member_hash), "materialized");
             let out = exec.evict(&db, &member_hash)?;
-            assert!(matches!(out, EvictOutcome::Evicted { .. }), "evicted: {out:?}");
+            assert!(
+                matches!(out, EvictOutcome::Evicted { .. }),
+                "evicted: {out:?}"
+            );
         }
         assert!(
             !store.has(Namespace::Data, &member_hash),

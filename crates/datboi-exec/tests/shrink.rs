@@ -26,7 +26,6 @@ fn sweep_all(
     run_sweep(db, store, &bytes, analyzer, limit).expect("sweep")
 }
 
-
 fn pattern(len: usize, seed: u64) -> Vec<u8> {
     let mut state = seed;
     (0..len)
@@ -144,7 +143,9 @@ fn pack_chunk_sets_consolidates_the_loose_flood() {
     fs::create_dir_all(&src).expect("mkdir");
     fs::write(src.join("big.iso"), &blob).expect("write");
     assert_eq!(
-        Ingester::new(&store, &mut db, &[]).ingest(&[&src]).files_stored,
+        Ingester::new(&store, &mut db, &[])
+            .ingest(&[&src])
+            .files_stored,
         1
     );
     let hash = Blake3::compute(&blob);
@@ -248,9 +249,16 @@ fn chunking_skips_already_routed_blobs() {
     // reads the OR-graph, it never executes the recipe.)
     let src = pattern(4096, 0x9999_AAAA_BBBB_CCCC);
     let src_hash = Blake3::compute(&src);
-    store.put(StoreNs::Data, src_hash, src.as_slice()).expect("put src");
+    store
+        .put(StoreNs::Data, src_hash, src.as_slice())
+        .expect("put src");
     let src_id = db
-        .upsert_blob(&src_hash, Some(src.len() as u64), IndexNs::Data, Residency::Resident)
+        .upsert_blob(
+            &src_hash,
+            Some(src.len() as u64),
+            IndexNs::Data,
+            Residency::Resident,
+        )
         .expect("upsert src");
     let meta_hash = Blake3::compute(b"pretend recipe object");
     let meta_id = db
@@ -309,9 +317,16 @@ fn rank7_chunks_a_grounding_leaf_piece() {
     let size = 6 << 20;
     let piece = pattern(size, 0xABCD_1234_5678_9AB0);
     let piece_hash = Blake3::compute(&piece);
-    store.put(StoreNs::Data, piece_hash, piece.as_slice()).expect("put");
+    store
+        .put(StoreNs::Data, piece_hash, piece.as_slice())
+        .expect("put");
     let piece_id = db
-        .upsert_blob(&piece_hash, Some(size as u64), IndexNs::Data, Residency::Resident)
+        .upsert_blob(
+            &piece_hash,
+            Some(size as u64),
+            IndexNs::Data,
+            Residency::Resident,
+        )
         .expect("upsert piece");
 
     // Its container is ABSENT and grounds via this piece — the D91
@@ -320,14 +335,24 @@ fn rank7_chunks_a_grounding_leaf_piece() {
     // grounding leaf: route-less to the fixpoint despite two recipe rows.
     let cont_hash = Blake3::compute(b"absent container");
     let cont_id = db
-        .upsert_blob(&cont_hash, Some(size as u64), IndexNs::Data, Residency::Absent)
+        .upsert_blob(
+            &cont_hash,
+            Some(size as u64),
+            IndexNs::Data,
+            Residency::Absent,
+        )
         .expect("upsert container");
     for (meta, input, out) in [
         (b"slice".as_slice(), cont_id, piece_id),
         (b"rebuild".as_slice(), piece_id, cont_id),
     ] {
         let meta_id = db
-            .upsert_blob(&Blake3::compute(meta), Some(32), IndexNs::Meta, Residency::Resident)
+            .upsert_blob(
+                &Blake3::compute(meta),
+                Some(32),
+                IndexNs::Meta,
+                Residency::Resident,
+            )
             .expect("meta");
         let rid = db
             .insert_recipe(&NewRecipe {

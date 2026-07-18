@@ -1272,14 +1272,25 @@ fn read_only_open_reads_but_never_writes() {
     }
     let ro = Db::open_read_only(dir.path()).expect("ro open");
     assert!(ro.get_blob_id(&hash).expect("read works").is_some());
-    assert_eq!(ro.config_get("k").expect("read works").as_deref(), Some(&b"v"[..]));
+    assert_eq!(
+        ro.config_get("k").expect("read works").as_deref(),
+        Some(&b"v"[..])
+    );
     // Writes refuse on both files.
     assert!(
-        ro.upsert_blob(&Blake3::compute(b"x"), None, Namespace::Data, Residency::Resident)
-            .is_err(),
+        ro.upsert_blob(
+            &Blake3::compute(b"x"),
+            None,
+            Namespace::Data,
+            Residency::Resident
+        )
+        .is_err(),
         "cache write must refuse"
     );
-    assert!(ro.config_set("k2", b"v").is_err(), "state write must refuse");
+    assert!(
+        ro.config_set("k2", b"v").is_err(),
+        "state write must refuse"
+    );
 
     // A version-skewed file refuses to open read-only (no migrations
     // from a handle that can't write them).
@@ -1308,12 +1319,31 @@ fn root_blobs_are_the_underived_resident_literals() {
     // a root, even though its producer's input is a root.
     let piece = blob(&db, b"piece", Residency::Resident);
     let container = blob(&db, b"container", Residency::Resident);
-    recipe(&mut db, b"rebuild", &[piece], &[container], VerifyState::Pending);
+    recipe(
+        &mut db,
+        b"rebuild",
+        &[piece],
+        &[container],
+        VerifyState::Pending,
+    );
     // Only a FAILED route produces this one → still a root.
     let poisoned_out = blob(&db, b"poisoned-out", Residency::Resident);
-    let poisoned = recipe(&mut db, b"lying", &[piece], &[poisoned_out], VerifyState::Pending);
-    db.set_verify_state(poisoned, VerifyAdvance::Failed { error: "lied", peer: None }, 3)
-        .expect("poison");
+    let poisoned = recipe(
+        &mut db,
+        b"lying",
+        &[piece],
+        &[poisoned_out],
+        VerifyState::Pending,
+    );
+    db.set_verify_state(
+        poisoned,
+        VerifyAdvance::Failed {
+            error: "lied",
+            peer: None,
+        },
+        3,
+    )
+    .expect("poison");
     // Absent and EvictedCovered rows are not servable literals; Meta
     // blobs (the recipe objects minted above) ride the plans scope.
     blob(&db, b"absent", Residency::Absent);
@@ -1333,7 +1363,8 @@ fn root_blobs_are_the_underived_resident_literals() {
     // The streaming twin visits the identical set (the recon
     // responder's pass).
     let mut streamed = Vec::new();
-    db.for_each_root_blob(&mut |h| streamed.push(h)).expect("stream");
+    db.for_each_root_blob(&mut |h| streamed.push(h))
+        .expect("stream");
     streamed.sort_unstable_by_key(|h| h.0);
     assert_eq!(streamed, want);
 
@@ -1341,9 +1372,17 @@ fn root_blobs_are_the_underived_resident_literals() {
     // loose ROM (minting a producing route) moves it under plan
     // coverage — the D102 invisibility class shrinking by definition.
     let slice = blob(&db, b"slice-of-loose", Residency::Resident);
-    recipe(&mut db, b"loose-rebuild", &[slice], &[loose], VerifyState::Pending);
+    recipe(
+        &mut db,
+        b"loose-rebuild",
+        &[slice],
+        &[loose],
+        VerifyState::Pending,
+    );
     assert!(
-        !db.root_blobs().expect("roots").contains(&Blake3::compute(b"loose-rom")),
+        !db.root_blobs()
+            .expect("roots")
+            .contains(&Blake3::compute(b"loose-rom")),
         "a produced blob leaves the roots scope"
     );
 }

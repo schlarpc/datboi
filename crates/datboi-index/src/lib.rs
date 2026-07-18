@@ -442,10 +442,8 @@ fn migrate_in_place(
         // IMMEDIATE + re-check inside (D93): two processes can race a
         // first-open after an upgrade; the loser must observe the
         // winner's stamp instead of re-running DDL into a conflict.
-        let tx = rusqlite::Transaction::new_unchecked(
-            conn,
-            rusqlite::TransactionBehavior::Immediate,
-        )?;
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
         let current: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if current != step {
             continue; // another opener already advanced this step

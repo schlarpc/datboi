@@ -163,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn derived_keys_are_domain_separated_and_stable(){
+    fn derived_keys_are_domain_separated_and_stable() {
         // D99: the root signs nothing; snapshot and iroh keys are distinct
         // derivations of it, each deterministic, neither equal to the root.
         let id = Identity::from_seed([5u8; 32]);

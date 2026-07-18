@@ -297,7 +297,11 @@ impl Store {
     /// data-namespace blobs fall through to the D91 pack map, coming
     /// back as bounded windows — callers cannot tell the difference,
     /// which is the design.
-    pub fn get(&self, ns: Namespace, hash: &Blake3) -> Result<Option<crate::pack::Blob>, StoreError> {
+    pub fn get(
+        &self,
+        ns: Namespace,
+        hash: &Blake3,
+    ) -> Result<Option<crate::pack::Blob>, StoreError> {
         let path = self.blob_path(ns, hash);
         match File::open(&path) {
             Ok(f) => return Ok(Some(crate::pack::Blob::loose(f))),

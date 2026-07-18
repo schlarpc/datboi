@@ -26,7 +26,12 @@ fn put(store: &Store, db: &Db, bytes: &[u8]) -> (Blake3, i64) {
     let hash = Blake3::compute(bytes);
     store.put(StoreNs::Data, hash, bytes).expect("put");
     let id = db
-        .upsert_blob(&hash, Some(bytes.len() as u64), IndexNs::Data, Residency::Resident)
+        .upsert_blob(
+            &hash,
+            Some(bytes.len() as u64),
+            IndexNs::Data,
+            Residency::Resident,
+        )
         .expect("row");
     (hash, id)
 }
@@ -52,15 +57,20 @@ fn analysis_details(db: &Db) -> Vec<String> {
 fn blob_hash_of(db: &Db, blob_id: i64) -> Blake3 {
     let bytes: Vec<u8> = db
         .cache()
-        .query_row("SELECT hash FROM blob WHERE blob_id = ?1", (blob_id,), |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT hash FROM blob WHERE blob_id = ?1",
+            (blob_id,),
+            |row| row.get(0),
+        )
         .expect("blob row");
     Blake3(bytes.try_into().expect("32 bytes"))
 }
 
 fn recipes_for(store: &Store, db: &Db, output: &Blake3) -> Vec<Recipe> {
-    let blob_id = db.get_blob_id(output).expect("query").expect("output blob row");
+    let blob_id = db
+        .get_blob_id(output)
+        .expect("query")
+        .expect("output blob row");
     db.recipes_for_output(blob_id)
         .expect("recipes")
         .iter()
@@ -87,7 +97,13 @@ fn materialize(params: &AssembleParams, sources: &[&[u8]]) -> Vec<u8> {
     out
 }
 
-fn derive_piece(store: &Store, db: &Db, narc: &[u8], narc_hash: &Blake3, piece: &Blake3) -> Vec<u8> {
+fn derive_piece(
+    store: &Store,
+    db: &Db,
+    narc: &[u8],
+    narc_hash: &Blake3,
+    piece: &Blake3,
+) -> Vec<u8> {
     let recipe = recipes_for(store, db, piece)
         .into_iter()
         .find(|r| r.inputs.len() == 1 && r.inputs[0].hash == *narc_hash)
@@ -97,7 +113,9 @@ fn derive_piece(store: &Store, db: &Db, narc: &[u8], narc_hash: &Blake3, piece: 
 }
 
 fn pattern(len: usize, seed: u8) -> Vec<u8> {
-    (0..len).map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed)).collect()
+    (0..len)
+        .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed))
+        .collect()
 }
 
 /// Assemble a synthetic NARC: header + BTAF (FAT) + minimal BTNF (FNT) +
@@ -226,7 +244,10 @@ fn shared_member_dedups_across_two_narcs() {
     // The shared members are a single claimed identity across both.
     for m in [&shared1, &shared2] {
         let id = db.get_blob_id(&Blake3::compute(m)).expect("q");
-        assert!(id.is_some(), "shared member claimed once, dedup across variants");
+        assert!(
+            id.is_some(),
+            "shared member claimed once, dedup across variants"
+        );
     }
 }
 
@@ -242,7 +263,11 @@ fn recipe_volume_cap_keeps_a_huge_narc_literal() {
     let (_hash, id) = put(&store, &db, &narc);
     let report = sweep(&mut db, &store);
     assert_eq!(report.errors, vec![]);
-    assert_eq!((report.positive, report.negative), (0, 1), "over-cap → negative");
+    assert_eq!(
+        (report.positive, report.negative),
+        (0, 1),
+        "over-cap → negative"
+    );
     assert!(
         db.recipes_for_output(id).expect("q").is_empty(),
         "no decomposition minted past the cap"
@@ -252,7 +277,11 @@ fn recipe_volume_cap_keeps_a_huge_narc_literal() {
 #[test]
 fn non_narc_blobs_conclude_negative() {
     let (_dir, store, mut db) = world();
-    put(&store, &db, b"NARCish but not really, missing the byte-order mark");
+    put(
+        &store,
+        &db,
+        b"NARCish but not really, missing the byte-order mark",
+    );
     let report = sweep(&mut db, &store);
     assert_eq!(report.errors, vec![]);
     assert_eq!((report.positive, report.negative), (0, 1));

@@ -241,12 +241,7 @@ fn resize_drones(
     }
 }
 
-fn worker(
-    db_dir: std::path::PathBuf,
-    store: &'static Store,
-    jobs: &Registry,
-    shared: Arc<Shared>,
-) {
+fn worker(db_dir: std::path::PathBuf, store: &'static Store, jobs: &Registry, shared: Arc<Shared>) {
     // Lowest CPU priority for THIS thread (Linux niceness is per-task,
     // so the request path is untouched). Best-effort everywhere else.
     if let Err(e) = rustix::process::nice(19) {
@@ -347,7 +342,11 @@ fn worker(
             // adopt a re-tuned count without a daemon restart.
             let want = worker_count(&db).saturating_sub(1);
             if want != drones.len() {
-                info!("refinement: resizing drone fleet {} → {}", drones.len(), want);
+                info!(
+                    "refinement: resizing drone fleet {} → {}",
+                    drones.len(),
+                    want
+                );
                 resize_drones(
                     want,
                     &mut drones,
@@ -647,8 +646,9 @@ mod tests {
     fn drone_fleet_grows_and_shrinks_live() {
         use std::sync::atomic::Ordering::Relaxed;
         let dir = tempfile::tempdir().expect("tempdir");
-        let store: &'static Store =
-            Box::leak(Box::new(Store::open(dir.path().join("store")).expect("store")));
+        let store: &'static Store = Box::leak(Box::new(
+            Store::open(dir.path().join("store")).expect("store"),
+        ));
         // Migrate once so each drone's private open sees the schema.
         let _db = Db::open(dir.path()).expect("db");
         let exec = Arc::new(
@@ -658,19 +658,46 @@ mod tests {
         let mut drones = Vec::new();
         let mut next_id = 1usize;
 
-        resize_drones(3, &mut drones, &mut next_id, dir.path(), store, &exec, &shared);
+        resize_drones(
+            3,
+            &mut drones,
+            &mut next_id,
+            dir.path(),
+            store,
+            &exec,
+            &shared,
+        );
         assert_eq!(drones.len(), 3, "grew to three drones");
         assert_eq!(next_id, 4, "ids are monotonic");
 
         // A retired drone is flagged to stop (and will observe it — the
         // loop checks the flag before every burst and after every wake).
         let retired = Arc::clone(drones.last().expect("nonempty"));
-        resize_drones(1, &mut drones, &mut next_id, dir.path(), store, &exec, &shared);
+        resize_drones(
+            1,
+            &mut drones,
+            &mut next_id,
+            dir.path(),
+            store,
+            &exec,
+            &shared,
+        );
         assert_eq!(drones.len(), 1, "shrank to one drone");
-        assert!(retired.load(Relaxed), "the retired drone was flagged to exit");
+        assert!(
+            retired.load(Relaxed),
+            "the retired drone was flagged to exit"
+        );
 
         // Regrowth spawns fresh, fungible drones (no id reuse needed).
-        resize_drones(4, &mut drones, &mut next_id, dir.path(), store, &exec, &shared);
+        resize_drones(
+            4,
+            &mut drones,
+            &mut next_id,
+            dir.path(),
+            store,
+            &exec,
+            &shared,
+        );
         assert_eq!(drones.len(), 4);
         assert_eq!(next_id, 7, "three fresh ids (4,5,6) after the shrink");
     }

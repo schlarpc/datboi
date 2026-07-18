@@ -220,7 +220,11 @@ struct RandomMapping {
 
 impl RandomMapping {
     #[inline]
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn next_index(&mut self) -> u64 {
         self.prng = self.prng.wrapping_mul(0xda94_2042_e4dd_58b5);
         let r = self.prng;
@@ -732,8 +736,14 @@ mod tests {
     #[test]
     fn golden_encoder_streams_match_block_encoding() {
         for (n, golden) in [
-            (1u64, &include_bytes!("../testdata/riblt/golden/encoder_1.bin")[..]),
-            (100, &include_bytes!("../testdata/riblt/golden/encoder_100.bin")[..]),
+            (
+                1u64,
+                &include_bytes!("../testdata/riblt/golden/encoder_1.bin")[..],
+            ),
+            (
+                100,
+                &include_bytes!("../testdata/riblt/golden/encoder_100.bin")[..],
+            ),
         ] {
             let set: Vec<Symbol> = (0..n).map(test_symbol).collect();
             // One 256-symbol block, and ragged blocks (1, 3, 60, rest).
@@ -791,8 +801,16 @@ mod tests {
             let index: u64 = parts.next().expect("index").parse().expect("u64");
             let symbol = hex32(parts.next().expect("symbol"));
             let hash: u64 = parts.next().expect("hash").parse().expect("u64");
-            assert_eq!(test_symbol(index), symbol, "symbol constructor diverged at {index}");
-            assert_eq!(hash_symbol(&symbol), hash, "SipHash checksum diverged at {index}");
+            assert_eq!(
+                test_symbol(index),
+                symbol,
+                "symbol constructor diverged at {index}"
+            );
+            assert_eq!(
+                hash_symbol(&symbol),
+                hash,
+                "SipHash checksum diverged at {index}"
+            );
             seen += 1;
         }
         assert_eq!(seen, 5, "golden file shrank");
@@ -801,9 +819,18 @@ mod tests {
     #[test]
     fn golden_encoder_streams_match_byte_for_byte() {
         for (n, golden) in [
-            (1u64, &include_bytes!("../testdata/riblt/golden/encoder_1.bin")[..]),
-            (3, &include_bytes!("../testdata/riblt/golden/encoder_3.bin")[..]),
-            (100, &include_bytes!("../testdata/riblt/golden/encoder_100.bin")[..]),
+            (
+                1u64,
+                &include_bytes!("../testdata/riblt/golden/encoder_1.bin")[..],
+            ),
+            (
+                3,
+                &include_bytes!("../testdata/riblt/golden/encoder_3.bin")[..],
+            ),
+            (
+                100,
+                &include_bytes!("../testdata/riblt/golden/encoder_100.bin")[..],
+            ),
         ] {
             let mut enc = Encoder::new((0..n).map(test_symbol));
             let mut stream = Vec::with_capacity(golden.len());

@@ -89,7 +89,10 @@ pub(crate) async fn eval(
 /// relinks, refreshes rollups, and publishes the snapshot). The same
 /// call the CLI's `view eval` runs — one code path (D96).
 fn run_eval_job(app: &App, id: i64, def: ViewDef) {
-    info!("eval job {id}: view {} ({}/{})", def.name, def.provider, def.system);
+    info!(
+        "eval job {id}: view {} ({}/{})",
+        def.name, def.provider, def.system
+    );
     let result = {
         let mut db = app
             .db
@@ -179,7 +182,14 @@ fn load_snapshot(app: &App, hash: Blake3) -> Result<ViewSnapshot, Response> {
 /// `mint_image` sequence the CLI's `view image` runs. Obao is always
 /// stored (the download surface serves ranges from it); no file export
 /// (the image downloads via `GET /v1/views/{name}/image`).
-fn run_mint_job(app: &App, id: i64, name: String, snap_hash: Blake3, snap: ViewSnapshot, params: ImageParams) {
+fn run_mint_job(
+    app: &App,
+    id: i64,
+    name: String,
+    snap_hash: Blake3,
+    snap: ViewSnapshot,
+    params: ImageParams,
+) {
     info!("mint job {id}: view {name} (snapshot {snap_hash})");
     let now = auth::now_unix();
     let result: Result<(datboi_catalog::ImageReport, usize), String> = (|| {
@@ -194,14 +204,19 @@ fn run_mint_job(app: &App, id: i64, name: String, snap_hash: Blake3, snap: ViewS
                 .materialize(&db, hash)
                 .map_err(|e| format!("materializing image input {hash}: {e}"))?;
         }
-        let report =
-            datboi_catalog::mint_image(&mut db, app.store, &name, &snap_hash, &snap, &params, true, now)
-                .map_err(|e| e.to_string())?;
+        let report = datboi_catalog::mint_image(
+            &mut db, app.store, &name, &snap_hash, &snap, &params, true, now,
+        )
+        .map_err(|e| e.to_string())?;
         Ok((report, materialized))
     })();
     match result {
         Ok((report, materialized)) => {
-            let obao = if report.obao_stored { ", obao stored" } else { "" };
+            let obao = if report.obao_stored {
+                ", obao stored"
+            } else {
+                ""
+            };
             let extra = if materialized > 0 {
                 format!(" (materialized {materialized} input(s) first)")
             } else {

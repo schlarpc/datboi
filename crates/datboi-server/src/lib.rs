@@ -252,8 +252,7 @@ impl App {
         // idempotent, but sequencing after the first open keeps it moot).
         let writers =
             WritePool::open(&config.db_dir, WRITE_POOL_SIZE).context("quick-write pool")?;
-        let readers =
-            ReadPool::open(&config.db_dir, READ_POOL_SIZE).context("read-only pool")?;
+        let readers = ReadPool::open(&config.db_dir, READ_POOL_SIZE).context("read-only pool")?;
         Ok(Arc::new(App {
             db: Mutex::new(db),
             writers,
@@ -352,14 +351,9 @@ impl Server {
                     datboi_catalog::statesnap::load_or_create_identity(&self.app.db_dir)?;
                 // A dedicated read-only Db so serving reads never contend
                 // with the request path's pools (serving is read-only).
-                let p2p_db =
-                    Arc::new(Mutex::new(Db::open_read_only(&self.app.db_dir)?));
-                match datboi_p2p::serve_holdings(
-                    self.app.store,
-                    p2p_db,
-                    identity.iroh_secret(),
-                )
-                .await
+                let p2p_db = Arc::new(Mutex::new(Db::open_read_only(&self.app.db_dir)?));
+                match datboi_p2p::serve_holdings(self.app.store, p2p_db, identity.iroh_secret())
+                    .await
                 {
                     Ok(sb) => {
                         info!(

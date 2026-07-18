@@ -324,12 +324,7 @@ pub async fn sync(
         };
         {
             let guard = db.lock().unwrap_or_else(|e| e.into_inner());
-            store.put_with_obao(
-                Namespace::Data,
-                *hash,
-                bytes.len() as u64,
-                bytes.as_slice(),
-            )?;
+            store.put_with_obao(Namespace::Data, *hash, bytes.len() as u64, bytes.as_slice())?;
             guard.upsert_blob(
                 hash,
                 Some(bytes.len() as u64),
@@ -378,7 +373,9 @@ pub async fn sync(
         pieces_unavailable,
         // Both sketches (plans + D102 roots) count against the savings.
         sketch_wire_bytes: recon.wire_bytes()
-            + peer_roots.as_ref().map_or(0, recon::ReconReport::wire_bytes),
+            + peer_roots
+                .as_ref()
+                .map_or(0, recon::ReconReport::wire_bytes),
         symbols_received: recon.symbols_received
             + peer_roots.as_ref().map_or(0, |r| r.symbols_received),
     };
@@ -409,15 +406,17 @@ pub async fn sync(
 mod tests {
     use datboi_core::assemble::{AssembleParams, Segment};
     use datboi_core::recipe::{InputRef, OutputRef};
-    use iroh::protocol::Router;
     use iroh::endpoint::presets;
+    use iroh::protocol::Router;
 
     use super::*;
     use crate::recon::ReconProvider;
 
     fn piece(i: u64) -> Vec<u8> {
         // > 16 KiB so pieces carry real bao trees.
-        (0..40_960u64).map(|j| ((i * 131 + j) % 251) as u8).collect()
+        (0..40_960u64)
+            .map(|j| ((i * 131 + j) % 251) as u8)
+            .collect()
     }
 
     /// Mint one affine assemble plan (pieces concatenated in order) the
@@ -573,15 +572,32 @@ mod tests {
         for p in shared.iter().chain(&extra2) {
             a_c2_pieces.push(import_piece(&mut db_a, store_a, p)?);
         }
-        mint_assemble(&mut db_a, store_a, &a_c1_pieces, &c1_hash, c1.len() as u64, RecipeSource::LocalIngest)?;
-        let rc2 = mint_assemble(&mut db_a, store_a, &a_c2_pieces, &c2_hash, c2.len() as u64, RecipeSource::LocalIngest)?;
+        mint_assemble(
+            &mut db_a,
+            store_a,
+            &a_c1_pieces,
+            &c1_hash,
+            c1.len() as u64,
+            RecipeSource::LocalIngest,
+        )?;
+        let rc2 = mint_assemble(
+            &mut db_a,
+            store_a,
+            &a_c2_pieces,
+            &c2_hash,
+            c2.len() as u64,
+            RecipeSource::LocalIngest,
+        )?;
         let db_a = Arc::new(Mutex::new(db_a));
 
         let endpoint_a = Endpoint::bind(presets::N0).await?;
         endpoint_a.online().await;
         let addr_a = endpoint_a.addr();
         let router = Router::builder(endpoint_a)
-            .accept(iroh_blobs::ALPN, crate::cas::CasProvider::new(store_a, Arc::clone(&db_a)))
+            .accept(
+                iroh_blobs::ALPN,
+                crate::cas::CasProvider::new(store_a, Arc::clone(&db_a)),
+            )
             .accept(recon::ALPN, ReconProvider::new(db_a))
             .spawn();
 
@@ -594,23 +610,26 @@ mod tests {
         for p in shared.iter().chain(&extra1) {
             b_c1_pieces.push(import_piece(&mut db_b, store_b, p)?);
         }
-        mint_assemble(&mut db_b, store_b, &b_c1_pieces, &c1_hash, c1.len() as u64, RecipeSource::LocalIngest)?;
+        mint_assemble(
+            &mut db_b,
+            store_b,
+            &b_c1_pieces,
+            &c1_hash,
+            c1.len() as u64,
+            RecipeSource::LocalIngest,
+        )?;
         let db_b = Arc::new(Mutex::new(db_b));
 
         let endpoint_b = Endpoint::bind(presets::N0).await?;
-        let report = sync(
-            &endpoint_b,
-            addr_a,
-            store_b,
-            Arc::clone(&db_b),
-            &[c2_hash],
-        )
-        .await?;
+        let report = sync(&endpoint_b, addr_a, store_b, Arc::clone(&db_b), &[c2_hash]).await?;
 
         assert_eq!(report.recipes_fetched, 1, "one plan crossed the wire");
         assert_eq!(report.pieces_fetched, 2, "only the pieces B lacked");
         assert_eq!(report.piece_bytes_fetched, 2 * 40_960);
-        assert_eq!(report.pieces_already_held, 6, "the shared pieces stayed home");
+        assert_eq!(
+            report.pieces_already_held, 6,
+            "the shared pieces stayed home"
+        );
         assert_eq!(report.bytes_already_held, 6 * 40_960);
         assert_eq!(report.bytes_rebuilt, c2.len() as u64);
         assert!(
@@ -659,14 +678,24 @@ mod tests {
         for p in &pieces_bytes {
             a_pieces.push(import_piece(&mut db_a, store_a, p)?);
         }
-        mint_assemble(&mut db_a, store_a, &a_pieces, &c_hash, container.len() as u64, RecipeSource::LocalIngest)?;
+        mint_assemble(
+            &mut db_a,
+            store_a,
+            &a_pieces,
+            &c_hash,
+            container.len() as u64,
+            RecipeSource::LocalIngest,
+        )?;
         let db_a = Arc::new(Mutex::new(db_a));
 
         let endpoint_a = Endpoint::bind(presets::N0).await?;
         endpoint_a.online().await;
         let addr_a = endpoint_a.addr();
         let router = Router::builder(endpoint_a)
-            .accept(iroh_blobs::ALPN, crate::cas::CasProvider::new(store_a, Arc::clone(&db_a)))
+            .accept(
+                iroh_blobs::ALPN,
+                crate::cas::CasProvider::new(store_a, Arc::clone(&db_a)),
+            )
             .accept(recon::ALPN, ReconProvider::new(db_a))
             .spawn();
 
@@ -679,7 +708,10 @@ mod tests {
 
         assert_eq!(report.recipes_fetched, 1);
         assert_eq!(report.pieces_fetched, 4, "all leaves fetched");
-        assert!(report.rebuilt.is_empty(), "mirror mode materializes nothing");
+        assert!(
+            report.rebuilt.is_empty(),
+            "mirror mode materializes nothing"
+        );
         assert!(
             !store_b.has(Namespace::Data, &c_hash),
             "container stays virtual (grounded, not resident)"
@@ -713,14 +745,24 @@ mod tests {
         for p in &pieces_bytes {
             a_pieces.push(import_piece(&mut db_a, store_a, p)?);
         }
-        mint_assemble(&mut db_a, store_a, &a_pieces, &c_hash, container.len() as u64, RecipeSource::LocalIngest)?;
+        mint_assemble(
+            &mut db_a,
+            store_a,
+            &a_pieces,
+            &c_hash,
+            container.len() as u64,
+            RecipeSource::LocalIngest,
+        )?;
         let db_a = Arc::new(Mutex::new(db_a));
 
         let endpoint_a = Endpoint::bind(presets::N0).await?;
         endpoint_a.online().await;
         let addr_a = endpoint_a.addr();
         let router = Router::builder(endpoint_a)
-            .accept(iroh_blobs::ALPN, crate::cas::CasProvider::new(store_a, Arc::clone(&db_a)))
+            .accept(
+                iroh_blobs::ALPN,
+                crate::cas::CasProvider::new(store_a, Arc::clone(&db_a)),
+            )
             .accept(recon::ALPN, ReconProvider::new(db_a))
             .spawn();
 
@@ -733,7 +775,14 @@ mod tests {
             .iter()
             .map(|p| (Blake3::compute(p), p.len() as u64))
             .collect();
-        mint_assemble(&mut db_b, store_b, &b_pieces, &c_hash, container.len() as u64, RecipeSource::Peer)?;
+        mint_assemble(
+            &mut db_b,
+            store_b,
+            &b_pieces,
+            &c_hash,
+            container.len() as u64,
+            RecipeSource::Peer,
+        )?;
         let db_b = Arc::new(Mutex::new(db_b));
 
         let endpoint_b = Endpoint::bind(presets::N0).await?;
@@ -743,7 +792,10 @@ mod tests {
             report.recipes_fetched, 0,
             "recon diff is empty — the plan is already local"
         );
-        assert_eq!(report.pieces_fetched, 4, "the orphaned leaves fetched anyway");
+        assert_eq!(
+            report.pieces_fetched, 4,
+            "the orphaned leaves fetched anyway"
+        );
         assert_eq!(report.pieces_unavailable, 0);
         for p in &pieces_bytes {
             assert!(store_b.has(Namespace::Data, &Blake3::compute(p)));
@@ -783,7 +835,14 @@ mod tests {
         for p in &pieces_bytes {
             a_pieces.push(import_piece(&mut db_a, store_a, p)?);
         }
-        mint_assemble(&mut db_a, store_a, &a_pieces, &c_hash, container.len() as u64, RecipeSource::LocalIngest)?;
+        mint_assemble(
+            &mut db_a,
+            store_a,
+            &a_pieces,
+            &c_hash,
+            container.len() as u64,
+            RecipeSource::LocalIngest,
+        )?;
         import_piece(&mut db_a, store_a, &loose)?;
         import_piece(&mut db_a, store_a, &shared)?;
         import_piece(&mut db_a, store_a, &x)?;
@@ -793,7 +852,10 @@ mod tests {
         endpoint_a.online().await;
         let addr_a = endpoint_a.addr();
         let router = Router::builder(endpoint_a)
-            .accept(iroh_blobs::ALPN, crate::cas::CasProvider::new(store_a, Arc::clone(&db_a)))
+            .accept(
+                iroh_blobs::ALPN,
+                crate::cas::CasProvider::new(store_a, Arc::clone(&db_a)),
+            )
             .accept(recon::ALPN, ReconProvider::new(db_a))
             .spawn();
 
@@ -805,7 +867,14 @@ mod tests {
         for p in &x_parts {
             b_x_pieces.push(import_piece(&mut db_b, store_b, p)?);
         }
-        mint_assemble(&mut db_b, store_b, &b_x_pieces, &x_hash, x.len() as u64, RecipeSource::LocalIngest)?;
+        mint_assemble(
+            &mut db_b,
+            store_b,
+            &b_x_pieces,
+            &x_hash,
+            x.len() as u64,
+            RecipeSource::LocalIngest,
+        )?;
         let db_b = Arc::new(Mutex::new(db_b));
 
         let endpoint_b = Endpoint::bind(presets::N0).await?;
@@ -854,15 +923,31 @@ mod tests {
         for p in &pieces_bytes {
             a_pieces.push(import_piece(&mut db_a, store_a, p)?);
         }
-        mint_assemble(&mut db_a, store_a, &a_pieces, &c_hash, container.len() as u64, RecipeSource::LocalIngest)?;
-        mint_slices(&mut db_a, store_a, &c_hash, &a_pieces, RecipeSource::LocalIngest)?;
+        mint_assemble(
+            &mut db_a,
+            store_a,
+            &a_pieces,
+            &c_hash,
+            container.len() as u64,
+            RecipeSource::LocalIngest,
+        )?;
+        mint_slices(
+            &mut db_a,
+            store_a,
+            &c_hash,
+            &a_pieces,
+            RecipeSource::LocalIngest,
+        )?;
         let db_a = Arc::new(Mutex::new(db_a));
 
         let endpoint_a = Endpoint::bind(presets::N0).await?;
         endpoint_a.online().await;
         let addr_a = endpoint_a.addr();
         let router = Router::builder(endpoint_a)
-            .accept(iroh_blobs::ALPN, crate::cas::CasProvider::new(store_a, Arc::clone(&db_a)))
+            .accept(
+                iroh_blobs::ALPN,
+                crate::cas::CasProvider::new(store_a, Arc::clone(&db_a)),
+            )
             .accept(recon::ALPN, ReconProvider::new(db_a))
             .spawn();
 

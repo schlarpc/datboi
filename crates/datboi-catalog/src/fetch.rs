@@ -35,7 +35,9 @@ fn resolve(source: &str) -> Result<(String, Option<&'static str>), CatalogError>
     }
     if let Some(slug) = source.strip_prefix("redump/") {
         if slug.is_empty() || !slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
-            return Err(CatalogError::Fetch(format!("bad redump system slug {slug:?}")));
+            return Err(CatalogError::Fetch(format!(
+                "bad redump system slug {slug:?}"
+            )));
         }
         return Ok((format!("http://redump.org/datfile/{slug}/"), Some("Redump")));
     }

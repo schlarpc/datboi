@@ -289,8 +289,10 @@ mod tests {
 
     #[test]
     fn refuses_non_narc() {
-        let err = parse_layout(&mut Cursor::new(b"not even close to a narc header!".to_vec()))
-            .unwrap_err();
+        let err = parse_layout(&mut Cursor::new(
+            b"not even close to a narc header!".to_vec(),
+        ))
+        .unwrap_err();
         assert!(matches!(err, NdsError::Refused(Refusal::NotNarc)));
     }
 }

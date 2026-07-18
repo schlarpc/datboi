@@ -248,7 +248,8 @@ pub(crate) fn parse_footer(file: &mut File) -> Result<Vec<(Blake3, u64, u64)>, S
         .checked_sub(TRAILER_LEN)
         .and_then(|v| v.checked_sub(footer_len))
         .ok_or("footer length exceeds the file")?;
-    file.seek(SeekFrom::Start(data_end)).map_err(|e| e.to_string())?;
+    file.seek(SeekFrom::Start(data_end))
+        .map_err(|e| e.to_string())?;
     let mut footer = vec![0u8; usize::try_from(footer_len).map_err(|e| e.to_string())?];
     file.read_exact(&mut footer).map_err(|e| e.to_string())?;
     let table = footer
@@ -363,7 +364,8 @@ impl Store {
                     break;
                 }
                 member_hasher.update(&buf[..n]);
-                out.write_all(&buf[..n]).map_err(|e| StoreError::io(temp, e))?;
+                out.write_all(&buf[..n])
+                    .map_err(|e| StoreError::io(temp, e))?;
                 copied += n as u64;
             }
             let got = Blake3(*member_hasher.finalize().as_bytes());
@@ -378,7 +380,8 @@ impl Store {
             table.push((member.hash, offset, member.len));
         }
         let footer = encode_footer(&table);
-        out.write_all(&footer).map_err(|e| StoreError::io(temp, e))?;
+        out.write_all(&footer)
+            .map_err(|e| StoreError::io(temp, e))?;
         out.write_all(&(footer.len() as u64).to_le_bytes())
             .map_err(|e| StoreError::io(temp, e))?;
         out.write_all(PACK_TRAILER)
@@ -459,7 +462,8 @@ impl Store {
         // Coverage order = write order = read order; drive per-member
         // hashers as the single forward pass crosses their spans.
         members.sort_unstable_by_key(|(_, offset, _)| *offset);
-        file.seek(SeekFrom::Start(0)).map_err(|e| StoreError::io(&path, e))?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|e| StoreError::io(&path, e))?;
         let mut whole = blake3::Hasher::new();
         let mut hashers: Vec<AliasHasher> = members.iter().map(|_| AliasHasher::new()).collect();
         let mut reader = io::BufReader::new(&mut file);
@@ -467,7 +471,9 @@ impl Store {
         let mut pos = 0u64;
         let mut cur = 0usize;
         loop {
-            let n = reader.read(&mut buf).map_err(|e| StoreError::io(&path, e))?;
+            let n = reader
+                .read(&mut buf)
+                .map_err(|e| StoreError::io(&path, e))?;
             if n == 0 {
                 break;
             }
