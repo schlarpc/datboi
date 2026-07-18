@@ -122,7 +122,7 @@ struct DbSnapshot<'a> {
     scope: Scope,
 }
 
-impl SetSnapshot for DbSnapshot<'_> {
+impl SetSnapshot<32> for DbSnapshot<'_> {
     type Error = anyhow::Error;
 
     fn for_each(&mut self, f: &mut dyn FnMut(Symbol)) -> Result<(), Self::Error> {
@@ -163,12 +163,12 @@ fn stream_scope(
         let mut block_len = FIRST_BLOCK;
         while sent < MAX_SYMBOLS && !stopped.load(Ordering::Relaxed) {
             let take = block_len.min(usize::try_from(MAX_SYMBOLS - sent).unwrap_or(usize::MAX));
-            let mut block = vec![CodedSymbol::default(); take];
+            let mut block = vec![CodedSymbol::<32>::default(); take];
             let mut source = DbSnapshot { db: &db, scope };
             riblt::encode_block(&mut source, sent, &mut block)?;
-            let mut bytes = Vec::with_capacity(take * CODED_SYMBOL_LEN);
-            for c in &block {
-                bytes.extend_from_slice(&c.to_bytes());
+            let mut bytes = vec![0u8; take * CODED_SYMBOL_LEN];
+            for (c, out) in block.iter().zip(bytes.chunks_exact_mut(CODED_SYMBOL_LEN)) {
+                c.write_to(out);
             }
             if tx.blocking_send(bytes).is_err() {
                 break;

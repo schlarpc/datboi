@@ -1,16 +1,26 @@
 //! Rateless IBLT set-reconciliation codec (D100).
 //!
-//! A `[u8; 32]`-specialized port of the reference Go implementation of
-//! "Practical Rateless Set Reconciliation" (Yang, Gilad, Alizadeh —
-//! SIGCOMM 2024; `github.com/yangl1996/riblt`, MIT). Ported
-//! statement-for-statement where the borrow checker allows, because the
-//! correctness proof is DIFFERENTIAL, not a re-derivation: the vendored
-//! reference (testdata/riblt/gen) generates committed golden vectors, and
-//! the tests below pin our encoder byte-for-byte and our decoder's exact
-//! diff recovery + symbol count against them. Deviate from the reference
+//! A port of the reference Go implementation of "Practical Rateless Set
+//! Reconciliation" (Yang, Gilad, Alizadeh — SIGCOMM 2024;
+//! `github.com/yangl1996/riblt`, MIT), const-generic over the symbol
+//! width `N` (D100 amendment: the algorithm is width-agnostic — the one
+//! shape it resists is per-ELEMENT variable width, since peeling is XOR
+//! algebra over a fixed-length domain — so width is a per-scope protocol
+//! constant, one width per stream). The v1 wire instantiation is `N = 32`
+//! ([`Symbol`], bare blake3); a future scope in another hash algebra
+//! (sha1-shaped, alias-pair-shaped) instantiates its own width and MUST
+//! bring its own goldens before becoming protocol surface.
+//!
+//! Ported statement-for-statement where the borrow checker allows,
+//! because the correctness proof is DIFFERENTIAL, not a re-derivation:
+//! the vendored reference (testdata/riblt/gen) generates committed golden
+//! vectors, and the tests below pin our encoder byte-for-byte and our
+//! decoder's exact diff recovery + symbol count against them — at
+//! `N = 32`, the only reference-pinned width. Deviate from the reference
 //! and the goldens catch it. The property tests then cover what goldens
 //! can't: arbitrary set shapes, insertion-order invariance, duplicate
-//! inputs, and adversarial coded streams.
+//! inputs, adversarial coded streams, and the width-genericity itself
+//! (the invariants re-proven at non-32 widths).
 //!
 //! Shape: for any set, an infinite deterministic sequence of *coded
 //! symbols* exists (each an XOR-sum of a pseudo-random subset of the set,
@@ -50,15 +60,21 @@
 use std::collections::HashSet;
 use std::hash::Hasher as _;
 
-/// A source symbol: a bare blake3 hash, the one element type every
-/// reconciled scope uses (D100 — recipe object hashes today).
+/// The v1 source symbol: a bare blake3 hash — the width both live wire
+/// scopes use (D100/D102). Other widths instantiate the generic types
+/// directly.
 pub type Symbol = [u8; 32];
 
-/// Wire size of one coded symbol: 32 XOR-sum ‖ 8 checksum LE ‖ 8 count LE.
-pub const CODED_SYMBOL_LEN: usize = 48;
+/// Wire size of one v1 (32-byte-symbol) coded symbol:
+/// 32 XOR-sum ‖ 8 checksum LE ‖ 8 count LE. The generic form is
+/// [`CodedSymbol::WIRE_LEN`].
+pub const CODED_SYMBOL_LEN: usize = CodedSymbol::<32>::WIRE_LEN;
 
 // Protocol constants (D100): the keys spell the surface they serve. Any
-// change is a wire break — the goldens pin them.
+// change is a wire break — the goldens pin them. Shared across widths on
+// purpose: two scopes never mix streams, so cross-width domain
+// separation buys nothing, and per-width keys would be one more thing a
+// new scope could get wrong.
 const SIPHASH_K0: u64 = u64::from_le_bytes(*b"datboi/r");
 const SIPHASH_K1: u64 = u64::from_le_bytes(*b"iblt/1\0\0");
 
@@ -69,34 +85,39 @@ const REMOVE: i64 = -1;
 /// summed into coded symbols, and the seed of the symbol's index mapping.
 #[inline]
 #[must_use]
-pub fn hash_symbol(symbol: &Symbol) -> u64 {
+pub fn hash_symbol<const N: usize>(symbol: &[u8; N]) -> u64 {
     let mut h = siphasher::sip::SipHasher24::new_with_keys(SIPHASH_K0, SIPHASH_K1);
     h.write(symbol);
     h.finish()
 }
 
-/// XOR one 32-byte symbol into another, four u64 lanes at a time (the
-/// innermost operation of the whole codec; byte loops vectorize less
-/// reliably). Endianness is irrelevant under pure XOR.
+/// XOR one symbol into another: u64 lanes for the width's 8-byte
+/// prefix, a byte loop for the ragged tail (the innermost operation of
+/// the whole codec; whole-width byte loops vectorize less reliably).
+/// Endianness is irrelevant under pure XOR.
 #[inline]
-fn xor_in_place(a: &mut Symbol, b: &Symbol) {
-    for i in 0..4 {
+fn xor_in_place<const N: usize>(a: &mut [u8; N], b: &[u8; N]) {
+    let lanes = N / 8;
+    for i in 0..lanes {
         let lane = u64::from_ne_bytes(a[i * 8..][..8].try_into().expect("8-byte lane"))
             ^ u64::from_ne_bytes(b[i * 8..][..8].try_into().expect("8-byte lane"));
         a[i * 8..][..8].copy_from_slice(&lane.to_ne_bytes());
+    }
+    for i in lanes * 8..N {
+        a[i] ^= b[i];
     }
 }
 
 /// A source symbol bundled with its checksum (reference: `HashedSymbol`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct HashedSymbol {
-    symbol: Symbol,
+struct HashedSymbol<const N: usize> {
+    symbol: [u8; N],
     hash: u64,
 }
 
-impl HashedSymbol {
+impl<const N: usize> HashedSymbol<N> {
     #[inline]
-    fn new(symbol: Symbol) -> Self {
+    fn new(symbol: [u8; N]) -> Self {
         let hash = hash_symbol(&symbol);
         Self { symbol, hash }
     }
@@ -105,39 +126,72 @@ impl HashedSymbol {
 /// One coded symbol (reference: `CodedSymbol`): the XOR-sum of the source
 /// symbols mapped to this index, the XOR-sum of their checksums, and the
 /// signed count of how many were added minus removed.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CodedSymbol {
-    pub symbol: Symbol,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CodedSymbol<const N: usize> {
+    pub symbol: [u8; N],
     pub hash: u64,
     pub count: i64,
 }
 
-impl CodedSymbol {
+/// Written out (not derived) because `[u8; N]: Default` is not yet
+/// implemented for arbitrary `N` in std.
+impl<const N: usize> Default for CodedSymbol<N> {
+    fn default() -> Self {
+        Self {
+            symbol: [0; N],
+            hash: 0,
+            count: 0,
+        }
+    }
+}
+
+impl<const N: usize> CodedSymbol<N> {
+    /// Wire size of one coded symbol at this width:
+    /// N XOR-sum ‖ 8 checksum LE ‖ 8 count LE.
+    pub const WIRE_LEN: usize = N + 16;
+
     #[inline]
-    fn apply(&mut self, s: &HashedSymbol, direction: i64) {
+    fn apply(&mut self, s: &HashedSymbol<N>, direction: i64) {
         xor_in_place(&mut self.symbol, &s.symbol);
         self.hash ^= s.hash;
         self.count += direction;
     }
 
-    /// Fixed wire encoding (D100): symbol ‖ hash LE ‖ count LE. A
-    /// bijection over all 48-byte strings — every wire record parses,
-    /// so untrusted input is handled by decode semantics, not framing.
+    /// Fixed wire encoding (D100): symbol ‖ hash LE ‖ count LE, exactly
+    /// [`Self::WIRE_LEN`] bytes into `out`. A bijection over all
+    /// WIRE_LEN-byte strings — every wire record parses, so untrusted
+    /// input is handled by decode semantics, not framing. Slice-shaped
+    /// because stable Rust cannot spell `[u8; N + 16]` in a signature.
+    ///
+    /// # Panics
+    /// If `out.len() != Self::WIRE_LEN` — a caller bug, not a data
+    /// condition.
+    pub fn write_to(&self, out: &mut [u8]) {
+        assert_eq!(out.len(), Self::WIRE_LEN, "coded-symbol buffer size");
+        out[..N].copy_from_slice(&self.symbol);
+        out[N..N + 8].copy_from_slice(&self.hash.to_le_bytes());
+        out[N + 8..].copy_from_slice(&self.count.to_le_bytes());
+    }
+
+    /// Convenience twin of [`Self::write_to`] (tests, cold paths — it
+    /// allocates).
     #[must_use]
-    pub fn to_bytes(&self) -> [u8; CODED_SYMBOL_LEN] {
-        let mut out = [0u8; CODED_SYMBOL_LEN];
-        out[..32].copy_from_slice(&self.symbol);
-        out[32..40].copy_from_slice(&self.hash.to_le_bytes());
-        out[40..48].copy_from_slice(&self.count.to_le_bytes());
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = vec![0u8; Self::WIRE_LEN];
+        self.write_to(&mut out);
         out
     }
 
+    /// # Panics
+    /// If `bytes.len() != Self::WIRE_LEN` — a caller bug, not a data
+    /// condition (the transport reads exact-size records).
     #[must_use]
-    pub fn from_bytes(bytes: &[u8; CODED_SYMBOL_LEN]) -> Self {
-        let mut symbol = [0u8; 32];
-        symbol.copy_from_slice(&bytes[..32]);
-        let hash = u64::from_le_bytes(bytes[32..40].try_into().expect("8 bytes"));
-        let count = i64::from_le_bytes(bytes[40..48].try_into().expect("8 bytes"));
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        assert_eq!(bytes.len(), Self::WIRE_LEN, "coded-symbol record size");
+        let mut symbol = [0u8; N];
+        symbol.copy_from_slice(&bytes[..N]);
+        let hash = u64::from_le_bytes(bytes[N..N + 8].try_into().expect("8 bytes"));
+        let count = i64::from_le_bytes(bytes[N + 8..].try_into().expect("8 bytes"));
         Self {
             symbol,
             hash,
@@ -225,16 +279,26 @@ fn fix_tail(q: &mut [SymbolMapping]) {
 /// A set of source symbols plus their mapping state (reference:
 /// `codingWindow`) — the machinery shared by the encoder and the
 /// decoder's three internal windows.
-#[derive(Default)]
-struct CodingWindow {
-    symbols: Vec<HashedSymbol>,
+struct CodingWindow<const N: usize> {
+    symbols: Vec<HashedSymbol<N>>,
     mappings: Vec<RandomMapping>,
     queue: Vec<SymbolMapping>,
     next_idx: u64,
 }
 
-impl CodingWindow {
-    fn add_hashed_symbol(&mut self, t: HashedSymbol) {
+impl<const N: usize> Default for CodingWindow<N> {
+    fn default() -> Self {
+        Self {
+            symbols: Vec::new(),
+            mappings: Vec::new(),
+            queue: Vec::new(),
+            next_idx: 0,
+        }
+    }
+}
+
+impl<const N: usize> CodingWindow<N> {
+    fn add_hashed_symbol(&mut self, t: HashedSymbol<N>) {
         self.add_hashed_symbol_with_mapping(
             t,
             RandomMapping {
@@ -244,7 +308,7 @@ impl CodingWindow {
         );
     }
 
-    fn add_hashed_symbol_with_mapping(&mut self, t: HashedSymbol, m: RandomMapping) {
+    fn add_hashed_symbol_with_mapping(&mut self, t: HashedSymbol<N>, m: RandomMapping) {
         self.symbols.push(t);
         self.mappings.push(m);
         self.queue.push(SymbolMapping {
@@ -256,7 +320,7 @@ impl CodingWindow {
 
     /// Apply every source symbol mapped to the next coded index onto `cw`,
     /// advance their mappings, and advance the window's cursor.
-    fn apply_window(&mut self, mut cw: CodedSymbol, direction: i64) -> CodedSymbol {
+    fn apply_window(&mut self, mut cw: CodedSymbol<N>, direction: i64) -> CodedSymbol<N> {
         if self.queue.is_empty() {
             self.next_idx += 1;
             return cw;
@@ -278,8 +342,10 @@ impl CodingWindow {
 /// XOR-cancel inside the sketch (present-twice reads as absent, with a
 /// count residue), so set semantics are enforced here rather than
 /// assumed of the caller.
-fn dedup_symbols(symbols: impl IntoIterator<Item = Symbol>) -> Vec<HashedSymbol> {
-    let mut seen: HashSet<Symbol> = HashSet::new();
+fn dedup_symbols<const N: usize>(
+    symbols: impl IntoIterator<Item = [u8; N]>,
+) -> Vec<HashedSymbol<N>> {
+    let mut seen: HashSet<[u8; N]> = HashSet::new();
     symbols
         .into_iter()
         .filter(|s| seen.insert(*s))
@@ -301,19 +367,19 @@ fn dedup_symbols(symbols: impl IntoIterator<Item = Symbol>) -> Vec<HashedSymbol>
 ///    streaming pass cannot without the O(n) state this trait exists to
 ///    remove, so the source owes it (a structurally-DISTINCT query, a
 ///    deduped slice).
-pub trait SetSnapshot {
+pub trait SetSnapshot<const N: usize> {
     type Error;
     /// Visit every element of the set exactly once, in any order.
-    fn for_each(&mut self, f: &mut dyn FnMut(Symbol)) -> Result<(), Self::Error>;
+    fn for_each(&mut self, f: &mut dyn FnMut([u8; N])) -> Result<(), Self::Error>;
 }
 
 /// Slices are snapshots of themselves. Callers owe distinctness (the
 /// trait contract) — test and decoder-prior shapes, where sets are
 /// deduped upstream.
-impl SetSnapshot for &[Symbol] {
+impl<const N: usize> SetSnapshot<N> for &[[u8; N]] {
     type Error = std::convert::Infallible;
 
-    fn for_each(&mut self, f: &mut dyn FnMut(Symbol)) -> Result<(), Self::Error> {
+    fn for_each(&mut self, f: &mut dyn FnMut([u8; N])) -> Result<(), Self::Error> {
         for s in self.iter() {
             f(*s);
         }
@@ -328,10 +394,10 @@ impl SetSnapshot for &[Symbol] {
 /// differential property below pins it — so a responder can stream an
 /// unbounded sequence in exponentially growing blocks at one set-scan
 /// per block, holding only the current block.
-pub fn encode_block<S: SetSnapshot>(
+pub fn encode_block<const N: usize, S: SetSnapshot<N>>(
     set: &mut S,
     start: u64,
-    out: &mut [CodedSymbol],
+    out: &mut [CodedSymbol<N>],
 ) -> Result<(), S::Error> {
     out.fill(CodedSymbol::default());
     let end = start + out.len() as u64;
@@ -370,13 +436,13 @@ pub fn encode_block<S: SetSnapshot>(
 /// and duplicates cannot affect it (each symbol's index mapping depends
 /// only on its own checksum, and coded sums are commutative — the
 /// property tests pin this).
-pub struct Encoder {
-    window: CodingWindow,
+pub struct Encoder<const N: usize = 32> {
+    window: CodingWindow<N>,
 }
 
-impl Encoder {
+impl<const N: usize> Encoder<N> {
     #[must_use]
-    pub fn new(set: impl IntoIterator<Item = Symbol>) -> Self {
+    pub fn new(set: impl IntoIterator<Item = [u8; N]>) -> Self {
         let mut window = CodingWindow::default();
         for symbol in dedup_symbols(set) {
             window.add_hashed_symbol(symbol);
@@ -390,7 +456,7 @@ impl Encoder {
         self.window.symbols.len()
     }
 
-    pub fn produce_next_coded_symbol(&mut self) -> CodedSymbol {
+    pub fn produce_next_coded_symbol(&mut self) -> CodedSymbol<N> {
         self.window.apply_window(CodedSymbol::default(), ADD)
     }
 }
@@ -400,15 +466,15 @@ impl Encoder {
 /// the symmetric difference is recovered — [`Decoder::remote`] is A∖B
 /// (what to fetch), [`Decoder::local`] is B∖A (never leaves this
 /// process; the D100 asymmetric reveal).
-pub struct Decoder {
+pub struct Decoder<const N: usize = 32> {
     /// Coded symbols received so far, mutated as decoded symbols peel off.
-    cs: Vec<CodedSymbol>,
+    cs: Vec<CodedSymbol<N>>,
     /// Recovered symbols exclusive to the decoder (B∖A).
-    local: CodingWindow,
+    local: CodingWindow<N>,
     /// The decoder's own set (the prior).
-    window: CodingWindow,
+    window: CodingWindow<N>,
     /// Recovered symbols exclusive to the encoder (A∖B).
-    remote: CodingWindow,
+    remote: CodingWindow<N>,
     /// Indices of coded symbols currently decodable (degree ±1 with a
     /// matching checksum, or degree 0 with a zero checksum-sum).
     decodable: Vec<usize>,
@@ -420,9 +486,9 @@ pub struct Decoder {
     malformed: bool,
 }
 
-impl Decoder {
+impl<const N: usize> Decoder<N> {
     #[must_use]
-    pub fn new(prior: impl IntoIterator<Item = Symbol>) -> Self {
+    pub fn new(prior: impl IntoIterator<Item = [u8; N]>) -> Self {
         let mut window = CodingWindow::default();
         for symbol in dedup_symbols(prior) {
             window.add_hashed_symbol(symbol);
@@ -461,18 +527,18 @@ impl Decoder {
     }
 
     /// Symbols present at the encoder but not here (A∖B).
-    pub fn remote(&self) -> impl Iterator<Item = &Symbol> {
+    pub fn remote(&self) -> impl Iterator<Item = &[u8; N]> {
         self.remote.symbols.iter().map(|s| &s.symbol)
     }
 
     /// Symbols present here but not at the encoder (B∖A).
-    pub fn local(&self) -> impl Iterator<Item = &Symbol> {
+    pub fn local(&self) -> impl Iterator<Item = &[u8; N]> {
         self.local.symbols.iter().map(|s| &s.symbol)
     }
 
     /// Consume the next coded symbol of the remote sequence, in order.
     /// A no-op once the stream is malformed.
-    pub fn add_coded_symbol(&mut self, c: CodedSymbol) {
+    pub fn add_coded_symbol(&mut self, c: CodedSymbol<N>) {
         if self.malformed {
             return;
         }
@@ -491,7 +557,7 @@ impl Decoder {
     /// participates in, collecting any that become decodable. Returns the
     /// mapping state so the symbol's window can extend it to future
     /// arrivals.
-    fn apply_new_symbol(&mut self, t: &HashedSymbol, direction: i64) -> RandomMapping {
+    fn apply_new_symbol(&mut self, t: &HashedSymbol<N>, direction: i64) -> RandomMapping {
         let mut m = RandomMapping {
             prng: t.hash,
             last_index: 0,
@@ -905,7 +971,7 @@ mod tests {
         #[test]
         fn wire_encoding_is_a_bijection(bytes in prop::collection::vec(any::<u8>(), 48)) {
             let record: [u8; 48] = bytes.as_slice().try_into().expect("48 bytes");
-            let decoded = CodedSymbol::from_bytes(&record);
+            let decoded = CodedSymbol::<32>::from_bytes(&record);
             prop_assert_eq!(decoded.to_bytes(), record);
         }
 
@@ -932,6 +998,74 @@ mod tests {
                 prop_assert!(dec.is_malformed());
             }
         }
+    }
+
+    /// Width-genericity (D100 amendment): the codec's invariants hold at
+    /// non-32 widths — exercised at the two shapes future scopes would
+    /// instantiate (20 = sha1-shaped, 52 = sha1‖blake3 alias-pair). This
+    /// is NOT a reference pin (goldens exist only for 32, the only wire
+    /// width); a new width becoming protocol surface owes its own
+    /// goldens first. Exact diff recovery, wire round-trip, and
+    /// block == incremental are each re-proven per width.
+    #[test]
+    fn codec_invariants_hold_at_other_widths() {
+        fn exercise<const N: usize>() {
+            let sym = |i: u64| -> [u8; N] {
+                let mut out = [0u8; N];
+                for (j, b) in out.iter_mut().enumerate() {
+                    *b = (test_symbol(i)[j % 32]).wrapping_add(j as u8);
+                }
+                out
+            };
+            let alice: Vec<[u8; N]> = (0..300).map(sym).collect();
+            let bob: Vec<[u8; N]> = (30..330).map(sym).collect();
+
+            let mut enc = Encoder::<N>::new(alice.iter().copied());
+            let mut dec = Decoder::<N>::new(bob.iter().copied());
+            let mut inc_stream: Vec<CodedSymbol<N>> = Vec::new();
+            let mut used = 0usize;
+            loop {
+                let c = enc.produce_next_coded_symbol();
+                // Wire round-trip at this width.
+                assert_eq!(CodedSymbol::<N>::from_bytes(&c.to_bytes()), c);
+                inc_stream.push(c);
+                dec.add_coded_symbol(c);
+                used += 1;
+                dec.try_decode();
+                assert!(!dec.is_malformed());
+                if dec.decoded() {
+                    break;
+                }
+                assert!(used < 10_000, "width {N} did not converge");
+            }
+            let mut remote: Vec<[u8; N]> = dec.remote().copied().collect();
+            let mut local: Vec<[u8; N]> = dec.local().copied().collect();
+            remote.sort_unstable();
+            local.sort_unstable();
+            let mut want_remote: Vec<[u8; N]> = (0..30).map(sym).collect();
+            let mut want_local: Vec<[u8; N]> = (300..330).map(sym).collect();
+            want_remote.sort_unstable();
+            want_local.sort_unstable();
+            assert_eq!(remote, want_remote, "A∖B at width {N}");
+            assert_eq!(local, want_local, "B∖A at width {N}");
+
+            // Block encoding stays byte-identical to incremental at this
+            // width (ragged cuts).
+            let mut start = 0u64;
+            for len in [1usize, 7, 64, used.saturating_sub(72).max(1)] {
+                let mut block = vec![CodedSymbol::<N>::default(); len];
+                encode_block(&mut alice.as_slice(), start, &mut block).expect("infallible");
+                for (i, c) in block.iter().enumerate() {
+                    let at = start as usize + i;
+                    if at < inc_stream.len() {
+                        assert_eq!(c, &inc_stream[at], "width {N} diverged at {at}");
+                    }
+                }
+                start += len as u64;
+            }
+        }
+        exercise::<20>();
+        exercise::<52>();
     }
 
     /// Scale guard (release-mode manual run: `cargo test -p datboi-p2p

@@ -2685,6 +2685,31 @@ aborts every pass; the held snapshot costs only pinned WAL checkpointing
 for the stream's bounded life); caching per-symbol mapping state across
 passes (that cache is exactly the O(n) being removed).
 
+*Amendment (same day): the codec is const-generic over symbol width.*
+The riblt algorithm is width-agnostic — peeling is XOR algebra over a
+fixed-length domain, so the one shape it resists is per-ELEMENT variable
+width (padding to max plus in-band lengths buys the complexity and none
+of the savings). What future scopes need is per-SCOPE width: sha1-shaped
+sets, or sha1‖blake3 alias pairs (52 bytes) for dat gap-fill, where
+hashing the pair down to 32 would decode to a digest of the answer
+instead of the answer. So `riblt` takes `const N: usize` throughout;
+`N = 32` remains the only wire width and the only reference-pinned
+instantiation (the goldens prove the refactor changed zero wire bytes);
+wire encode/decode went slice-shaped because stable Rust cannot spell
+`[u8; N + 16]`. A width-genericity test re-proves exact diff recovery,
+wire round-trip, and block==incremental at 20 and 52. Rules for a new
+width becoming protocol surface: it MUST commit its own goldens from
+the (generic) Go reference first, and its symbol must be a
+collision-free identity for the element — reconciliation is set algebra
+over symbol values, so a colliding symbol (a bare crc32 over a big
+corpus) silently merges distinct elements and duplicates break peeling
+outright. SipHash keys stay shared across widths (streams never mix;
+per-width keys are one more thing to get wrong).
+*Rejected (amendment):* per-element variable width (fights the
+algebra); widening only when the first non-32 scope lands (the refactor
+is mechanical now and load-bearing to the scope-API design being ruled
+next); per-width SipHash keys.
+
 ## D101 — The p2p operator surface: sync is a job, the seedbox endpoint is the identity (2026-07-17)
 
 D96 (serve+web is the complete surface) meets D100 (the sync engine).
