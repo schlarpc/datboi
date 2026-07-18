@@ -3044,3 +3044,52 @@ scrub-REPAIR of a rotted obao section — the trees are recomputable
 byte-identically from member bytes in the same file, so an in-place
 rewrite is restoration-to-name, but it's still the write-once
 posture's first carve-out and wants its own ruling.
+
+## D106 — p2p tests exercise iroh against an in-process relay, never public n0 (2026-07-18)
+
+The recon/sync/blob tests bound their endpoints with `presets::N0` —
+Number 0's public relay servers plus DNS/pkarr discovery — and then
+awaited `endpoint.online()`, which blocks until a home-relay
+connection to that public infrastructure is established, with no
+timeout. On 2026-07-18 a CI run hung every in-flight test for the full
+6-hour job cap: the GitHub runner couldn't promptly reach n0's relays,
+so `online()` never resolved and nextest (no `terminate-after`
+configured) never reaped the parked tasks. The mountain of
+magic-nix-cache noise in that log — FlakeHub 401s, cache rate-limit
+418s, disabled-substituter warnings — was a red herring; those are
+harmless build-from-source fallbacks. The tests passed locally because
+a dev box reaches n0 fine, which is exactly what makes an
+internet-dependent unit test a flake generator.
+
+**Test-reachable code binds no public infrastructure.** A `#[cfg(test)]`
+harness stands up iroh's own `test-utils`: `run_relay_server()` (a
+relay on `127.0.0.1:0`) and `DnsPkarrServer` (a local DNS + pkarr
+relay). Every test endpoint now binds `presets::Minimal` +
+`RelayMode::Custom(<local map>)` + the server's discovery preset. This
+still exercises the real iroh path end to end — relay home connection,
+pkarr publish, discovery, `connect` — but wholly on loopback, so
+`online()` resolves in milliseconds and the run is net-less. The point
+was never to bypass iroh (a direct-addr shortcut would have; rejected
+below) but to run the coordinator ourselves. The spike-era
+`Provider::serve`/`fetch` helpers, which have no production caller and
+are reached only by tests, lose their hardcoded N0 bind and take an
+endpoint from the harness — a test-only function that dials production
+infrastructure is precisely the footgun this removes. Production
+`serve_holdings`/`sync_blocking` keep `presets::N0`: the daemon SHOULD
+speak to the real n0 network.
+
+**A hang can never cost six hours again.** `.config/nextest.toml` gains
+`slow-timeout = { period, terminate-after }`, so any future
+deadlock — from any cause, not just this one — dies in minutes as a red
+X naming the test, not a wall-clock job timeout with nothing to read.
+
+*Rejected:* binding test endpoints with relays disabled and connecting
+over direct loopback addresses (net-less, but routes around the relay
+and discovery code the p2p subsystem's correctness rests on — the
+opposite of what a p2p test should cover); keeping `presets::N0` and
+wrapping `online()` in a bounded timeout (a test that depends on
+reaching the public internet and merely fails faster is still a flake,
+just a quicker one); leaving `Provider::serve`/`fetch` on N0 as thin
+convenience shims (keeps the loaded footgun pointed at the next test
+author, for helpers with no production consumer — D-north-star:
+correct-by-construction over compat).
