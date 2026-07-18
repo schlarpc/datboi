@@ -1,0 +1,8 @@
+# Hang guard (D106). A deadlocked test — p2p endpoints were the first
+# offender, but this binds any cause — is marked SLOW and then KILLED
+# after `terminate-after` periods, failing red with the test's name in
+# minutes. Before this, a hung test parked until the 6h CI job cap with
+# nothing legible to read. Our slowest honest tests finish in seconds,
+# so 3 minutes is pure margin.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 3 }
