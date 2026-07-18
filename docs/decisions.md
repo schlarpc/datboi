@@ -2817,3 +2817,86 @@ groundability-checked roots query (one-level input checks false-root
 chained derivations — aggregates — and full transitive grounding in SQL
 re-solves the walk on the responder; the invariant above makes the
 cheap query the correct one).
+
+## D103 — recon/2: postcard envelopes, raw frames; the scope registry is an enum (2026-07-17)
+
+DESIGNED, NOT BUILT — the ruling lands before the code (house rule);
+`datboi/recon/1` stays the live wire until recon/2 is implemented.
+
+The scope surface is growing on three axes — more blake3 sets, sets
+parameterized by an argument ("blobs in dat X", "inputs of recipe Y"),
+and sets in other hash algebras (sha1-shaped, sha1‖blake3 alias pairs
+for dat gap-fill) — and recon/1's one-byte request can't carry
+arguments, while its bare-stream response can't distinguish "I don't
+speak that scope" or "I don't have that dat" from a dead wire. Rulings:
+
+**Each layer sits in its encoding register.** The codebase has three
+earned registers, now stated as a rule: identity bytes (CAS object
+encodings) are hand-controlled canonical forms a macro must never own
+(D18/D69); operator/control surfaces are typed-and-negotiable (D69's
+REST); homogeneous machine-to-machine record streams are hand-rolled
+fixed binary (D100). A wire protocol's *envelope* — request, response
+header — is control-plane data: heterogeneous, evolvable, tiny. It gets
+a serialized struct. The *payload* — the coded-symbol stream — is a
+record stream and stays raw. This is not REST-here-binary-there
+inconsistency; it is the same envelope/stream split iroh-blobs itself
+makes (postcard requests, raw verified byte streams).
+
+**The wire.** Request (initiator→responder): a length-prefixed postcard
+message — an enum with one variant per scope, payloads where scopes
+take arguments. The length prefix is required because the initiator's
+send half stays open for the stop signal, so FIN cannot frame the
+request. Response (responder→initiator): a length-prefixed postcard
+header — `Accepted { set_size, frame_len }` or `Refused { code }` —
+then the raw coded-symbol stream exactly as today (fixed-width records,
+every byte-string parses, stop byte between batches, drain cap;
+goldens untouched). `frame_len` is redundant with the scope's protocol
+constant but costs ~2 bytes and lets a dumb tool skip a stream it
+doesn't understand. Errors are HEADER-TIME ONLY: mid-stream failure
+stays a QUIC stream reset — in-band trailers would need escape
+sequences inside the frame stream, destroying the every-record-parses
+property. The initiator's convergence budget already bounds a lying
+stream. The stop signal stays a raw byte.
+
+**Postcard, not CBOR.** This is a Rust↔Rust friends-plane protocol;
+CBOR's win is cross-language self-description nothing consumes, and
+postcard matches the protocol family we embed in (iroh-blobs' own
+envelopes) at the smallest dependency cost.
+
+**D69's derive scoping, refined.** The serde-derive ban exists because
+identity bytes must never be macro-owned. A VERSIONED WIRE ENVELOPE is
+the same category as the REST API — negotiable surface, not identity —
+so serde+postcard derives are allowed in `datboi-p2p`, scoped to the
+envelope module; coded-symbol records and CAS encodings stay
+hand-rolled. (`datboi-api` remains the only crate with API-shape
+derives; this admits wire envelopes, not a second API surface.)
+
+**The scope registry stays a closed enum in one file.** The request
+enum IS the registry: variants are append-only, never renumbered, each
+declaring its argument shape and its symbol width as protocol
+constants (one width per stream — the D100 amendment; a non-32 width
+owes its own goldens before becoming surface). The symmetric-prior
+convention is now stated: a scope is ONE set definition evaluated on
+both databases — the responder advertises it, the initiator runs the
+same query locally as its decoder prior. That symmetry is what makes
+the diff meaningful; a scope wanting an asymmetric prior is a design
+smell to stop at (D102's roots scope bends it knowingly — the walk
+mops up the asymmetry).
+
+**One rev, everything batched.** Request envelope, response header, and
+the D102 scopes ship together as `datboi/recon/2`; recon/1 is DELETED,
+not maintained (the peer population is one operator). ALPN remains the
+only version negotiation.
+
+*Rejected:* CBOR envelopes (self-description without a consumer);
+an RPC framework (the exchange is "stream until told to stop" — QUIC
+bi-streams natively are that call model; a framework would re-multiplex
+QUIC inside QUIC and fight the cancel semantics); serializing the
+symbol stream (re-rejected from D100 — per-record overhead, and a
+parse-failure path per record where today none can exist); in-band
+error trailers (escape sequences kill every-record-parses); a bare
+status byte instead of the postcard header (requests were growing
+arguments anyway; one envelope register, not two); serde-free manual
+envelope impls (the D69 refinement is the honest ruling, not a
+workaround); keeping recon/1 alive beside recon/2 (nothing speaks it
+but us).

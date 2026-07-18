@@ -695,7 +695,35 @@ slated for change:
 
 ## Next sessions (pick up here)
 
-**Position as of 2026-07-17, latest — D102 COMPLETENESS RULED AND
+**Position as of 2026-07-17, latest — D103 RECON/2 RULED (designed,
+NOT built)**: the scope-API design conversation landed as three
+rulings. (1) **D100 amendment, BUILT**: riblt is const-generic over
+symbol width (the algorithm resists only per-element variable width;
+per-scope width is a protocol constant) — 32 stays the only wire width
+and only golden-pinned instantiation, wire bytes provably unchanged, a
+width-genericity test runs at 20/52. New-width rules: own goldens
+first, and the symbol must be a collision-free identity (bare crc32
+disqualifies — collisions silently merge elements, duplicates break
+peeling). (2) **D103, code NOT started**: `datboi/recon/2` — postcard
+request enum (length-prefixed; the enum IS the closed scope registry,
+carrying per-scope args + width) and postcard response header
+(`Accepted {set_size, frame_len}` | `Refused {code}`), then the raw
+coded-symbol stream untouched; errors header-time only, mid-stream
+stays a QUIC reset; encoding-register rule stated (envelopes =
+postcard, record streams = raw, identity bytes = hand-canonical);
+D69 refined (serde derives OK for wire envelopes in datboi-p2p,
+scoped to the envelope module); ships WITH the D102 scopes in one rev,
+recon/1 deleted on landing. **Pick up here**: BUILD recon/2 per D103
+(envelope module, Refused codes, port both scopes + e2e suite, delete
+recon/1); then the swarm tiers with the **recon ACL before any
+advertisement tier**; the D34 channel design (naming layer:
+entry→blake3 gap-fill, curated-view discovery,
+`available-from-peer(X)`); smaller remainders: hash-seq requests,
+shared wasm engine per CasProvider, partial-range
+over-materialization, disaster-restore verb. The previous position
+(D102 completeness) is below.
+
+**Position as of 2026-07-17, earlier — D102 COMPLETENESS RULED AND
 BUILT**: the use-case audit's coverage ruling landed in three commits,
 workspace green. Ruled first (**D102**): completeness is two planes,
 not one layer — mirror stays on the recon plane via a second scope,

@@ -186,9 +186,24 @@ both; wants mode needs neither widened.
   prior that never crosses the wire and sends a stop byte when decoded.
   Privacy is this asymmetry: the answering party is the consenting party;
   the initiator reveals only the scope request and a diff-size bound.
-- **Wire**: request = 1-byte scope tag; response = `u64 LE` responder set
-  size, then 48-byte coded symbols (32 XOR-sum ‖ 8 SipHash-sum LE ‖
-  8 count i64 LE) in batches, stop-checked, capped responder-side.
+- **Wire** (`datboi/recon/1`, live): request = 1-byte scope tag;
+  response = `u64 LE` responder set size, then 48-byte coded symbols
+  (32 XOR-sum ‖ 8 SipHash-sum LE ‖ 8 count i64 LE) in batches,
+  stop-checked, capped responder-side.
+- **Wire v2** (`datboi/recon/2`, **D103 — designed, not built**):
+  postcard envelopes around the same raw frame stream. Request = a
+  length-prefixed postcard enum (one variant per scope, payloads for
+  parameterized scopes — "blobs in dat X"); response = a
+  length-prefixed postcard header (`Accepted {set_size, frame_len}` |
+  `Refused {code}`, so "unknown scope" is distinguishable from a dead
+  wire), then the coded-symbol stream unchanged. Errors are header-time
+  only; mid-stream stays a QUIC reset. Ships with the D102 scopes in
+  one rev; recon/1 is deleted when it lands. The scope registry is the
+  request enum itself: append-only, each variant declaring its argument
+  shape and symbol width (per-scope width, one width per stream —
+  D100 amendment), and every scope is ONE set definition evaluated on
+  both databases (responder advertises, initiator priors — the
+  symmetric-prior convention, D103).
 - **Sync flow** (`datboi_p2p::sync`): reconcile recipes → fetch missing
   recipe blobs over the blobs ALPN (CasProvider serves Meta too; bytes
   verify against their own hash) → `index_recipe` as `source=Peer`, born
