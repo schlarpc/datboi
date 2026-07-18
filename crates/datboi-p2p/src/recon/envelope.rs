@@ -103,8 +103,15 @@ pub fn encode<T: Serialize>(msg: &T) -> Vec<u8> {
 
 /// Decode one envelope body (the bytes AFTER the length prefix).
 /// Rejects trailing bytes — an envelope is exactly one message.
+/// (`take_from_bytes` + empty-remainder check: postcard's plain
+/// `from_bytes` silently IGNORES trailing bytes, which would let a
+/// length prefix disagree with its body unnoticed.)
 pub fn decode<'a, T: Deserialize<'a>>(body: &'a [u8]) -> Result<T> {
-    postcard::from_bytes(body).context("recon envelope did not parse")
+    let (msg, rest) = postcard::take_from_bytes(body).context("recon envelope did not parse")?;
+    if !rest.is_empty() {
+        anyhow::bail!("recon envelope has {} trailing bytes", rest.len());
+    }
+    Ok(msg)
 }
 
 #[cfg(test)]
