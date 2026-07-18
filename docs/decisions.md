@@ -3098,3 +3098,27 @@ just a quicker one); leaving `Provider::serve`/`fetch` on N0 as thin
 convenience shims (keeps the loaded footgun pointed at the next test
 author, for helpers with no production consumer — D-north-star:
 correct-by-construction over compat).
+
+## D107 — D-numbers are internal vocabulary; they never reach a user-facing surface (2026-07-18)
+
+The decision log is a record for the people building datboi, and code
+comments and commit messages cite it liberally (house rule) — that
+stays. But a `D<n>` is meaningless jargon to someone using the
+software: it points at a document they can't see and names a debate
+they never had. So the rule: **no `D<n>` reference on any user-facing
+surface** — not the README, not CLI output (error and status text a
+user reads), not web UI copy. The rationale a citation carried moves
+into a code comment next to the string, where its audience actually
+is; the string itself states the behavior in the user's terms. Audit
+at ruling time found four CLI strings (`bail!`/`println!` in
+`datboi`'s `cmds.rs`) and one web string (Activity's subtitle,
+extracted to `en.po` as `(D74)`); the README was already clean. Web
+copy is wuchale-extracted (D67), so `en.po` is the authoritative sweep
+for translated surfaces — one hit, now gone, re-extracted.
+
+*Rejected:* keeping the citations as "harmless" (they're log noise in
+the user's face — the same instinct that let a D-number ride into
+shipped UI is the one worth ruling out); a lint/CI grep forbidding
+`D\d+` in string literals (worth considering later, but heavy for five
+sites, and the extract step already surfaces web copy — filed as a
+watch item, not built now).
