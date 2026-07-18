@@ -22,9 +22,14 @@
       url = "github:nix-community/nix-direnv";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    git-hooks = {
+      url = "github:cachix/git-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, systems, rust-overlay, crane, nix-direnv, nix2container-turbo, ... }:
+  outputs = { self, nixpkgs, systems, rust-overlay, crane, nix-direnv, nix2container-turbo, git-hooks, ... }:
     let
       eachSystem = nixpkgs.lib.genAttrs (import systems);
 
@@ -45,6 +50,25 @@
           rustToolchain = rustToolchainFor system;
         in
         (crane.mkLib pkgs).overrideToolchain rustToolchain;
+
+      # Formatting enforced at commit time (git-hooks.nix): the devshell's
+      # shellHook installs a git pre-commit hook running the SAME pinned
+      # rustfmt the CI fmt check uses, so an unformatted tree fails locally
+      # instead of in CI. rustfmt only — it's the one formatter this repo
+      # enforces (no prettier in web/, no nix formatter convention).
+      preCommitFor = system:
+        let rustToolchain = rustToolchainFor system;
+        in
+        git-hooks.lib.${system}.run {
+          src = ./.;
+          hooks.rustfmt = {
+            enable = true;
+            packageOverrides = {
+              cargo = rustToolchain;
+              rustfmt = rustToolchain;
+            };
+          };
+        };
 
       # ---- host workspace (crates/) ----
 
@@ -627,6 +651,10 @@
             src = hostArgs.src;
           };
 
+          # The commit-time gate, also proven in CI so the hook config
+          # can't rot (it runs the same hooks over the whole tree).
+          pre-commit = preCommitFor system;
+
           test = craneLib.cargoNextest (hostArgs // componentsEnvFor system // webEnvFor system // magicEnvFor system // emuEnvFor system // {
             cargoArtifacts = hostArtifacts;
             partitions = 1;
@@ -693,10 +721,16 @@
         let
           pkgs = pkgsFor system;
           rustToolchain = rustToolchainFor system;
+          preCommit = preCommitFor system;
         in
         {
           default = pkgs.mkShell {
             inputsFrom = [ self.packages.${system}.default ];
+
+            # Installs the pre-commit hook into .git/hooks on shell entry
+            # (direnv), so formatting is enforced before every commit.
+            shellHook = preCommit.shellHook;
+            buildInputs = preCommit.enabledPackages;
 
             nativeBuildInputs = [
               rustToolchain
