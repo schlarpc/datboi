@@ -27,8 +27,9 @@ use integer surrogate keys (8 B FKs at 40M+ edge rows).
 ## Store index (cache.db)
 
 `blob` (hash unique, size, namespace data/meta, residency
-resident/evicted-covered/absent, verified_at, obao state, last_access,
-pinned_reason) · `alias` ((algo, digest, blob_id) PK — multi-hit
+resident/evicted-covered/absent, verified_at, last_access,
+pinned_reason — obao state dropped in v7, D109: outboard presence is a
+store fact) · `alias` ((algo, digest, blob_id) PK — multi-hit
 tolerant per D2) · `recipe` (op, **seek_class** affine/manifest/opaque
 for D27, verify state machine `pending → verified → replayed-local`
 (only replayed-local licenses drops, D25) | `failed` = permanent poison

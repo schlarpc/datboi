@@ -20,7 +20,9 @@
 /// v5: sf_by_blob + analyzer-first sweep_by_priority (query-shaped
 /// indexes; no table changes).
 /// v6: sweep_absent_eligible (D92 grounded-not-resident sweeps).
-pub const CACHE_SCHEMA_VERSION: u32 = 6;
+/// v7: blob.obao dropped (D109 — shipped in v1 anticipating index-side
+/// outboard tracking, never read or written; presence is a store fact).
+pub const CACHE_SCHEMA_VERSION: u32 = 7;
 
 /// cache.db migration ladder, same shape and rules as
 /// [`STATE_MIGRATIONS`]: `CACHE_MIGRATIONS[i]` migrates version `i + 1`
@@ -107,6 +109,14 @@ CREATE TABLE sweep_absent_eligible (
   blob_id INTEGER PRIMARY KEY REFERENCES blob(blob_id)
 ) STRICT, WITHOUT ROWID;
 ",
+    // v6 → v7 (D109): blob.obao was never read or written — outboard
+    // presence is a store fact (`ensure_obao` asks the filesystem).
+    // DROP COLUMN rewrites the stored schema text to exactly the
+    // fresh-DDL form (verified: sqlite deletes the whole column line),
+    // keeping the migrated_cache_equals_fresh_schema guarantee.
+    "
+ALTER TABLE blob DROP COLUMN obao;
+",
 ];
 
 /// state.db gets REAL migrations forever: an older file is upgraded in
@@ -170,7 +180,6 @@ CREATE TABLE blob (
   namespace     INTEGER NOT NULL DEFAULT 0,
   residency     INTEGER NOT NULL,
   verified_at   INTEGER,
-  obao          INTEGER NOT NULL DEFAULT 0,
   last_access   INTEGER,
   pinned_reason INTEGER
 ) STRICT;

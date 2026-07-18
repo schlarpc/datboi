@@ -160,14 +160,15 @@ fn version_skew_recreates_cache_and_protects_state() {
     }
 
     // A v1 cache (the shipped ladder's floor): drop the v2+ tables and
-    // the v5 index, rewind the stamp — exactly what a real v1 file
-    // looks like.
+    // the v5 index, restore the column v7 removed, rewind the stamp —
+    // exactly what a real v1 file looks like.
     {
         let conn = rusqlite::Connection::open(dir.path().join("cache.db")).expect("raw open");
         conn.execute_batch(
             "DROP TABLE sweep_queue; DROP TABLE analysis; DROP TABLE seek_quarantine;
              DROP TABLE gc_guard; DROP TABLE orphan_candidate;
-             DROP TABLE sweep_absent_eligible; DROP INDEX sf_by_blob;",
+             DROP TABLE sweep_absent_eligible; DROP INDEX sf_by_blob;
+             ALTER TABLE blob ADD COLUMN obao INTEGER NOT NULL DEFAULT 0;",
         )
         .expect("devolve");
         conn.pragma_update(None, "user_version", 1).expect("rewind");
@@ -268,7 +269,8 @@ fn migrated_cache_equals_fresh_schema() {
         conn.execute_batch(
             "DROP TABLE sweep_queue; DROP TABLE analysis; DROP TABLE seek_quarantine;
              DROP TABLE gc_guard; DROP TABLE orphan_candidate;
-             DROP TABLE sweep_absent_eligible; DROP INDEX sf_by_blob;",
+             DROP TABLE sweep_absent_eligible; DROP INDEX sf_by_blob;
+             ALTER TABLE blob ADD COLUMN obao INTEGER NOT NULL DEFAULT 0;",
         )
         .expect("devolve");
         conn.pragma_update(None, "user_version", 1).expect("rewind");
