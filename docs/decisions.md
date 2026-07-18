@@ -3062,15 +3062,20 @@ a dev box reaches n0 fine, which is exactly what makes an
 internet-dependent unit test a flake generator.
 
 **Test-reachable code binds no public infrastructure.** A `#[cfg(test)]`
-harness stands up iroh's own `test-utils`: `run_relay_server()` (a
-relay on `127.0.0.1:0`) and `DnsPkarrServer` (a local DNS + pkarr
-relay). Every test endpoint now binds `presets::Minimal` +
-`RelayMode::Custom(<local map>)` + the server's discovery preset. This
-still exercises the real iroh path end to end — relay home connection,
-pkarr publish, discovery, `connect` — but wholly on loopback, so
-`online()` resolves in milliseconds and the run is net-less. The point
-was never to bypass iroh (a direct-addr shortcut would have; rejected
-below) but to run the coordinator ourselves. The spike-era
+harness stands up iroh's own `test-utils` relay coordinator —
+`run_relay_server()`, a relay on `127.0.0.1:0` — and dials through it.
+Every test endpoint binds `presets::Minimal` +
+`RelayMode::Custom(<local map>)` + `ca_tls_config(insecure_skip_verify)`
+(the test relay's cert is self-signed) and connects over the
+relay-bearing `endpoint.addr()`. This exercises the real iroh
+connection path — relay home connection, `online()`, QUIC connect
+through the coordinator — but wholly on loopback, so `online()`
+resolves in milliseconds and the run is net-less. The point was never
+to bypass iroh (a direct-addr shortcut would have; rejected below) but
+to run the coordinator ourselves. This mirrors iroh's own endpoint
+test suite exactly. Discovery-by-id (pkarr/DNS resolve) is not the unit
+under test — these tests carry explicit addresses — and stays
+production's concern; the daemon keeps real n0 discovery. The spike-era
 `Provider::serve`/`fetch` helpers, which have no production caller and
 are reached only by tests, lose their hardcoded N0 bind and take an
 endpoint from the harness — a test-only function that dials production
@@ -3085,8 +3090,8 @@ X naming the test, not a wall-clock job timeout with nothing to read.
 
 *Rejected:* binding test endpoints with relays disabled and connecting
 over direct loopback addresses (net-less, but routes around the relay
-and discovery code the p2p subsystem's correctness rests on — the
-opposite of what a p2p test should cover); keeping `presets::N0` and
+coordination code the p2p transport rests on — the opposite of what a
+p2p test should cover); keeping `presets::N0` and
 wrapping `online()` in a bounded timeout (a test that depends on
 reaching the public internet and merely fails faster is still a flake,
 just a quicker one); leaving `Provider::serve`/`fetch` on N0 as thin

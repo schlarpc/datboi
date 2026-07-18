@@ -46,6 +46,12 @@ tempfile.workspace = true
 flate2.workspace = true
 # riblt invariants over arbitrary set shapes and adversarial streams.
 proptest.workspace = true
+# D106: the test harness runs iroh's OWN relay + pkarr/DNS discovery
+# in-process on loopback, so recon/sync tests exercise the real iroh
+# path net-less. `test-utils` gates `iroh::test_utils`; it rides
+# dev-deps only, so the shipped daemon binary never links the relay
+# server (production keeps `presets::N0`).
+iroh = { workspace = true, features = ["test-utils"] }
 
 [lints]
 workspace = true

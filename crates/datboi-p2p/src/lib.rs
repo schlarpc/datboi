@@ -24,6 +24,8 @@
 pub mod recon;
 pub mod riblt;
 pub mod sync;
+#[cfg(test)]
+pub(crate) mod testnet;
 
 use anyhow::Result;
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
