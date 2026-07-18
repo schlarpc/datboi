@@ -2917,6 +2917,16 @@ envelope impls (the D69 refinement is the honest ruling, not a
 workaround); keeping recon/1 alive beside recon/2 (nothing speaks it
 but us).
 
+*Amendment (same day):* the new wire ships as `datboi/recon/1`, not
+`/2`. ALPN version numbers exist to disambiguate across a deployed
+peer population, and the original recon/1 wire never had one — the
+peer population is one operator's machines in lockstep behind an
+unreleased `--p2p` opt-in, and the ruling above already deletes the
+old wire in the same rev, so there is no window where two formats
+coexist. Burning `/1` on a format nothing external ever spoke would
+misname the first real protocol rev forever. Everything else stands
+unchanged; the NEXT incompatible change is `/2`.
+
 ## D104 — Web ingest surface: one content-classified drop, REST + polling, HTTP custody is copy (2026-07-11; recorded 2026-07-17)
 
 Retroactive recording — these were ruled and shipped 2026-07-11 during
