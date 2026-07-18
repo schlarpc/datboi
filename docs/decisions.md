@@ -2967,3 +2967,80 @@ dat-vs-rom upload endpoints/boxes (users shouldn't need to know, and
 zipped dats — how No-Intro/Redump actually ship — fit neither box);
 name-based classification (names never decide); SSE/WS for
 file-granular progress (complexity with nothing to carry).
+
+## D105 — Pack format v2: the outboard rides the pack, derived not described (2026-07-17)
+
+Rules both pack-format reconsiderations the M6-spike review flagged
+under D91 (outboard-in-pack, footer integrity) as one format revision:
+
+```text
+[member bytes…]        back-to-back from 0, coverage order
+[obao section]         member-rooted obao4 trees, member order
+[footer: b"datboi/pack/1\n", u32 count, rows of (32B blake3, u64 offset, u64 len)]
+[trailer: 32B blake3(footer), u64 footer_len, b"DBOIPACK"]
+```
+
+**The outboard is a byproduct of verification the write already
+does.** `put_pack` streams every member byte through a hasher to prove
+its identity; the bao root IS the blake3 hash (the D52 golden pins
+this), so that hasher becomes `obao::compute` and each member's tree
+falls out of the write for free. The D91 amendment's post-pack bless
+loop is deleted (it re-read everything just written), the lazy
+`ensure_obao` backstop for recovery-restored packs dies (`scan_packs`
+derives the tree locations from the footer), and a footer that
+references a tree disagreeing with the member bytes is structurally
+impossible — one pass produces bytes, proof, and tree together.
+Outboard inodes for packed members go to zero: the chunk-pack phase
+now drops BOTH redundant loose files (`.data` and `.obao4`), and the
+swap phase writes no loose sidecars at all. The write spools the
+section to a staging file rather than RAM (packs may reach disc-image
+scale; ~0.4% of 100 GiB is 400 MB better not held).
+
+**Derived, not described.** The footer rows are byte-identical to
+v1 — the obao section adds ZERO fields. Everything about it is
+computed: trees sit in member order starting at the last member's
+end; each tree's length is `outboard_size(len)`; small members
+(≤ 16 KiB, empty outboard) contribute nothing — absence derived,
+exactly the loose-sidecar rule. The parser ENFORCES the derivation
+(member offsets are the prefix sum of lengths from zero; data +
+section + footer + trailer tile the file exactly), so redundancy that
+could disagree with reality doesn't exist to disagree. This couples
+the pack format to obao4 permanently — cheap: D52 froze obao4 first,
+and any future change is a new magic anyway.
+
+**Footer integrity: blake3(footer) in the trailer.** The pack's
+filename already commits to every byte (whole-file scrub proves it);
+the gap was OPEN-time — `parse_footer` accepted any plausible table,
+and a parseable-but-wrong offset mis-slices members through the D4
+plain-read path until a scrub or verified read notices. Open now
+checks the footer's own hash (still one small tail read), using the
+house primitive. Deliberately NOT covered at open: the obao section —
+checking it would read the whole section and defeat the O(1) open,
+and trees are self-authenticating on use (rot fails validation, never
+verifies wrong bytes — the D49 loose-sidecar trust model), with
+whole-file scrub as the localizer (members verify clean + whole-file
+mismatch ⇒ the rot is in the section or footer).
+
+**Ships as `datboi/pack/1` — v2 replaces v1 outright.** No deployed
+store holds a v1 pack (D91 landed 07-15 and the swap is policy-gated),
+so per the D103 amendment doctrine — version numbers are for deployed
+populations — the layout keeps the /1 name and the v1 parser is
+deleted. A stray old-format file fails the trailer shape / footer-hash
+check and is refused whole (reported bad, never mis-sliced).
+
+*Rejected:* one whole-pack obao with member subtrees (blake3 is
+position-dependent — chunk counters and root finalization mean
+`obao(pack)` shares no subtree with `obao(member)`; N member-rooted
+trees is the only shape); explicit per-member `(obao_offset, obao_len)`
+rows and a CBOR footer body (both add describe-vs-derive disagreement
+surfaces to buy evolution that magic-versioning already provides; the
+store layout stays hand-rolled fixed binary, D19); CRC32 for the
+footer check (a new dependency, weaker, saves nanoseconds on a
+kilobytes-scale footer); hashing the obao section at open (defeats the
+tail-read open for rot the self-auth path already fails safe on);
+16 KiB member alignment (nothing verifies across the pack boundary, so
+there is nothing to align FOR). Deferred with an open-questions flag:
+scrub-REPAIR of a rotted obao section — the trees are recomputable
+byte-identically from member bytes in the same file, so an in-place
+rewrite is restoration-to-name, but it's still the write-once
+posture's first carve-out and wants its own ruling.

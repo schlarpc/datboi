@@ -188,34 +188,49 @@ migrate off someone else's.
   local index (never READDIR), deep shard fanout, parallelized recovery
   scans. Packing remains retrofittable behind the trait as a pure
   optimization (identities unchanged) if it ever hurts.
-- **Sealed packs (D91)** are that clause's first exercise: the affine
-  piece-swap writes one immutable pack per decomposition
-  (`packs/ab/cd/<hex>`, members in coverage order, self-describing
-  footer + trailer magic). Resolution is store-internal — open() scans
-  footers into a map; `get`/`has`/`len` serve packed members as bounded
-  windows, indistinguishable from loose blobs to every consumer.
-  Identities unchanged; packs are write-once; a packed blob refuses
-  eviction (`Blocked::Packed`) — reclaiming its bytes is
-  TOMBSTONE-AND-REPACK, not an in-place edit. When orphan GC (D73)
-  applies to a packed piece, it can't `remove_blob` (no loose file),
-  so it groups the pack's dead members and `Store::repack` rewrites the
-  pack WITHOUT them (survivors streamed and re-verified out of the old
-  windows into a fresh sealed pack, the map flips, the old file
-  unlinks) — or unlinks the pack outright if every member died. Inode
-  growth is O(swapped decompositions), never O(pieces). **Scrub covers packs**:
-  the loose walk (`Store::list`) never sees packed members, so
-  `scrub_pack` re-hashes each whole pack against its own identity (the
-  filename) in one sequential read — a match certifies every member by
-  construction (`put_pack` verified each member's bytes INTO the hashed
-  file), and the same pass re-derives per-member alias tuples for the
-  fast-recovery back-fill. Packs are O(decompositions), so scrub reads
-  them all rather than sampling. **Packed pieces are obao-blessed at
-  swap time** (D91 amendment): the swap phase computes each member's
-  outboard over its window right after packing — while the bytes are
-  warm and before the container evicts — so the container's first
-  served range is verified with no lazy stall. The sidecar lives beside
-  the member (never inside the pack); the lazy `open_random_verified`
-  path stays the backstop for recovery-restored packs.
+- **Sealed packs (D91; format v2 per D105)** are that clause's first
+  exercise: the affine piece-swap writes one immutable pack per
+  decomposition (`packs/ab/cd/<hex>`): members back-to-back in
+  coverage order, then an OUTBOARD SECTION of member-rooted obao4
+  trees, then the self-describing footer, then a trailer carrying
+  `blake3(footer)` + footer length + magic. The section's layout is
+  fully DERIVED from the footer's `(hash, offset, len)` rows — trees
+  in member order at the last member's end, each `outboard_size(len)`
+  bytes, ≤ 16 KiB members contributing nothing (absence IS the empty
+  sidecar) — and the parser enforces that data + section + footer +
+  trailer tile the file exactly and that the footer matches its
+  trailer hash, all in one small tail read: a plausible-but-wrong
+  table is refused at open, never mis-sliced through the plain-read
+  path. Resolution is store-internal — open() scans footers into a
+  map; `get`/`has`/`len` serve packed members as bounded windows,
+  indistinguishable from loose blobs to every consumer; `get_obao`
+  serves a packed member's tree out of the section (a loose sidecar
+  wins when both exist, mirroring `get`), so verified range reads and
+  recovery need no loose `.obao4` for packed members — the trees are
+  a byproduct of `put_pack`'s own member verification (bao root =
+  blake3 identity), not a separate blessing pass. Identities
+  unchanged; packs are write-once; a packed blob refuses eviction
+  (`Blocked::Packed`) — reclaiming its bytes is TOMBSTONE-AND-REPACK,
+  not an in-place edit. When orphan GC (D73) applies to a packed
+  piece, it can't `remove_blob` (no loose file), so it groups the
+  pack's dead members and `Store::repack` rewrites the pack WITHOUT
+  them (survivors streamed and re-verified out of the old windows
+  into a fresh sealed pack — trees recomputed on the way, the map
+  flips, the old file unlinks) — or unlinks the pack outright if
+  every member died. Inode growth is O(swapped decompositions), never
+  O(pieces), and packed members carry no sidecar inodes at all.
+  **Scrub covers packs**: the loose walk (`Store::list`) never sees
+  packed members, so `scrub_pack` re-hashes each whole pack against
+  its own identity (the filename) in one sequential read — a match
+  certifies every member AND the section by construction (`put_pack`
+  verified each member's bytes INTO the hashed file), a mismatch with
+  all members verifying clean localizes rot to the section/footer,
+  and the same pass re-derives per-member alias tuples for the
+  fast-recovery back-fill. Packs are O(decompositions), so scrub
+  reads them all rather than sampling. Section rot is fail-safe on
+  use (obao is self-authenticating — validation fails, wrong bytes
+  never verify); in-place repair is a deferred posture ruling
+  (open-questions § scrub-repair).
 - All embedded DBs on daemon-local disk (never NFS); NAS holds only
   authoritative bytes.
 

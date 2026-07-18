@@ -1,7 +1,7 @@
 # Open questions & active research
 
 [decisions.md](decisions.md) is the authoritative record (through
-D104); the subsystem docs (see [README.md](README.md)) are the design
+D105); the subsystem docs (see [README.md](README.md)) are the design
 record. This file holds only what is genuinely open: flags awaiting a
 ruling, deferred design work, watch items, and the pick-up-here
 position note. Condensed 2026-07-17 — resolved entries were deleted
@@ -18,38 +18,6 @@ Each of these wants its D entry before (or as) the code lands.
   to anyone holding the unlisted EndpointId — capability-addressed
   friends plane, fine behind `--p2p` opt-in, not fine once announced.
   Also owed with the D34 channel work: how manifests ride the channel.
-- **Outboard-in-pack (pack format v2).** Packed pieces > 16 KiB
-  currently keep individual LOOSE `.obao4` sidecars (swap-blessed,
-  `swap.rs`), so outboard inodes are O(pieces) — undercutting D91's
-  O(packs) inode goal — and bare-NAS recovery doesn't rebuild them
-  (`scan_packs` reads footers only), leaving the lazy `ensure_obao`
-  backstop. The original "no obao at pack time" rejection assumed LAZY
-  blessing; the D91 same-day amendment made blessing EAGER (right
-  after `put_pack`), which removes that premise. Proposal: a v2 footer
-  carries a per-member obao `(offset,len)` into an outboard SECTION of
-  the pack, making inode cost truly O(packs) AND letting packed-member
-  outboards survive recovery (kills the backstop). NOT a whole-pack
-  sidecar: blake3 is position-dependent (chunk counter + root
-  finalization), so `obao(pack)` contains no subtree equal to
-  `obao(member)` — the section stores N member-rooted trees, keyed by
-  the footer. Scope: only helps > 16 KiB pieces (small pieces have no
-  outboard at all — absence IS the empty sidecar). Decide the footer
-  body encoding at the same time (hand-rolled fixed 48-byte rows vs a
-  CBOR body: CBOR buys forward-compatible field-adds — exactly this
-  new obao field — but the `[u64 len][magic]` trailer stays
-  hand-rolled either way since CBOR isn't seekable-from-end; the
-  footer sits in the store-layout layer where fixed binary is the
-  house style, D19).
-- **Pack footer integrity.** `parse_footer` bounds-checks member
-  offsets but verifies nothing cryptographically at open; a
-  parseable-but-WRONG footer (a plausible bad offset) mis-slices a
-  member and serves wrong bytes through the D4 plain-read path until a
-  scrub or a verified read catches it. A loose blob cannot have this
-  failure (its filename IS the content hash; a mis-named file just
-  fails to resolve) — packs introduce the indirection, so they should
-  carry its check. Proposal: a footer CRC or member-table hash so
-  open-time parse detects structural rot without a full-pack rehash.
-  Today's only backstop is ZFS + `scrub_pack` (whole-file rehash).
 - **Saves + writable overlays** ([saves.md](saves.md) is the design
   pass D62 reserved; save persistence is the loudest play-surface
   gap). Eleven rulings are enumerated at the end of that doc, none
@@ -105,6 +73,15 @@ Each of these wants its D entry before (or as) the code lands.
 
 ## Open (design work)
 
+- **Scrub-repair posture** (deferred from D105): a rotted obao
+  section in a pack is recomputable byte-identically from the member
+  bytes in the same file — an in-place rewrite would restore the pack
+  to matching its own filename. Restoration-to-name vs the write-once
+  posture wants its own ruling before any repair verb lands; until
+  then repair is "repack it" like any other rot, and scrub localizes
+  (whole-file mismatch + all members verifying clean ⇒ section/footer
+  rot). Related in spirit to the saves ring-buffer's byte-destroying
+  drill flag.
 - **Quarantine review screen** was never designed (the wireframes
   link `review →` into nothing). Storage ships the count + list; the
   review/resolve flow needs design — the D73 orphan review card is
@@ -258,25 +235,22 @@ Named so they aren't rediscovered as bugs; not slated for change.
 
 ## Next session (pick up here)
 
-**Position as of 2026-07-17 (late) — D103 BUILT**: the recon envelope
-wire is live, and per the same-day amendment it kept the
-`datboi/recon/1` name (nothing external ever spoke the one-byte
-format; version numbers are for deployed populations). What landed:
-`recon::envelope` — the postcard request enum that IS the closed
-scope registry (append-only, wire-byte-pinned by goldens, per-scope
-`frame_len`) and the `Accepted {set_size, frame_len}` |
-`Refused {code}` response header (codes are a bare u16 so newer codes
-display instead of failing to parse; `REFUSED_UNKNOWN_SCOPE = 1`) —
-around the untouched raw coded-symbol stream; serde derives scoped to
-that one module (the D69 refinement); both scopes ported; e2e suite
-extended with a refusal test (unknown discriminant → parseable
-refusal, connection survives); `ReconReport` counts envelope bytes so
-the savings telemetry stays honest. **Pick up here**: the swarm tiers
-with the recon ACL (flagged above — the envelope now has a place for
-an auth argument if the ACL design wants one); the D34 channel design
-(naming layer: entry→blake3 gap-fill, curated-view discovery,
-`available-from-peer(X)`); smaller remainders in Open (minor) above.
+**Position as of 2026-07-17 (later) — D105 BUILT**: pack format v2 —
+the outboard section rides the pack (member-rooted obao4 trees,
+layout fully DERIVED from the v1-shaped footer rows, zero new
+fields), `blake3(footer)` in the trailer closes the open-time
+footer-trust gap, and `put_pack` computes each member's tree as a
+byproduct of the verification it already did (bless loops deleted
+from both swap phases; the chunk phase drops loose `.data` AND
+`.obao4`). Ships as `datboi/pack/1` outright — no deployed packs
+existed, D103-amendment doctrine. Scrub-repair of a rotted section is
+the one deferred flag (Open § design work). **Pick up here**: the
+swarm tiers with the recon ACL (flagged above — the D103 envelope has
+a place for an auth argument if the ACL design wants one); the D34
+channel design (naming layer: entry→blake3 gap-fill, curated-view
+discovery, `available-from-peer(X)`); smaller remainders in Open
+(minor) above.
 
 ## Resolved
 
-See [decisions.md](decisions.md) (D1–D104).
+See [decisions.md](decisions.md) (D1–D105).
