@@ -40,8 +40,9 @@ pub fn export_dat(
         |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
     )?;
     if !materialized {
+        // D38: a demoted revision is header-only.
         return Err(CatalogError::Export(format!(
-            "revision {revision_id} is header-only (demoted, D38); re-import it first"
+            "revision {revision_id} is header-only (demoted); re-import it first"
         )));
     }
     let header: Value = header_json

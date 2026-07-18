@@ -47,7 +47,7 @@ pub fn ingest(mut env: Env, paths: &[PathBuf], mv: bool, json: bool) -> anyhow::
         // D40 custody semantics (delete source only after index rows are
         // durable) need a per-file hook the Ingester doesn't expose yet;
         // shipping half of --move would be worse than none.
-        bail!("--move is not implemented yet; ingest defaults to --copy semantics (D40)");
+        bail!("--move is not implemented yet; ingest defaults to --copy semantics");
     }
     warn_detector_errors(&env);
     // Best-effort sweep of crash-orphaned temp files (docs/cas.md).
@@ -247,8 +247,9 @@ pub fn dat_import(
             report.revision_id, report.entries, report.claims, report.dat_blob
         );
         if !report.demoted_revisions.is_empty() {
+            // D38: a revision that loses its payload demotes to header-only.
             println!(
-                "demoted to header-only (D38): revisions {:?}",
+                "demoted to header-only: revisions {:?}",
                 report.demoted_revisions
             );
         }
@@ -892,9 +893,8 @@ pub fn sweep(
         if json {
             println!("{}", json!({"analyzer": analyzer.name(), "disabled": true}));
         } else {
-            println!(
-                "analyzer family {family:?} is disabled (D60): `datboi analyzer enable {family}`"
-            );
+            // D60: disabled analyzer families are opt-in via `analyzer enable`.
+            println!("analyzer family {family:?} is disabled: `datboi analyzer enable {family}`");
         }
         return Ok(ExitCode::from(1));
     }
@@ -1975,7 +1975,8 @@ pub fn view_image(
             if report.obao_stored {
                 ", obao stored"
             } else {
-                ", no obao (D63 carve-out serving)"
+                // D63: small members are a carve-out — served without an obao.
+                ", no obao"
             },
         );
         if materialized > 0 {

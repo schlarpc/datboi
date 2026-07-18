@@ -77,10 +77,12 @@ pub enum ExecError {
     Runtime(#[from] RuntimeError),
     #[error("i/o during execution: {0}")]
     Io(#[from] io::Error),
-    #[error("no outboard for {0}: recipe-served range reads require one (D49)")]
+    // D49: recipe-served range reads require the retained outboard.
+    #[error("no outboard for {0}: recipe-served range reads require one")]
     MissingOutboard(Blake3),
+    // D56: materialization needs disk headroom.
     #[error(
-        "insufficient disk headroom to materialize {hash}: need ~{need} bytes, {have} available (D56)"
+        "insufficient disk headroom to materialize {hash}: need ~{need} bytes, {have} available"
     )]
     InsufficientHeadroom { hash: Blake3, need: u64, have: u64 },
     #[error("range verification failed for {hash}: {detail}")]
@@ -482,7 +484,8 @@ impl<'s> Executor<'s> {
                 random::read_at_exact(src.as_mut(), start, &mut buf).map_err(|e| {
                     ExecError::RangeVerifyFailed {
                         hash: *hash,
-                        detail: format!("affine carve-out (D63): {e}"),
+                        // D63: affine carve-out serving.
+                        detail: format!("affine carve-out: {e}"),
                     }
                 })?;
                 return Ok(buf);

@@ -88,7 +88,8 @@
 <main>
   <div class="title-row">
     <h2>Activity</h2>
-    <span class="sub">every job the daemon ran — live and ledgered (D74)</span>
+    <!-- D74: the ledger is every job the daemon ran, live and recorded. -->
+    <span class="sub">every job the daemon ran — live and ledgered</span>
     {#if registry.unreachable}
       <span class="chip bad">can't reach the daemon</span>
     {/if}

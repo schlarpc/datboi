@@ -248,7 +248,8 @@ pub(crate) async fn gate(
         }
         Access::LoopbackOnly => {
             if caller != Caller::Local {
-                return unauthorized("this surface is loopback-only (M5, D68)");
+                // M5/D68: this surface is owner-only, gated to loopback callers.
+                return unauthorized("this surface is loopback-only");
             }
         }
     }

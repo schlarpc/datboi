@@ -1586,9 +1586,10 @@ fn verify_one(app: &App, job: i64, blob_id: i64, ns: Namespace, hash: &Blake3) {
                     tracing::warn!("verify {}: demote failed: {e}", hash.to_hex());
                 }
             }
+            // D81: a resident row with no bytes self-heals to absent.
             app.jobs.fail(
                 job,
-                "no bytes on disk — index said resident and has been demoted to absent (D81)",
+                "no bytes on disk — index said resident and has been demoted to absent",
                 crate::auth::now_unix(),
             );
         }
@@ -1957,7 +1958,7 @@ fn run_sweep_job(app: &App, job: i64, analyzer_name: &str, limit: usize) {
         app.jobs.push_note(
             job,
             format!(
-                "analyzer family {:?} is disabled (D60): enable it via PUT /v1/analyzers/{}",
+                "analyzer family {:?} is disabled: enable it via PUT /v1/analyzers/{}",
                 analyzer.family(),
                 analyzer.family()
             ),

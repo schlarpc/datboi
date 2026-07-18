@@ -318,8 +318,9 @@ impl Analyzer for PreflateZipAnalyzer {
         if !parsed.skipped.is_empty() {
             return Ok(AnalysisResult {
                 outcome: AnalysisOutcome::Negative,
+                // D24: unsupported members leave the container literal.
                 detail: Some(format!(
-                    "{} member(s) outside the supported subset; container stays literal (D24)",
+                    "{} member(s) outside the supported subset; container stays literal",
                     parsed.skipped.len()
                 )),
             });
@@ -417,8 +418,9 @@ impl Analyzer for PreflateZipAnalyzer {
         if covered.is_empty() {
             return Ok(AnalysisResult {
                 outcome: AnalysisOutcome::Negative,
+                // D24: no member splits, so the container stays literal.
                 detail: Some(format!(
-                    "no member splits; container stays literal (D24). {}",
+                    "no member splits; container stays literal. {}",
                     summarize_failures(&failures)
                 )),
             });
@@ -688,7 +690,8 @@ impl Analyzer for ChunkAnalyzer {
         {
             return Ok(AnalysisResult {
                 outcome: AnalysisOutcome::Negative,
-                detail: Some("already covered by a grounding route (D59)".into()),
+                // D59: an existing grounding route already covers this.
+                detail: Some("already covered by a grounding route".into()),
             });
         }
         let file = bytes.open(item, db, pulse)?;

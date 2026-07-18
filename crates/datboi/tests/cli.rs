@@ -1161,7 +1161,7 @@ fn analyzer_policy_gates_sweeps() {
         .args(["sweep", "--analyzer", "noop"])
         .assert()
         .code(1)
-        .stdout(predicate::str::contains("disabled (D60)"));
+        .stdout(predicate::str::contains("is disabled:"));
 
     // List reflects the state.
     let list = u

@@ -1433,9 +1433,8 @@ msgstr "activity"
 msgid "Activity"
 msgstr "Activity"
 
-#: src/screens/Activity.svelte
-msgid "every job the daemon ran — live and ledgered (D74)"
-msgstr "every job the daemon ran — live and ledgered (D74)"
+#~ msgid "every job the daemon ran — live and ledgered (D74)"
+#~ msgstr "every job the daemon ran — live and ledgered (D74)"
 
 #: src/screens/Activity.svelte
 msgctxt "job kind filter"
@@ -1969,3 +1968,7 @@ msgstr[1] "# pieces weren't"
 #: src/screens/Ingest.svelte
 msgid "{0} available from this friend — the next fetch retries them"
 msgstr "{0} available from this friend — the next fetch retries them"
+
+#: src/screens/Activity.svelte
+msgid "every job the daemon ran — live and ledgered"
+msgstr "every job the daemon ran — live and ledgered"

@@ -949,7 +949,8 @@ fn p2p_status() {}
         (status = 202, description = "Sync job started; poll GET /v1/jobs/{id}", body = JobStartResponse),
         (status = 400, description = "Malformed peer id or want hash", body = ApiError),
         (status = 403, description = "Owner only", body = ApiError),
-        (status = 503, description = "P2p is disabled — start the daemon with --p2p (D101)", body = ApiError),
+        // D101: p2p is a job; the seedbox endpoint is the identity.
+        (status = 503, description = "P2p is disabled — start the daemon with --p2p", body = ApiError),
     ),
 )]
 fn p2p_sync() {}
@@ -959,8 +960,9 @@ fn p2p_sync() {}
 
     info(
         title = "datboi /v1",
-        description = "The datboi daemon's JSON API (D69 contract). Loopback callers are \
-                       implicitly the owner (D68); non-loopback callers authenticate with a \
+        // D69: this description IS the contract text; D68: loopback = owner.
+        description = "The datboi daemon's JSON API. Loopback callers are \
+                       implicitly the owner; non-loopback callers authenticate with a \
                        session cookie or bearer token. The `/view/*`, `/snap/*`, and `/dav` \
                        byte-serving surfaces are outside this contract.",
     ),

@@ -753,7 +753,7 @@ fn d70_security_headers_and_csrf() {
     assert_eq!(status, 403);
     let v: serde_json::Value =
         serde_json::from_str(&resp.into_string().expect("json")).expect("typed error shape");
-    assert_eq!(v["error"], "cross-origin request rejected (D70)");
+    assert_eq!(v["error"], "cross-origin request rejected");
 
     // same-origin fetch (the SPA's own login call) reaches the handler:
     // normal invalid-credentials 401, not a 403

@@ -2954,7 +2954,7 @@
     "contact": {
       "name": "Chaz Schlarp"
     },
-    "description": "The datboi daemon's JSON API (D69 contract). Loopback callers are implicitly the owner (D68); non-loopback callers authenticate with a session cookie or bearer token. The `/view/*`, `/snap/*`, and `/dav` byte-serving surfaces are outside this contract.",
+    "description": "The datboi daemon's JSON API. Loopback callers are implicitly the owner; non-loopback callers authenticate with a session cookie or bearer token. The `/view/*`, `/snap/*`, and `/dav` byte-serving surfaces are outside this contract.",
     "license": {
       "identifier": "MIT",
       "name": "MIT"
@@ -4998,7 +4998,7 @@
                 }
               }
             },
-            "description": "P2p is disabled — start the daemon with --p2p (D101)"
+            "description": "P2p is disabled — start the daemon with --p2p"
           }
         },
         "security": [

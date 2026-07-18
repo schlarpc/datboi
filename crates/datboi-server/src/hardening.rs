@@ -92,8 +92,8 @@ pub(crate) async fn security_headers(req: Request, next: Next) -> Response {
 
 // ---- Fetch-Metadata CSRF (D70) ----
 
-/// The 403 body for every CSRF rejection.
-pub(crate) const CSRF_REJECTED: &str = "cross-origin request rejected (D70)";
+/// The 403 body for every CSRF rejection (D70: cross-origin gate).
+pub(crate) const CSRF_REJECTED: &str = "cross-origin request rejected";
 
 /// Decide whether a request passes the cross-origin gate. Pure over
 /// (method, headers) so the whole matrix is unit-testable.

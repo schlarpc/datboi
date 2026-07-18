@@ -409,9 +409,9 @@ impl<'s> Executor<'s> {
             )]);
         }
         if self.pinned_protected_set(db)?.contains(&row.blob_id) {
+            // D27: a view/image tag pins the bytes it serves.
             return Ok(vec![
-                "pinned (D27): a view/image tag serves these bytes; drop or move the tag first"
-                    .into(),
+                "pinned: a view/image tag serves these bytes; drop or move the tag first".into(),
             ]);
         }
         let recipes = db.recipes_for_output(row.blob_id)?;
@@ -451,8 +451,9 @@ impl<'s> Executor<'s> {
                         }
                     }
                     if offenders.is_empty() {
+                        // D21: mutually-dependent recipes can't ground each other.
                         lines.push(format!(
-                            "route via {} recipe #{}: licensed, but dropping this literal would break its own grounding (mutually-dependent recipes, D21)",
+                            "route via {} recipe #{}: licensed, but dropping this literal would break its own grounding (mutually-dependent recipes)",
                             recipe.op_name, recipe.recipe_id
                         ));
                     } else {
