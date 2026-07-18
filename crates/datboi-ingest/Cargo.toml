@@ -23,9 +23,6 @@ preflate-rs = "=0.7.6"
 # Native twin of the shipped component: the analyzer classifies with the
 # same code the component rebuilds with (verify-at-discovery).
 datboi-xf-ecm = { path = "../datboi-xf-ecm" }
-# 7z member extraction (pure Rust). Container rebuild recipes wait on an
-# LZMA-class transform; ingest extracts members as first-class blobs.
-sevenz-rust2 = "0.21"
 thiserror.workspace = true
 # D92: analyzers consume the logical CAS — the refine sweep reads
 # absent-but-grounded blobs through the executor (bounded spill).
@@ -34,6 +31,9 @@ tempfile.workspace = true
 
 [dev-dependencies]
 crc32fast.workspace = true
+# WRITER only, for forging 7z test fixtures — the read path is the
+# ex-7z component (D110).
+sevenz-rust2 = "0.21"
 
 [lints]
 workspace = true

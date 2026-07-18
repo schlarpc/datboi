@@ -3201,3 +3201,20 @@ ex-7z lands. *Rejected:* host-native liblzma bindings (fastest raw
 decode, but an unsandboxed C dependency and no recipe/replay story);
 keeping sevenz-rust2 and only pipelining the hashing (saves the small
 share; the decoder is the bottleneck).
+
+*Amendment (same day):* landed at FULL 7zDec folder parity in one
+motion. The interim shape — LZMA/LZMA2/Delta streaming first, with
+sevenz-rust2 kept as a refusal fallback — was challenged and rejected:
+two decoders behind one format is exactly the split-brain this ruling
+exists to end, and "temporary" fallbacks calcify. So the streaming
+pipeline covers PPMd7, the branch-filter family (x86 through the
+converter's resumable state, the fixed-width ISAs through
+instruction-boundary carry — the chunked-resume contract Bra.h itself
+documents), and the BCJ2 four-coder tree (main stream
+dictionary-streamed, call/jump/rc buffered whole — bomb-sized side
+streams refuse at the allocator under the memory cap). Every shape is
+gate-tested byte-exact against 7-Zip-written fixtures; shapes upstream
+7zDec itself refuses (arbitrary chains, raw-stream BCJ2-only) refuse
+here too and the container stays literal. sevenz-rust2's reader is
+gone; its writer half survives as a dev-dependency that forges test
+fixtures.

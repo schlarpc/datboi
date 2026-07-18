@@ -8,12 +8,19 @@
  * requested host sinks (slot-indexed — one guest pass serves the whole
  * D89 batch) and drops the rest.
  *
- * v1 folder shapes (a subset of 7zDec.c's CheckSupportedFolder, chosen
- * for streamability): one coder (Copy / LZMA / LZMA2), or a main coder
- * followed by a Delta filter (Delta is chunk-safe by design; its state
- * rides across flushes). Branch filters (BCJ/BCJ2/ARM…) and PPMd refuse
- * with SZ_ERROR_UNSUPPORTED — the host falls back and the container
- * stays literal, exactly the pre-ex-7z posture.
+ * Folder coverage is the FULL 7zDec set (no de-scope; sevenz-rust2 left
+ * the tree on this, per D108):
+ *   - one main coder: Copy / LZMA / LZMA2 / PPMd7;
+ *   - main + one filter: Delta or a branch converter (x86 BCJ with its
+ *     resumable state, ARM64/ARM/ARMT/PPC/SPARC/IA64/RISCV) — filters
+ *     run CHUNKED with an instruction-boundary carry tail, exactly the
+ *     resume contract Bra.h documents;
+ *   - the BCJ2 four-coder shape: the MAIN stream (coder2) streams
+ *     through its dictionary window into the Bcj2Dec state machine;
+ *     the small call/jump/rc streams buffer whole (a bomb-sized side
+ *     stream hits the allocator → clean refusal under the memory cap).
+ * Unsupported = folder graphs even 7zDec refuses; those error politely
+ * and the archive stays a literal.
  *
  * Verification: a running CRC32 per REQUESTED member (checked against
  * the header's per-file CRC when defined) plus the folder CRC when
@@ -30,10 +37,13 @@
 
 #include "7z.h"
 #include "7zCrc.h"
+#include "Bcj2.h"
+#include "Bra.h"
 #include "CpuArch.h"
 #include "Delta.h"
 #include "Lzma2Dec.h"
 #include "LzmaDec.h"
+#include "Ppmd7.h"
 
 /* Hooks implemented by the Rust guest (src/lib.rs) over the WIT
  * resources of the in-flight export call. */
@@ -50,12 +60,25 @@ extern void datboi_sink_write(UInt32 slot, const Byte *buf, size_t n);
  * read-at ceiling. */
 #define LOOK_BUF_SIZE (1 << 20)
 #define CHUNK (1 << 18)
+/* Branch-filter carry margin over CHUNK (max converter lookahead is 6;
+ * 64 is comfortable and keeps the buffer pointer-aligned). */
+#define BRANCH_SLACK 64
 
 /* Method ids (mirrors 7zDec.c). */
 #define k_Copy 0
 #define k_Delta 3
+#define k_ARM64 0xa
+#define k_RISCV 0xb
 #define k_LZMA2 0x21
 #define k_LZMA 0x30101
+#define k_PPMD 0x30401
+#define k_BCJ 0x3030103
+#define k_PPC 0x3030205
+#define k_IA64 0x3030401
+#define k_ARM 0x3030501
+#define k_ARMT 0x3030701
+#define k_SPARC 0x3030805
+#define k_BCJ2 0x303011B
 
 static void *ex_alloc(ISzAllocPtr p, size_t size)
 {
@@ -279,36 +302,174 @@ static int split_finish(Split *sp, UInt32 folderIndex)
   return 0;
 }
 
-/* ---- emit: optional Delta filter between decoder and splitter ----
- * The filter must NOT run in place on the LZMA dictionary (matches
+/* ---- emit: the filter stage between main decoder and splitter ----
+ * Filters must NOT run in place on the LZMA dictionary (matches
  * reference the UNFILTERED coder output), so filtered spans copy
- * through a scratch buffer first. */
+ * through the stage's scratch buffer first. */
+
+enum
+{
+  EMIT_PLAIN,
+  EMIT_DELTA,
+  EMIT_BRANCH,
+  EMIT_BCJ2
+};
 
 typedef struct
 {
   Split *sp;
-  int has_delta;
+  int kind;
+  /* EMIT_DELTA */
   unsigned delta;
   Byte delta_state[DELTA_STATE_SIZE];
-  Byte *scratch; /* CHUNK bytes, only when has_delta */
+  /* EMIT_BRANCH — chunked with a carry tail at an instruction
+   * boundary (the converter's documented resume contract). */
+  z7_Func_BranchConv conv; /* stateless family */
+  int is_x86;              /* x86 uses the resumable St variant */
+  UInt32 x86_state;
+  UInt32 pc;
+  size_t pend_len; /* carried tail length at scratch[0..] */
+  /* EMIT_BCJ2 — the state machine pulls MAIN spans as they stream. */
+  CBcj2Dec bcj2;
+  UInt64 bcj2_dest_total;
+  UInt64 bcj2_dest_done;
+  /* stage scratch (delta copies / branch pending / bcj2 dest) */
+  Byte *scratch;
+  size_t scratch_cap;
 } Emit;
+
+static int emit_bcj2_pump(Emit *e, const Byte *buf, size_t n)
+{
+  e->bcj2.bufs[BCJ2_STREAM_MAIN] = buf;
+  e->bcj2.lims[BCJ2_STREAM_MAIN] = buf + n;
+  for (;;)
+  {
+    Byte *dst = e->scratch;
+    const UInt64 want = e->bcj2_dest_total - e->bcj2_dest_done;
+    const size_t cap = want < CHUNK ? (size_t)want : CHUNK;
+    e->bcj2.dest = dst;
+    e->bcj2.destLim = dst + cap;
+    RINOK(Bcj2Dec_Decode(&e->bcj2))
+    const size_t out = (size_t)(e->bcj2.dest - dst);
+    if (out != 0)
+    {
+      const int r = split_feed(e->sp, dst, out);
+      if (r)
+        return r;
+      e->bcj2_dest_done += out;
+    }
+    const int main_left =
+        e->bcj2.bufs[BCJ2_STREAM_MAIN] != e->bcj2.lims[BCJ2_STREAM_MAIN];
+    if (!main_left && (out == 0 || cap == 0))
+      break; /* span consumed; the next main span (or finish) continues */
+    if (main_left && out == 0)
+      return SZ_ERROR_DATA; /* stalled: a side stream starved mid-decode */
+  }
+  /* Never leave dangling span pointers between emit calls. */
+  e->bcj2.bufs[BCJ2_STREAM_MAIN] = e->bcj2.lims[BCJ2_STREAM_MAIN] = e->scratch;
+  return 0;
+}
 
 static int emit(Emit *e, const Byte *buf, size_t n)
 {
-  if (!e->has_delta)
-    return split_feed(e->sp, buf, n);
-  while (n != 0)
+  switch (e->kind)
   {
-    size_t take = n < CHUNK ? n : CHUNK;
-    memcpy(e->scratch, buf, take);
-    Delta_Decode(e->delta_state, e->delta, e->scratch, take);
-    const int r = split_feed(e->sp, e->scratch, take);
-    if (r)
-      return r;
-    buf += take;
-    n -= take;
+    case EMIT_PLAIN:
+      return split_feed(e->sp, buf, n);
+
+    case EMIT_DELTA:
+      while (n != 0)
+      {
+        size_t take = n < CHUNK ? n : CHUNK;
+        memcpy(e->scratch, buf, take);
+        Delta_Decode(e->delta_state, e->delta, e->scratch, take);
+        const int r = split_feed(e->sp, e->scratch, take);
+        if (r)
+          return r;
+        buf += take;
+        n -= take;
+      }
+      return 0;
+
+    case EMIT_BRANCH:
+      while (n != 0)
+      {
+        const size_t space = e->scratch_cap - e->pend_len;
+        const size_t take = n < space ? n : space;
+        memcpy(e->scratch + e->pend_len, buf, take);
+        e->pend_len += take;
+        buf += take;
+        n -= take;
+        Byte *stop = e->is_x86
+            ? z7_BranchConvSt_X86_Dec(e->scratch, e->pend_len, e->pc, &e->x86_state)
+            : e->conv(e->scratch, e->pend_len, e->pc);
+        const size_t done = (size_t)(stop - e->scratch);
+        if (done != 0)
+        {
+          const int r = split_feed(e->sp, e->scratch, done);
+          if (r)
+            return r;
+          e->pc += (UInt32)done;
+          memmove(e->scratch, e->scratch + done, e->pend_len - done);
+          e->pend_len -= done;
+        }
+        else if (take == 0)
+          /* Buffer full yet the converter cannot advance: impossible
+           * with CHUNK-scale capacity vs ≤6-byte lookahead — refuse
+           * rather than spin. */
+          return SZ_ERROR_DATA;
+      }
+      return 0;
+
+    default:
+      return emit_bcj2_pump(e, buf, n);
   }
-  return 0;
+}
+
+/* End of the main stream: flush carries and run final-state checks. */
+static int emit_finish(Emit *e)
+{
+  switch (e->kind)
+  {
+    case EMIT_PLAIN:
+    case EMIT_DELTA:
+      return 0;
+
+    case EMIT_BRANCH:
+      /* The trailing sub-lookahead bytes stay unconverted — identical
+       * to the whole-buffer converters' own behavior. */
+      return e->pend_len == 0 ? 0 : split_feed(e->sp, e->scratch, e->pend_len);
+
+    default:
+    {
+      /* Drain what the state machine can still produce from its side
+       * streams, then require the exact end state (7zDec's checks). */
+      for (;;)
+      {
+        Byte *dst = e->scratch;
+        const UInt64 want = e->bcj2_dest_total - e->bcj2_dest_done;
+        const size_t cap = want < CHUNK ? (size_t)want : CHUNK;
+        e->bcj2.dest = dst;
+        e->bcj2.destLim = dst + cap;
+        RINOK(Bcj2Dec_Decode(&e->bcj2))
+        const size_t out = (size_t)(e->bcj2.dest - dst);
+        if (out == 0)
+          break;
+        const int r = split_feed(e->sp, dst, out);
+        if (r)
+          return r;
+        e->bcj2_dest_done += out;
+      }
+      if (e->bcj2_dest_done != e->bcj2_dest_total)
+        return SZ_ERROR_DATA;
+      for (unsigned i = 1; i < BCJ2_NUM_STREAMS; i++)
+        if (e->bcj2.bufs[i] != e->bcj2.lims[i])
+          return SZ_ERROR_DATA;
+      if (!Bcj2Dec_IsMaybeFinished(&e->bcj2))
+        return SZ_ERROR_DATA;
+      return 0;
+    }
+  }
 }
 
 /* ---- streaming main-coder decoders ---- */
@@ -345,7 +506,7 @@ static int lzma_pump(CLzmaDec *st, ILookInStreamPtr in, UInt64 inSize, UInt64 ou
     Emit *e, int lzma2, CLzma2Dec *st2)
 {
   UInt64 remainOut = outSize;
-  while (remainOut != 0)
+  for (;;)
   {
     const void *inBuf = NULL;
     size_t look = CHUNK;
@@ -353,6 +514,10 @@ static int lzma_pump(CLzmaDec *st, ILookInStreamPtr in, UInt64 inSize, UInt64 ou
       look = (size_t)inSize;
     RINOK(ILookInStream_Look(in, &inBuf, &look))
 
+    /* Once the output is complete the stream may still owe its
+     * terminator (LZMA2's 0x00 control byte, an LZMA end mark): keep
+     * calling at the fixed limit with FINISH_END until the decoder
+     * reports the mark or the packed stream runs out — 7zDec's shape. */
     SizeT dicLimit;
     ELzmaFinishMode fm;
     if (remainOut < (UInt64)(st->dicBufSize - st->dicPos))
@@ -380,16 +545,22 @@ static int lzma_pump(CLzmaDec *st, ILookInStreamPtr in, UInt64 inSize, UInt64 ou
       const int r = emit(e, st->dic + before, produced);
       if (r)
         return r;
+      if ((UInt64)produced > remainOut)
+        return SZ_ERROR_DATA; /* stream inflates past the declared folder size */
       remainOut -= produced;
     }
     RINOK(ILookInStream_Skip(in, inProcessed))
     if (st->dicPos == st->dicBufSize)
       st->dicPos = 0;
+
+    if (status == LZMA_STATUS_FINISHED_WITH_MARK)
+      /* Strict like 7zDec: exact output, packed stream fully consumed. */
+      return (remainOut == 0 && inSize == 0) ? SZ_OK : SZ_ERROR_DATA;
+    if (remainOut == 0 && inSize == 0)
+      return SZ_OK; /* markless end at the exact declared size */
     if (inProcessed == 0 && produced == 0)
       return SZ_ERROR_DATA; /* no progress: truncated or corrupt stream */
   }
-  /* Strict like 7zDec: the folder's packed stream must be fully consumed. */
-  return inSize == 0 ? SZ_OK : SZ_ERROR_DATA;
 }
 
 static int decode_lzma(const Byte *props, unsigned propsSize, ILookInStreamPtr in,
@@ -452,7 +623,240 @@ static int decode_lzma2(const Byte *props, unsigned propsSize, ILookInStreamPtr 
   return res;
 }
 
+/* PPMd7 (7z variant), ported from 7zDec's SzDecodePpmd but flushing
+ * chunkwise instead of filling one whole-folder buffer. */
+
+typedef struct
+{
+  IByteIn vt;
+  const Byte *cur;
+  const Byte *end;
+  const Byte *begin;
+  UInt64 processed;
+  BoolInt extra;
+  SRes res;
+  ILookInStreamPtr inStream;
+} CByteInToLook;
+
+static Byte Ppmd_ReadByte(IByteInPtr pp)
+{
+  Z7_CONTAINER_FROM_VTBL_TO_DECL_VAR_pp_vt_p(CByteInToLook)
+  if (p->cur != p->end)
+    return *p->cur++;
+  if (p->res == SZ_OK)
+  {
+    size_t size = (size_t)(p->cur - p->begin);
+    p->processed += size;
+    p->res = ILookInStream_Skip(p->inStream, size);
+    size = CHUNK;
+    p->res = ILookInStream_Look(p->inStream, (const void **)&p->begin, &size);
+    p->cur = p->begin;
+    p->end = p->begin + size;
+    if (size != 0)
+      return *p->cur++;
+  }
+  p->extra = True;
+  return 0;
+}
+
+static int decode_ppmd(const Byte *props, unsigned propsSize, ILookInStreamPtr in,
+    UInt64 inSize, UInt64 outSize, Emit *e)
+{
+  CPpmd7 ppmd;
+  CByteInToLook s;
+  int res = SZ_OK;
+
+  s.vt.Read = Ppmd_ReadByte;
+  s.inStream = in;
+  s.begin = s.end = s.cur = NULL;
+  s.extra = False;
+  s.res = SZ_OK;
+  s.processed = 0;
+
+  if (propsSize != 5)
+    return SZ_ERROR_UNSUPPORTED;
+  {
+    const unsigned order = props[0];
+    const UInt32 memSize = GetUi32(props + 1);
+    if (order < PPMD7_MIN_ORDER || order > PPMD7_MAX_ORDER
+        || memSize < PPMD7_MIN_MEM_SIZE || memSize > PPMD7_MAX_MEM_SIZE)
+      return SZ_ERROR_UNSUPPORTED;
+    Ppmd7_Construct(&ppmd);
+    if (!Ppmd7_Alloc(&ppmd, memSize, &g_alloc))
+      return SZ_ERROR_MEM;
+    Ppmd7_Init(&ppmd, order);
+  }
+  Byte *buf = (Byte *)malloc(CHUNK);
+  if (!buf)
+  {
+    Ppmd7_Free(&ppmd, &g_alloc);
+    return SZ_ERROR_MEM;
+  }
+  {
+    ppmd.rc.dec.Stream = &s.vt;
+    if (!Ppmd7z_RangeDec_Init(&ppmd.rc.dec))
+      res = SZ_ERROR_DATA;
+    else if (!s.extra)
+    {
+      UInt64 remain = outSize;
+      while (remain != 0 && res == SZ_OK)
+      {
+        const size_t step = remain < CHUNK ? (size_t)remain : CHUNK;
+        size_t got = 0;
+        for (; got < step; got++)
+        {
+          const int sym = Ppmd7z_DecodeSymbol(&ppmd);
+          if (s.extra || sym < 0)
+            break;
+          buf[got] = (Byte)sym;
+        }
+        if (got != 0)
+        {
+          const int r = emit(e, buf, got);
+          if (r)
+            res = r;
+        }
+        if (res == SZ_OK && got != step)
+          res = SZ_ERROR_DATA;
+        remain -= got;
+      }
+      if (res == SZ_OK && !Ppmd7z_RangeDec_IsFinishedOK(&ppmd.rc.dec))
+        res = SZ_ERROR_DATA;
+    }
+    if (s.extra)
+      res = (s.res != SZ_OK ? s.res : SZ_ERROR_DATA);
+    else if (res == SZ_OK && s.processed + (size_t)(s.cur - s.begin) != inSize)
+      res = SZ_ERROR_DATA;
+  }
+  free(buf);
+  Ppmd7_Free(&ppmd, &g_alloc);
+  return res;
+}
+
+static int is_main_method(UInt64 id)
+{
+  return id == k_Copy || id == k_LZMA || id == k_LZMA2 || id == k_PPMD;
+}
+
+/* Decode one main-method coder's packed stream (already positioned via
+ * the absolute offset) through the emit stage. */
+static int decode_main(Ex7z *p, const CSzCoderInfo *coder, const Byte *props_base,
+    UInt64 packOffAbs, UInt64 inSize, UInt64 outSize, Emit *e)
+{
+  RINOK(LookInStream_SeekTo(&p->look.vt, packOffAbs))
+  const Byte *props = props_base + coder->PropsOffset;
+  switch ((UInt32)coder->MethodID)
+  {
+    case k_Copy:
+      return decode_copy(&p->look.vt, inSize, outSize, e);
+    case k_LZMA:
+      return decode_lzma(props, coder->PropsSize, &p->look.vt, inSize, outSize, e);
+    case k_LZMA2:
+      return decode_lzma2(props, coder->PropsSize, &p->look.vt, inSize, outSize, e);
+    case k_PPMD:
+      return decode_ppmd(props, coder->PropsSize, &p->look.vt, inSize, outSize, e);
+    default:
+      return SZ_ERROR_UNSUPPORTED;
+  }
+}
+
+/* Decode a BCJ2 side stream (call/jump — small by construction) whole
+ * into memory. Copy reads raw; LZMA/LZMA2 use the one-call decoders. */
+static int decode_substream(Ex7z *p, const CSzCoderInfo *coder, const Byte *props_base,
+    UInt64 packOffAbs, UInt64 packSize, Byte *out, size_t outSize)
+{
+  RINOK(LookInStream_SeekTo(&p->look.vt, packOffAbs))
+  const Byte *props = props_base + coder->PropsOffset;
+  if (coder->MethodID == k_Copy)
+  {
+    if (packSize != outSize)
+      return SZ_ERROR_DATA;
+    return LookInStream_Read(&p->look.vt, out, outSize);
+  }
+  if (packSize > ((UInt64)1 << 31))
+    return SZ_ERROR_MEM; /* absurd side stream: refuse before allocating */
+  Byte *src = (Byte *)malloc(packSize != 0 ? (size_t)packSize : 1);
+  if (!src)
+    return SZ_ERROR_MEM;
+  int res = LookInStream_Read(&p->look.vt, src, (size_t)packSize);
+  if (res == SZ_OK)
+  {
+    SizeT destLen = outSize;
+    SizeT srcLen = (SizeT)packSize;
+    ELzmaStatus status;
+    if (coder->MethodID == k_LZMA)
+      res = LzmaDecode(out, &destLen, src, &srcLen, props, coder->PropsSize,
+          LZMA_FINISH_END, &status, &g_alloc);
+    else if (coder->MethodID == k_LZMA2 && coder->PropsSize == 1)
+      res = Lzma2Decode(out, &destLen, src, &srcLen, props[0], LZMA_FINISH_END, &status,
+          &g_alloc);
+    else
+      res = SZ_ERROR_UNSUPPORTED;
+    if (res == SZ_OK && destLen != outSize)
+      res = SZ_ERROR_DATA;
+  }
+  free(src);
+  return res;
+}
+
 /* ---- folder driver ---- */
+
+/* Configure the emit stage for a 2-coder folder's filter. Returns an
+ * SRes error for filters even 7zDec does not know. */
+static int setup_filter(Emit *e, const CSzCoderInfo *c, const Byte *props_base)
+{
+  const Byte *props = props_base + c->PropsOffset;
+  switch ((UInt32)c->MethodID)
+  {
+    case k_Delta:
+      if (c->PropsSize != 1)
+        return SZ_ERROR_UNSUPPORTED;
+      e->kind = EMIT_DELTA;
+      e->delta = (unsigned)props[0] + 1;
+      Delta_Init(e->delta_state);
+      return SZ_OK;
+    case k_BCJ:
+      if (c->PropsSize != 0)
+        return SZ_ERROR_UNSUPPORTED;
+      e->kind = EMIT_BRANCH;
+      e->is_x86 = 1;
+      e->x86_state = Z7_BRANCH_CONV_ST_X86_STATE_INIT_VAL;
+      return SZ_OK;
+    case k_ARM64:
+    case k_RISCV:
+      e->kind = EMIT_BRANCH;
+      e->conv = (c->MethodID == k_ARM64) ? Z7_BRANCH_CONV_DEC(ARM64) : Z7_BRANCH_CONV_DEC(RISCV);
+      if (c->PropsSize == 4)
+      {
+        const UInt32 pc = GetUi32(props);
+        if (pc & ((c->MethodID == k_ARM64) ? 3 : 1))
+          return SZ_ERROR_UNSUPPORTED;
+        e->pc = pc;
+      }
+      else if (c->PropsSize != 0)
+        return SZ_ERROR_UNSUPPORTED;
+      return SZ_OK;
+    case k_ARM:
+    case k_ARMT:
+    case k_PPC:
+    case k_SPARC:
+    case k_IA64:
+      if (c->PropsSize != 0)
+        return SZ_ERROR_UNSUPPORTED;
+      e->kind = EMIT_BRANCH;
+      switch ((UInt32)c->MethodID)
+      {
+        case k_ARM: e->conv = Z7_BRANCH_CONV_DEC(ARM); break;
+        case k_ARMT: e->conv = Z7_BRANCH_CONV_DEC(ARMT); break;
+        case k_PPC: e->conv = Z7_BRANCH_CONV_DEC(PPC); break;
+        case k_SPARC: e->conv = Z7_BRANCH_CONV_DEC(SPARC); break;
+        default: e->conv = Z7_BRANCH_CONV_DEC(IA64); break;
+      }
+      return SZ_OK;
+    default:
+      return SZ_ERROR_UNSUPPORTED;
+  }
+}
 
 static int decode_folder(Ex7z *p, UInt32 folderIndex, const UInt32 *wf, const UInt32 *ws,
     UInt32 nw)
@@ -467,36 +871,10 @@ static int decode_folder(Ex7z *p, UInt32 folderIndex, const UInt32 *wf, const UI
   if (sd.Size != 0 || folder.UnpackStream != ar->FoToMainUnpackSizeIndex[folderIndex])
     return SZ_ERROR_FAIL;
 
-  /* v1 shapes: single main coder, or main + Delta (module doc). */
-  const CSzCoderInfo *main_coder = &folder.Coders[0];
-  int has_delta = 0;
-  unsigned delta = 0;
-  if (main_coder->NumStreams != 1)
-    return SZ_ERROR_UNSUPPORTED;
-  if (folder.NumCoders == 1)
-  {
-    if (folder.NumPackStreams != 1 || folder.PackStreams[0] != 0 || folder.NumBonds != 0)
-      return SZ_ERROR_UNSUPPORTED;
-  }
-  else if (folder.NumCoders == 2)
-  {
-    const CSzCoderInfo *c = &folder.Coders[1];
-    if (c->NumStreams != 1 || folder.NumPackStreams != 1 || folder.PackStreams[0] != 0
-        || folder.NumBonds != 1 || folder.Bonds[0].InIndex != 1
-        || folder.Bonds[0].OutIndex != 0)
-      return SZ_ERROR_UNSUPPORTED;
-    if (c->MethodID != k_Delta || c->PropsSize != 1)
-      return SZ_ERROR_UNSUPPORTED;
-    has_delta = 1;
-    delta = (unsigned)data[c->PropsOffset] + 1;
-  }
-  else
-    return SZ_ERROR_UNSUPPORTED;
-
   const UInt64 outSize = SzAr_GetFolderUnpackSize(ar, folderIndex);
-  const UInt64 *packPositions = ar->PackPositions + ar->FoStartPackStreamIndex[folderIndex];
-  const UInt64 inSize = packPositions[1] - packPositions[0];
-  RINOK(LookInStream_SeekTo(&p->look.vt, p->db.dataPos + packPositions[0]))
+  const UInt64 *unpackSizes = ar->CoderUnpackSizes + ar->FoToCoderUnpackSizes[folderIndex];
+  const UInt64 *pp = ar->PackPositions + ar->FoStartPackStreamIndex[folderIndex];
+  const UInt64 base = p->db.dataPos;
 
   Split sp;
   memset(&sp, 0, sizeof(sp));
@@ -514,36 +892,109 @@ static int decode_folder(Ex7z *p, UInt32 folderIndex, const UInt32 *wf, const UI
   Emit e;
   memset(&e, 0, sizeof(e));
   e.sp = &sp;
-  e.has_delta = has_delta;
-  e.delta = delta;
-  if (has_delta)
-  {
-    Delta_Init(e.delta_state);
-    e.scratch = (Byte *)malloc(CHUNK);
-    if (!e.scratch)
-      return SZ_ERROR_MEM;
-  }
+  e.kind = EMIT_PLAIN;
 
   int res;
-  switch ((UInt32)main_coder->MethodID)
+  Byte *call_buf = NULL, *jump_buf = NULL, *rc_buf = NULL;
+
+  if (folder.NumCoders == 1)
   {
-    case k_Copy:
-      res = decode_copy(&p->look.vt, inSize, outSize, &e);
-      break;
-    case k_LZMA:
-      res = decode_lzma(data + main_coder->PropsOffset, main_coder->PropsSize, &p->look.vt,
-          inSize, outSize, &e);
-      break;
-    case k_LZMA2:
-      res = decode_lzma2(data + main_coder->PropsOffset, main_coder->PropsSize, &p->look.vt,
-          inSize, outSize, &e);
-      break;
-    default:
-      res = SZ_ERROR_UNSUPPORTED;
+    if (!is_main_method(folder.Coders[0].MethodID) || folder.Coders[0].NumStreams != 1
+        || folder.NumPackStreams != 1 || folder.PackStreams[0] != 0 || folder.NumBonds != 0)
+      return SZ_ERROR_UNSUPPORTED;
+    res = decode_main(p, &folder.Coders[0], data, base + pp[0], pp[1] - pp[0], outSize, &e);
   }
+  else if (folder.NumCoders == 2)
+  {
+    const CSzCoderInfo *c = &folder.Coders[1];
+    if (!is_main_method(folder.Coders[0].MethodID) || folder.Coders[0].NumStreams != 1
+        || c->NumStreams != 1 || folder.NumPackStreams != 1 || folder.PackStreams[0] != 0
+        || folder.NumBonds != 1 || folder.Bonds[0].InIndex != 1
+        || folder.Bonds[0].OutIndex != 0)
+      return SZ_ERROR_UNSUPPORTED;
+    RINOK(setup_filter(&e, c, data))
+    e.scratch_cap = (e.kind == EMIT_BRANCH) ? (CHUNK + BRANCH_SLACK) : CHUNK;
+    e.scratch = (Byte *)malloc(e.scratch_cap);
+    if (!e.scratch)
+      return SZ_ERROR_MEM;
+    res = decode_main(p, &folder.Coders[0], data, base + pp[0], pp[1] - pp[0], outSize, &e);
+  }
+  else if (folder.NumCoders == 4)
+  {
+    /* The BCJ2 shape, exactly as 7zDec pins it: coders 0/1/2 are
+     * main-method producers for JUMP/CALL/MAIN, coder 3 is BCJ2. */
+    const CSzCoderInfo *bcj2c = &folder.Coders[3];
+    if (!is_main_method(folder.Coders[0].MethodID) || folder.Coders[0].NumStreams != 1
+        || !is_main_method(folder.Coders[1].MethodID) || folder.Coders[1].NumStreams != 1
+        || !is_main_method(folder.Coders[2].MethodID) || folder.Coders[2].NumStreams != 1
+        || bcj2c->MethodID != k_BCJ2 || bcj2c->NumStreams != 4)
+      return SZ_ERROR_UNSUPPORTED;
+    if (folder.NumPackStreams != 4 || folder.PackStreams[0] != 2 || folder.PackStreams[1] != 6
+        || folder.PackStreams[2] != 1 || folder.PackStreams[3] != 0 || folder.NumBonds != 3
+        || folder.Bonds[0].InIndex != 5 || folder.Bonds[0].OutIndex != 0
+        || folder.Bonds[1].InIndex != 4 || folder.Bonds[1].OutIndex != 1
+        || folder.Bonds[2].InIndex != 3 || folder.Bonds[2].OutIndex != 2)
+      return SZ_ERROR_UNSUPPORTED;
+
+    const UInt64 jump_size = unpackSizes[0];
+    const UInt64 call_size = unpackSizes[1];
+    const UInt64 main_size = unpackSizes[2];
+    const UInt64 rc_size = pp[2] - pp[1];
+    if ((jump_size & 3) != 0 || (call_size & 3) != 0
+        || main_size + jump_size + call_size != outSize)
+      return SZ_ERROR_DATA;
+    if (jump_size > ((UInt64)1 << 31) || call_size > ((UInt64)1 << 31)
+        || rc_size > ((UInt64)1 << 31))
+      return SZ_ERROR_MEM;
+
+    jump_buf = (Byte *)malloc(jump_size != 0 ? (size_t)jump_size : 1);
+    call_buf = (Byte *)malloc(call_size != 0 ? (size_t)call_size : 1);
+    rc_buf = (Byte *)malloc(rc_size != 0 ? (size_t)rc_size : 1);
+    e.scratch = (Byte *)malloc(CHUNK);
+    e.scratch_cap = CHUNK;
+    res = (jump_buf && call_buf && rc_buf && e.scratch) ? SZ_OK : SZ_ERROR_MEM;
+
+    /* Side streams first (pack slots per 7zDec: coder0→pp[3], coder1→
+     * pp[2]... i.e. si = {3,2,0}; rc rides pack slot 1 raw). */
+    if (res == SZ_OK)
+      res = decode_substream(p, &folder.Coders[0], data, base + pp[3], pp[4] - pp[3],
+          jump_buf, (size_t)jump_size);
+    if (res == SZ_OK)
+      res = decode_substream(p, &folder.Coders[1], data, base + pp[2], pp[3] - pp[2],
+          call_buf, (size_t)call_size);
+    if (res == SZ_OK)
+    {
+      res = LookInStream_SeekTo(&p->look.vt, base + pp[1]);
+      if (res == SZ_OK)
+        res = LookInStream_Read(&p->look.vt, rc_buf, (size_t)rc_size);
+    }
+    if (res == SZ_OK)
+    {
+      e.kind = EMIT_BCJ2;
+      Bcj2Dec_Init(&e.bcj2);
+      e.bcj2.bufs[BCJ2_STREAM_MAIN] = e.bcj2.lims[BCJ2_STREAM_MAIN] = e.scratch;
+      e.bcj2.bufs[BCJ2_STREAM_CALL] = call_buf;
+      e.bcj2.lims[BCJ2_STREAM_CALL] = call_buf + call_size;
+      e.bcj2.bufs[BCJ2_STREAM_JUMP] = jump_buf;
+      e.bcj2.lims[BCJ2_STREAM_JUMP] = jump_buf + jump_size;
+      e.bcj2.bufs[BCJ2_STREAM_RC] = rc_buf;
+      e.bcj2.lims[BCJ2_STREAM_RC] = rc_buf + rc_size;
+      e.bcj2_dest_total = outSize;
+      res = decode_main(p, &folder.Coders[2], data, base + pp[0], pp[1] - pp[0], main_size,
+          &e);
+    }
+  }
+  else
+    return SZ_ERROR_UNSUPPORTED;
+
+  if (res == SZ_OK)
+    res = emit_finish(&e);
   if (res == 0)
     res = split_finish(&sp, folderIndex);
   free(e.scratch);
+  free(call_buf);
+  free(jump_buf);
+  free(rc_buf);
   return res;
 }
 

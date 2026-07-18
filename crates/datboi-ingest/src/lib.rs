@@ -59,6 +59,11 @@ pub const EX_UNRAR_WASM: &[u8] = include_bytes!(concat!(
     "/datboi_ex_unrar.wasm"
 ));
 
+/// The stamped `ex-7z` component (D110), same lane and same embedding
+/// rules; 7z derive recipes pin it.
+pub const EX_7Z_WASM: &[u8] =
+    include_bytes!(concat!(env!("DATBOI_COMPONENTS_DIR"), "/datboi_ex_7z.wasm"));
+
 /// Streaming buffer size for member hashing.
 const CHUNK: usize = 64 * 1024;
 
@@ -132,13 +137,46 @@ pub struct IngestReport {
     pub fresh_blobs: Vec<i64>,
 }
 
-/// Lazily-built rar extractor state (D58): the wasm host, the compiled
-/// `ex-unrar` component, and whether its bytes have been published into
+/// Which extractor component a container runs (D58 rar, D110 7z) —
+/// both share the lazily-built wasm host and the whole batch pipeline.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExFormat {
+    Rar,
+    SevenZ,
+}
+
+impl ExFormat {
+    fn wasm(self) -> &'static [u8] {
+        match self {
+            ExFormat::Rar => EX_UNRAR_WASM,
+            ExFormat::SevenZ => EX_7Z_WASM,
+        }
+    }
+}
+
+/// One compiled component + whether its bytes have been published into
 /// the store this sweep (recipes pin it by hash).
-struct ExtractorRt {
-    host: ExtractorHost,
+struct ExtractorSlot {
     component: datboi_runtime::extractor::ExtractorComponent,
     published: bool,
+}
+
+/// Lazily-built extractor state (D58/D110): the wasm host plus a slot
+/// per format, each compiled on the first container of that format.
+struct ExtractorRt {
+    host: ExtractorHost,
+    rar: Option<ExtractorSlot>,
+    sevenz: Option<ExtractorSlot>,
+}
+
+impl ExtractorRt {
+    fn slot(&self, fmt: ExFormat) -> &ExtractorSlot {
+        match fmt {
+            ExFormat::Rar => self.rar.as_ref(),
+            ExFormat::SevenZ => self.sevenz.as_ref(),
+        }
+        .expect("ensure_extractor first")
+    }
 }
 
 pub struct Ingester<'a> {
@@ -146,8 +184,8 @@ pub struct Ingester<'a> {
     db: &'a mut Db,
     detectors: &'a [Detector],
     config: IngestConfig,
-    /// Built on the first rar container encountered (avoids the wasm engine
-    /// cost when a sweep has no rar).
+    /// Built on the first rar/7z container encountered (avoids the wasm
+    /// engine cost when a sweep has neither).
     extractor: Option<ExtractorRt>,
     /// Resident-blob ids accumulated across `record_resident_blob`
     /// calls; drained into `IngestReport::fresh_blobs` per run.
@@ -295,7 +333,7 @@ impl<'a> Ingester<'a> {
                 report.errors.push((path.to_owned(), e.to_string()));
             }
         } else if archive::looks_like_7z(&head[..head_len]) {
-            if let Err(e) = self.process_7z(&mut blob, report) {
+            if let Err(e) = self.process_7z(&hash, report) {
                 report.errors.push((path.to_owned(), e));
             }
         } else if archive::looks_like_rar(&head[..head_len]) {
@@ -353,30 +391,20 @@ impl<'a> Ingester<'a> {
         Ok(())
     }
 
-    /// Extract every 7z member into the CAS (see the archive module docs
-    /// for why extraction, not claims: no LZMA-class rebuild transform
-    /// exists yet, so the container stays literal and the members become
-    /// first-class resident blobs).
+    /// Extract every 7z member into the CAS through the `ex-7z`
+    /// component (D110): 7-Zip's own C decoder inside the wasm sandbox,
+    /// streaming — each member lands resident AND carries a derive
+    /// recipe, exactly the rar shape. Coder coverage equals upstream
+    /// 7zDec's (LZMA/LZMA2/Copy/PPMd mains, Delta + branch filters,
+    /// BCJ2); folder graphs beyond that refuse whole and the container
+    /// stays an opaque literal (D24) — the same posture as a rar the
+    /// extractor cannot open.
     fn process_7z(
         &mut self,
-        blob: &mut datboi_store_fs::Blob,
+        container_hash: &Blake3,
         report: &mut IngestReport,
     ) -> Result<(), String> {
-        let store = self.store;
-        let mut stored: Vec<(datboi_core::alias::AliasTuple, String)> = Vec::new();
-        archive::extract_7z(blob, |name, reader| {
-            let (_, aliases, _) = store
-                .put_new(StoreNs::Data, reader)
-                .map_err(|e| format!("storing member {name:?}: {e}"))?;
-            stored.push((aliases, name.to_owned()));
-            Ok(())
-        })?;
-        for (aliases, _name) in &stored {
-            self.record_resident_blob(&aliases.blake3, aliases)
-                .map_err(|e| e.to_string())?;
-            report.members_extracted += 1;
-        }
-        Ok(())
+        self.extract_via_component(ExFormat::SevenZ, container_hash, report)
     }
 
     /// Extract every rar member into the CAS through the `ex-unrar`
@@ -390,20 +418,49 @@ impl<'a> Ingester<'a> {
         container_hash: &Blake3,
         report: &mut IngestReport,
     ) -> Result<(), String> {
-        self.ensure_extractor()?;
-        let members = self.extractor_enumerate(container_hash)?;
+        self.extract_via_component(ExFormat::Rar, container_hash, report)
+    }
 
-        // Decode members in BATCHES (D89): one guest pass serves the
-        // whole batch, so each solid block decodes once — the single-
-        // member ABI made this sweep O(n²) in solid archives. Each
-        // member streams into the CAS through its own bounded pipe
-        // (hash computed on the way in); neither the container nor any
-        // member is ever whole in memory. The batch cap bounds consumer
-        // threads; solid decode restarts once per batch, which is the
-        // accepted cost of the cap.
+    /// The shared component-extraction path (D58 rar, D110 7z): decode
+    /// members in BATCHES (D89) — one guest pass serves the whole batch,
+    /// so each solid block decodes once (the single-member ABI made this
+    /// sweep O(n²) in solid archives). Each member streams into the CAS
+    /// through its own bounded pipe with hashing on the consumer threads,
+    /// so decode overlaps hash+store; neither the container nor any
+    /// member is ever whole in memory. Each non-empty member gains a
+    /// container→member derive recipe pinning the format's component.
+    fn extract_via_component(
+        &mut self,
+        fmt: ExFormat,
+        container_hash: &Blake3,
+        report: &mut IngestReport,
+    ) -> Result<(), String> {
+        self.ensure_extractor(fmt)?;
+        let container_len = self
+            .store
+            .len(StoreNs::Data, container_hash)
+            .map_err(|e| e.to_string())?
+            .unwrap_or(0);
+        let members = self.extractor_enumerate(fmt, container_hash, container_len)?;
+
+        // Fuel scales with the WHOLE archive per batch (container +
+        // every member), not the batch's slice: a solid folder decodes
+        // predecessors regardless of the request set, so the guest's
+        // instruction count follows total unpacked size. Same
+        // calibration as the exec replay path (fuel exists to kill
+        // runaways; generosity costs nothing — datboi_exec doc).
+        let total_unpacked = members
+            .iter()
+            .map(|m| m.size)
+            .fold(0u64, u64::saturating_add);
+        let fuel = datboi_exec::fuel_for_bytes(container_len.saturating_add(total_unpacked));
+
+        // The batch cap bounds consumer threads; solid decode restarts
+        // once per batch, which is the accepted cost of the cap.
         const EXTRACT_BATCH: usize = 128;
         for chunk in members.chunks(EXTRACT_BATCH) {
-            let stored = self.extractor_extract_batch_into_store(container_hash, chunk)?;
+            let stored =
+                self.extractor_extract_batch_into_store(fmt, container_hash, chunk, fuel)?;
             for (member, (member_hash, aliases)) in chunk.iter().zip(stored) {
                 if aliases.size != member.size {
                     // The mismatched bytes already landed in the CAS
@@ -429,7 +486,7 @@ impl<'a> Ingester<'a> {
                     .encode();
                     let recipe = Recipe {
                         op: Op::Wasm {
-                            component: self.extractor_component_hash()?,
+                            component: Blake3::compute(fmt.wasm()),
                             world: World::Extractor1,
                             export: World::Extractor1
                                 .required_export()
@@ -456,40 +513,60 @@ impl<'a> Ingester<'a> {
         Ok(())
     }
 
-    /// Lazily build the extractor host + compile the pinned component, and
-    /// publish the component into the store+index once per sweep (recipes
-    /// pin it by hash, so a later replay can load it).
-    fn ensure_extractor(&mut self) -> Result<(), String> {
+    /// Lazily build the extractor host + compile the format's pinned
+    /// component, and publish the component into the store+index once per
+    /// sweep (recipes pin it by hash, so a later replay can load it).
+    fn ensure_extractor(&mut self, fmt: ExFormat) -> Result<(), String> {
         if self.extractor.is_none() {
             let host =
                 ExtractorHost::new(datboi_runtime::Limits::default()).map_err(|e| e.to_string())?;
-            let component = host.load(EX_UNRAR_WASM).map_err(|e| e.to_string())?;
             self.extractor = Some(ExtractorRt {
                 host,
-                component,
-                published: false,
+                rar: None,
+                sevenz: None,
             });
         }
-        if !self.extractor.as_ref().expect("just set").published {
-            let hash = Blake3::compute(EX_UNRAR_WASM);
+        let rt = self.extractor.as_mut().expect("just set");
+        let missing = match fmt {
+            ExFormat::Rar => rt.rar.is_none(),
+            ExFormat::SevenZ => rt.sevenz.is_none(),
+        };
+        if missing {
+            let component = rt.host.load(fmt.wasm()).map_err(|e| e.to_string())?;
+            let slot = ExtractorSlot {
+                component,
+                published: false,
+            };
+            match fmt {
+                ExFormat::Rar => rt.rar = Some(slot),
+                ExFormat::SevenZ => rt.sevenz = Some(slot),
+            }
+        }
+        let published = match fmt {
+            ExFormat::Rar => rt.rar.as_ref().expect("just set").published,
+            ExFormat::SevenZ => rt.sevenz.as_ref().expect("just set").published,
+        };
+        if !published {
+            let wasm = fmt.wasm();
+            let hash = Blake3::compute(wasm);
             self.store
-                .put(StoreNs::Data, hash, EX_UNRAR_WASM)
+                .put(StoreNs::Data, hash, wasm)
                 .map_err(|e| e.to_string())?;
             self.db
                 .upsert_blob(
                     &hash,
-                    Some(EX_UNRAR_WASM.len() as u64),
+                    Some(wasm.len() as u64),
                     IndexNs::Data,
                     Residency::Resident,
                 )
                 .map_err(|e| e.to_string())?;
-            self.extractor.as_mut().expect("just set").published = true;
+            let rt = self.extractor.as_mut().expect("just set");
+            match fmt {
+                ExFormat::Rar => rt.rar.as_mut().expect("just set").published = true,
+                ExFormat::SevenZ => rt.sevenz.as_mut().expect("just set").published = true,
+            }
         }
         Ok(())
-    }
-
-    fn extractor_component_hash(&self) -> Result<Blake3, String> {
-        Ok(Blake3::compute(EX_UNRAR_WASM))
     }
 
     /// The stored container as a seekable resource for the component —
@@ -505,11 +582,20 @@ impl<'a> Ingester<'a> {
 
     fn extractor_enumerate(
         &self,
+        fmt: ExFormat,
         container: &Blake3,
+        container_len: u64,
     ) -> Result<Vec<datboi_runtime::extractor::Member>, String> {
         let rt = self.extractor.as_ref().expect("ensure_extractor first");
         rt.host
-            .enumerate(&rt.component, vec![self.container_random(container)?], &[])
+            .enumerate_fueled(
+                &rt.slot(fmt).component,
+                vec![self.container_random(container)?],
+                &[],
+                // The header walk's work is bounded by the container
+                // itself (compressed headers decode whole).
+                Some(datboi_exec::fuel_for_bytes(container_len)),
+            )
             .map_err(|e| e.to_string())
     }
 
@@ -523,8 +609,10 @@ impl<'a> Ingester<'a> {
     /// `put_new` deletes its temps and publishes nothing.
     fn extractor_extract_batch_into_store(
         &self,
+        fmt: ExFormat,
         container: &Blake3,
         members: &[datboi_runtime::extractor::Member],
+        fuel: u64,
     ) -> Result<Vec<(Blake3, AliasTuple)>, String> {
         let rt = self.extractor.as_ref().expect("ensure_extractor first");
         // Only the store crosses into the consumer threads — the rest of
@@ -539,8 +627,15 @@ impl<'a> Ingester<'a> {
             consumers_in.push((member, r, h));
         }
         std::thread::scope(|s| {
-            let guest =
-                s.spawn(move || rt.host.extract(&rt.component, vec![archive], &[], requests));
+            let guest = s.spawn(move || {
+                rt.host.extract_fueled(
+                    &rt.slot(fmt).component,
+                    vec![archive],
+                    &[],
+                    requests,
+                    Some(fuel),
+                )
+            });
             let consumers: Vec<_> = consumers_in
                 .into_iter()
                 .map(|(member, r, h)| {

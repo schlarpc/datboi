@@ -307,7 +307,23 @@ impl ExtractorHost {
         archives: Vec<Box<dyn RangeRead>>,
         params: &[u8],
     ) -> Result<Vec<Member>, RuntimeError> {
-        let mut store = self.store(None)?;
+        self.enumerate_fueled(component, archives, params, None)
+    }
+
+    /// [`ExtractorHost::enumerate`] with an explicit fuel budget
+    /// (compressed headers decode whole, so callers scale fuel with the
+    /// container size). `None` uses [`Limits::fuel`].
+    ///
+    /// # Errors
+    /// As [`ExtractorHost::enumerate`].
+    pub fn enumerate_fueled(
+        &self,
+        component: &ExtractorComponent,
+        archives: Vec<Box<dyn RangeRead>>,
+        params: &[u8],
+        fuel: Option<u64>,
+    ) -> Result<Vec<Member>, RuntimeError> {
+        let mut store = self.store(fuel)?;
         let extractor = self.instantiate(&mut store, component)?;
         let mut handles = Vec::with_capacity(archives.len());
         for archive in archives {

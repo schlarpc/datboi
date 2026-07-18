@@ -69,6 +69,34 @@ fn seven_zip_members_become_resident_alias_indexed_blobs() {
         assert_eq!(row.residency, datboi_index::Residency::Resident);
     }
 
+    // D110: each member carries a DERIVE RECIPE (container→member
+    // through the ex-7z component) — evictable + rebuildable, exactly
+    // the rar shape.
+    let member_hash = Blake3::compute(&rom_a);
+    let row = db.blob_by_hash(&member_hash).expect("q").expect("indexed");
+    let recipes = db.recipes_for_output(row.blob_id).expect("q");
+    assert_eq!(
+        recipes.len(),
+        1,
+        "one covering derive recipe (notes: {:?})",
+        report.notes
+    );
+
+    let exec =
+        datboi_exec::Executor::new(&store, datboi_exec::ExecConfig::default()).expect("executor");
+    exec.replay(&db, recipes[0].recipe_id).expect("replay");
+    let outcome = exec.evict(&db, &member_hash).expect("evict");
+    assert!(
+        matches!(outcome, datboi_exec::evict::EvictOutcome::Evicted { .. }),
+        "member evicted: {outcome:?}"
+    );
+    let mut rebuilt = Vec::new();
+    exec.open_stream(&db, &member_hash)
+        .expect("route")
+        .read_to_end(&mut rebuilt)
+        .expect("read");
+    assert_eq!(&rebuilt, &rom_a, "member rebuilds bit-exact through ex-7z");
+
     // Re-ingest is a rescan-cache hit: nothing re-extracted.
     let again = Ingester::new(&store, &mut db, &[]).ingest(&[&archive_path]);
     assert_eq!(again.files_unchanged, 1);

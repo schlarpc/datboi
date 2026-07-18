@@ -20,19 +20,26 @@ out, all through host-implemented WIT resources, with ZERO wasm imports
   SDK's `7zDec` (which materializes a whole solid folder in memory —
   a big-ISO folder would blow the 1 GiB guest cap). LzmaDec/Lzma2Dec
   stream through their circular dictionary window; every produced span
-  flushes to a member splitter that routes byte ranges to slot-indexed
-  host sinks. Memory is dictionary-bounded, not folder-bounded.
+  flushes through the (optional) filter stage to a member splitter that
+  routes byte ranges to slot-indexed host sinks. Memory is
+  dictionary-bounded, not folder-bounded.
 - `src/lib.rs` is the thin Rust guest (same shape as ex-unrar):
   world bindings, the `datboi_*` hooks, ix↔file-index mapping.
 
-## v1 coder scope (policy, not ABI)
+## Coder coverage: full 7zDec parity (policy, not ABI)
 
-Supported folder shapes: single coder **Copy / LZMA / LZMA2**, or a
-main coder + **Delta** filter. Branch filters (BCJ/BCJ2/ARM…), PPMd,
-encryption, and multi-volume sets refuse cleanly — the host treats any
-error as whole-archive refusal and ingest falls back to the extraction
-lane it had before ex-7z (sevenz-rust2), so coverage never regresses
-while the coder set grows.
+Every folder shape upstream `7zDec` accepts, this component accepts —
+streaming: single main coder **Copy / LZMA / LZMA2 / PPMd7**; main +
+one filter (**Delta**, **x86 BCJ** via the resumable-state converter,
+**ARM64/ARM/ARMT/PPC/SPARC/IA64/RISCV** via boundary-carried chunking);
+and the **BCJ2** four-coder tree (main stream dictionary-streamed, the
+small call/jump/rc streams buffered whole — a bomb-sized side stream
+hits the allocator and refuses under the memory cap). Folder graphs
+even 7zDec refuses (arbitrary coder chains, the raw-stream BCJ2-only
+layout), encryption, and multi-volume sets refuse cleanly — the host
+treats any error as whole-archive refusal and the container stays an
+opaque literal (D24). There is no second decoder behind this one:
+sevenz-rust2's read path left the tree with this component (D110).
 
 Verification: running CRC32 per requested member (checked against the
 header's per-file CRC when defined) + folder CRC when defined; the

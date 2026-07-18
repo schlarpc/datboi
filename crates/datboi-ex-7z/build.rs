@@ -23,16 +23,15 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The decoder TUs the streaming glue needs — deliberately narrow: no
-/// branch filters, no encoders, no file/thread code. 7zDec IS compiled
-/// (with Z7_NO_METHODS_FILTERS): SzArEx_Open needs its
+/// The decoder TUs the streaming glue needs — decode-only: no encoders,
+/// no file/thread code. 7zDec is here because SzArEx_Open needs its
 /// SzAr_DecodeFolder for COMPRESSED HEADERS (the 7z default), which are
 /// small and always LZMA — the in-memory decode is fine there; DATA
-/// folders go through csrc/glue.c's streaming decode instead. Bcj2
-/// rides along only because 7zDec's BCJ2 arm is unconditional.
+/// folders go through csrc/glue.c's streaming decode instead. The
+/// filter/PPMd TUs back glue.c's full-coverage folder shapes (D108).
 const LZMA_TUS: &[&str] = &[
-    "7zArcIn", "7zBuf", "7zCrc", "7zCrcOpt", "7zDec", "7zStream", "Bcj2", "CpuArch", "Delta",
-    "LzmaDec", "Lzma2Dec",
+    "7zArcIn", "7zBuf", "7zCrc", "7zCrcOpt", "7zDec", "7zStream", "Bcj2", "Bra", "Bra86",
+    "BraIA64", "CpuArch", "Delta", "LzmaDec", "Lzma2Dec", "Ppmd7", "Ppmd7Dec",
 ];
 
 fn main() {
@@ -70,10 +69,6 @@ fn main() {
         // Single-thread build of a decode-only TU set; also keeps any
         // stray thread-aware paths compiled out.
         "-DZ7_ST",
-        // 7zDec is only here for compressed-header decode (LZMA-only by
-        // format); dropping the branch filters keeps Bra.c out of the
-        // link and the v1 coder policy honest in the binary itself.
-        "-DZ7_NO_METHODS_FILTERS",
         "-Wall",
     ]
     .iter()

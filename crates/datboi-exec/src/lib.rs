@@ -1346,6 +1346,15 @@ impl Write for VecSink {
 const FUEL_BASE: u64 = 1 << 24;
 const FUEL_PER_BYTE: u64 = 4096;
 
+/// The byte-scaled wasm fuel budget, shared with every other lane that
+/// runs components over real corpus bytes (datboi-ingest's extraction
+/// batches hit the same "fixed default vs 570 MB solid folder" wall the
+/// replay path solved here first).
+#[must_use]
+pub fn fuel_for_bytes(bytes: u64) -> u64 {
+    FUEL_BASE.saturating_add(bytes.saturating_mul(FUEL_PER_BYTE))
+}
+
 fn fuel_budget(children: &[Plan], outputs: &[(Blake3, u64)]) -> u64 {
     let bytes = children
         .iter()
@@ -1357,7 +1366,7 @@ fn fuel_budget(children: &[Plan], outputs: &[(Blake3, u64)]) -> u64 {
                 .map(|(_, s)| *s)
                 .fold(0u64, u64::saturating_add),
         );
-    FUEL_BASE.saturating_add(bytes.saturating_mul(FUEL_PER_BYTE))
+    fuel_for_bytes(bytes)
 }
 
 /// DFS for the transform node running `component`; returns its children —

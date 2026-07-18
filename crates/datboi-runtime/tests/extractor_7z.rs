@@ -43,6 +43,63 @@ const EX_7Z: &[u8] = include_bytes!(concat!(env!("DATBOI_COMPONENTS_DIR"), "/dat
 
 const VERSION_7Z: &[u8] = include_bytes!("../../datboi-ingest/tests/fixtures/version.7z");
 const PPMD_7Z: &[u8] = include_bytes!("../../datboi-ingest/tests/fixtures/ppmd.7z");
+const BCJ_7Z: &[u8] = include_bytes!("../../datboi-ingest/tests/fixtures/bcj.7z");
+const BCJ2_7Z: &[u8] = include_bytes!("../../datboi-ingest/tests/fixtures/bcj2.7z");
+const BCJ2_LZMA_7Z: &[u8] = include_bytes!("../../datboi-ingest/tests/fixtures/bcj2lzma.7z");
+const ARM64_7Z: &[u8] = include_bytes!("../../datboi-ingest/tests/fixtures/arm64.7z");
+const DELTA_7Z: &[u8] = include_bytes!("../../datboi-ingest/tests/fixtures/delta.7z");
+const CHAIN3_7Z: &[u8] = include_bytes!("../../datboi-ingest/tests/fixtures/chain3.7z");
+
+/// The filter fixtures' x86-flavored payload (`prog.bin`): E8 call
+/// opcodes with small relative targets in xorshift filler — enough for
+/// the branch converters to really rewrite bytes.
+fn prog_pattern() -> Vec<u8> {
+    let mut state = 0x1234_5678_9ABC_DEF0u64;
+    let mut rnd = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let mut out = Vec::new();
+    while out.len() < 120_000 {
+        for _ in 0..(rnd() % 12 + 2) {
+            out.push((rnd() & 0xFF) as u8);
+        }
+        out.push(0xE8);
+        let rel = (rnd() % 60_000) as i64 - 30_000;
+        out.extend_from_slice(&(rel as i32).to_le_bytes());
+    }
+    out.truncate(120_000);
+    out
+}
+
+/// The delta fixture's payload (`audio.bin`): integer triangle waves,
+/// 4-byte frames.
+fn pcm_pattern() -> Vec<u8> {
+    let mut out = Vec::with_capacity(120_000);
+    for i in 0i64..30_000 {
+        let v = ((i * 7) % 4000 - 2000).unsigned_abs() as u16;
+        let w = ((i * 13) % 6000 - 3000).unsigned_abs() as u16;
+        out.extend_from_slice(&v.to_le_bytes());
+        out.extend_from_slice(&w.to_le_bytes());
+    }
+    out
+}
+
+/// Extract member 0 of a one-member fixture and return its bytes.
+fn extract_single(host: &ExtractorHost, fixture: &[u8]) -> Result<Vec<u8>, String> {
+    let component = host.load(EX_7Z).expect("load");
+    let out = SharedBuf::default();
+    host.extract(
+        &component,
+        vec![Box::new(fixture.to_vec()) as Box<dyn RangeRead>],
+        &[],
+        vec![(0, Box::new(out.clone()))],
+    )
+    .map_err(|e| format!("{e}"))?;
+    Ok(out.take())
+}
 
 /// The fixture's a.rom/b.rom payload (same xorshift the ingest tests use).
 fn rom_pattern() -> Vec<u8> {
@@ -237,27 +294,67 @@ fn out_of_range_member_refuses() {
 }
 
 #[test]
-fn unsupported_coder_refuses_politely() {
-    // PPMd is outside the v1 coder scope: enumerate parses the header
-    // fine, extract refuses with an error (never a trap, never bytes) —
-    // the host's cue to fall back (ingest keeps the container literal).
+fn every_7zdec_coder_shape_round_trips() {
+    // Full 7zDec coverage (D108 — no de-scoped fallback): PPMd, the
+    // branch filters (x86 with its resumable state, a stateless ISA),
+    // Delta, and both BCJ2 trees (Copy substreams and the classic
+    // LZMA tree) all decode byte-exact through the STREAMING pipeline.
+    let host = host();
+    let prog = prog_pattern();
+    assert_eq!(
+        extract_single(&host, PPMD_7Z).expect("ppmd"),
+        b"tiny",
+        "PPMd7 main coder"
+    );
+    assert_eq!(
+        extract_single(&host, BCJ_7Z).expect("bcj"),
+        prog,
+        "x86 BCJ filter over LZMA"
+    );
+    assert_eq!(
+        extract_single(&host, ARM64_7Z).expect("arm64"),
+        prog,
+        "ARM64 branch filter over LZMA"
+    );
+    assert_eq!(
+        extract_single(&host, BCJ2_LZMA_7Z).expect("bcj2+lzma"),
+        prog,
+        "BCJ2 tree with LZMA substreams"
+    );
+    assert_eq!(
+        extract_single(&host, DELTA_7Z).expect("delta"),
+        pcm_pattern(),
+        "Delta filter over LZMA"
+    );
+}
+
+#[test]
+fn unsupported_folder_shape_refuses_politely() {
+    // Folder graphs beyond even 7zDec's shapes — a 3-coder chain
+    // (Delta+BCJ+LZMA) and 7-Zip's raw-stream BCJ2-only layout (one
+    // 4-input coder over four pack streams, which upstream 7zDec
+    // refuses too): enumerate parses the header fine, extract refuses
+    // with an error (never a trap, never bytes) and the container
+    // stays literal.
     let host = host();
     let component = host.load(EX_7Z).expect("load");
-    let members = host
-        .enumerate(&component, vec![Box::new(PPMD_7Z.to_vec())], &[])
-        .expect("header parse is coder-independent");
-    assert_eq!(members.len(), 1);
-    let out = SharedBuf::default();
-    let err = host
-        .extract(
-            &component,
-            vec![Box::new(PPMD_7Z.to_vec())],
-            &[],
-            vec![(0, Box::new(out.clone()))],
-        )
-        .expect_err("PPMd member decode must refuse");
-    assert!(out.take().is_empty(), "no bytes on refusal");
-    let _ = err;
+    for (name, fixture) in [("chain3", CHAIN3_7Z), ("bcj2-raw", BCJ2_7Z)] {
+        let members = host
+            .enumerate(&component, vec![Box::new(fixture.to_vec())], &[])
+            .expect("header parse is coder-independent");
+        assert_eq!(members.len(), 1, "{name}");
+        let out = SharedBuf::default();
+        let err = host
+            .extract(
+                &component,
+                vec![Box::new(fixture.to_vec())],
+                &[],
+                vec![(0, Box::new(out.clone()))],
+            )
+            .expect_err("unsupported folder shape must refuse");
+        assert!(out.take().is_empty(), "{name}: no bytes on refusal");
+        let _ = err;
+    }
 }
 
 #[test]

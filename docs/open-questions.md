@@ -251,6 +251,18 @@ channel design (naming layer: entry→blake3 gap-fill, curated-view
 discovery, `available-from-peer(X)`); smaller remainders in Open
 (minor) above.
 
+**Position as of 2026-07-18 — D108–D110 BUILT**: analyzer classes
+claim-gate the sweep order (the drone fleet raced chunk past ecm on
+the first real ingest — ~520 MB of pieces the D59 gate would have
+declined; the class gate closes it at the claim layer), cache v7
+drops the never-wired `blob.obao` column, and ex-7z ships at FULL
+7zDec folder parity (streaming, dictionary-bounded; sevenz-rust2's
+reader left the tree — see the D110 amendment). Watch items: both
+extractor lanes still refuse multi-volume sets and encrypted
+archives (policy cuts awaiting demand, not ABI); PPMd as a BCJ2
+side-stream coder refuses (absurd-but-legal shape — revisit only if
+a real archive surfaces).
+
 ## Resolved
 
-See [decisions.md](decisions.md) (D1–D105).
+See [decisions.md](decisions.md) (D1–D110).
