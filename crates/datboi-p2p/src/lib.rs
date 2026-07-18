@@ -39,14 +39,14 @@ pub struct Provider {
 }
 
 impl Provider {
-    /// Bind an endpoint, put `bytes` into a fresh in-memory store, and
-    /// start serving the blobs protocol. Returns the provider and a
-    /// ticket a peer can fetch from.
-    pub async fn serve(bytes: Vec<u8>) -> Result<(Self, BlobTicket)> {
-        let endpoint = Endpoint::bind(presets::N0).await?;
+    /// Put `bytes` into a fresh in-memory store on `endpoint` and start
+    /// serving the blobs protocol. Returns the provider and a ticket a
+    /// peer can fetch from. The caller supplies the (already-online)
+    /// endpoint so the network posture isn't baked in — the daemon uses
+    /// `presets::N0`, tests use an in-process relay (D106).
+    pub async fn serve(endpoint: Endpoint, bytes: Vec<u8>) -> Result<(Self, BlobTicket)> {
         let store = MemStore::new();
         let tag = store.add_slice(&bytes).await?;
-        endpoint.online().await;
         let addr = endpoint.addr();
         let ticket = BlobTicket::new(addr, tag.hash, tag.format);
         let blobs = BlobsProtocol::new(&store, None);
@@ -57,11 +57,11 @@ impl Provider {
     }
 }
 
-/// A second instance: bind a fresh endpoint + empty store, connect to the
-/// provider named in `ticket`, fetch the blob, and return its bytes. The
-/// fetch is blake3-verified by iroh-blobs against the ticket's hash.
-pub async fn fetch(ticket: &BlobTicket) -> Result<Vec<u8>> {
-    let endpoint = Endpoint::bind(presets::N0).await?;
+/// A second instance: on `endpoint` with a fresh empty store, connect to
+/// the provider named in `ticket`, fetch the blob, and return its bytes.
+/// The fetch is blake3-verified by iroh-blobs against the ticket's hash.
+/// Caller supplies the endpoint (see [`Provider::serve`]).
+pub async fn fetch(endpoint: Endpoint, ticket: &BlobTicket) -> Result<Vec<u8>> {
     let store = MemStore::new();
     let conn = endpoint
         .connect(ticket.addr().clone(), iroh_blobs::ALPN)
@@ -524,15 +524,17 @@ pub mod cas {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testnet::TestNet;
 
     /// The headline M6 deliverable: two independent instances, a blob
     /// leaves one and arrives verified at the other. Multi-group size so
     /// the bao tree is exercised, not a single-chunk trivial case.
     #[tokio::test]
     async fn two_instances_exchange_a_verified_blob() -> Result<()> {
+        let net = TestNet::start().await?;
         let original: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
-        let (provider, ticket) = Provider::serve(original.clone()).await?;
-        let received = fetch(&ticket).await?;
+        let (provider, ticket) = Provider::serve(net.endpoint().await?, original.clone()).await?;
+        let received = fetch(net.endpoint().await?, &ticket).await?;
         assert_eq!(received, original, "bytes survived the round trip");
         provider.router.shutdown().await?;
         Ok(())
@@ -568,8 +570,8 @@ mod tests {
         )?;
         let db = Arc::new(Mutex::new(db));
 
-        let endpoint = Endpoint::bind(presets::N0).await?;
-        endpoint.online().await;
+        let net = TestNet::start().await?;
+        let endpoint = net.endpoint().await?;
         let addr = endpoint.addr();
         let provider = cas::CasProvider::new(store, db);
         let router = Router::builder(endpoint)
@@ -578,7 +580,7 @@ mod tests {
 
         let iroh_hash = iroh_blobs::Hash::from_bytes(hash.0);
         let ticket = BlobTicket::new(addr, iroh_hash, iroh_blobs::BlobFormat::Raw);
-        let received = fetch(&ticket).await?;
+        let received = fetch(net.endpoint().await?, &ticket).await?;
         assert_eq!(received, original, "bytes came verified from the real CAS");
 
         router.shutdown().await?;
@@ -699,8 +701,8 @@ mod tests {
         // Serve the VIRTUAL member to a peer; it must arrive verified,
         // rebuilt from its recipe on the fly.
         let db = Arc::new(Mutex::new(db));
-        let endpoint = Endpoint::bind(presets::N0).await?;
-        endpoint.online().await;
+        let net = TestNet::start().await?;
+        let endpoint = net.endpoint().await?;
         let addr = endpoint.addr();
         let provider = cas::CasProvider::new(store, db);
         let router = Router::builder(endpoint)
@@ -712,7 +714,7 @@ mod tests {
             iroh_blobs::Hash::from_bytes(member_hash.0),
             iroh_blobs::BlobFormat::Raw,
         );
-        let received = fetch(&ticket).await?;
+        let received = fetch(net.endpoint().await?, &ticket).await?;
         assert_eq!(
             received, member,
             "evicted blob rebuilt from its recipe, verified, over the wire"
@@ -742,8 +744,8 @@ mod tests {
         store.put(Namespace::Meta, hash, meta.as_slice())?;
         let db = Arc::new(Mutex::new(db));
 
-        let endpoint = Endpoint::bind(presets::N0).await?;
-        endpoint.online().await;
+        let net = TestNet::start().await?;
+        let endpoint = net.endpoint().await?;
         let addr = endpoint.addr();
         let provider = cas::CasProvider::new(store, db);
         let router = Router::builder(endpoint)
@@ -755,7 +757,7 @@ mod tests {
             iroh_blobs::Hash::from_bytes(hash.0),
             iroh_blobs::BlobFormat::Raw,
         );
-        let received = fetch(&ticket).await?;
+        let received = fetch(net.endpoint().await?, &ticket).await?;
         assert_eq!(received, meta, "meta bytes verified over the wire");
 
         router.shutdown().await?;

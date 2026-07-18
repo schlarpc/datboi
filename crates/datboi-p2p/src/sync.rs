@@ -406,11 +406,11 @@ pub async fn sync(
 mod tests {
     use datboi_core::assemble::{AssembleParams, Segment};
     use datboi_core::recipe::{InputRef, OutputRef};
-    use iroh::endpoint::presets;
     use iroh::protocol::Router;
 
     use super::*;
     use crate::recon::ReconProvider;
+    use crate::testnet::TestNet;
 
     fn piece(i: u64) -> Vec<u8> {
         // > 16 KiB so pieces carry real bao trees.
@@ -590,8 +590,8 @@ mod tests {
         )?;
         let db_a = Arc::new(Mutex::new(db_a));
 
-        let endpoint_a = Endpoint::bind(presets::N0).await?;
-        endpoint_a.online().await;
+        let net = TestNet::start().await?;
+        let endpoint_a = net.endpoint().await?;
         let addr_a = endpoint_a.addr();
         let router = Router::builder(endpoint_a)
             .accept(
@@ -620,7 +620,7 @@ mod tests {
         )?;
         let db_b = Arc::new(Mutex::new(db_b));
 
-        let endpoint_b = Endpoint::bind(presets::N0).await?;
+        let endpoint_b = net.endpoint().await?;
         let report = sync(&endpoint_b, addr_a, store_b, Arc::clone(&db_b), &[c2_hash]).await?;
 
         assert_eq!(report.recipes_fetched, 1, "one plan crossed the wire");
@@ -688,8 +688,8 @@ mod tests {
         )?;
         let db_a = Arc::new(Mutex::new(db_a));
 
-        let endpoint_a = Endpoint::bind(presets::N0).await?;
-        endpoint_a.online().await;
+        let net = TestNet::start().await?;
+        let endpoint_a = net.endpoint().await?;
         let addr_a = endpoint_a.addr();
         let router = Router::builder(endpoint_a)
             .accept(
@@ -703,7 +703,7 @@ mod tests {
         let store_b: &'static Store = Box::leak(Box::new(Store::open(dir_b.path().join("s"))?));
         let db_b = Arc::new(Mutex::new(Db::open(dir_b.path())?));
 
-        let endpoint_b = Endpoint::bind(presets::N0).await?;
+        let endpoint_b = net.endpoint().await?;
         let report = sync(&endpoint_b, addr_a, store_b, Arc::clone(&db_b), &[]).await?;
 
         assert_eq!(report.recipes_fetched, 1);
@@ -755,8 +755,8 @@ mod tests {
         )?;
         let db_a = Arc::new(Mutex::new(db_a));
 
-        let endpoint_a = Endpoint::bind(presets::N0).await?;
-        endpoint_a.online().await;
+        let net = TestNet::start().await?;
+        let endpoint_a = net.endpoint().await?;
         let addr_a = endpoint_a.addr();
         let router = Router::builder(endpoint_a)
             .accept(
@@ -785,7 +785,7 @@ mod tests {
         )?;
         let db_b = Arc::new(Mutex::new(db_b));
 
-        let endpoint_b = Endpoint::bind(presets::N0).await?;
+        let endpoint_b = net.endpoint().await?;
         let report = sync(&endpoint_b, addr_a, store_b, Arc::clone(&db_b), &[]).await?;
 
         assert_eq!(
@@ -848,8 +848,8 @@ mod tests {
         import_piece(&mut db_a, store_a, &x)?;
         let db_a = Arc::new(Mutex::new(db_a));
 
-        let endpoint_a = Endpoint::bind(presets::N0).await?;
-        endpoint_a.online().await;
+        let net = TestNet::start().await?;
+        let endpoint_a = net.endpoint().await?;
         let addr_a = endpoint_a.addr();
         let router = Router::builder(endpoint_a)
             .accept(
@@ -877,7 +877,7 @@ mod tests {
         )?;
         let db_b = Arc::new(Mutex::new(db_b));
 
-        let endpoint_b = Endpoint::bind(presets::N0).await?;
+        let endpoint_b = net.endpoint().await?;
         let report = sync(&endpoint_b, addr_a, store_b, Arc::clone(&db_b), &[]).await?;
 
         assert_eq!(report.recipes_fetched, 1, "A's container plan");
@@ -940,8 +940,8 @@ mod tests {
         )?;
         let db_a = Arc::new(Mutex::new(db_a));
 
-        let endpoint_a = Endpoint::bind(presets::N0).await?;
-        endpoint_a.online().await;
+        let net = TestNet::start().await?;
+        let endpoint_a = net.endpoint().await?;
         let addr_a = endpoint_a.addr();
         let router = Router::builder(endpoint_a)
             .accept(
@@ -956,7 +956,7 @@ mod tests {
         let store_b: &'static Store = Box::leak(Box::new(Store::open(dir_b.path().join("s"))?));
         let db_b = Arc::new(Mutex::new(Db::open(dir_b.path())?));
 
-        let endpoint_b = Endpoint::bind(presets::N0).await?;
+        let endpoint_b = net.endpoint().await?;
         let report = sync(&endpoint_b, addr_a, store_b, Arc::clone(&db_b), &[]).await?;
 
         assert_eq!(report.recipes_fetched, 5);

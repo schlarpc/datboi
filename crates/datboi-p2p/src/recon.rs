@@ -407,9 +407,9 @@ mod tests {
     use datboi_index::recipes::NewRecipe;
     use datboi_index::{Namespace as IndexNs, OpKind, RecipeSource, Residency, SeekClass};
     use iroh::protocol::Router;
-    use iroh::{Endpoint, endpoint::presets};
 
     use super::*;
+    use crate::testnet::TestNet;
 
     fn fake_hash(tag: &str, i: u64) -> Blake3 {
         Blake3::compute(format!("{tag}:{i}").as_bytes())
@@ -451,8 +451,8 @@ mod tests {
         }
         let db = Arc::new(Mutex::new(db));
 
-        let endpoint = Endpoint::bind(presets::N0).await?;
-        endpoint.online().await;
+        let net = TestNet::start().await?;
+        let endpoint = net.endpoint().await?;
         let addr = endpoint.addr();
         let router = Router::builder(endpoint)
             .accept(ALPN, ReconProvider::new(db))
@@ -462,7 +462,7 @@ mod tests {
         let mut local: Vec<Blake3> = responder_set[5..].to_vec();
         local.extend((0..5).map(|i| fake_hash("local-extra", i)));
 
-        let client = Endpoint::bind(presets::N0).await?;
+        let client = net.endpoint().await?;
         let conn = client.connect(addr, ALPN).await?;
         let report = reconcile(&conn, Scope::AffineRecipes, &local).await?;
 
@@ -530,14 +530,14 @@ mod tests {
         }
         let db = Arc::new(Mutex::new(db));
 
-        let endpoint = Endpoint::bind(presets::N0).await?;
-        endpoint.online().await;
+        let net = TestNet::start().await?;
+        let endpoint = net.endpoint().await?;
         let addr = endpoint.addr();
         let router = Router::builder(endpoint)
             .accept(ALPN, ReconProvider::new(db))
             .spawn();
 
-        let client = Endpoint::bind(presets::N0).await?;
+        let client = net.endpoint().await?;
         let conn = client.connect(addr, ALPN).await?;
         let report = reconcile(&conn, Scope::AffineRecipes, &set).await?;
         assert_eq!(report.symbols_received, 1);
@@ -562,14 +562,14 @@ mod tests {
         }
         let db = Arc::new(Mutex::new(db));
 
-        let endpoint = Endpoint::bind(presets::N0).await?;
-        endpoint.online().await;
+        let net = TestNet::start().await?;
+        let endpoint = net.endpoint().await?;
         let addr = endpoint.addr();
         let router = Router::builder(endpoint)
             .accept(ALPN, ReconProvider::new(db))
             .spawn();
 
-        let client = Endpoint::bind(presets::N0).await?;
+        let client = net.endpoint().await?;
         let conn = client.connect(addr, ALPN).await?;
 
         // A request from the future: valid envelope framing, unknown
