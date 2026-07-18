@@ -1292,3 +1292,58 @@ fn read_only_open_reads_but_never_writes() {
         Err(IndexError::SchemaVersion { .. })
     ));
 }
+
+/// The D102 roots scope: resident Data blobs with no non-Failed
+/// producing route — underived literals only. A Failed route does not
+/// disqualify (poison proves nothing about the bytes' origin); ANY
+/// live route does, wherever it leads (coverage is the plans scope's
+/// job); non-resident and Meta rows never advertise.
+#[test]
+fn root_blobs_are_the_underived_resident_literals() {
+    let (_dir, mut db) = open_db();
+
+    // A loose never-analyzed ROM: resident, no routes → root.
+    let loose = blob(&db, b"loose-rom", Residency::Resident);
+    // A decomposed container: resident, produced by a live route → not
+    // a root, even though its producer's input is a root.
+    let piece = blob(&db, b"piece", Residency::Resident);
+    let container = blob(&db, b"container", Residency::Resident);
+    recipe(&mut db, b"rebuild", &[piece], &[container], VerifyState::Pending);
+    // Only a FAILED route produces this one → still a root.
+    let poisoned_out = blob(&db, b"poisoned-out", Residency::Resident);
+    let poisoned = recipe(&mut db, b"lying", &[piece], &[poisoned_out], VerifyState::Pending);
+    db.set_verify_state(poisoned, VerifyAdvance::Failed { error: "lied", peer: None }, 3)
+        .expect("poison");
+    // Absent and EvictedCovered rows are not servable literals; Meta
+    // blobs (the recipe objects minted above) ride the plans scope.
+    blob(&db, b"absent", Residency::Absent);
+    blob(&db, b"evicted", Residency::EvictedCovered);
+
+    let mut roots = db.root_blobs().expect("roots");
+    roots.sort_unstable_by_key(|h| h.0);
+    let mut want = vec![
+        Blake3::compute(b"loose-rom"),
+        Blake3::compute(b"piece"),
+        Blake3::compute(b"poisoned-out"),
+    ];
+    want.sort_unstable_by_key(|h| h.0);
+    assert_eq!(roots, want);
+    assert_eq!(db.root_blob_count().expect("count"), 3);
+
+    // The streaming twin visits the identical set (the recon
+    // responder's pass).
+    let mut streamed = Vec::new();
+    db.for_each_root_blob(&mut |h| streamed.push(h)).expect("stream");
+    streamed.sort_unstable_by_key(|h| h.0);
+    assert_eq!(streamed, want);
+
+    // Analysis migrates a blob out of the roots scope: decomposing the
+    // loose ROM (minting a producing route) moves it under plan
+    // coverage — the D102 invisibility class shrinking by definition.
+    let slice = blob(&db, b"slice-of-loose", Residency::Resident);
+    recipe(&mut db, b"loose-rebuild", &[slice], &[loose], VerifyState::Pending);
+    assert!(
+        !db.root_blobs().expect("roots").contains(&Blake3::compute(b"loose-rom")),
+        "a produced blob leaves the roots scope"
+    );
+}

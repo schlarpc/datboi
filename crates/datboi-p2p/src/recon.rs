@@ -12,10 +12,11 @@
 //! - responder → initiator: `[set_size: u64 LE]` then 48-byte coded
 //!   symbols (batched) until stop, stream closure, or the drain cap.
 //!
-//! v1's one scope is `AffineRecipes` — the meta-blob hashes of
-//! non-Failed builtin `assemble@1` routes. Reconcile the plans; the
-//! parts (D91 pieces) follow from a local closure walk (D100:
-//! "reconcile the plans, fetch the parts").
+//! Two scopes (D100 + D102): `AffineRecipes` — the meta-blob hashes of
+//! non-Failed builtin `assemble@1` routes ("reconcile the plans, fetch
+//! the parts"; the D91 pieces follow from a local closure walk) — and
+//! `RootBlobs` — the underived resident literals, which make mirror
+//! complete by construction (D102).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -55,13 +56,23 @@ const MAX_BLOCK: usize = 1 << 17;
 #[repr(u8)]
 pub enum Scope {
     /// Meta-blob hashes of non-Failed affine builtin `assemble@1`
-    /// routes ([`Db::affine_recipe_objects`]).
+    /// routes ([`Db::affine_recipe_objects`]) — the D100
+    /// transfer-optimization plane.
     AffineRecipes = 0,
+    /// Resident Data-namespace blobs with no non-Failed producing
+    /// route ([`Db::root_blobs`]) — the D102 completeness plane. With
+    /// the plans this covers the holdings by construction: every blob
+    /// is underived (here) or derived (reachable from a plan).
+    RootBlobs = 1,
 }
 
 impl Scope {
     fn from_byte(b: u8) -> Option<Self> {
-        (b == Scope::AffineRecipes as u8).then_some(Scope::AffineRecipes)
+        match b {
+            0 => Some(Scope::AffineRecipes),
+            1 => Some(Scope::RootBlobs),
+            _ => None,
+        }
     }
 }
 
@@ -117,6 +128,7 @@ impl SetSnapshot for DbSnapshot<'_> {
     fn for_each(&mut self, f: &mut dyn FnMut(Symbol)) -> Result<(), Self::Error> {
         match self.scope {
             Scope::AffineRecipes => self.db.for_each_affine_recipe_object(&mut |h| f(h.0))?,
+            Scope::RootBlobs => self.db.for_each_root_blob(&mut |h| f(h.0))?,
         }
         Ok(())
     }
@@ -142,6 +154,7 @@ fn stream_scope(
     let result = (|| -> Result<(u64, u64)> {
         let set_size = match scope {
             Scope::AffineRecipes => db.affine_recipe_object_count()?,
+            Scope::RootBlobs => db.root_blob_count()?,
         };
         if tx.blocking_send(set_size.to_le_bytes().to_vec()).is_err() {
             return Ok((set_size, 0));

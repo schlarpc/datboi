@@ -15,7 +15,10 @@
 //! An empty want-list is mirror mode (D34 full-mirror subscriber
 //! policy): every container the fetched plans describe is made grounded
 //! — leaves fetched, nothing materialized (residency stays the
-//! planner's knob, D91).
+//! planner's knob, D91) — and the peer's plan-less content arrives via
+//! the D102 roots scope (underived resident literals reconciled
+//! alongside the plans), so "everything they share" is complete by
+//! construction, not just for decomposed content.
 //!
 //! Savings are a first-class result (D97): the [`SyncReport`] carries
 //! what was fetched vs what was rebuilt vs what was already held, and
@@ -195,15 +198,32 @@ pub async fn sync(
     wants: &[Blake3],
 ) -> Result<SyncReport> {
     // 1. Reconcile plans (the sketch: our set never crosses the wire).
-    let prior = {
+    //    Mirror mode also reconciles the D102 roots scope — the peer's
+    //    underived literals, the content no plan will ever reach — so
+    //    "everything they share" is complete by construction. Our prior
+    //    is our OWN roots; a peer root we hold as a non-root shows up
+    //    in the diff but the walk below resolves it Supported and
+    //    fetches nothing (the walk is the dedup filter, D102).
+    let (prior, roots_prior) = {
         let guard = db.lock().unwrap_or_else(|e| e.into_inner());
-        guard.affine_recipe_objects()?
+        let prior = guard.affine_recipe_objects()?;
+        let roots_prior = if wants.is_empty() {
+            guard.root_blobs()?
+        } else {
+            Vec::new()
+        };
+        (prior, roots_prior)
     };
     let recon_conn = endpoint
         .connect(peer.clone(), recon::ALPN)
         .await
         .context("connect recon")?;
     let recon = recon::reconcile(&recon_conn, Scope::AffineRecipes, &prior).await?;
+    let peer_roots = if wants.is_empty() {
+        Some(recon::reconcile(&recon_conn, Scope::RootBlobs, &roots_prior).await?)
+    } else {
+        None
+    };
 
     // 2. Fetch the plans we lack; verify by content, index as Peer claims.
     let blobs_conn = endpoint
@@ -248,13 +268,20 @@ pub async fn sync(
     //    EVERY peer-sourced plan output — not just this round's fetches
     //    — so a sync interrupted between plan-indexing and piece-fetch
     //    is finished by the next run instead of orphaned behind an
-    //    empty recon diff (D100 use-case audit: the resume gap). The
-    //    walk is idempotent, so re-rooting settled plans costs index
-    //    reads and honestly recounts their leaves as already-held.
+    //    empty recon diff (D100 use-case audit: the resume gap), PLUS
+    //    the peer's remote-only roots (D102): plan-less content —
+    //    never-analyzed loose ROMs, preflate-refused containers — walks
+    //    as an unknown blob and resolves Fetch. The walk is idempotent,
+    //    so re-rooting settled plans (or roots we can already derive)
+    //    costs index reads and honestly recounts leaves as already-held.
     let (missing, pieces_already_held, bytes_already_held) = {
         let guard = db.lock().unwrap_or_else(|e| e.into_inner());
         let roots: Vec<Blake3> = if wants.is_empty() {
-            guard.peer_plan_outputs()?
+            let mut roots = guard.peer_plan_outputs()?;
+            if let Some(r) = &peer_roots {
+                roots.extend(r.remote_only.iter().copied());
+            }
+            roots
         } else {
             wants.to_vec()
         };
@@ -349,8 +376,11 @@ pub async fn sync(
         rebuilt,
         bytes_rebuilt,
         pieces_unavailable,
-        sketch_wire_bytes: recon.wire_bytes(),
-        symbols_received: recon.symbols_received,
+        // Both sketches (plans + D102 roots) count against the savings.
+        sketch_wire_bytes: recon.wire_bytes()
+            + peer_roots.as_ref().map_or(0, recon::ReconReport::wire_bytes),
+        symbols_received: recon.symbols_received
+            + peer_roots.as_ref().map_or(0, |r| r.symbols_received),
     };
     // D97: the savings ARE the result. Named numeric fields at the INFO
     // job boundary (D81), OTEL-liftable as-is.
@@ -715,6 +745,85 @@ mod tests {
         );
         assert_eq!(report.pieces_fetched, 4, "the orphaned leaves fetched anyway");
         assert_eq!(report.pieces_unavailable, 0);
+        for p in &pieces_bytes {
+            assert!(store_b.has(Namespace::Data, &Blake3::compute(p)));
+        }
+
+        router.shutdown().await?;
+        Ok(())
+    }
+
+    /// The D102 completeness proof, the use-case audit's exact gap: a
+    /// mirror must reach the content nothing has decomposed. A holds a
+    /// decomposed container (plan + pieces) AND a never-analyzed loose
+    /// ROM (resident, plan-less — invisible to the recipes scope). The
+    /// roots scope carries the loose ROM across; and a root the
+    /// initiator can already DERIVE (decomposed at B, whole at A) rides
+    /// the diff but fetches nothing — the walk is the dedup filter.
+    #[tokio::test]
+    async fn mirror_fetches_plan_less_roots() -> Result<()> {
+        let pieces_bytes: Vec<Vec<u8>> = (0..4).map(piece).collect();
+        let container: Vec<u8> = pieces_bytes.iter().flatten().copied().collect();
+        let c_hash = Blake3::compute(&container);
+        let loose = piece(200); // never analyzed anywhere
+        let loose_hash = Blake3::compute(&loose);
+        // Shared root: held loose on BOTH sides — same prior entry, so
+        // it never even reaches the diff.
+        let shared = piece(201);
+        // Derivable root: A holds it whole and unanalyzed; B holds it
+        // DECOMPOSED (pieces + rebuild plan, bytes not resident).
+        let x_parts: Vec<Vec<u8>> = (202..204).map(piece).collect();
+        let x: Vec<u8> = x_parts.iter().flatten().copied().collect();
+        let x_hash = Blake3::compute(&x);
+
+        let dir_a = tempfile::tempdir()?;
+        let store_a: &'static Store = Box::leak(Box::new(Store::open(dir_a.path().join("s"))?));
+        let mut db_a = Db::open(dir_a.path())?;
+        let mut a_pieces = Vec::new();
+        for p in &pieces_bytes {
+            a_pieces.push(import_piece(&mut db_a, store_a, p)?);
+        }
+        mint_assemble(&mut db_a, store_a, &a_pieces, &c_hash, container.len() as u64, RecipeSource::LocalIngest)?;
+        import_piece(&mut db_a, store_a, &loose)?;
+        import_piece(&mut db_a, store_a, &shared)?;
+        import_piece(&mut db_a, store_a, &x)?;
+        let db_a = Arc::new(Mutex::new(db_a));
+
+        let endpoint_a = Endpoint::bind(presets::N0).await?;
+        endpoint_a.online().await;
+        let addr_a = endpoint_a.addr();
+        let router = Router::builder(endpoint_a)
+            .accept(iroh_blobs::ALPN, crate::cas::CasProvider::new(store_a, Arc::clone(&db_a)))
+            .accept(recon::ALPN, ReconProvider::new(db_a))
+            .spawn();
+
+        let dir_b = tempfile::tempdir()?;
+        let store_b: &'static Store = Box::leak(Box::new(Store::open(dir_b.path().join("s"))?));
+        let mut db_b = Db::open(dir_b.path())?;
+        import_piece(&mut db_b, store_b, &shared)?;
+        let mut b_x_pieces = Vec::new();
+        for p in &x_parts {
+            b_x_pieces.push(import_piece(&mut db_b, store_b, p)?);
+        }
+        mint_assemble(&mut db_b, store_b, &b_x_pieces, &x_hash, x.len() as u64, RecipeSource::LocalIngest)?;
+        let db_b = Arc::new(Mutex::new(db_b));
+
+        let endpoint_b = Endpoint::bind(presets::N0).await?;
+        let report = sync(&endpoint_b, addr_a, store_b, Arc::clone(&db_b), &[]).await?;
+
+        assert_eq!(report.recipes_fetched, 1, "A's container plan");
+        // 4 container pieces + the loose ROM; NOT the shared root (same
+        // prior both sides) and NOT x (derivable at B).
+        assert_eq!(report.pieces_fetched, 5);
+        assert_eq!(report.pieces_unavailable, 0);
+        assert!(
+            store_b.has(Namespace::Data, &loose_hash),
+            "the plan-less loose ROM mirrored — the audit's invisibility class"
+        );
+        assert!(
+            !store_b.has(Namespace::Data, &x_hash),
+            "a root B can derive is not refetched (the walk filtered it)"
+        );
         for p in &pieces_bytes {
             assert!(store_b.has(Namespace::Data, &Blake3::compute(p)));
         }

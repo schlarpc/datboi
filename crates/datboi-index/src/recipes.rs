@@ -10,6 +10,17 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::types::{OpKind, RecipeSource, SeekClass, VerifyState};
 use crate::{Db, IndexError, Namespace, Residency};
 
+/// The D102 roots-scope query, shared by the set/streaming twins:
+/// resident (0) Data-namespace (0) blobs that are the output of no
+/// non-Failed (verify != 2) recipe — underived literals only.
+const ROOT_BLOBS_SQL: &str = "SELECT b.hash FROM blob b
+     WHERE b.namespace = 0 AND b.residency = 0
+       AND NOT EXISTS (
+         SELECT 1 FROM recipe_output ro
+         JOIN recipe r ON r.recipe_id = ro.recipe_id
+         WHERE ro.blob_id = b.blob_id AND r.verify != 2)
+     ORDER BY b.blob_id";
+
 /// Raw row shape for [`Db::insert_recipe`]. Production minting goes
 /// through [`Db::index_recipe`], which derives these rows from the
 /// recipe object itself; the raw shape remains for tests that need a
@@ -614,6 +625,52 @@ impl Db {
             .query_map([], |row| row.get::<_, [u8; 32]>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows.into_iter().map(Blake3).collect())
+    }
+
+    /// D102 reconciliation scope: the roots — resident Data-namespace
+    /// blobs with no non-Failed producing route, the ur-literals
+    /// (never-analyzed loose ROMs, preflate-refused containers).
+    /// Together with [`Self::affine_recipe_objects`] this covers the
+    /// holdings by construction: every blob is either underived (here)
+    /// or derived (reachable from an advertised plan). Sound while
+    /// every non-Failed route's inputs are locally groundable — the
+    /// additive-v1 invariant (D102: eviction work must revisit this
+    /// query). This is the initiator's prior for the roots recon.
+    pub fn root_blobs(&self) -> Result<Vec<Blake3>, IndexError> {
+        let mut stmt = self.cache().prepare_cached(ROOT_BLOBS_SQL)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, [u8; 32]>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows.into_iter().map(Blake3).collect())
+    }
+
+    /// Streaming twin of [`Self::root_blobs`] — the recon responder's
+    /// O(block)-memory pass (D100 amendment). Distinctness is
+    /// structural (`blob.hash` is unique); cross-pass stability is the
+    /// CALLER's read transaction.
+    pub fn for_each_root_blob(&self, f: &mut dyn FnMut(Blake3)) -> Result<(), IndexError> {
+        let mut stmt = self.cache().prepare_cached(ROOT_BLOBS_SQL)?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            f(Blake3(row.get::<_, [u8; 32]>(0)?));
+        }
+        Ok(())
+    }
+
+    /// Count twin — the recon wire header's advertised set size, read
+    /// under the same transaction as the passes so the two agree.
+    pub fn root_blob_count(&self) -> Result<u64, IndexError> {
+        let count: i64 = self.cache().query_row(
+            "SELECT COUNT(*) FROM blob b
+             WHERE b.namespace = 0 AND b.residency = 0
+               AND NOT EXISTS (
+                 SELECT 1 FROM recipe_output ro
+                 JOIN recipe r ON r.recipe_id = ro.recipe_id
+                 WHERE ro.blob_id = b.blob_id AND r.verify != 2)",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(count).unwrap_or(0))
     }
 
     /// A rebuild route's inputs in position (coverage) order, each with
