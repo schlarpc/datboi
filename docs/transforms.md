@@ -75,3 +75,33 @@ verify-without-materializing.
    headered/headerless dat worlds onto one object).
 7. **CDC chunking** of what remains — 2–4× across language/revision
    variants once containers/encryption are out of the way.
+
+## Rebuild long-tail verdicts (research pass, 2026-07-07)
+
+Recorded here from the research that ruled the deferrals; the fixpoint
+re-covers today's corpus whenever an analyzer lands, so deferral is
+structurally free.
+
+- **7z / LZMA — param discovery, M7.** No preflate-analog exists for
+  LZMA anywhere and corrections cannot transfer: the adaptive range
+  coder makes divergence global — predicting the optimal parse exactly
+  IS the encoder. But parameter discovery is viable in a way it never
+  was for zlib: LZMA encoding is deterministic per
+  encoder-version+params and byte-stable across multi-year version
+  families (SDK 9.04–17.01 identical; 18.06–21.x identical; encode.su
+  thread 4187). Candidate design, recorded for M7: header blob stays
+  literal; re-encode plaintext against a small pinned matrix (2–3
+  vendored encoder families × {fast, normal} × fb ∈ {32, 64, 273} ×
+  LZMA2 chunk layout) with incremental-compare early abort; hit → the
+  recipe pins (encoder-id, params); miss → stays literal; no
+  diff-patch middle path. PPMd/bzip2-in-7z fall out near-free. Needs
+  the C-to-wasm lane (7-Zip SDK to wasm32-unknown-unknown) — the same
+  infrastructure M7's CHD/RVZ/NSZ work wants, which is why it slots
+  there. Interim hedges: the `status` literal-only counter sizes the
+  tax; an opt-in drop-containers-without-routes policy is a future
+  discussion (byte-destroying, so never a default).
+- **RAR — confirmed infeasible, permanently literal.** No recompressor
+  exists for v3/v5; the encoder is closed and the unrar license
+  forbids using its source to recreate compression. The
+  extraction-based ingest (D9/D58: members carry derive recipes, the
+  container stays a literal) is the final answer.

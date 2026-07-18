@@ -68,6 +68,18 @@ non-link "this blob".
 words; the marks are a single CSS-drawn component (filled, half,
 outline, dash), colored from tokens, word alongside.
 
+## The nav
+
+Ruled during the M5 build (2026-07-11, recorded here): the nav is
+**Library · Views · Ingest · Storage · Admin**. Audit is the
+drill-down under Library, not a tab — the hi-fi comps' "Dats" tab
+variant was rejected as redundant with it. The friend-facing surface
+ships as part of this web product (it is what invites + ACLs exist
+for); the M6 "Friends" plane is iroh daemon-to-daemon, a different
+thing. A naming pass over the Library/Browse/Shelves/Views overlap is
+owed when the next screen gets added (flagged in open-questions.md),
+not before.
+
 ## One canonical home per concept
 
 A concept is *owned* by one screen; everywhere else summarizes and

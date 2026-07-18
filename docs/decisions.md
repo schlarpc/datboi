@@ -348,6 +348,22 @@ revision churn are re-aggregated lazily and GC'd. D19 store format
 unchanged (aggregates are ordinary blobs). The M1 NFS benchmark decides
 default-on vs opt-in.
 
+*Amendment (2026-07-07, ruled; recorded here 2026-07-17 during the
+open-questions condense):* the M1 NFS benchmark is **indefinitely
+deferred** — a local-SSD run cannot answer what the bench gates (NFS
+metadata round-trips are the whole case for aggregation and the fanout
+freeze), so no bench until the NFS machine exists. Accepted
+consequences: the 2-level×256 fanout is frozen-by-default at first
+real corpus; aggregation stays available later as an additive layer;
+the recovery walk stays at 8 workers. A local scale-smoke (50k blobs,
+MAME-ish size histogram) DID run to catch algorithmic pathologies in
+our own code: ingest is linear (~890 files/s, fsync-per-blob
+dominated, as designed); recovery was SQLite-autocommit-bound, fixed
+by batching the rebuild passes in transactions — fast recover 13.7 s →
+2.5 s per 50k (~20k blobs/s ⇒ the DB side of a 10M-blob recovery
+≈ 8 min; the NFS walk then dominates, which is the part the deferred
+bench would tune).
+
 ## D37 — Two-file DB split (2026-07-03)
 
 `state.db` (authoritative-until-snapshotted, tiny, synchronous=FULL,
@@ -2900,3 +2916,44 @@ arguments anyway; one envelope register, not two); serde-free manual
 envelope impls (the D69 refinement is the honest ruling, not a
 workaround); keeping recon/1 alive beside recon/2 (nothing speaks it
 but us).
+
+## D104 — Web ingest surface: one content-classified drop, REST + polling, HTTP custody is copy (2026-07-11; recorded 2026-07-17)
+
+Retroactive recording — these were ruled and shipped 2026-07-11 during
+the M5 web sessions and lived only in open-questions.md until the
+condense. The CLI-only-mutations posture they first punched holes in
+was later inverted wholesale by D96; what remains load-bearing here is
+the ingest-surface design itself.
+
+**One drop surface, content-classified.** Users don't route bytes to
+the right upload box; the ingest job classifies every staged file by
+content (the house philosophy: magic bytes and `datboi_formats::detect`
+— names never decide). A file whose head detects as a dat imports via
+`import_dat`; a zip whose central directory names EXACTLY one member
+whose head detects as a dat imports that member (extraction bounded by
+the declared size, riding the D35 walker — a multi-member zip is a ROM
+container by construction and is never sniffed further); everything
+else runs the pipeline unchanged. Pipeline counters stay pure: a dat
+import is not a `files_scanned`; the report carries a separate
+`dats_imported` lane. Both the Ingest screen and the Library screen's
+dat card ride the same staged flow.
+
+**Transport is REST + polling.** Staged uploads
+(`POST /v1/ingest/uploads` streaming raw bytes, no multipart, headroom
+guard instead of a body cap) return in-memory tokens;
+`POST /v1/ingest` spends them all-or-nothing into a background job.
+Upload progress is the browser's own XHR meter and server-side events
+are file-granular, so SSE/WebSockets buy nothing today — the tray
+polls 2 s while running, the screen 1 s on its job. The upgrade path
+(SSE over the bounded-mpsc pattern, per-byte progress via the D71
+Pulse trait) is named, not built.
+
+**Custody over HTTP is always copy.** The browser cannot move
+originals; NAS-local ingest (move/reflink custody) stays CLI. Report
+paths wear the client's original names; staging paths never leak.
+
+*Rejected:* multipart uploads (one file IS the request); separate
+dat-vs-rom upload endpoints/boxes (users shouldn't need to know, and
+zipped dats — how No-Intro/Redump actually ship — fit neither box);
+name-based classification (names never decide); SSE/WS for
+file-granular progress (complexity with nothing to carry).
