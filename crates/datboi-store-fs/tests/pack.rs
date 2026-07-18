@@ -317,6 +317,176 @@ fn repack_with_no_matching_drop_is_a_noop() {
     assert_eq!(store.list_packs(), vec![pack]);
 }
 
+/// Count loose `.obao4` sidecar files anywhere under a store root.
+fn loose_sidecars_under(root: &std::path::Path) -> usize {
+    let mut count = 0;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "obao4") {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+#[test]
+fn packed_members_serve_verified_reads_with_no_sidecar_inodes() {
+    // D105: the outboard section rides the pack, so a packed member
+    // serves VERIFIED range reads — across recovery — with zero loose
+    // `.obao4` files anywhere in the store.
+    let (dir, store) = world();
+    let pieces: Vec<Vec<u8>> = vec![pattern(300, 1), pattern(70_000, 2), pattern(5, 3)];
+    let members = members_of(&pieces);
+    store
+        .put_pack(&members, |ix| {
+            Ok(Box::new(std::io::Cursor::new(pieces[ix].clone())))
+        })
+        .expect("pack");
+    assert_eq!(loose_sidecars_under(dir.path()), 0, "no sidecar inodes");
+
+    // The big member's tree resolves out of the section; small members
+    // derive the empty outboard from their length.
+    let big = &members[1];
+    assert_eq!(
+        store
+            .get_obao(Namespace::Data, &big.hash)
+            .expect("get_obao")
+            .expect("tree in the pack")
+            .len() as u64,
+        datboi_store_fs::obao::outboard_size(big.len)
+    );
+    assert_eq!(
+        store
+            .get_obao(Namespace::Data, &members[2].hash)
+            .expect("get_obao"),
+        Some(Vec::new()),
+        "≤ one chunk group ⇒ empty outboard, derived"
+    );
+    let out = store
+        .read_range_verified(Namespace::Data, &big.hash, 40_000, 4096)
+        .expect("verified range straight off the pack");
+    assert_eq!(out, &pieces[1][40_000..40_000 + 4096]);
+
+    // Bare-NAS recovery: a fresh open re-derives the section from the
+    // footer — the old lazy-blessing backstop is dead.
+    drop(store);
+    let store = Store::open(dir.path().join("store")).expect("reopen");
+    let out = store
+        .read_range_verified(Namespace::Data, &big.hash, 0, 70_000)
+        .expect("verified after recovery");
+    assert_eq!(out, pieces[1]);
+    assert_eq!(loose_sidecars_under(dir.path()), 0);
+}
+
+#[test]
+fn footer_tampering_is_refused_at_open() {
+    // D105: the trailer's blake3(footer) means a plausible-but-wrong
+    // member table is refused at parse — it can never mis-slice a
+    // member through the plain-read path. (Under v1 this exact flip
+    // parsed fine: only offsets were bounds-checked.)
+    let (dir, store) = world();
+    let pieces: Vec<Vec<u8>> = vec![pattern(300, 1), pattern(9000, 2)];
+    let members = members_of(&pieces);
+    let pack = store
+        .put_pack(&members, |ix| {
+            Ok(Box::new(std::io::Cursor::new(pieces[ix].clone())))
+        })
+        .expect("pack");
+    drop(store);
+
+    // Flip one byte inside the footer's member table: the first row's
+    // hash. Footer layout is pinned by the format: magic + u32 count +
+    // 48-byte rows; the trailer is 48 bytes.
+    let footer_len = b"datboi/pack/1\n".len() + 4 + members.len() * 48;
+    let path = pack_file(dir.path(), &pack);
+    let mut bytes = std::fs::read(&path).expect("read pack");
+    let n = bytes.len();
+    let first_hash_byte = n - 48 - footer_len + b"datboi/pack/1\n".len() + 4;
+    bytes[first_hash_byte] ^= 0xFF;
+    std::fs::write(&path, &bytes).expect("write pack");
+
+    // Open refuses the pack whole; nothing resolves, nothing mis-slices.
+    let store = Store::open(dir.path().join("store")).expect("open");
+    assert!(!store.has(Namespace::Data, &members[0].hash));
+    assert!(matches!(
+        store.scrub_pack(&pack),
+        Err(StoreError::PackFooter { .. })
+    ));
+}
+
+#[test]
+fn outboard_section_rot_fails_safe_and_scrub_localizes_it() {
+    // Rot in the obao section can never verify wrong bytes (trees are
+    // self-authenticating, D49): verified reads fail, plain reads of
+    // member bytes are untouched, and scrub localizes the rot — the
+    // whole-file hash breaks while every member's slice still verifies.
+    let (dir, store) = world();
+    let pieces: Vec<Vec<u8>> = vec![pattern(300, 1), pattern(70_000, 2)];
+    let members = members_of(&pieces);
+    let pack = store
+        .put_pack(&members, |ix| {
+            Ok(Box::new(std::io::Cursor::new(pieces[ix].clone())))
+        })
+        .expect("pack");
+    drop(store);
+
+    // The section starts at the last member's end (derived layout).
+    let section_start: u64 = members.iter().map(|m| m.len).sum();
+    let path = pack_file(dir.path(), &pack);
+    let mut bytes = std::fs::read(&path).expect("read pack");
+    bytes[usize::try_from(section_start).expect("fits") + 8] ^= 0xFF;
+    std::fs::write(&path, &bytes).expect("write pack");
+
+    let store = Store::open(dir.path().join("store")).expect("open");
+    // Plain reads still serve the member's true bytes.
+    let mut blob = store
+        .get(Namespace::Data, &members[1].hash)
+        .expect("get")
+        .expect("resolves — footer is intact");
+    let mut plain = Vec::new();
+    blob.read_to_end(&mut plain).expect("read");
+    assert_eq!(plain, pieces[1]);
+    // Verified reads refuse — never wrong bytes.
+    assert!(
+        store
+            .read_range_verified(Namespace::Data, &members[1].hash, 0, 4096)
+            .is_err(),
+        "a rotted tree fails validation"
+    );
+    // Scrub: file no longer hashes to its name, yet every member slice
+    // verifies — the rot is localized outside the member spans.
+    let scrub = store.scrub_pack(&pack).expect("scrub");
+    assert!(!scrub.intact);
+    assert!(scrub.members.iter().all(|m| m.aliases.is_some()));
+}
+
+/// FORMAT COMMITMENT (D105): members, derived outboard section, footer,
+/// blake3(footer) trailer. If this golden moves, the at-rest pack
+/// format changed — that requires a new magic and a D entry.
+#[test]
+fn golden_pack_bytes() {
+    let (_dir, store) = world();
+    let pieces: Vec<Vec<u8>> = vec![pattern(300, 1), pattern(70_000, 2), pattern(5, 3)];
+    let members = members_of(&pieces);
+    let pack = store
+        .put_pack(&members, |ix| {
+            Ok(Box::new(std::io::Cursor::new(pieces[ix].clone())))
+        })
+        .expect("pack");
+    assert_eq!(
+        pack.to_hex(),
+        "d29da60d85bc80acceb5179fa4470714483193900ffeb640a816746e765be2e3"
+    );
+}
+
 #[test]
 fn pack_files_are_content_addressed_and_deterministic() {
     let (_dir, store_a) = world();

@@ -15,22 +15,35 @@
 //! packed blob from a loose one — which is exactly the point: every
 //! read path in the system inherits pack support by construction.
 //!
-//! Format (little-endian throughout):
+//! Format (little-endian throughout, D105):
 //!
 //! ```text
-//! [member 0 bytes][member 1 bytes]…
+//! [member 0 bytes][member 1 bytes]…      back-to-back from 0, coverage order
+//! [outboard section]                     member-rooted obao4 trees, member order
 //! [footer: b"datboi/pack/1\n"
 //!          u32 member count
 //!          per member: 32-byte blake3, u64 offset, u64 len]
-//! [u64 footer_len][b"DBOIPACK"]
+//! [32-byte blake3(footer)][u64 footer_len][b"DBOIPACK"]
 //! ```
 //!
-//! The trailer magic + length locate the footer from the end; the
-//! footer magic versions the format (a v2 is a new magic, D51-style —
-//! shipped layouts are frozen). Member obao sidecars are NOT written
-//! at pack time: packed pieces serve ranges through the D4 plain-read
-//! default for literals, and a future `ensure_obao` over the window
-//! upgrades them without touching the pack.
+//! The trailer locates AND authenticates the footer from the end in
+//! one small tail read: a footer that fails its trailer hash refuses
+//! the pack at open — a plausible-but-wrong member table can never
+//! mis-slice a member through the plain-read path (D105). The
+//! outboard section is DERIVED, not described: trees sit in member
+//! order starting at the last member's end, each exactly
+//! `outboard_size(len)` bytes (zero for ≤ 16 KiB members — absence IS
+//! the empty sidecar, the loose-sidecar rule), and the parser
+//! enforces that members are contiguous from zero and that data +
+//! section + footer + trailer tile the file exactly. Redundancy that
+//! could disagree with reality doesn't exist to disagree.
+//!
+//! Each tree is a BYPRODUCT of the write's own verification: the bao
+//! root IS the member's blake3 identity (the D52 golden), so
+//! `put_pack` proves each member and produces its outboard in the
+//! same pass. Packed members therefore never need loose `.obao4`
+//! sidecars, and recovery (`scan_packs`) sees the trees by
+//! construction — no lazy blessing backstop.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -46,8 +59,22 @@ use crate::store::{Store, StoreError, fsync_dir};
 /// parse (skipped, reported to the caller's logging).
 pub(crate) type PackScan = (HashMap<Blake3, PackedLoc>, Vec<PathBuf>);
 
-/// A written pack's identity + its member table rows.
-type SealedPack = (Blake3, Vec<(Blake3, u64, u64)>);
+/// A written pack's identity + its parsed-shape member entries.
+type SealedPack = (Blake3, Vec<MemberEntry>);
+
+/// One member as the footer + derived outboard section describe it —
+/// what `parse_footer` returns and `put_pack` records.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MemberEntry {
+    pub hash: Blake3,
+    pub offset: u64,
+    pub len: u64,
+    /// This member's obao4 tree window in the outboard section,
+    /// derived (never stored) per D105. `obao_len == 0` ⇔ the member
+    /// is ≤ one chunk group and its outboard is empty.
+    pub obao_offset: u64,
+    pub obao_len: u64,
+}
 
 /// The outcome of scrubbing one sealed pack ([`Store::scrub_pack`]).
 #[derive(Debug)]
@@ -85,8 +112,9 @@ pub struct PackMemberScrub {
 
 pub(crate) const PACK_MAGIC: &[u8] = b"datboi/pack/1\n";
 pub(crate) const PACK_TRAILER: &[u8] = b"DBOIPACK";
-/// Trailer: u64 footer length + 8-byte magic.
-const TRAILER_LEN: u64 = 16;
+/// Trailer: 32-byte blake3(footer) + u64 footer length + 8-byte magic
+/// (D105 — the hash is what makes open-time footer trust cheap).
+const TRAILER_LEN: u64 = 48;
 const MEMBER_ROW: usize = 32 + 8 + 8;
 
 /// One member a caller intends to pack: identity + exact length,
@@ -103,6 +131,10 @@ pub(crate) struct PackedLoc {
     pub pack: Blake3,
     pub offset: u64,
     pub len: u64,
+    /// The member's obao4 tree window in the pack's outboard section
+    /// (D105); `obao_len == 0` for ≤ one-chunk-group members.
+    pub obao_offset: u64,
+    pub obao_len: u64,
 }
 
 /// An open blob: a loose file, or a bounded window of an immutable
@@ -223,13 +255,16 @@ impl Seek for Blob {
     }
 }
 
-/// Parse a pack file's footer into its member table.
+/// Parse a pack file's footer into its member table, authenticate it
+/// against the trailer hash, and derive the outboard section layout
+/// (D105).
 ///
 /// # Errors
-/// A malformed footer (wrong magic, truncated table, rows outside the
-/// file) — the pack is refused whole; members it held stay resolvable
-/// only if another copy exists.
-pub(crate) fn parse_footer(file: &mut File) -> Result<Vec<(Blake3, u64, u64)>, String> {
+/// A malformed footer — wrong magic, truncated table, a footer that
+/// fails its trailer hash, rows that aren't contiguous from zero, or a
+/// derived section that doesn't tile the file — refuses the pack
+/// whole; members it held stay resolvable only if another copy exists.
+pub(crate) fn parse_footer(file: &mut File) -> Result<Vec<MemberEntry>, String> {
     let total = file.seek(SeekFrom::End(0)).map_err(|e| e.to_string())?;
     if total < TRAILER_LEN {
         return Err("shorter than the trailer".into());
@@ -238,20 +273,26 @@ pub(crate) fn parse_footer(file: &mut File) -> Result<Vec<(Blake3, u64, u64)>, S
         -i64::try_from(TRAILER_LEN).expect("trailer fits i64"),
     ))
     .map_err(|e| e.to_string())?;
-    let mut trailer = [0u8; 16];
+    let mut trailer = [0u8; 48];
     file.read_exact(&mut trailer).map_err(|e| e.to_string())?;
-    if &trailer[8..] != PACK_TRAILER {
+    if &trailer[40..] != PACK_TRAILER {
         return Err("missing trailer magic".into());
     }
-    let footer_len = u64::from_le_bytes(trailer[..8].try_into().expect("eight bytes"));
-    let data_end = total
+    let footer_hash = Blake3(trailer[..32].try_into().expect("thirty-two bytes"));
+    let footer_len = u64::from_le_bytes(trailer[32..40].try_into().expect("eight bytes"));
+    let footer_start = total
         .checked_sub(TRAILER_LEN)
         .and_then(|v| v.checked_sub(footer_len))
         .ok_or("footer length exceeds the file")?;
-    file.seek(SeekFrom::Start(data_end))
+    file.seek(SeekFrom::Start(footer_start))
         .map_err(|e| e.to_string())?;
     let mut footer = vec![0u8; usize::try_from(footer_len).map_err(|e| e.to_string())?];
     file.read_exact(&mut footer).map_err(|e| e.to_string())?;
+    // D105: not one byte of the table is trusted before the footer
+    // matches the hash the trailer recorded.
+    if Blake3::compute(&footer) != footer_hash {
+        return Err("footer does not match its trailer hash".into());
+    }
     let table = footer
         .strip_prefix(PACK_MAGIC)
         .ok_or("missing footer magic")?;
@@ -259,24 +300,55 @@ pub(crate) fn parse_footer(file: &mut File) -> Result<Vec<(Blake3, u64, u64)>, S
         return Err("truncated member count".into());
     }
     let count = u32::from_le_bytes(table[..4].try_into().expect("four bytes")) as usize;
+    if count == 0 {
+        // put_pack refuses empty packs; an empty table is malformed.
+        return Err("empty member table".into());
+    }
     let rows = &table[4..];
     if rows.len() != count * MEMBER_ROW {
         return Err("member table length disagrees with the count".into());
     }
+    // Members are contiguous from zero (write order) — enforced so the
+    // derived section layout below cannot be fooled by a plausible
+    // offset, and so offsets stay ascending by construction.
     let mut members = Vec::with_capacity(count);
+    let mut expect = 0u64;
     for row in rows.chunks_exact(MEMBER_ROW) {
         let hash = Blake3(row[..32].try_into().expect("thirty-two bytes"));
         let offset = u64::from_le_bytes(row[32..40].try_into().expect("eight bytes"));
         let len = u64::from_le_bytes(row[40..48].try_into().expect("eight bytes"));
-        if offset.checked_add(len).is_none_or(|end| end > data_end) {
-            return Err("member row points outside the pack data".into());
+        if offset != expect {
+            return Err("member rows are not contiguous from zero".into());
         }
-        members.push((hash, offset, len));
+        expect = offset
+            .checked_add(len)
+            .ok_or("member length overflows the pack")?;
+        members.push(MemberEntry {
+            hash,
+            offset,
+            len,
+            obao_offset: 0,
+            obao_len: 0,
+        });
+    }
+    // Derive the outboard section (D105): trees in member order at the
+    // last member's end, each exactly outboard_size(len) bytes — and
+    // the whole thing must tile the gap up to the footer exactly.
+    let mut cursor = expect;
+    for member in &mut members {
+        member.obao_len = crate::obao::outboard_size(member.len);
+        member.obao_offset = cursor;
+        cursor = cursor
+            .checked_add(member.obao_len)
+            .ok_or("outboard section overflows the pack")?;
+    }
+    if cursor != footer_start {
+        return Err("outboard section does not tile the file".into());
     }
     Ok(members)
 }
 
-pub(crate) fn encode_footer(members: &[(Blake3, u64, u64)]) -> Vec<u8> {
+pub(crate) fn encode_footer(members: &[MemberEntry]) -> Vec<u8> {
     let mut footer = Vec::with_capacity(PACK_MAGIC.len() + 4 + members.len() * MEMBER_ROW);
     footer.extend_from_slice(PACK_MAGIC);
     footer.extend_from_slice(
@@ -284,10 +356,12 @@ pub(crate) fn encode_footer(members: &[(Blake3, u64, u64)]) -> Vec<u8> {
             .expect("member count fits u32")
             .to_le_bytes(),
     );
-    for (hash, offset, len) in members {
-        footer.extend_from_slice(&hash.0);
-        footer.extend_from_slice(&offset.to_le_bytes());
-        footer.extend_from_slice(&len.to_le_bytes());
+    // Rows carry (hash, offset, len) only — the outboard section is
+    // derived from them at parse, never described here (D105).
+    for member in members {
+        footer.extend_from_slice(&member.hash.0);
+        footer.extend_from_slice(&member.offset.to_le_bytes());
+        footer.extend_from_slice(&member.len.to_le_bytes());
     }
     footer
 }
@@ -320,13 +394,15 @@ impl Store {
                 fs::rename(&temp, &final_path).map_err(|e| StoreError::io(&final_path, e))?;
                 fsync_dir(parent)?;
                 let mut packs = self.packs.write().unwrap_or_else(|e| e.into_inner());
-                for (hash, offset, len) in table {
+                for entry in table {
                     packs.insert(
-                        hash,
+                        entry.hash,
                         PackedLoc {
                             pack: pack_hash,
-                            offset,
-                            len,
+                            offset: entry.offset,
+                            len: entry.len,
+                            obao_offset: entry.obao_offset,
+                            obao_len: entry.obao_len,
                         },
                     );
                 }
@@ -345,42 +421,103 @@ impl Store {
         members: &[PackMember],
         open: &mut impl FnMut(usize) -> io::Result<Box<dyn Read + 'r>>,
     ) -> Result<SealedPack, StoreError> {
+        // The outboard section spools to a staging file, not RAM: it's
+        // ~0.4% of the data, which is real memory at disc-image pack
+        // scale (D105).
+        let spool_path = self.staging_path("pack-obao");
+        let result = self.write_pack_spooled(temp, &spool_path, members, open);
+        let _ = fs::remove_file(&spool_path);
+        result
+    }
+
+    fn write_pack_spooled<'r>(
+        &self,
+        temp: &PathBuf,
+        spool_path: &PathBuf,
+        members: &[PackMember],
+        open: &mut impl FnMut(usize) -> io::Result<Box<dyn Read + 'r>>,
+    ) -> Result<SealedPack, StoreError> {
         let file = File::create(temp).map_err(|e| StoreError::io(temp, e))?;
         let mut out = HashingWriter {
             inner: io::BufWriter::new(file),
             hasher: blake3::Hasher::new(),
             written: 0,
         };
-        let mut table = Vec::with_capacity(members.len());
+        let mut spool = File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(spool_path)
+            .map_err(|e| StoreError::io(spool_path, e))?;
+        let mut rows: Vec<(Blake3, u64, u64)> = Vec::with_capacity(members.len());
         for (ix, member) in members.iter().enumerate() {
             let offset = out.written;
             let mut reader = open(ix).map_err(|e| StoreError::io(temp, e))?;
-            let mut member_hasher = blake3::Hasher::new();
-            let mut buf = vec![0u8; 64 * 1024];
-            let mut copied = 0u64;
-            loop {
-                let n = reader.read(&mut buf).map_err(|e| StoreError::io(temp, e))?;
-                if n == 0 {
-                    break;
-                }
-                member_hasher.update(&buf[..n]);
-                out.write_all(&buf[..n])
-                    .map_err(|e| StoreError::io(temp, e))?;
-                copied += n as u64;
-            }
-            let got = Blake3(*member_hasher.finalize().as_bytes());
-            if got != member.hash || copied != member.len {
+            // The member's obao tree is a byproduct of the verification
+            // this loop always did: the bao root IS the member's blake3
+            // (D52 golden), so one tee'd pass writes the bytes, proves
+            // the identity, and yields the outboard (D105).
+            let (root, sidecar) = crate::obao::compute(
+                TeeRead {
+                    inner: &mut reader,
+                    out: &mut out,
+                },
+                member.len,
+            )
+            .map_err(|e| match e {
+                crate::obao::ObaoError::Io(err) => StoreError::io(temp, err),
+                other => StoreError::Obao {
+                    path: temp.clone(),
+                    source: other,
+                },
+            })?;
+            // A stream longer than declared refuses the pack even when
+            // the first `len` bytes hash correctly — the declared
+            // identity is (hash, len) exactly.
+            let extra =
+                io::copy(&mut reader, &mut io::sink()).map_err(|e| StoreError::io(temp, e))?;
+            if root != member.hash || extra > 0 {
                 return Err(StoreError::PackMemberMismatch {
                     expected: member.hash,
-                    got,
+                    got: root,
                     expected_len: member.len,
-                    got_len: copied,
+                    got_len: member.len.saturating_add(extra),
                 });
             }
-            table.push((member.hash, offset, member.len));
+            spool
+                .write_all(&sidecar)
+                .map_err(|e| StoreError::io(spool_path, e))?;
+            rows.push((member.hash, offset, member.len));
         }
+        // Replay the spooled outboard section into the hashed stream,
+        // then derive each tree's window exactly as the parser will.
+        let section_start = out.written;
+        spool
+            .seek(SeekFrom::Start(0))
+            .map_err(|e| StoreError::io(spool_path, e))?;
+        io::copy(&mut io::BufReader::new(&mut spool), &mut out)
+            .map_err(|e| StoreError::io(temp, e))?;
+        let mut cursor = section_start;
+        let table: Vec<MemberEntry> = rows
+            .into_iter()
+            .map(|(hash, offset, len)| {
+                let obao_len = crate::obao::outboard_size(len);
+                let entry = MemberEntry {
+                    hash,
+                    offset,
+                    len,
+                    obao_offset: cursor,
+                    obao_len,
+                };
+                cursor += obao_len;
+                entry
+            })
+            .collect();
+        debug_assert_eq!(cursor, out.written, "section tiles by construction");
         let footer = encode_footer(&table);
         out.write_all(&footer)
+            .map_err(|e| StoreError::io(temp, e))?;
+        out.write_all(&Blake3::compute(&footer).0)
             .map_err(|e| StoreError::io(temp, e))?;
         out.write_all(&(footer.len() as u64).to_le_bytes())
             .map_err(|e| StoreError::io(temp, e))?;
@@ -455,13 +592,14 @@ impl Store {
     pub fn scrub_pack(&self, pack: &Blake3) -> Result<PackScrub, StoreError> {
         let path = self.pack_path(pack);
         let mut file = File::open(&path).map_err(|e| StoreError::io(&path, e))?;
-        let mut members = parse_footer(&mut file).map_err(|detail| StoreError::PackFooter {
+        let members = parse_footer(&mut file).map_err(|detail| StoreError::PackFooter {
             path: path.clone(),
             detail,
         })?;
-        // Coverage order = write order = read order; drive per-member
-        // hashers as the single forward pass crosses their spans.
-        members.sort_unstable_by_key(|(_, offset, _)| *offset);
+        // Coverage order = write order = read order — the parser
+        // enforces contiguity from zero, so entries arrive ascending;
+        // drive per-member hashers as the single forward pass crosses
+        // their spans.
         file.seek(SeekFrom::Start(0))
             .map_err(|e| StoreError::io(&path, e))?;
         let mut whole = blake3::Hasher::new();
@@ -479,12 +617,12 @@ impl Store {
             }
             whole.update(&buf[..n]);
             let (chunk_start, chunk_end) = (pos, pos + n as u64);
-            // Fan the buffer out over the members it overlaps. Footer and
-            // trailer bytes past the last member fall through to `whole`
-            // only. At most one member straddles any buffer boundary.
+            // Fan the buffer out over the members it overlaps. Outboard-
+            // section, footer, and trailer bytes past the last member
+            // fall through to `whole` only. At most one member straddles
+            // any buffer boundary.
             while cur < members.len() {
-                let (_, offset, len) = members[cur];
-                let (mstart, mend) = (offset, offset + len);
+                let (mstart, mend) = (members[cur].offset, members[cur].offset + members[cur].len);
                 if mstart >= chunk_end {
                     break;
                 }
@@ -506,14 +644,14 @@ impl Store {
         let members = members
             .into_iter()
             .zip(hashers)
-            .map(|((hash, _, len), hasher)| {
+            .map(|(member, hasher)| {
                 let aliases = hasher.finalize();
                 PackMemberScrub {
-                    hash,
-                    len,
+                    hash: member.hash,
+                    len: member.len,
                     // Trusted for back-fill on its own merits: the slice's
                     // own bytes hashed to its identity.
-                    aliases: (aliases.blake3 == hash).then_some(aliases),
+                    aliases: (aliases.blake3 == member.hash).then_some(aliases),
                 }
             })
             .collect();
@@ -558,15 +696,15 @@ impl Store {
                 detail,
             })?
         };
-        let mut survivors: Vec<(Blake3, u64, u64)> = Vec::new();
+        let mut survivors: Vec<MemberEntry> = Vec::new();
         let mut dropped: Vec<Blake3> = Vec::new();
         let mut bytes_freed = 0u64;
-        for (hash, offset, len) in &members {
-            if drop.contains(hash) {
-                dropped.push(*hash);
-                bytes_freed += *len;
+        for member in &members {
+            if drop.contains(&member.hash) {
+                dropped.push(member.hash);
+                bytes_freed += member.len;
             } else {
-                survivors.push((*hash, *offset, *len));
+                survivors.push(*member);
             }
         }
         // Nothing to drop (the caller's set named no member of this
@@ -582,8 +720,8 @@ impl Store {
         if survivors.is_empty() {
             {
                 let mut map = self.packs.write().unwrap_or_else(|e| e.into_inner());
-                for (hash, _, _) in &members {
-                    map.remove(hash);
+                for member in &members {
+                    map.remove(&member.hash);
                 }
             }
             match fs::remove_file(&old_path) {
@@ -597,21 +735,21 @@ impl Store {
                 bytes_freed,
             });
         }
-        // Rewrite the survivors (coverage order) into a fresh pack,
-        // streaming each straight out of the old pack's window — which
-        // re-verifies every survivor against its hash as it lands.
-        survivors.sort_unstable_by_key(|(_, offset, _)| *offset);
+        // Rewrite the survivors (coverage order — parse guarantees
+        // ascending) into a fresh pack, streaming each straight out of
+        // the old pack's window — which re-verifies every survivor
+        // against its hash and regrows its outboard tree as it lands.
         let pack_members: Vec<PackMember> = survivors
             .iter()
-            .map(|(hash, _, len)| PackMember {
-                hash: *hash,
-                len: *len,
+            .map(|m| PackMember {
+                hash: m.hash,
+                len: m.len,
             })
             .collect();
         let old = File::open(&old_path).map_err(|e| StoreError::io(&old_path, e))?;
         let new_hash = self.put_pack(&pack_members, |ix| {
-            let (_, offset, len) = survivors[ix];
-            Ok(Box::new(Blob::packed(old.try_clone()?, offset, len)?))
+            let m = survivors[ix];
+            Ok(Box::new(Blob::packed(old.try_clone()?, m.offset, m.len)?))
         })?;
         // put_pack remapped the survivors onto the new pack. Forget the
         // dropped members and unlink the superseded file.
@@ -676,13 +814,15 @@ impl Store {
                 };
                 match parse_footer(&mut file) {
                     Ok(members) => {
-                        for (hash, offset, len) in members {
+                        for member in members {
                             map.insert(
-                                hash,
+                                member.hash,
                                 PackedLoc {
                                     pack: pack_hash,
-                                    offset,
-                                    len,
+                                    offset: member.offset,
+                                    len: member.len,
+                                    obao_offset: member.obao_offset,
+                                    obao_len: member.obao_len,
                                 },
                             );
                         }
@@ -692,6 +832,21 @@ impl Store {
             }
         }
         (map, bad)
+    }
+}
+
+/// Reads from `inner`, mirroring every byte into `out` — how the pack
+/// write stores, hashes, and grows a member's outboard in one pass.
+struct TeeRead<'a, R: Read, W: Write> {
+    inner: R,
+    out: &'a mut W,
+}
+
+impl<R: Read, W: Write> Read for TeeRead<'_, R, W> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.out.write_all(&buf[..n])?;
+        Ok(n)
     }
 }
 

@@ -5,10 +5,10 @@
 //! Format: headerless pre-order obao4 — 16 KiB chunk groups
 //! (`BlockSize(4)`), hash pairs only, blob length implied by the data
 //! file. This is byte-identical to what iroh-blobs writes, so the M6 p2p
-//! layer serves these sidecars unchanged (D2/D14 alignment). PENDING
-//! RATIFICATION: the sidecar format is a decades-scale at-rest commitment
-//! like the store layout itself; flagged for a decision entry before the
-//! M2 freeze is declared.
+//! layer serves these sidecars unchanged (D2/D14 alignment). Ratified as
+//! D52 — a decades-scale at-rest commitment like the store layout
+//! itself, and since D105 also frozen INTO the pack format (packs carry
+//! member trees in their outboard section).
 //!
 //! Outboards are self-authenticating against the blob hash (the file
 //! name): a corrupt, truncated, or foreign sidecar makes validation fail —
@@ -319,8 +319,9 @@ mod tests {
         assert!(matches!(err, ObaoError::SidecarSize { .. }));
     }
 
-    /// FORMAT COMMITMENT (pending ratification): headerless pre-order
-    /// obao4. If this golden hash moves, the sidecar format changed.
+    /// FORMAT COMMITMENT (D52): headerless pre-order obao4. If this
+    /// golden hash moves, the sidecar format changed — and with it the
+    /// D105 pack outboard section.
     #[test]
     fn golden_sidecar() {
         let data = data_of(64 * 1024);

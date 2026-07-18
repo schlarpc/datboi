@@ -651,16 +651,39 @@ impl Store {
     /// Load a blob's outboard sidecar. `Ok(Some(vec![]))` means the blob
     /// is resident and small enough (≤ one chunk group) that its outboard
     /// is empty; `Ok(None)` means no sidecar has been computed. The
-    /// sidecar file is consulted FIRST: outboards must survive eviction
-    /// of the literal (D49 rule 1), so this works with no blob on disk.
-    /// (For an evicted small blob the caller decides emptiness from the
-    /// indexed size — the store can't know the length of absent bytes.)
+    /// loose sidecar file is consulted FIRST (outboards must survive
+    /// eviction of the literal, D49 rule 1, so this works with no blob
+    /// on disk); packed members fall through to their pack's outboard
+    /// section (D105) — mirroring `get`'s loose-wins order. (For an
+    /// evicted small blob the caller decides emptiness from the indexed
+    /// size — the store can't know the length of absent bytes.)
     pub fn get_obao(&self, ns: Namespace, hash: &Blake3) -> Result<Option<Vec<u8>>, StoreError> {
         let path = self.obao_path(ns, hash);
         match fs::read(&path) {
             Ok(bytes) => return Ok(Some(bytes)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(StoreError::io(&path, e)),
+        }
+        if ns == Namespace::Data
+            && let Some(loc) = self.packed_loc(hash)
+        {
+            // The tree rides the pack (D105). A zero-length window IS
+            // the empty outboard — small members store nothing.
+            if loc.obao_len == 0 {
+                return Ok(Some(Vec::new()));
+            }
+            let pack_path = self.pack_path(&loc.pack);
+            let file = File::open(&pack_path).map_err(|e| StoreError::io(&pack_path, e))?;
+            let mut window = crate::pack::Blob::packed(file, loc.obao_offset, loc.obao_len)
+                .map_err(|e| StoreError::io(&pack_path, e))?;
+            let mut bytes = Vec::with_capacity(
+                usize::try_from(loc.obao_len)
+                    .map_err(|e| StoreError::io(&pack_path, io::Error::other(e)))?,
+            );
+            window
+                .read_to_end(&mut bytes)
+                .map_err(|e| StoreError::io(&pack_path, e))?;
+            return Ok(Some(bytes));
         }
         match self.len(ns, hash)? {
             Some(len) if crate::obao::outboard_size(len) == 0 => Ok(Some(Vec::new())),
@@ -751,11 +774,12 @@ impl Store {
         Ok(true)
     }
 
-    /// Remove a blob COMPLETELY: bytes and obao sidecar (D73 orphan
-    /// deletion). Unlike [`Store::evict_literal`] — which keeps the
-    /// sidecar so recipe-served range reads stay verifiable (D49) —
-    /// an orphan by definition has no recipe to serve it, so the
-    /// sidecar is dead weight. Returns whether bytes existed.
+    /// Remove a blob's LOOSE files completely: bytes and obao sidecar.
+    /// Two legitimate callers: D73 orphan deletion (an orphan has no
+    /// recipe to serve, so unlike [`Store::evict_literal`] the sidecar
+    /// is dead weight, not a D49 keeper) and pack consolidation (D105:
+    /// the pack carries the member's bytes AND tree, so both loose
+    /// files are redundant copies). Returns whether bytes existed.
     pub fn remove_blob(&self, ns: Namespace, hash: &Blake3) -> Result<bool, StoreError> {
         let obao = self.obao_path(ns, hash);
         match fs::remove_file(&obao) {
