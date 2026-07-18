@@ -120,10 +120,16 @@ rustix = { version = "1", features = ["fs", "process"] }
 # nfsserve lineage). Serves mount+portmap+nfs on one TCP port; no
 # kernel export, no root.
 nfsserve = "0.11"
-# Trait bounds only (`T: Serialize`) outside the contract crate: D69
+# The recon wire envelope (D103): request enum + response header are
+# postcard messages around the raw coded-symbol stream. Already in-tree
+# via iroh, which frames its own protocol envelopes the same way.
+postcard = { version = "1.1", default-features = false, features = ["use-std"] }
+# Trait bounds only (`T: Serialize`) outside the contract crates: D69
 # scopes the derive ban to identity-bearing encodings (CAS canonical
-# bytes, D18) — crates/datboi-api is the ONE crate that may enable the
-# derive feature.
+# bytes, D18). Derives are legal in crates/datboi-api (the /v1
+# contract) and in crates/datboi-p2p's envelope module (versioned wire
+# envelopes — the D103 refinement); coded-symbol records and CAS
+# encodings stay hand-rolled everywhere.
 serde = "1"
 # Value construction (JSONB column text, CLI --json output) and the
 # contract crate's spec emission. Same D69 scoping as serde: derives

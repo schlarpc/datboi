@@ -33,6 +33,12 @@ positioned-io = { version = "0.3", default-features = false }
 # The riblt coded-symbol checksum (D100): SipHash-2-4 under fixed protocol
 # keys, matching the reference implementation's checksum construction.
 siphasher = "1"
+# The recon wire envelope (D103): request enum + response header are
+# length-prefixed postcard, scoped to `recon::envelope` — the ONE place
+# in this crate serde derives are legal (D69 refinement; identity bytes
+# and coded-symbol records stay hand-rolled).
+serde = { workspace = true, features = ["derive"] }
+postcard.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

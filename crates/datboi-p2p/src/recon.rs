@@ -4,13 +4,20 @@
 //! Roles are asymmetric by design (the privacy ruling): the RESPONDER
 //! streams rateless coded symbols ([`crate::riblt`]) over its scope's
 //! set; the INITIATOR decodes against a local prior that never crosses
-//! the wire, and reveals only the 1-byte scope request plus a stop
-//! signal. The answering party is the consenting party.
+//! the wire, and reveals only the scope request plus a stop signal.
+//! The answering party is the consenting party.
 //!
-//! Wire (fixed binary, D19 register):
-//! - initiator → responder: `[scope: u8]`, later `[0u8]` = stop;
-//! - responder → initiator: `[set_size: u64 LE]` then 48-byte coded
-//!   symbols (batched) until stop, stream closure, or the drain cap.
+//! Wire (D103): the ENVELOPES are length-prefixed postcard
+//! ([`envelope`]); the PAYLOAD stays a raw record stream (D100
+//! register):
+//! - initiator → responder: one [`envelope::Scope`] request, later a
+//!   raw `[0u8]` = stop;
+//! - responder → initiator: an [`envelope::Response`] header —
+//!   `Accepted { set_size, frame_len }` or `Refused { code }` — then
+//!   48-byte coded symbols (batched) until stop, stream closure, or
+//!   the drain cap. Errors are HEADER-TIME ONLY; mid-stream failure
+//!   stays a QUIC reset (D103: in-band trailers would destroy the
+//!   every-record-parses property).
 //!
 //! Two scopes (D100 + D102): `AffineRecipes` — the meta-blob hashes of
 //! non-Failed builtin `assemble@1` routes ("reconcile the plans, fetch
@@ -30,8 +37,15 @@ use iroh::protocol::{AcceptError, ProtocolHandler};
 
 use crate::riblt::{self, CODED_SYMBOL_LEN, CodedSymbol, SetSnapshot, Symbol};
 
+pub mod envelope;
+
+pub use envelope::Scope;
+
 /// The recon ALPN. Versioned: an algorithm or wire change is a new ALPN,
 /// not an in-band negotiation (D100 keeps the codec swappable this way).
+/// Still `/1` under the D103 wire (the same-day amendment): nothing
+/// external ever spoke the original format, so the postcard-envelope
+/// wire claims the name; the NEXT incompatible change is `/2`.
 pub const ALPN: &[u8] = b"datboi/recon/1";
 
 /// Responder-side drain cap: enough symbols to decode a symmetric
@@ -50,31 +64,6 @@ const FIRST_BLOCK: usize = 1024;
 /// symbols while keeping a full drain to `MAX_SYMBOLS` at O(log) set
 /// scans (doubling from `FIRST_BLOCK`, then ~8 max-size blocks).
 const MAX_BLOCK: usize = 1 << 17;
-
-/// What a responder will reconcile (the wire's first byte).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Scope {
-    /// Meta-blob hashes of non-Failed affine builtin `assemble@1`
-    /// routes ([`Db::affine_recipe_objects`]) — the D100
-    /// transfer-optimization plane.
-    AffineRecipes = 0,
-    /// Resident Data-namespace blobs with no non-Failed producing
-    /// route ([`Db::root_blobs`]) — the D102 completeness plane. With
-    /// the plans this covers the holdings by construction: every blob
-    /// is underived (here) or derived (reachable from a plan).
-    RootBlobs = 1,
-}
-
-impl Scope {
-    fn from_byte(b: u8) -> Option<Self> {
-        match b {
-            0 => Some(Scope::AffineRecipes),
-            1 => Some(Scope::RootBlobs),
-            _ => None,
-        }
-    }
-}
 
 /// The responder: streams a scope's coded-symbol sequence until the
 /// initiator stops it, encoding off a sqlite SNAPSHOT rather than a
@@ -136,8 +125,8 @@ impl SetSnapshot<32> for DbSnapshot<'_> {
 
 /// The blocking half of one recon stream (D100 amendment): open the
 /// dedicated read-only connection, pin one read transaction, and send
-/// the size header + exponentially growing coded blocks through the
-/// channel until stop/cap/hang-up. A failed send means the async side
+/// the `Accepted` header + exponentially growing coded blocks through
+/// the channel until stop/cap/hang-up. A failed send means the async side
 /// hung up (initiator stop or wire death) — a normal exit. Returns
 /// (advertised set size, symbols sent).
 fn stream_scope(
@@ -156,7 +145,11 @@ fn stream_scope(
             Scope::AffineRecipes => db.affine_recipe_object_count()?,
             Scope::RootBlobs => db.root_blob_count()?,
         };
-        if tx.blocking_send(set_size.to_le_bytes().to_vec()).is_err() {
+        let header = envelope::encode(&envelope::Response::Accepted {
+            set_size,
+            frame_len: scope.frame_len(),
+        });
+        if tx.blocking_send(header).is_err() {
             return Ok((set_size, 0));
         }
         let mut sent = 0u64;
@@ -185,13 +178,32 @@ fn stream_scope(
 impl ProtocolHandler for ReconProvider {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         while let Ok((mut send, mut recv)) = connection.accept_bi().await {
-            let mut scope_byte = [0u8; 1];
-            if recv.read_exact(&mut scope_byte).await.is_err() {
+            // Envelope read (D103): `[len u16 LE][postcard Scope]`. A
+            // parse failure IS "I don't speak that scope" — a newer
+            // peer's variant arrives as exactly an unknown discriminant
+            // — and gets a Refused header on THIS stream; the
+            // connection stays up for the next request.
+            let mut len_buf = [0u8; 2];
+            if recv.read_exact(&mut len_buf).await.is_err() {
                 continue;
             }
-            let Some(scope) = Scope::from_byte(scope_byte[0]) else {
-                // Unknown scope: refuse the stream, keep the connection
-                // (a newer peer probing an older responder).
+            let len = usize::from(u16::from_le_bytes(len_buf));
+            let scope = if len <= envelope::MAX_ENVELOPE_LEN {
+                let mut body = vec![0u8; len];
+                match recv.read_exact(&mut body).await {
+                    Ok(()) => envelope::decode::<Scope>(&body).ok(),
+                    Err(_) => continue, // stream died mid-request
+                }
+            } else {
+                None // a length past the cap is no scope of ours
+            };
+            let Some(scope) = scope else {
+                let refusal = envelope::encode(&envelope::Response::Refused {
+                    code: envelope::REFUSED_UNKNOWN_SCOPE,
+                });
+                if send.write_all(&refusal).await.is_ok() {
+                    let _ = send.finish();
+                }
                 continue;
             };
 
@@ -261,6 +273,10 @@ pub struct ReconReport {
     pub local_set: u64,
     /// Coded symbols consumed before the decode completed.
     pub symbols_received: u64,
+    /// Envelope bytes on the wire (request + response header, length
+    /// prefixes included) — counted so [`Self::wire_bytes`] stays
+    /// honest as envelopes grow arguments.
+    pub envelope_bytes: u64,
     /// Hashes the responder has that we lack (what to fetch).
     pub remote_only: Vec<Blake3>,
     /// Hashes we have that the responder lacks (never leaves this
@@ -269,33 +285,59 @@ pub struct ReconReport {
 }
 
 impl ReconReport {
-    /// Wire bytes spent on the sketch (header + symbols): the cost the
-    /// savings telemetry compares against shipping the plain set.
+    /// Wire bytes spent on the sketch (envelopes + symbols): the cost
+    /// the savings telemetry compares against shipping the plain set.
     #[must_use]
     pub fn wire_bytes(&self) -> u64 {
-        8 + self.symbols_received * CODED_SYMBOL_LEN as u64
+        self.envelope_bytes + self.symbols_received * CODED_SYMBOL_LEN as u64
     }
 }
 
 /// Reconcile `local` against a peer's scope over an open recon
 /// connection: request the scope, feed the decoder our prior, consume
 /// coded symbols until the symmetric difference decodes, then stop the
-/// responder. Errors on stream failure or on blowing the convergence
-/// budget (a responder that can't be decoded — malformed stream or a
-/// diff beyond the cap).
-pub async fn reconcile(
-    conn: &Connection,
-    scope: Scope,
-    local: &[Blake3],
-) -> Result<ReconReport> {
+/// responder. Errors on stream failure, on a `Refused` header (the
+/// peer doesn't speak the scope — distinguishable from a dead wire,
+/// D103), or on blowing the convergence budget (a responder that
+/// can't be decoded — malformed stream or a diff beyond the cap).
+pub async fn reconcile(conn: &Connection, scope: Scope, local: &[Blake3]) -> Result<ReconReport> {
     let (mut send, mut recv) = conn.open_bi().await.context("open recon stream")?;
-    send.write_all(&[scope as u8])
-        .await
-        .context("send recon scope")?;
+    let request = envelope::encode(&scope);
+    send.write_all(&request).await.context("send recon scope")?;
 
-    let mut header = [0u8; 8];
-    recv.read_exact(&mut header).await.context("recon header")?;
-    let remote_set = u64::from_le_bytes(header);
+    let mut len_buf = [0u8; 2];
+    recv.read_exact(&mut len_buf)
+        .await
+        .context("recon header")?;
+    let header_len = usize::from(u16::from_le_bytes(len_buf));
+    if header_len > envelope::MAX_ENVELOPE_LEN {
+        bail!(
+            "recon response header claims {header_len} bytes (cap {})",
+            envelope::MAX_ENVELOPE_LEN
+        );
+    }
+    let mut header = vec![0u8; header_len];
+    recv.read_exact(&mut header)
+        .await
+        .context("recon header body")?;
+    let (remote_set, frame_len) = match envelope::decode::<envelope::Response>(&header)? {
+        envelope::Response::Accepted {
+            set_size,
+            frame_len,
+        } => (set_size, frame_len),
+        envelope::Response::Refused { code } => {
+            bail!("peer refused recon scope {scope:?} (code {code})")
+        }
+    };
+    // One width per stream is a protocol constant of the scope (D100
+    // amendment); a mismatch means we don't actually speak this scope.
+    if frame_len as usize != CODED_SYMBOL_LEN {
+        bail!(
+            "peer serves {frame_len}-byte frames for {scope:?}; \
+             this build speaks {CODED_SYMBOL_LEN}"
+        );
+    }
+    let envelope_bytes = (request.len() + 2 + header_len) as u64;
     let local_set = local.len() as u64;
 
     let mut dec = riblt::Decoder::new(local.iter().map(|h| h.0));
@@ -337,6 +379,7 @@ pub async fn reconcile(
         remote_set,
         local_set,
         symbols_received,
+        envelope_bytes,
         remote_only,
         local_only,
     };
@@ -463,7 +506,11 @@ mod tests {
         reader.for_each_affine_recipe_object(&mut |h| pass2.push(h))?;
         reader.cache().execute_batch("COMMIT")?;
         assert_eq!(count, 10);
-        assert_eq!(pass1.len(), 10, "mid-stream write invisible to the held snapshot");
+        assert_eq!(
+            pass1.len(),
+            10,
+            "mid-stream write invisible to the held snapshot"
+        );
         assert_eq!(pass1, pass2, "every pass sees the identical set");
         reader.cache().execute_batch("BEGIN")?;
         let after = reader.affine_recipe_object_count()?;
@@ -496,6 +543,56 @@ mod tests {
         assert_eq!(report.symbols_received, 1);
         assert!(report.remote_only.is_empty());
         assert!(report.local_only.is_empty());
+
+        router.shutdown().await?;
+        Ok(())
+    }
+
+    /// D103: an unknown scope (a newer peer's discriminant) is REFUSED
+    /// on its stream with a parseable header — distinguishable from a
+    /// dead wire — and the connection survives for a follow-up request
+    /// the responder does speak.
+    #[tokio::test]
+    async fn unknown_scope_is_refused_and_the_connection_survives() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut db = Db::open(dir.path())?;
+        let set: Vec<Blake3> = (0..10).map(|i| fake_hash("recipe", i)).collect();
+        for (i, hash) in set.iter().enumerate() {
+            insert_affine_recipe(&mut db, hash, i as u64)?;
+        }
+        let db = Arc::new(Mutex::new(db));
+
+        let endpoint = Endpoint::bind(presets::N0).await?;
+        endpoint.online().await;
+        let addr = endpoint.addr();
+        let router = Router::builder(endpoint)
+            .accept(ALPN, ReconProvider::new(db))
+            .spawn();
+
+        let client = Endpoint::bind(presets::N0).await?;
+        let conn = client.connect(addr, ALPN).await?;
+
+        // A request from the future: valid envelope framing, unknown
+        // postcard discriminant (varint 99).
+        let (mut send, mut recv) = conn.open_bi().await?;
+        send.write_all(&[1, 0, 99]).await?;
+        let mut len_buf = [0u8; 2];
+        recv.read_exact(&mut len_buf).await?;
+        let mut body = vec![0u8; usize::from(u16::from_le_bytes(len_buf))];
+        recv.read_exact(&mut body).await?;
+        assert_eq!(
+            envelope::decode::<envelope::Response>(&body)?,
+            envelope::Response::Refused {
+                code: envelope::REFUSED_UNKNOWN_SCOPE
+            },
+            "a refusal names itself; a dead wire could not"
+        );
+        drop(send);
+
+        // The same connection still serves a scope we both speak.
+        let report = reconcile(&conn, Scope::AffineRecipes, &set).await?;
+        assert_eq!(report.remote_set, 10);
+        assert!(report.remote_only.is_empty());
 
         router.shutdown().await?;
         Ok(())

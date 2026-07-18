@@ -167,7 +167,7 @@ pieces are a *local* closure walk (recipe inputs ∉ my grounded set,
 recursing through usable local routes). Reconcile the plans; the parts
 follow by local math. The fetched diff is still the D91 pieces.
 
-Two scopes behind the 1-byte tag (the completeness ruling, **D102**):
+Two scopes in the request registry (the completeness ruling, **D102**):
 `AffineRecipes` (0) is the transfer-optimization plane above;
 `RootBlobs` (1) is the completeness plane — the responder's resident
 Data-namespace blobs with no non-Failed producing route, the
@@ -186,24 +186,25 @@ both; wants mode needs neither widened.
   prior that never crosses the wire and sends a stop byte when decoded.
   Privacy is this asymmetry: the answering party is the consenting party;
   the initiator reveals only the scope request and a diff-size bound.
-- **Wire** (`datboi/recon/1`, live): request = 1-byte scope tag;
-  response = `u64 LE` responder set size, then 48-byte coded symbols
-  (32 XOR-sum ‖ 8 SipHash-sum LE ‖ 8 count i64 LE) in batches,
-  stop-checked, capped responder-side.
-- **Wire v2** (`datboi/recon/2`, **D103 — designed, not built**):
-  postcard envelopes around the same raw frame stream. Request = a
-  length-prefixed postcard enum (one variant per scope, payloads for
-  parameterized scopes — "blobs in dat X"); response = a
-  length-prefixed postcard header (`Accepted {set_size, frame_len}` |
-  `Refused {code}`, so "unknown scope" is distinguishable from a dead
-  wire), then the coded-symbol stream unchanged. Errors are header-time
-  only; mid-stream stays a QUIC reset. Ships with the D102 scopes in
-  one rev; recon/1 is deleted when it lands. The scope registry is the
-  request enum itself: append-only, each variant declaring its argument
-  shape and symbol width (per-scope width, one width per stream —
-  D100 amendment), and every scope is ONE set definition evaluated on
-  both databases (responder advertises, initiator priors — the
-  symmetric-prior convention, D103).
+- **Wire** (`datboi/recon/1`, **D103**, live — the postcard-envelope
+  wire kept the `/1` name because nothing external ever spoke the
+  original one-byte format, same-day amendment): envelopes are
+  length-prefixed postcard (`datboi_p2p::recon::envelope`, the one
+  place in the crate serde derives are legal — the D69 refinement);
+  the payload stays a raw record stream. Request = a postcard enum
+  (one variant per scope, payloads for parameterized scopes — "blobs
+  in dat X"); response = a postcard header
+  (`Accepted {set_size, frame_len}` | `Refused {code}`, so "unknown
+  scope" is distinguishable from a dead wire), then 48-byte coded
+  symbols (32 XOR-sum ‖ 8 SipHash-sum LE ‖ 8 count i64 LE) in
+  batches, stop-checked, capped responder-side. Errors are header-time
+  only; mid-stream stays a QUIC reset. The scope registry is the
+  request enum itself: append-only, wire-byte-pinned by goldens, each
+  variant declaring its argument shape and symbol width (per-scope
+  width, one width per stream — D100 amendment), and every scope is
+  ONE set definition evaluated on both databases (responder
+  advertises, initiator priors — the symmetric-prior convention,
+  D103).
 - **Sync flow** (`datboi_p2p::sync`): reconcile recipes → fetch missing
   recipe blobs over the blobs ALPN (CasProvider serves Meta too; bytes
   verify against their own hash) → `index_recipe` as `source=Peer`, born
@@ -302,6 +303,12 @@ mirror-invisibility gap — mirror mode reconciles both scopes and the
 holdings are covered by construction; D34 holdings channels remain owed
 as the naming layer for gap-fill and curated subscription, on the swarm
 arc with the recon ACL.
+**Envelope wire ruled AND BUILT 2026-07-17 as D103** (with the same-day
+amendment keeping the `datboi/recon/1` name): the postcard request enum
+(the scope registry) and response header replaced the one-byte tag and
+bare size — unknown scopes now refuse with a code instead of a silent
+hang-up, and parameterized scopes have somewhere to put their
+arguments. The coded-symbol stream and its goldens are untouched.
 
 ## Use-case coverage audit (2026-07-17, pre-ship exploration)
 

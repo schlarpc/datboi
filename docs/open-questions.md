@@ -258,26 +258,23 @@ Named so they aren't rediscovered as bugs; not slated for change.
 
 ## Next session (pick up here)
 
-**Position as of 2026-07-17 — D103 RECON/2 RULED (designed, NOT
-built)**: the scope-API design conversation landed as three rulings.
-(1) **D100 amendment, BUILT**: riblt is const-generic over symbol
-width (per-scope width is a protocol constant) — 32 stays the only
-wire width and only golden-pinned instantiation, wire bytes provably
-unchanged. New-width rules: own goldens first, and the symbol must be
-a collision-free identity. (2) **D103, code NOT started**:
-`datboi/recon/2` — postcard request enum (the enum IS the closed
-scope registry, carrying per-scope args + width) and postcard
-response header (`Accepted {set_size, frame_len}` | `Refused {code}`),
-then the raw coded-symbol stream untouched; errors header-time only,
-mid-stream stays a QUIC reset; encoding-register rule stated
-(envelopes = postcard, record streams = raw, identity bytes =
-hand-canonical); D69 refined (serde derives OK for wire envelopes in
-datboi-p2p, scoped to the envelope module); ships WITH the D102
-scopes in one rev, recon/1 deleted on landing. **Pick up here**:
-BUILD recon/2 per D103 (envelope module, Refused codes, port both
-scopes + e2e suite, delete recon/1); then the swarm tiers with the
-recon ACL (flagged above); the D34 channel design (naming layer:
-entry→blake3 gap-fill, curated-view discovery,
+**Position as of 2026-07-17 (late) — D103 BUILT**: the recon envelope
+wire is live, and per the same-day amendment it kept the
+`datboi/recon/1` name (nothing external ever spoke the one-byte
+format; version numbers are for deployed populations). What landed:
+`recon::envelope` — the postcard request enum that IS the closed
+scope registry (append-only, wire-byte-pinned by goldens, per-scope
+`frame_len`) and the `Accepted {set_size, frame_len}` |
+`Refused {code}` response header (codes are a bare u16 so newer codes
+display instead of failing to parse; `REFUSED_UNKNOWN_SCOPE = 1`) —
+around the untouched raw coded-symbol stream; serde derives scoped to
+that one module (the D69 refinement); both scopes ported; e2e suite
+extended with a refusal test (unknown discriminant → parseable
+refusal, connection survives); `ReconReport` counts envelope bytes so
+the savings telemetry stays honest. **Pick up here**: the swarm tiers
+with the recon ACL (flagged above — the envelope now has a place for
+an auth argument if the ACL design wants one); the D34 channel design
+(naming layer: entry→blake3 gap-fill, curated-view discovery,
 `available-from-peer(X)`); smaller remainders in Open (minor) above.
 
 ## Resolved
