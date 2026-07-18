@@ -25,6 +25,7 @@ const COMPONENT_CRATES: &[&str] = &[
     "datboi-xf-reference",
     "datboi-xf-reference-stream",
     "datboi-ex-unrar",
+    "datboi-ex-7z",
 ];
 
 fn main() {

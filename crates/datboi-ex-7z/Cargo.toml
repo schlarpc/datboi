@@ -1,0 +1,40 @@
+[package]
+name = "datboi-ex-7z"
+description = "7z extractor component for the datboi:extractor@1 world (D110): 7-Zip's own public-domain ANSI-C decoder inside the wasm sandbox with a custom STREAMING folder decode — seekable archive stream in, member metadata + byte streams out, dictionary-bounded memory, zero imports"
+version = "0.1.0"
+edition = "2024"
+authors = ["Chaz Schlarp"]
+# The vendored decoder (the 7-Zip source's C/ tree, LZMA SDK lineage) is
+# public domain; the datboi glue and guest are MIT like the rest of the
+# tree. No unrar-style restriction applies to this lane.
+license = "MIT"
+repository = "https://github.com/schlarpc/datboi"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Guest bindings only for the wasm component; the host-native build (unit
+# tests, cargo metadata) skips both the bindings and the C (build.rs is a
+# no-op off wasm32).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+datboi-guest-extractor = { path = "../datboi-guest-extractor" }
+
+# Standalone workspace ON PURPOSE (D54): each component builds against its
+# own lockfile so sibling crates can't perturb its bytes through shared
+# dependency resolution — component identity must be reproducible from this
+# directory alone (plus ../wit, ../datboi-guest-extractor and the pinned wasi toolchain).
+[workspace]
+
+[lints.rust]
+# The guest is inherently unsafe (FFI into the C decoder + callback
+# trampoline); scoped `#[allow(unsafe_code)]` on the component module.
+unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+# Content-addressed artifact: favor small, stable output.
+opt-level = "s"
+lto = true
+strip = true

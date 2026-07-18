@@ -82,15 +82,16 @@
         nixpkgs.lib.cleanSourceWith {
           src = root;
           filter = path: type:
-            (builtins.match ".*\\.(xml|wit|wasm|deflate|bin|rar)$" path != null)
+            (builtins.match ".*\\.(xml|wit|wasm|deflate|bin|rar|7z)$" path != null)
             # WIT package dependencies are symlinks named after the dep
             # package (wit/<lane>/v<n>/deps/streams → ../../../streams/v1,
             # D89) — extensionless, so the .wit match above misses them.
             || (builtins.match ".*/deps/[^/]+$" path != null)
             # ex-unrar vendors C++ (.cpp/.hpp) plus force-included compat
             # headers (.h) and the license/patch provenance (.txt); the
-            # build.rs cross-compiles them (D58).
-            || (builtins.match ".*\\.(cpp|hpp|h|txt|def|rc|vcxproj)$" path != null)
+            # build.rs cross-compiles them (D58). ex-7z's glue is plain
+            # C (.c) on the same lane (D110).
+            || (builtins.match ".*\\.(c|cpp|hpp|h|txt|def|rc|vcxproj)$" path != null)
             # The checked-in /v1 contract spec (D69): datboi-api's
             # staleness test include_str!s it, so hermetic builds need
             # it in the source.
@@ -141,6 +142,7 @@
         "datboi-xf-reference"
         "datboi-xf-reference-stream"
         "datboi-ex-unrar"
+        "datboi-ex-7z"
       ];
 
       # ---- C-to-wasm toolchain lane (D58) ----
@@ -163,9 +165,11 @@
           libcxx = wasi.llvmPackages.libcxx;
           libc = wasi.wasilibc;
           builtins = wasi.llvmPackages.compiler-rt;
-          # The exact env the ex-* build.rs reads.
+          # The exact env the ex-* build.rs reads (CXX drives ex-unrar's
+          # C++, CC drives ex-7z's plain C — same clang package).
           env = {
             DATBOI_WASI_CXX = "${cc}/bin/wasm32-unknown-wasi-clang++";
+            DATBOI_WASI_CC = "${cc}/bin/wasm32-unknown-wasi-clang";
             DATBOI_WASI_WASMLD = "${bintools}/bin/wasm32-unknown-wasi-wasm-ld";
             DATBOI_WASI_LIBCXX_DIR = "${libcxx}/lib";
             DATBOI_WASI_LIBC_DIR = "${libc}/lib/wasm32-wasi";
@@ -183,6 +187,12 @@
       # DATBOI_UNRAR_SRC. The recipe is colocated with the crate that owns it.
       unrarSrcFor = system:
         (pkgsFor system).callPackage ./crates/datboi-ex-unrar/nix/unrar-src.nix { };
+
+      # ex-7z's decoder source, same out-of-tree pattern (D110): the
+      # hash-pinned 7-Zip tarball reduced to its public-domain C/ tree.
+      # build.rs consumes it via DATBOI_LZMA_SRC.
+      lzmaSdkFor = system:
+        (pkgsFor system).callPackage ./crates/datboi-ex-7z/nix/lzma-sdk.nix { };
 
       # Which pregen-bindings crate a component lane consumes (D89,
       # docs/worlds.md §vending).
@@ -236,6 +246,10 @@
         # ex-unrar additionally needs its out-of-tree unrar source (nix/unrar-src.nix).
         // nixpkgs.lib.optionalAttrs (crate == "datboi-ex-unrar") {
           DATBOI_UNRAR_SRC = "${unrarSrcFor system}";
+        }
+        # ex-7z likewise (nix/lzma-sdk.nix, D110).
+        // nixpkgs.lib.optionalAttrs (crate == "datboi-ex-7z") {
+          DATBOI_LZMA_SRC = "${lzmaSdkFor system}";
         };
 
       # One stamped component per crate (D54 attribution): identity
