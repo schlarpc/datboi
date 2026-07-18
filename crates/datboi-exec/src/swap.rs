@@ -165,24 +165,14 @@ impl<'s> Executor<'s> {
             report.packs += 1;
             report.bytes_packed += pack_bytes;
             // Bytes first, rows second: flip residency now that the
-            // pack is durable.
+            // pack is durable. Nothing to bless: the pack carries every
+            // member's outboard by construction (D105 — the tree is a
+            // byproduct of put_pack's own verification), so the evicted
+            // container's first served range verifies with no lazy
+            // stall and no loose sidecars.
             for (blob_id, _) in &piece_ids {
                 db.set_residency(*blob_id, Residency::Resident)
                     .map_err(|e| SwapSkip::Other(e.to_string()))?;
-            }
-            // Bless each packed piece's obao over its window NOW, while
-            // the bytes are warm from the pack write (D91 amendment). The
-            // very next step evicts the container; its first served range
-            // replays through these pieces via the D63 carve-out, which
-            // would otherwise ensure_obao them lazily ON the serving
-            // thread — a stall proportional to the whole decomposition.
-            // Sidecars live beside the member (`data/…/<hex>.obao4`),
-            // never inside the immutable pack, so this "upgrades the
-            // window" exactly as the landing note promised.
-            for member in &to_pack {
-                self.store_ref()
-                    .ensure_obao(StoreNs::Data, &member.hash)
-                    .map_err(|e| SwapSkip::Other(format!("obao bless: {e}")))?;
             }
         }
 
@@ -239,8 +229,9 @@ impl<'s> Executor<'s> {
     /// decomposition pieces. Unlike the swap, chunks are born RESIDENT
     /// (the analyzer writes them loose), so there is nothing to
     /// materialize — the pieces stream out of their own loose files into
-    /// the pack, their obao is blessed over the window, and the redundant
-    /// loose `.data` is dropped (the `.obao4` stays for verified serving).
+    /// the pack, which carries their outboards by construction (D105),
+    /// and BOTH redundant loose files drop (`.data` and `.obao4`) —
+    /// verified serving reads the tree out of the pack's section.
     /// A piece shared across sets packs with the FIRST set (first-packer-
     /// wins, like the swap); the rest see it already packed and skip it,
     /// so cross-set dedup is preserved — the global pack map resolves it
@@ -285,11 +276,12 @@ impl<'s> Executor<'s> {
             }
             if self.store_ref().is_packed(&input.hash) {
                 // Already packed. Self-heal an interrupted prior run that
-                // packed the bytes but never dropped the loose copy.
+                // packed the bytes but never dropped the loose copies
+                // (data + sidecar — the pack carries the tree, D105).
                 if self.store_ref().has_loose(StoreNs::Data, &input.hash)
                     && self
                         .store_ref()
-                        .evict_literal(StoreNs::Data, &input.hash)
+                        .remove_blob(StoreNs::Data, &input.hash)
                         .map_err(|e| SwapSkip::Other(e.to_string()))?
                 {
                     report.swept_loose += 1;
@@ -338,15 +330,13 @@ impl<'s> Executor<'s> {
             })
             .map_err(|e| SwapSkip::Other(format!("pack write: {e}")))?;
         report.sets_packed += 1;
-        // Bless obao over the window, then drop the now-redundant loose
-        // `.data` (evict_literal keeps the `.obao4` for verified serving).
-        // Residency stays Resident — a packed piece is still resident.
+        // The pack carries every member's outboard (D105), so both loose
+        // files are redundant now — drop `.data` AND `.obao4`, completing
+        // the inode win. Residency stays Resident — a packed piece is
+        // still resident.
         for member in &to_pack {
             self.store_ref()
-                .ensure_obao(StoreNs::Data, &member.hash)
-                .map_err(|e| SwapSkip::Other(format!("obao bless: {e}")))?;
-            self.store_ref()
-                .evict_literal(StoreNs::Data, &member.hash)
+                .remove_blob(StoreNs::Data, &member.hash)
                 .map_err(|e| SwapSkip::Other(format!("loose drop: {e}")))?;
             report.members += 1;
             report.bytes_packed += member.len;

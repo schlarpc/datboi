@@ -179,6 +179,25 @@ fn pack_chunk_sets_consolidates_the_loose_flood() {
     for c in &chunks {
         assert!(store.is_packed(c), "chunk packed");
         assert!(!store.has_loose(StoreNs::Data, c), "loose .data dropped");
+        // D105: the pack carries the tree, so the loose sidecar drops
+        // too — the inode win covers both files.
+        let hex = c.to_hex();
+        let sidecar = dir
+            .path()
+            .join("store")
+            .join("data")
+            .join(&hex[0..2])
+            .join(&hex[2..4])
+            .join(format!("{hex}.obao4"));
+        assert!(!sidecar.exists(), "loose .obao4 dropped");
+        // And the outboard still resolves — out of the pack's section.
+        assert!(
+            store
+                .get_obao(StoreNs::Data, c)
+                .expect("get_obao")
+                .is_some(),
+            "tree serves from the pack"
+        );
     }
 
     // Evict the original: it now routes through the PACKED chunks.

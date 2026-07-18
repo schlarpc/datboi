@@ -116,12 +116,13 @@ fn read_back(exec: &Executor, db: &Db, hash: &Blake3) -> Vec<u8> {
 }
 
 #[test]
-fn swap_blesses_packed_piece_obao_over_the_window() {
+fn swap_packs_carry_piece_obao_with_no_loose_sidecar() {
     // A shared file large enough to need a real outboard (> one 16 KiB
-    // chunk group). The swap phase must compute each packed piece's obao
-    // sidecar over its window right after packing — BEFORE the container
-    // evicts — so the container's first served range never pays a lazy
-    // ensure_obao stall (D91 amendment).
+    // chunk group). The pack itself carries each member's obao tree
+    // (D105 — a byproduct of put_pack's verification), so the moment
+    // the swap finishes — BEFORE the container evicts — every packed
+    // piece serves verified reads with no lazy stall and no loose
+    // `.obao4` inode.
     let (_dir, store, mut db) = world();
     let shared_len = 20 * 1024;
     let usa = variant_nds(b"BIG USA", 0, &pattern(600, 100), shared_len);
@@ -142,11 +143,12 @@ fn swap_blesses_packed_piece_obao_over_the_window() {
     assert_eq!(report.swapped, 2, "skipped: {:?}", report.skipped);
     assert!(store.is_packed(&big_piece), "the large shared piece packed");
 
-    // The sidecar exists NOW — right after the swap, with no serve yet.
+    // The outboard resolves NOW — right after the swap, with no serve
+    // yet — straight out of the pack's section (D105).
     let sidecar = store
         .get_obao(StoreNs::Data, &big_piece)
         .expect("get_obao")
-        .expect("swap blessed the packed piece's obao");
+        .expect("the pack carries the piece's obao");
     assert!(
         !sidecar.is_empty(),
         "a >16 KiB member carries a real outboard, not the empty small-blob one"
