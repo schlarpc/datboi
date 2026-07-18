@@ -281,6 +281,12 @@ fetch-from-a-friend card (share-your-id + peer-id form + the savings
 receipt); `datboi fetch --peer <id> [want…]` is the direct-library lane
 under an EPHEMERAL key (deliberate: a live `--p2p` daemon owns the
 derived key's discovery record).
+**Completeness ruled AND BUILT 2026-07-17 as D102**: the `RootBlobs`
+recon scope (underived resident literals) closes the use-case audit's
+mirror-invisibility gap — mirror mode reconciles both scopes and the
+holdings are covered by construction; D34 holdings channels remain owed
+as the naming layer for gap-fill and curated subscription, on the swarm
+arc with the recon ACL.
 
 ## Use-case coverage audit (2026-07-17, pre-ship exploration)
 
@@ -312,11 +318,15 @@ Per journey:
 1. **Explicit fetch (wants mode)** — COMPLETE today. The closure walk's
    degenerate case fetches any grounded peer blob whole by hash;
    recon/plans only make it cheaper. Proven e2e.
-2. **Friend mirror ("everything you share")** — PARTIAL, two gaps.
-   (a) The invisibility class above: the Ingest card's copy states the
-   intent ("fetches everything they share that you lack"); the chosen
-   posture is to make the copy TRUE rather than lawyer it — see the
-   options below. (b) ~~*Resume gap, bug-shaped*~~ FIXED same day:
+2. **Friend mirror ("everything you share")** — COMPLETE (both gaps
+   closed same day). (a) ~~The invisibility class above~~ CLOSED by
+   **D102**: mirror mode reconciles the `RootBlobs` scope alongside the
+   plans — the underived resident literals cross as whole fetches, so
+   the Ingest card's copy ("fetches everything they share that you
+   lack") is now TRUE by construction, proven e2e (a never-analyzed
+   loose ROM mirrors; a root the initiator can derive is filtered by
+   the walk, not refetched). (b) ~~*Resume gap, bug-shaped*~~ FIXED
+   same day:
    mirror roots are now EVERY peer-sourced plan output
    (`Db::peer_plan_outputs`), not this round's fetches, so an
    interrupted sync's leaves are retried by the next run; leaves the

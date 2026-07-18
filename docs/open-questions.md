@@ -695,7 +695,39 @@ slated for change:
 
 ## Next sessions (pick up here)
 
-**Position as of 2026-07-17, latest — D101 OPERATOR SURFACE BUILT**: the
+**Position as of 2026-07-17, latest — D102 COMPLETENESS RULED AND
+BUILT**: the use-case audit's coverage ruling landed in three commits,
+workspace green. Ruled first (**D102**): completeness is two planes,
+not one layer — mirror stays on the recon plane via a second scope,
+`RootBlobs` (wire byte 1: resident Data blobs with no non-Failed
+producing route, the ur-literals), which with the plans covers the
+holdings BY CONSTRUCTION (every blob is underived-and-advertised or
+derived-and-reachable); D34 holdings channels are NOT mirror's
+dependency — they stay the naming/discovery layer journeys 3/4 actually
+need (entry→blake3 gap-fill, curated-view subscription), on the swarm
+arc behind the recon ACL. Built: the scope-shared roots query in
+datboi-index (set/streaming/count twins, same held-transaction snapshot
+shape), `Scope::RootBlobs` in the recon protocol, and mirror-mode sync
+reconciling both scopes — remote-only roots join the walk roots, where
+the walk is the dedup filter (a root we hold or can derive resolves
+Supported, fetches nothing); wants mode untouched; sketch bytes/symbols
+sum across both reconciles (no API change, so no web/openapi churn).
+Proven: an index test pinning roots semantics (Failed routes don't
+disqualify; analysis migrates blobs out of the scope) and an e2e mirror
+(never-analyzed loose ROM crosses; a B-derivable root rides the diff
+but is not refetched). The soundness invariant is stated in D102: "no
+producing route" is the honest minimal cover only while additive-v1
+holds — eviction work must revisit the query with CasProvider's
+serve-the-derivable story. **Pick up here**: the swarm tiers, with the
+**recon ACL before any advertisement tier** (flagged above); the D34
+channel design (naming layer — gap-fill's entry→blake3, curated-view
+discovery/update flow, `available-from-peer(X)` on the friend surface);
+smaller p2p remainders: hash-seq requests, a shared wasm engine per
+CasProvider, partial-range over-materialization; and the disaster-
+restore verb (snapshot → want-list, no design risk). The previous
+position (D101 operator surface) is below.
+
+**Position as of 2026-07-17, earlier — D101 OPERATOR SURFACE BUILT**: the
 whole D96 surface for D100 sync landed in five commits, workspace + web
 green, hermetic build verified. Ruled first (**D101**): sync is a JOB
 (new Sync kind in the wire enum + D74 ledger, additive codes); the
