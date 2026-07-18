@@ -94,8 +94,9 @@ pub fn load_or_create_identity(db_dir: &Path) -> Result<Identity, CatalogError> 
     }
     #[cfg(not(unix))]
     std::fs::write(&path, identity.to_seed())?;
+    // D15: identity lives on daemon-local disk; the operator backs it up.
     tracing::info!(
-        "generated instance identity at {} — back this file up out-of-band (D15)",
+        "generated instance identity at {} — back this file up out-of-band",
         path.display()
     );
     Ok(identity)

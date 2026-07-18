@@ -124,8 +124,9 @@ pub fn parse_attribution(bytes: &[u8]) -> Result<Attribution, String> {
         missing.push("revision");
     }
     if !missing.is_empty() {
+        // D54: components must carry attribution metadata.
         return Err(format!(
-            "component missing required attribution metadata [{}] (D54): \
+            "component missing required attribution metadata [{}]: \
              stamp it at build time with `wasm-tools metadata add`",
             missing.join(", ")
         ));

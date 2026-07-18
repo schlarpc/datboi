@@ -3107,18 +3107,29 @@ stays. But a `D<n>` is meaningless jargon to someone using the
 software: it points at a document they can't see and names a debate
 they never had. So the rule: **no `D<n>` reference on any user-facing
 surface** — not the README, not CLI output (error and status text a
-user reads), not web UI copy. The rationale a citation carried moves
-into a code comment next to the string, where its audience actually
-is; the string itself states the behavior in the user's terms. Audit
-at ruling time found four CLI strings (`bail!`/`println!` in
-`datboi`'s `cmds.rs`) and one web string (Activity's subtitle,
-extracted to `en.po` as `(D74)`); the README was already clean. Web
-copy is wuchale-extracted (D67), so `en.po` is the authoritative sweep
-for translated surfaces — one hit, now gone, re-extracted.
+user reads), not web UI copy, not daemon logs (the operator reads
+them). The rationale a citation carried moves into a code comment next
+to the string, where its audience actually is; the string itself
+states the behavior in the user's terms. Audit at ruling time swept
+every surface a user or operator can see — CLI output, HTTP error
+bodies and the OpenAPI description, analyzer verdicts, library error
+types (`#[error]` Display), web copy, and daemon `tracing` logs — and
+cleaned roughly a dozen-and-a-half strings across nine crates; the
+README was already clean. Web copy is wuchale-extracted (D67), so
+`en.po` is the authoritative sweep for translated surfaces. The only
+`D<n>` left in a string literal is a `#[cfg(test)]` assertion message,
+which no user runs.
+
+*Amendment (same day):* daemon logs count as user-facing. The initial
+audit scoped README/CLI/web and treated `tracing` output as an
+operator diagnostic outside the ruling; corrected — an operator
+reading logs is a user, and a `D<n>` there is the same dead-end
+jargon. The log statements (and the operator-visible startup and error
+strings that flow to them) were folded into the sweep.
 
 *Rejected:* keeping the citations as "harmless" (they're log noise in
 the user's face — the same instinct that let a D-number ride into
 shipped UI is the one worth ruling out); a lint/CI grep forbidding
-`D\d+` in string literals (worth considering later, but heavy for five
-sites, and the extract step already surfaces web copy — filed as a
-watch item, not built now).
+`D\d+` in string literals (worth considering later, but heavy, and the
+extract step already surfaces web copy; the test-assert exemption would
+need modeling too — filed as a watch item, not built now).

@@ -129,9 +129,10 @@ impl<'a, 's> Logical<'a, 's> {
         }
         match db.blob_by_hash(&item.hash).map_err(|e| e.to_string())? {
             Some(row) if row.residency == Residency::Resident => {
+                // D81: a resident row with no bytes self-heals to absent.
                 return Err(match db.set_residency(row.blob_id, Residency::Absent) {
                     Ok(()) => "blob not resident — index said resident, store had no bytes; \
-                               demoted to absent (D81)"
+                               demoted to absent"
                         .into(),
                     Err(e) => format!("blob not resident (and the index demote failed: {e})"),
                 });

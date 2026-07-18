@@ -61,9 +61,10 @@ pub enum IndexError {
         path: PathBuf,
         source: std::io::Error,
     },
+    // D15: state/cache DBs are daemon-local; only the store may be remote.
     #[error(
         "db dir {path} is on {fs}; state.db/cache.db must live on daemon-local disk, \
-         never a network filesystem (D15) — only the store may be remote"
+         never a network filesystem — only the store may be remote"
     )]
     DbDirOnNetworkFs { path: PathBuf, fs: &'static str },
 }

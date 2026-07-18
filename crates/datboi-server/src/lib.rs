@@ -281,7 +281,7 @@ impl Server {
         if !config.listen.ip().is_loopback() {
             info!(
                 "listening on non-loopback {}: auth required — non-loopback requests \
-                 need a session or bearer token (D68; mint invites with `datboi user invite`)",
+                 need a session or bearer token (mint invites with `datboi user invite`)",
                 config.listen
             );
         }
