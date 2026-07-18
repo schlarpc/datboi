@@ -168,12 +168,36 @@ impl<'a, 's> Logical<'a, 's> {
     }
 }
 
+/// D108 sweep-ordering class: WHERE an analyzer sits in the per-blob
+/// sequencing, as a property of the analyzer itself (list position in
+/// a roster proved un-enforceable — the D93 drone fleet drains
+/// families concurrently). Variant order IS the execution order
+/// (`Ord` on the discriminant); [`process_round`] refuses to claim a
+/// blob for a class while any enabled lower-class family still has it
+/// queued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AnalyzerClass {
+    /// Mints format-aware routes (preflate, ecm, nds, narc): must
+    /// settle a blob first, so fallback coverage gates (D59) see real
+    /// routes instead of racing them.
+    Structural,
+    /// Format-blind (chunk, noop): claims a blob only after every
+    /// structural family concluded on it.
+    Fallback,
+}
+
 /// One analyzer. Implementations mint recipes/claims through their own
 /// side effects (they get store + db access) and report provenance via
 /// the returned result. What they claim must be dat-blind (D47).
 pub trait Analyzer {
     /// Versioned, human-readable name (also the CLI selector).
     fn name(&self) -> &'static str;
+
+    /// D108 ordering class. Required (no default) BY DESIGN: an
+    /// analyzer cannot exist without declaring its place in the
+    /// sequencing, so "forgot to order the new analyzer" is
+    /// unrepresentable.
+    fn class(&self) -> AnalyzerClass;
 
     /// Stable operator-facing family name — the D60 config key. Unlike
     /// [`Analyzer::name`]/[`Analyzer::id`], it survives version bumps:
@@ -212,6 +236,12 @@ pub struct NoopAnalyzer;
 impl Analyzer for NoopAnalyzer {
     fn name(&self) -> &'static str {
         "noop/1"
+    }
+
+    fn class(&self) -> AnalyzerClass {
+        // Format-blind by definition; mints nothing, so it never
+        // appears in anyone's blocked-by list either way.
+        AnalyzerClass::Fallback
     }
 
     fn family(&self) -> &'static str {
@@ -457,6 +487,20 @@ pub fn process_round(
             ..SweepReport::default()
         });
     }
+    // D108 class gate, derived HERE so no driver (prime, drone, CLI,
+    // /v1/sweep) can claim around the sequencing: enabled roster
+    // families of a strictly lower class block this analyzer's claims
+    // per blob. Disabled families never block — their stale queue rows
+    // have no drain to clear them.
+    let blocked_by = {
+        let mut ids = Vec::new();
+        for other in crate::analyzers::sweep_roster() {
+            if other.class() < analyzer.class() && analyzer_enabled(db, other.family())? {
+                ids.push(other.id());
+            }
+        }
+        ids
+    };
     let id = analyzer.id();
     let mut report = SweepReport::default();
     let keeper = db.lease_keeper()?;
@@ -465,7 +509,7 @@ pub fn process_round(
             break;
         }
         let Some(item) = db
-            .claim_sweep_items(&id, 1, now_unix(), SWEEP_LEASE_SECS)?
+            .claim_sweep_items(&id, &blocked_by, 1, now_unix(), SWEEP_LEASE_SECS)?
             .pop()
         else {
             break;

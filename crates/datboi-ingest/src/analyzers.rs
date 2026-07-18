@@ -10,7 +10,9 @@ use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe, World};
 use datboi_index::{AnalysisOutcome, Db, Namespace as IndexNs, Residency, SeekClass, SweepItem};
 use datboi_store_fs::{Namespace as StoreNs, Store};
 
-use crate::refine::{AnalysisResult, Analyzer, Logical, Pulse, TickReader, analyzer_tag};
+use crate::refine::{
+    AnalysisResult, Analyzer, AnalyzerClass, Logical, Pulse, TickReader, analyzer_tag,
+};
 
 /// FastCDC parameters (D3 strategy ladder, rung 3): gear hash, NC level
 /// 2, 64 KiB / 256 KiB / 1 MiB — tuned for disc images. The values are
@@ -63,6 +65,30 @@ pub const SWEEP_ANALYZERS: &[&str] = &["noop", "chunk", "preflate", "ecm", "nds"
 /// ONE place (D96). Each family's canonical name and its CLI aliases
 /// resolve; an unknown name is `None` (the caller owns the error message,
 /// spelling out [`SWEEP_ANALYZERS`]).
+/// The auto-swept roster, sorted by [`AnalyzerClass`] (D108) — the ONE
+/// list every multi-family driver walks, so enqueue order and drain
+/// order agree with the claim gate by construction. Registration order
+/// breaks class ties only (a cosmetic preference; same-class families
+/// are sequencing-independent — see the nds/narc note in D59). `noop`
+/// is CLI-only plumbing and stays off the auto roster.
+///
+/// The sort is what makes the D108 claim gate race-free on the fresh
+/// path: a wake enqueues blocker families' rows before fallback rows,
+/// so a drone can never observe a fallback row whose structural
+/// siblings aren't queued yet.
+#[must_use]
+pub fn sweep_roster() -> Vec<Box<dyn Analyzer>> {
+    let mut roster: Vec<Box<dyn Analyzer>> = vec![
+        Box::new(PreflateZipAnalyzer::new()),
+        Box::new(EcmAnalyzer::new()),
+        Box::new(NdsAnalyzer),
+        Box::new(NarcAnalyzer),
+        Box::new(ChunkAnalyzer),
+    ];
+    roster.sort_by_key(|a| a.class());
+    roster
+}
+
 #[must_use]
 pub fn analyzer_for(name: &str) -> Option<Box<dyn Analyzer>> {
     Some(match name {
@@ -269,6 +295,10 @@ impl std::io::Read for SplitReader<'_> {
 impl Analyzer for PreflateZipAnalyzer {
     fn name(&self) -> &'static str {
         Self::VERSIONED_NAME
+    }
+
+    fn class(&self) -> AnalyzerClass {
+        AnalyzerClass::Structural
     }
 
     fn family(&self) -> &'static str {
@@ -632,6 +662,10 @@ impl Analyzer for ChunkAnalyzer {
         Self::VERSIONED_NAME
     }
 
+    fn class(&self) -> AnalyzerClass {
+        AnalyzerClass::Fallback
+    }
+
     fn family(&self) -> &'static str {
         "chunk"
     }
@@ -904,6 +938,10 @@ impl Analyzer for EcmAnalyzer {
         Self::VERSIONED_NAME
     }
 
+    fn class(&self) -> AnalyzerClass {
+        AnalyzerClass::Structural
+    }
+
     fn family(&self) -> &'static str {
         "ecm"
     }
@@ -1056,6 +1094,10 @@ impl Analyzer for NdsAnalyzer {
         Self::VERSIONED_NAME
     }
 
+    fn class(&self) -> AnalyzerClass {
+        AnalyzerClass::Structural
+    }
+
     fn family(&self) -> &'static str {
         "nds"
     }
@@ -1183,6 +1225,10 @@ impl NarcAnalyzer {
 impl Analyzer for NarcAnalyzer {
     fn name(&self) -> &'static str {
         Self::VERSIONED_NAME
+    }
+
+    fn class(&self) -> AnalyzerClass {
+        AnalyzerClass::Structural
     }
 
     fn family(&self) -> &'static str {

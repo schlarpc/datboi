@@ -973,7 +973,7 @@ fn sweep_leases_and_priority_tiers() {
     );
 
     // Claim: fresh outranks ambient; the absent blob is never picked.
-    let claimed = db.claim_sweep_items(&analyzer, 10, 100, 60).unwrap();
+    let claimed = db.claim_sweep_items(&analyzer, &[], 10, 100, 60).unwrap();
     assert_eq!(
         claimed.iter().map(|i| i.blob_id).collect::<Vec<_>>(),
         [fresh, ambient],
@@ -983,18 +983,20 @@ fn sweep_leases_and_priority_tiers() {
 
     // Leased items are invisible to a second claimant...
     assert!(
-        db.claim_sweep_items(&analyzer, 10, 100, 60)
+        db.claim_sweep_items(&analyzer, &[], 10, 100, 60)
             .unwrap()
             .is_empty()
     );
     // ...visible again after expiry...
     assert_eq!(
-        db.claim_sweep_items(&analyzer, 10, 161, 60).unwrap().len(),
+        db.claim_sweep_items(&analyzer, &[], 10, 161, 60)
+            .unwrap()
+            .len(),
         2
     );
     // ...and an early release returns one item without waiting.
     db.release_sweep_lease(ambient, &analyzer).unwrap();
-    let reclaimed = db.claim_sweep_items(&analyzer, 10, 162, 60).unwrap();
+    let reclaimed = db.claim_sweep_items(&analyzer, &[], 10, 162, 60).unwrap();
     assert_eq!(
         reclaimed.iter().map(|i| i.blob_id).collect::<Vec<_>>(),
         [ambient]
@@ -1003,7 +1005,9 @@ fn sweep_leases_and_priority_tiers() {
     // Startup amnesty: every lease clears at once.
     assert_eq!(db.clear_sweep_leases().unwrap(), 2);
     assert_eq!(
-        db.claim_sweep_items(&analyzer, 10, 163, 60).unwrap().len(),
+        db.claim_sweep_items(&analyzer, &[], 10, 163, 60)
+            .unwrap()
+            .len(),
         2
     );
 
@@ -1017,10 +1021,61 @@ fn sweep_leases_and_priority_tiers() {
     db.enqueue_fresh(&analyzer, &[ambient], 201).unwrap();
     db.bump_dat_matched_priorities().unwrap();
     db.clear_sweep_leases().unwrap();
-    let after = db.claim_sweep_items(&analyzer, 1, 300, 60).unwrap();
+    let after = db.claim_sweep_items(&analyzer, &[], 1, 300, 60).unwrap();
     assert_eq!(after[0].blob_id, ambient);
     assert!(after[0].priority >= PRIORITY_DAT_MATCHED);
     assert_eq!(after[0].priority, PRIORITY_FRESH);
+}
+
+/// D108 class gate: a blob is unclaimable for a gated analyzer while a
+/// blocking analyzer still holds a queue row for it — leased or not (a
+/// row means unsettled) — and opens the moment the blocker concludes.
+/// Blobs the blocker never queued flow through untouched.
+#[test]
+fn sweep_claim_class_gate() {
+    use datboi_index::AnalysisOutcome;
+
+    let (_dir, mut db) = open_db();
+    let structural = Blake3::compute(b"structural-analyzer");
+    let fallback = Blake3::compute(b"fallback-analyzer");
+    let gated = blob(&db, b"gated", Residency::Resident);
+    let free = blob(&db, b"free", Residency::Resident);
+
+    // The fresh path enqueues blocker families first (roster order,
+    // D108): only `gated` is on the structural queue.
+    db.enqueue_fresh(&structural, &[gated], 10).unwrap();
+    db.enqueue_fresh(&fallback, &[gated, free], 10).unwrap();
+
+    let claimed = db
+        .claim_sweep_items(&fallback, &[structural], 10, 100, 60)
+        .unwrap();
+    assert_eq!(
+        claimed.iter().map(|i| i.blob_id).collect::<Vec<_>>(),
+        [free],
+        "the structural row gates the shared blob; the free blob flows"
+    );
+    db.complete_sweep_item(free, &fallback, AnalysisOutcome::Negative, None, 101)
+        .unwrap();
+
+    // A LEASED blocker row still gates: in flight is not settled.
+    let in_flight = db.claim_sweep_items(&structural, &[], 10, 110, 60).unwrap();
+    assert_eq!(in_flight.len(), 1);
+    assert!(
+        db.claim_sweep_items(&fallback, &[structural], 10, 111, 60)
+            .unwrap()
+            .is_empty()
+    );
+
+    // The blocker concluding removes its row and opens the gate.
+    db.complete_sweep_item(gated, &structural, AnalysisOutcome::Positive, None, 120)
+        .unwrap();
+    let opened = db
+        .claim_sweep_items(&fallback, &[structural], 10, 200, 60)
+        .unwrap();
+    assert_eq!(
+        opened.iter().map(|i| i.blob_id).collect::<Vec<_>>(),
+        [gated]
+    );
 }
 
 /// D71 progress-gated heartbeat: renewal through a `SweepLeaseKeeper`
@@ -1032,20 +1087,22 @@ fn sweep_lease_renewal_extends_visibility() {
     let analyzer = Blake3::compute(b"analyzer-y");
     let target = blob(&db, b"long-runner", Residency::Resident);
     db.enqueue_unanalyzed(&analyzer, 10).unwrap();
-    let claimed = db.claim_sweep_items(&analyzer, 1, 100, 60).unwrap();
+    let claimed = db.claim_sweep_items(&analyzer, &[], 1, 100, 60).unwrap();
     assert_eq!(claimed[0].blob_id, target);
 
     // Progress at t=150 re-stamps: expiry moves from 160 to 210.
     let keeper = db.lease_keeper().unwrap();
     keeper.renew(target, &analyzer, 150, 60).unwrap();
     assert!(
-        db.claim_sweep_items(&analyzer, 1, 161, 60)
+        db.claim_sweep_items(&analyzer, &[], 1, 161, 60)
             .unwrap()
             .is_empty(),
         "past the ORIGINAL expiry the renewed lease still holds"
     );
     assert_eq!(
-        db.claim_sweep_items(&analyzer, 1, 211, 60).unwrap().len(),
+        db.claim_sweep_items(&analyzer, &[], 1, 211, 60)
+            .unwrap()
+            .len(),
         1,
         "no further renewals: the item frees on the renewed clock"
     );
@@ -1200,7 +1257,7 @@ fn absent_eligibility_gates_the_claim_query() {
 
     let claim_ids = |db: &mut Db, at: i64| -> Vec<i64> {
         let ids = db
-            .claim_sweep_items(&analyzer, 10, at, 60)
+            .claim_sweep_items(&analyzer, &[], 10, at, 60)
             .unwrap()
             .iter()
             .map(|i| i.blob_id)

@@ -48,9 +48,6 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use datboi_index::Db;
-use datboi_ingest::analyzers::{
-    ChunkAnalyzer, EcmAnalyzer, NarcAnalyzer, NdsAnalyzer, PreflateZipAnalyzer,
-};
 use datboi_ingest::refine::{
     Analyzer, Logical, SweepObserver, analyzer_enabled, enqueue_candidates, process_round,
     refresh_admission,
@@ -157,21 +154,14 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The auto-swept analyzer families, in dependency-aware order (module
-/// docs). `noop` is CLI-only plumbing; a new analyzer joins by adding
-/// a constructor here.
+/// The auto-swept analyzer roster. Ordering is the analyzers' OWN
+/// property now (D108 `AnalyzerClass` — structural decomposition
+/// before fallback CDC, the D59 rank-7 sequencing): the shared roster
+/// sorts by class, and the claim gate in `process_round` enforces the
+/// same sequencing per blob against the concurrent drone fleet. A new
+/// analyzer joins in `analyzers::sweep_roster`.
 fn families() -> Vec<Box<dyn Analyzer>> {
-    vec![
-        Box::new(PreflateZipAnalyzer::new()),
-        Box::new(EcmAnalyzer::new()),
-        // nds-split before narc before chunk: the ROM decomposes into
-        // NitroFS files, a NARC among them decomposes into members, and
-        // only the media-stream remainder falls through to CDC (D59
-        // rank-7 sequencing).
-        Box::new(NdsAnalyzer),
-        Box::new(NarcAnalyzer),
-        Box::new(ChunkAnalyzer),
-    ]
+    datboi_ingest::analyzers::sweep_roster()
 }
 
 /// D93 worker count: `refine:workers` ("auto" or a number ≥ 1; 1

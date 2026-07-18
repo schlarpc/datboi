@@ -279,9 +279,18 @@ impl Db {
     /// members of refused containers) stay QUEUED but unclaimed:
     /// erroring on each every sweep is noise, and a later grounding or
     /// rematerialization admits them automatically.
+    ///
+    /// `blocked_by` is the D108 class gate: a blob is unclaimable for
+    /// `analyzer` while ANY of those analyzer identities still holds a
+    /// `sweep_queue` row for it (leased or not — a row means unsettled).
+    /// The caller ([`process_round`]'s roster walk) passes the enabled
+    /// lower-class families; structural analyzers pass `&[]`. Mandatory
+    /// on purpose: every claimant states its ordering position, so no
+    /// driver can race the fleet past the D59 sequencing again.
     pub fn claim_sweep_items(
         &mut self,
         analyzer: &Blake3,
+        blocked_by: &[Blake3],
         limit: usize,
         now_unix: i64,
         lease_secs: i64,
@@ -301,7 +310,24 @@ impl Db {
             // priority DESC, enqueued_at, blob_id): the claim is an
             // ordered index walk that stops at LIMIT, not a sort of the
             // whole blobs × analyzers queue. Keep them in lockstep.
-            let mut stmt = tx.prepare_cached(
+            // The D108 gate is a PK-prefix probe per candidate row
+            // ((blob_id, analyzer) is sweep_queue's key), so the walk
+            // stays an index walk. Distinct blocker counts cache as
+            // distinct statements — the roster is small and fixed.
+            let gate = if blocked_by.is_empty() {
+                String::new()
+            } else {
+                let marks = (0..blocked_by.len())
+                    .map(|i| format!("?{}", i + 4))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "AND NOT EXISTS (
+                       SELECT 1 FROM sweep_queue p
+                       WHERE p.blob_id = q.blob_id AND p.analyzer IN ({marks}))"
+                )
+            };
+            let sql = format!(
                 "SELECT q.blob_id, b.hash, b.size, q.priority
                  FROM sweep_queue q JOIN blob b ON b.blob_id = q.blob_id
                  WHERE q.analyzer = ?1
@@ -309,24 +335,25 @@ impl Db {
                      SELECT 1 FROM sweep_absent_eligible e
                      WHERE e.blob_id = b.blob_id))
                    AND q.leased_until <= ?2
+                   {gate}
                  ORDER BY q.priority DESC, q.enqueued_at, q.blob_id
-                 LIMIT ?3",
-            )?;
-            stmt.query_map(
-                params![
-                    analyzer.0.as_slice(),
-                    now_unix,
-                    i64::try_from(limit).unwrap_or(i64::MAX)
-                ],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, [u8; 32]>(1)?,
-                        row.get::<_, Option<i64>>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                },
-            )?
+                 LIMIT ?3"
+            );
+            let mut vals: Vec<rusqlite::types::Value> = vec![
+                analyzer.0.to_vec().into(),
+                now_unix.into(),
+                i64::try_from(limit).unwrap_or(i64::MAX).into(),
+            ];
+            vals.extend(blocked_by.iter().map(|b| b.0.to_vec().into()));
+            let mut stmt = tx.prepare_cached(&sql)?;
+            stmt.query_map(rusqlite::params_from_iter(vals), |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, [u8; 32]>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?
             .collect::<Result<Vec<_>, _>>()?
         };
         {

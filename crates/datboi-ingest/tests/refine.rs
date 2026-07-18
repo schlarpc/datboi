@@ -263,3 +263,63 @@ fn concurrent_drains_share_the_queue_without_duplication() {
         0
     );
 }
+
+/// D108: the roster sorts by class (structural families strictly before
+/// fallback), and `process_round` refuses to claim a blob for a
+/// fallback analyzer while a structural family still has it queued —
+/// the drone-fleet race that chunked a bin mid-ecm, reproduced at the
+/// claim layer.
+#[test]
+fn class_gate_holds_fallback_until_structural_settles() {
+    use datboi_ingest::analyzers::{ChunkAnalyzer, EcmAnalyzer, sweep_roster};
+    use datboi_ingest::refine::{AnalyzerClass, NoObserver, process_round};
+
+    // Roster order is the class order, chunk (fallback) at the end.
+    let roster = sweep_roster();
+    let classes: Vec<AnalyzerClass> = roster.iter().map(|a| a.class()).collect();
+    let mut sorted = classes.clone();
+    sorted.sort();
+    assert_eq!(classes, sorted, "roster must be class-sorted");
+    assert_eq!(
+        roster.last().expect("non-empty").family(),
+        "chunk",
+        "the CDC fallback drains last"
+    );
+
+    let (_dir, store, mut db) = world();
+    let (_hash, id) = put(&store, &db, b"gated bytes");
+    let ecm_id = EcmAnalyzer::new().id();
+    db.enqueue_fresh(&ecm_id, &[id], 10).expect("enqueue ecm");
+    db.enqueue_fresh(&ChunkAnalyzer.id(), &[id], 10)
+        .expect("enqueue chunk");
+
+    let exec =
+        datboi_exec::Executor::new(&store, datboi_exec::ExecConfig::default()).expect("executor");
+    let bytes = Logical::new(&store, &exec);
+
+    // ecm's queue row gates the chunk claim entirely.
+    let gated = process_round(
+        &mut db,
+        &store,
+        &bytes,
+        &mut ChunkAnalyzer,
+        5,
+        &mut NoObserver,
+    )
+    .expect("round");
+    assert_eq!(gated.analyzed, 0, "fallback must not claim past ecm");
+
+    // ecm settling opens the gate on the next round.
+    db.complete_sweep_item(id, &ecm_id, AnalysisOutcome::Negative, None, 20)
+        .expect("settle");
+    let opened = process_round(
+        &mut db,
+        &store,
+        &bytes,
+        &mut ChunkAnalyzer,
+        5,
+        &mut NoObserver,
+    )
+    .expect("round");
+    assert_eq!(opened.analyzed, 1, "settled structural row frees the blob");
+}
