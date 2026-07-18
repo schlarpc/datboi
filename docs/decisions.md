@@ -3133,3 +3133,71 @@ shipped UI is the one worth ruling out); a lint/CI grep forbidding
 `D\d+` in string literals (worth considering later, but heavy, and the
 extract step already surfaces web copy; the test-assert exemption would
 need modeling too — filed as a watch item, not built now).
+
+## D108 — Analyzer sweep classes: ordering is claim-gated, not list-ordered (2026-07-18)
+
+The D59 rank-7 sequencing ("structural decomposition eats the blob
+before CDC takes the remainder") lived only in the element order of
+the server's `families()` vec — and the D93 drone fleet defeats it:
+drones drain family queues concurrently with the prime, so on the
+first real ingest chunk claimed a PS1 bin while ecm was still
+concluding, minting 1,518 pieces (~520 MB resident) that the D59
+coverage gate would have declined seconds later. Ordering is now a
+property of the analyzer itself: the `Analyzer` trait requires
+`class()` — `Structural` (mints format-aware routes: preflate, ecm,
+nds, narc) before `Fallback` (format-blind: chunk, noop) — and the
+gate is enforced where it cannot be forgotten or raced: (1) the one
+canonical roster (`analyzers::sweep_roster`) sorts by class, so a
+driver walking it enqueues and drains blocker families first —
+registration order can no longer lie; (2) `claim_sweep_items` takes a
+mandatory blocked-by list and refuses to hand out an item while any
+blocking family still holds a `sweep_queue` row for the same blob,
+and the list is computed inside `process_round` (the D60 single entry
+point every sweep caller uses) as the roster's ENABLED lower-class
+families — prime, drones, CLI sweeps, and `/v1/sweep` all pass
+through it. Corollaries: a disabled family never blocks (its stale
+rows have no drain to clear them); a structural family's
+environmental error keeps its queue row and therefore keeps the
+blob's fallback gated — conservative, and consistent with "the
+environment failed, not the analysis". *Rejected:* prime-only
+ordering (observed defeated by drones); a per-wake stage barrier
+across the fleet (worker coordination, and one big structural item
+stalls fallback work on unrelated blobs); re-check-and-requeue inside
+ChunkAnalyzer (repairs one family instead of the class; the D59 guard
+stays as defense-in-depth).
+
+## D109 — cache.db drops the never-wired blob.obao column (2026-07-18)
+
+`blob.obao` shipped in the v1 DDL anticipating index-tracked outboard
+presence and was never read or written anywhere — within one ingest
+the flags (all 0) already disagreed with disk (license replays had
+written two sidecars via `ensure_obao`). Outboard presence is a STORE
+fact, not an index fact: every consumer asks the filesystem
+(`ensure_obao` computes on miss), and D105 pack members carry their
+trees in the pack itself. Dropped via cache migration v7. A future
+index-side outboard ledger re-earns a column with an actual reader.
+*Rejected:* wiring the flag up (a cache of a cheap stat that must be
+kept true across eviction, repack, and recovery for no query that
+wants it).
+
+## D110 — ex-7z: 7z extraction moves into a sandboxed component (2026-07-18)
+
+Measured on the first real ingest (Redump PS1, solid LZMA1 96 MiB
+dict, 227 MB): sevenz-rust2 0.21.3 decodes at 9.2 MB/s where
+single-threaded p7zip does 49 MB/s on the same bytes — the upload
+spent ~2 minutes in extraction, ~all of it LZMA decode (solid blocks
+are inherently serial; the ceiling is native decode speed, not
+parallelism). Direction: an `ex-7z` wasm component vendoring 7-Zip's
+own ANSI-C 7z decoder (the LZMA SDK), same shape as ex-unrar (D58)
+behind the same extractor world and D89 batch ABI, replacing the
+sevenz-rust2 path in `process_7z`. Speed is half the point; the shape
+is the other half: members stream through the batch pipe/consumer
+path (decode overlaps hashing + storing for free), and each member
+gains a container→member derive recipe pinning the component — 7z
+members become evictable and rebuildable exactly like rar members,
+closing archive.rs's "no rebuild transform yet, so members are
+extract-only residents" clause. sevenz-rust2 leaves the tree when
+ex-7z lands. *Rejected:* host-native liblzma bindings (fastest raw
+decode, but an unsandboxed C dependency and no recipe/replay story);
+keeping sevenz-rust2 and only pipelining the hashing (saves the small
+share; the decoder is the bottleneck).
