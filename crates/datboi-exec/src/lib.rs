@@ -611,10 +611,14 @@ impl<'s> Executor<'s> {
         if let Plan::Op(op_plan) = plan {
             match &op_plan.op {
                 OpImpl::Assemble(params) => {
-                    let children = self.open_children_random(&op_plan.children)?;
+                    let children =
+                        self.open_children_random(&op_plan.children, Children::ServeInPlace)?;
                     let mut node = AssembleRandom::new(params.clone(), children)
                         .map_err(ExecError::Malformed)?;
-                    return Ok((read_via(&mut node)?, None));
+                    // A seekable wasm child served in place (D111) is the
+                    // suspect if this window fails to verify: attribute
+                    // to it exactly as a top-level seek path would be.
+                    return Ok((read_via(&mut node)?, first_seekable_transform(plan)));
                 }
                 OpImpl::Transform {
                     transform,
@@ -630,7 +634,7 @@ impl<'s> Executor<'s> {
                     let mut inputs: Vec<Box<dyn RangeRead>> =
                         Vec::with_capacity(op_plan.children.len());
                     for child in &op_plan.children {
-                        inputs.push(self.open_random(child)?);
+                        inputs.push(self.open_random(child, Children::ServeInPlace)?);
                     }
                     let sink = VecSink::default();
                     self.stream_host.serve_range_fueled(
@@ -887,7 +891,8 @@ impl<'s> Executor<'s> {
                     // The container (input 0) arrives random-access — the
                     // extractor seeks its headers. The single output member
                     // streams out through a pipe (opaque: whole member).
-                    let container = self.open_random(&op_plan.children[0])?;
+                    let container =
+                        self.open_random(&op_plan.children[0], Children::Materialize)?;
                     let (w, r, h) = pipe::pipe();
                     let host = Arc::clone(&self.extractor_host);
                     let component = component.clone();
@@ -958,13 +963,14 @@ impl<'s> Executor<'s> {
     fn open_builtin_sequential(&self, op_plan: &OpPlan) -> Result<Box<dyn Read + Send>, ExecError> {
         match &op_plan.op {
             OpImpl::Assemble(params) => {
-                let children = self.open_children_random(&op_plan.children)?;
+                let children =
+                    self.open_children_random(&op_plan.children, Children::Materialize)?;
                 let node =
                     AssembleRandom::new(params.clone(), children).map_err(ExecError::Malformed)?;
                 Ok(Box::new(SeqOverRandom::new(Box::new(node))))
             }
             OpImpl::Deflate { offset, len } => {
-                let container = self.open_random(&op_plan.children[0])?;
+                let container = self.open_random(&op_plan.children[0], Children::Materialize)?;
                 Ok(Box::new(flate2::read::DeflateDecoder::new(WindowSeq::new(
                     container, *offset, *len,
                 ))))
@@ -978,8 +984,9 @@ impl<'s> Executor<'s> {
     fn open_children_random(
         &self,
         children: &[Plan],
+        mode: Children,
     ) -> Result<Vec<Box<dyn RangeRead>>, ExecError> {
-        children.iter().map(|c| self.open_random(c)).collect()
+        children.iter().map(|c| self.open_random(c, mode)).collect()
     }
 
     fn open_transform_inputs(
@@ -991,7 +998,9 @@ impl<'s> Executor<'s> {
         for (ix, child) in children.iter().enumerate() {
             let ix32 = u32::try_from(ix).expect("input count fits u32");
             if random_access_inputs.contains(&ix32) {
-                inputs.push(StreamInput::RandomAccess(self.open_random(child)?));
+                inputs.push(StreamInput::RandomAccess(
+                    self.open_random(child, Children::Materialize)?,
+                ));
             } else {
                 inputs.push(StreamInput::Sequential(SequentialInput {
                     reader: self.open_sequential(child)?,
@@ -1002,16 +1011,20 @@ impl<'s> Executor<'s> {
         Ok(inputs)
     }
 
-    /// Random access over a plan node. Affine nodes translate; a
-    /// declared-seekable wasm node serves each window through
-    /// `serve-range` in place (D111 — the XGD1 filler stream under a
-    /// disc's assemble is the first consumer: spilling it would
-    /// regenerate gigabytes per range read of the disc); everything
-    /// else spills to a temp file first (the spill rule: correctness
-    /// first, the planner treats spills as cost). Bytes a child serves
-    /// are verified by whoever consumes the top-level window (D49), so
-    /// a lying child cannot serve — it can only fail the parent's check.
-    fn open_random(&self, plan: &Plan) -> Result<Box<dyn RangeRead>, ExecError> {
+    /// Random access over a plan node. Affine nodes translate; under
+    /// [`Children::ServeInPlace`] a declared-seekable wasm node serves
+    /// each window through `serve-range` (D111 — the XGD1 filler stream
+    /// under a disc's assemble is the first consumer: spilling it would
+    /// regenerate gigabytes per range read of the disc); everything else
+    /// spills to a temp file first (the spill rule: correctness first,
+    /// the planner treats spills as cost). In-place bytes are verified
+    /// by whoever consumes the top-level window (D49), so a lying child
+    /// cannot serve — it can only fail the parent's check, which then
+    /// quarantines it. Materialization (replay, sequential streams,
+    /// spills) passes [`Children::Materialize`]: there the whole-output
+    /// claim check is the verifier, and a seek-path lie must not be able
+    /// to poison a recipe that is not lying.
+    fn open_random(&self, plan: &Plan, mode: Children) -> Result<Box<dyn RangeRead>, ExecError> {
         match plan {
             Plan::Literal { hash, .. } => {
                 let file = self
@@ -1022,7 +1035,7 @@ impl<'s> Executor<'s> {
             }
             Plan::Op(op_plan) => match &op_plan.op {
                 OpImpl::Assemble(params) => {
-                    let children = self.open_children_random(&op_plan.children)?;
+                    let children = self.open_children_random(&op_plan.children, mode)?;
                     Ok(Box::new(
                         AssembleRandom::new(params.clone(), children)
                             .map_err(ExecError::Malformed)?,
@@ -1034,8 +1047,10 @@ impl<'s> Executor<'s> {
                     params,
                     seek,
                     ..
-                } if *seek != datboi_runtime::SeekClass::Opaque => {
-                    let children = self.open_children_random(&op_plan.children)?;
+                } if mode == Children::ServeInPlace
+                    && *seek != datboi_runtime::SeekClass::Opaque =>
+                {
+                    let children = self.open_children_random(&op_plan.children, mode)?;
                     Ok(Box::new(TransformRandom {
                         host: Arc::clone(&self.stream_host),
                         transform: Arc::clone(transform),
@@ -1248,7 +1263,7 @@ impl<'s> Executor<'s> {
                         "extractor recipe must claim exactly one member output".into(),
                     ));
                 }
-                let container = self.open_random(&children[0])?;
+                let container = self.open_random(&children[0], Children::Materialize)?;
                 let fuel = fuel_budget(&children, &outputs);
                 let host = Arc::clone(&self.extractor_host);
                 let component = Arc::clone(component);
@@ -1374,6 +1389,17 @@ impl Write for VecSink {
     }
 }
 
+/// How `open_random` treats a declared-seekable wasm child (D111).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Children {
+    /// Spill through the known-good sequential `run` — replay and every
+    /// other materialization; a seek-path lie cannot reach a claim check.
+    Materialize,
+    /// Serve each window through `serve-range`, verified by the
+    /// top-level window's outboard — the D49 range path.
+    ServeInPlace,
+}
+
 /// Random access over a declared-seekable wasm node (D111): every
 /// `read_at` is one `serve-range` call on a fresh deterministic
 /// instance, with the node's children shared across calls behind a
@@ -1478,6 +1504,24 @@ fn fuel_budget(children: &[Plan], outputs: &[(Blake3, u64)]) -> u64 {
                 .fold(0u64, u64::saturating_add),
         );
     fuel_for_bytes(bytes)
+}
+
+/// DFS for the first transform node the in-place child path would run
+/// (declared seekable; quarantine already downgraded the rest to opaque
+/// at plan time) — the component a composite's window-verify failure
+/// indicts (D49 rule 3 through D111's `open_random`).
+fn first_seekable_transform(plan: &Plan) -> Option<Blake3> {
+    let Plan::Op(op_plan) = plan else {
+        return None;
+    };
+    if let OpImpl::Transform {
+        component, seek, ..
+    } = &op_plan.op
+        && *seek != datboi_runtime::SeekClass::Opaque
+    {
+        return Some(*component);
+    }
+    op_plan.children.iter().find_map(first_seekable_transform)
 }
 
 /// DFS for the transform node running `component`; returns its children —

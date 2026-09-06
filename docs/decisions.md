@@ -3330,3 +3330,17 @@ v1.02 — so a table piece is its declared bytes and the slack
 classifies like a file tail; the multiple-of-2048 refusal was wrong
 and is gone. The wiki's "always a multiple of 0x800" is a lie the
 first seed-era disc disproved.
+*Amendment (same day, verified ranges on the composite):* the
+in-place child path is the RANGE path only. `open_random` takes a
+mode: range serving (`produce_range`) serves a seekable wasm child
+through `serve-range`, and a window that fails the composite's
+outboard check indicts that child exactly as a top-level seek path
+would (quarantine, then the next read spills it through `run`);
+materialization — replay, sequential streams, spills — always spills
+the child through `run`, so a seek-path lie can never reach a claim
+check and poison a recipe that is not lying (D49's two verifiers stay
+on their own paths). Gate: a lying reference-stream child under an
+assemble is caught through the composite, quarantined, and served
+correctly on the next read. On the real disc the spill-based replay
+is faster than per-window instantiation (full rebuild 15 s, swap
+25 s).

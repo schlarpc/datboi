@@ -532,6 +532,129 @@ fn lying_seek_path_is_quarantined_and_falls_back() {
     assert_eq!(got, &swapped[4096..4196]);
 }
 
+/// D111: a seekable wasm node UNDER an assemble serves its windows in
+/// place, and the composite's verification still catches its lies —
+/// the child component is quarantined exactly as a top-level seek path
+/// would be, and the next read of the composite spills the (now opaque)
+/// child through the honest sequential path.
+#[test]
+fn lying_seekable_child_of_an_assemble_is_caught_and_quarantined() {
+    use datboi_core::assemble::{AssembleParams, Segment};
+
+    let mut w = world();
+    let payload = pattern(80_000);
+    let swapped = byteswap(&payload);
+    // The prefix spans whole bao groups (16 KiB), so a window inside it
+    // never pulls the child into the verified group.
+    let prefix = pattern(32_768);
+    let mut composite = prefix.clone();
+    composite.extend_from_slice(&swapped[1000..70_000]);
+
+    let (component_hash, _) = w.put_literal(COMPONENT);
+    let (payload_hash, _) = w.put_literal(&payload);
+    let (prefix_hash, _) = w.put_literal(&prefix);
+    let (swapped_hash, _) = w.claim_absent(&swapped);
+    let (composite_hash, _) = w.claim_absent(&composite);
+    let child = Recipe {
+        op: Op::Wasm {
+            component: component_hash,
+            world: WasmWorld::Transform1,
+            export: "byteswap-lying-range".into(),
+        },
+        inputs: vec![InputRef {
+            hash: payload_hash,
+            role: None,
+        }],
+        outputs: vec![OutputRef {
+            hash: swapped_hash,
+            size: swapped.len() as u64,
+            name: None,
+        }],
+        params: Vec::new(),
+    };
+    w.mint_recipe(&child, SeekClass::Affine);
+    let parent = Recipe {
+        op: Op::Builtin {
+            name: "assemble".into(),
+            major: 1,
+        },
+        inputs: vec![
+            InputRef {
+                hash: prefix_hash,
+                role: None,
+            },
+            InputRef {
+                hash: swapped_hash,
+                role: None,
+            },
+        ],
+        outputs: vec![OutputRef {
+            hash: composite_hash,
+            size: composite.len() as u64,
+            name: None,
+        }],
+        params: AssembleParams {
+            segments: vec![
+                Segment::BlobRange {
+                    input_ix: 0,
+                    offset: 0,
+                    len: prefix.len() as u64,
+                },
+                Segment::BlobRange {
+                    input_ix: 1,
+                    offset: 1000,
+                    len: 69_000,
+                },
+            ],
+        }
+        .encode()
+        .expect("params"),
+    };
+    let parent_id = w.mint_recipe(&parent, SeekClass::Affine);
+
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+    // Sequential replay is honest (the child's `run` tells the truth),
+    // so the composite licenses; the child is never materialized.
+    exec.replay(&w.db, parent_id).expect("honest replay");
+    w.evict(&composite_hash);
+    assert!(
+        !w.store.has(StoreNs::Data, &swapped_hash),
+        "child stays derived"
+    );
+
+    // A window inside the prefix never touches the child: served, verified.
+    let got = exec
+        .serve_range(&w.db, &composite_hash, 100, 200)
+        .expect("prefix window");
+    assert_eq!(got, &composite[100..300]);
+    let got = exec
+        .serve_range(&w.db, &composite_hash, 16_000, 500)
+        .expect("prefix window, second group");
+    assert_eq!(got, &composite[16_000..16_500]);
+    assert!(!w.db.is_seek_quarantined(&component_hash).expect("q"));
+
+    // A window inside the child's span: the lie fails the COMPOSITE's
+    // outboard check; no bytes surface; the child component is indicted.
+    let err = exec
+        .serve_range(&w.db, &composite_hash, 50_000, 100)
+        .expect_err("lie caught through the composite");
+    assert!(
+        matches!(err, ExecError::RangeVerifyFailed { .. }),
+        "EIO class, never bytes: {err}"
+    );
+    assert!(
+        w.db.is_seek_quarantined(&component_hash).expect("q"),
+        "the seekable child is quarantined (D49 rule 3 through D111)"
+    );
+
+    // Next read: the child plans opaque, spills through its honest
+    // sequential path, and the composite window verifies.
+    let got = exec
+        .serve_range(&w.db, &composite_hash, 50_000, 100)
+        .expect("sequential fallback");
+    assert_eq!(got, &composite[50_000..50_100]);
+}
+
 /// Quarantine attribution (D49 rule 3, refined): a window-verify failure
 /// caused by a CORRUPT INPUT must not defame the component. Same honest
 /// component as `served_ranges_verify_after_eviction`, but the input
