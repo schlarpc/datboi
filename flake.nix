@@ -143,6 +143,7 @@
         "datboi-xf-reference-stream"
         "datboi-xf-xgd1-prng"
         "datboi-xf-gc-junk"
+        "datboi-xf-wii-crypt"
         "datboi-ex-unrar"
         "datboi-ex-7z"
       ];

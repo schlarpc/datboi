@@ -22,6 +22,8 @@ datboi-xf-ecm = { path = "../datboi-xf-ecm" }
 # generates the expected stream natively and asserts the component agrees.
 datboi-xf-xgd1-prng = { path = "../datboi-xf-xgd1-prng" }
 datboi-xf-gc-junk = { path = "../datboi-xf-gc-junk" }
+# And the Wii partition crypto (D116): AES + SHA-1 tree, wasm vs native.
+datboi-xf-wii-crypt = { path = "../datboi-xf-wii-crypt" }
 blake3.workspace = true
 wat.workspace = true
 

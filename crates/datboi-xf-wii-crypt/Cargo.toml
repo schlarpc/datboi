@@ -1,0 +1,41 @@
+[package]
+name = "datboi-xf-wii-crypt"
+description = "Wii partition body encryption for the datboi:transform@1 world (D116): `encrypt {title-key, title-id, sectors}` re-derives the per-sector SHA-1 hash tree (H0/H1/H2 over 2 MiB groups) from a plaintext partition and AES-128-CBC encrypts it under the title key unwrapped by the common-key input; `decrypt` is its sector-granular inverse. Seekable at hash-group granularity, so an evicted disc serves ranges through it in place; the same crate is the twin the analyzer verifies with natively"
+version = "0.1.0"
+edition = "2024"
+authors = ["Chaz Schlarp"]
+license = "MIT"
+repository = "https://github.com/schlarpc/datboi"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# RustCrypto, no_std-capable, pure Rust on wasm32 (fixsliced AES) and
+# AES-NI-accelerated natively for the analyzer's verify-at-discovery
+# pass. Pinned exactly: the component's bytes are its identity.
+aes = { version = "=0.8.4", default-features = false }
+sha1 = { version = "=0.10.6", default-features = false }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+datboi-guest-transform = { path = "../datboi-guest-transform" }
+
+# Standalone workspace ON PURPOSE (D54): each transform builds against its
+# own lockfile so sibling crates can't perturb its bytes through shared
+# dependency resolution — component identity must be reproducible from
+# this directory alone (plus ../wit and ../datboi-guest-transform).
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+# Transforms are content-addressed artifacts: favor small, stable output.
+# AES and SHA-1 dominate; the fixsliced AES is already vectorized by
+# hand, so opt-level s costs little over 3 and keeps the artifact small.
+opt-level = "s"
+lto = true
+strip = true
