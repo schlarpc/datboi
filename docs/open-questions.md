@@ -158,6 +158,13 @@ Each of these wants its D entry before (or as) the code lands.
   Rulings owed at build time: GPL-3.0 component embedded in the MIT
   server binary; the analysis-time forward `pack` op through the
   stream host.
+- **JPEG recompression (Lepton, Rust port)**: feasibility proven,
+  design recorded beside balrogg's in [transforms.md](transforms.md)
+  (2026-09-06). Pure-Rust preflate/ecm shape, Apache-2.0, nothing to
+  rule — one upstream cfg patch for wasm32 (`Instant::now`) to land
+  or carry. Deferred on corpus relevance; triggers: an ISO9660
+  analyzer, a census finding JPEG members, or an artwork/media-
+  library scope ruling.
 - Shard fanout + inline-outboard threshold: frozen-by-default; the
   gating NFS benchmark is indefinitely deferred (D36 amendment).
 - Detector registry ordering + canonical-orientation preference:

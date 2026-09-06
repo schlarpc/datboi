@@ -146,3 +146,50 @@ structurally free.
   members, or M7 LZMA param discovery starts — that work needs
   exactly this shape (a C encoder cross-compiled to wasm, run FORWARD
   from an analyzer) and balrogg is a two-session pathfinder for it.
+- **JPEG — Lepton via the Rust port, feasible, deferred (research
+  pass, 2026-09-06).** Dropbox's Lepton (C++, archived 2023-02-14)
+  lives on as Microsoft's
+  [lepton_jpeg](https://github.com/microsoft/lepton_jpeg_rust) (pure
+  Rust, Apache-2.0, 0.5.8 of 2026-06, actively maintained; Dropbox's
+  own deprecation notice points at it). Split: headers zlib'd, scan
+  data Huffman-decoded then re-coded with a VP8 CABAC over an integer
+  predictor — ~22% on real photos; baseline AND progressive; refuses
+  arithmetic-coded, 12-bit, lossless (errors, not panics — the
+  transform world's polite refusal path, unlike balrogg's exit()).
+  Proven in-session on synthetic 0.1–3.8 MB baseline/progressive/
+  4:2:0/grayscale samples: 19–39% smaller, native encode 6–11 MB/s and
+  decode 5–12 MB/s single-threaded, roundtrip exact, output bytes
+  IDENTICAL across repeat runs, across thread counts (partitioning is
+  a format parameter, `max_partitions`, not a thread-count artifact),
+  and across native vs wasm builds (hash-compared). It is the
+  preflate/ecm shape EXACTLY, not balrogg's: the analyzer calls the
+  crate natively for the split (threads welcome — bytes are
+  thread-independent) and the recipe pins `unpack` in a
+  `datboi-xf-lepton` transform component, exact-pinned dep like
+  xf-cso's miniz_oxide, opaque seek class (CABAC; the up-to-8
+  horizontal partitions are a someday coarse-range hook). No
+  C-to-wasm lane, no forward wasm op. The one wrinkle: the crate calls
+  `std::time::Instant` for its metrics on non-Windows targets, which
+  traps on wasm32-unknown-unknown (`Instant::now` is unimplemented
+  there). A ~12-line cfg patch (metrics.rs `CpuTimeMeasure` → unit +
+  `Duration::ZERO` on wasm32; one `Instant::now()` in
+  lepton_file_writer.rs routed through it) yields a ZERO-import
+  component; upstream PR is the right home, `[patch.crates-io]` on a
+  fork rev the interim (D66 fetch+patch posture, Rust flavour; nix
+  needs the git dep's outputHash in the crane args). wasm roundtrip
+  (encode+decode) of the 3.8 MB sample: 1.4 s including JIT, ~2×
+  native; peak ~100 MiB. Memory is 2 B/coefficient (pixels × components
+  × 2), so the crate's default 16386-px dimension cap can exceed the
+  1 GiB linear-memory ceiling on 4:4:4 — a trap there is a Negative,
+  fine, but the analyzer should pre-gate on dimensions. Pin the
+  `EnabledFeatures` inside the op (the compat knobs for C++-lepton
+  interop change bytes; we never interoperate). Skip
+  `encode_lepton_verify` (1.9× encode): D4/D25 replay is the
+  verification. WHY deferred: JPEG is commoner than Ogg near a ROM
+  corpus but still not IN console dumps — Switch NACP icons are JPEG
+  but ~100 KB, PC discs need ISO9660 first, and the real reservoir
+  (box art / screenshot / manual-scan media libraries) is a scope
+  datboi has not ruled on. Triggers: an ISO9660 analyzer, a corpus
+  census finding JPEG members, or an artwork/media-library scope
+  ruling. Build cost when it fires: under a session — it is xf-cso
+  with a different crate.
