@@ -299,7 +299,7 @@ fn params_key(family: &str) -> String {
 /// `analyzer` subcommand and the daemon's `/v1/analyzers` surface agree
 /// on (D96) — a family added here appears on both without a second edit.
 pub const FAMILIES: &[&str] = &[
-    "noop", "chunk", "preflate", "ecm", "nds", "xdvdfs", "iso9660",
+    "noop", "chunk", "preflate", "ecm", "nds", "xdvdfs", "iso9660", "gcm",
 ];
 
 /// Is the family enabled? Absent means yes (opt-out policy).

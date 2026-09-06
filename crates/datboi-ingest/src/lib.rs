@@ -27,6 +27,7 @@
 
 pub mod analyzers;
 pub mod archive;
+pub mod gcm;
 pub mod iso9660;
 pub mod narc;
 pub mod nds;

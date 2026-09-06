@@ -21,6 +21,7 @@ exclude = [
   "crates/datboi-xf-reference",
   "crates/datboi-xf-reference-stream",
   "crates/datboi-xf-xgd1-prng",
+  "crates/datboi-xf-gc-junk",
   "crates/datboi-ex-unrar",
   "crates/datboi-ex-7z",
   # The emu lane (D84) is standalone AND nightly-only (dust-core);

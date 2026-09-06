@@ -521,14 +521,17 @@ impl Db {
     /// decomposition route serves; the planner re-derives inputs from
     /// the returned id).
     ///
-    /// A route with an input at least as large as its output is a
-    /// VIEW, not a decomposition — a piece's own slice of its container
-    /// (D83), a NARC member's slice of the NARC (D94), the XISO and
-    /// video-volume views of a redump image (D113). Packing a whole to
-    /// free a part can never clear the reclaim floor (D112), so those
-    /// routes are excluded here rather than rejected one
-    /// `rebuild_inputs` round-trip at a time (1,220 rows on a swapped
-    /// Xbox pair). The exclusion is per ROUTE, not per blob: a bare
+    /// A route with a NON-GENERATED input at least as large as its
+    /// output is a VIEW, not a decomposition — a piece's own slice of
+    /// its container (D83), a NARC member's slice of the NARC (D94),
+    /// the XISO and video-volume views of a redump image (D113).
+    /// Packing a whole to free a part can never clear the reclaim floor
+    /// (D112), so those routes are excluded here rather than rejected
+    /// one `rebuild_inputs` round-trip at a time (1,220 rows on a
+    /// swapped Xbox pair). A generated input (a zero-input recipe's
+    /// output — the GameCube junk stream spans the disc's whole address
+    /// space, D115) is never packed and so never makes a route a view.
+    /// The exclusion is per ROUTE, not per blob: a bare
     /// XISO ingested after its redump image carries both the image's
     /// view claim (older, lower id) and its own base-0 decomposition,
     /// and MIN over all routes would have handed the swap the view and
@@ -545,7 +548,13 @@ impl Db {
                AND NOT EXISTS (SELECT 1 FROM recipe_input ri
                                JOIN blob bi ON bi.blob_id = ri.blob_id
                                WHERE ri.recipe_id = r.recipe_id
-                                 AND bi.size >= ro.size)
+                                 AND bi.size >= ro.size
+                                 AND NOT EXISTS (
+                                   SELECT 1 FROM recipe_output go
+                                   JOIN recipe g ON g.recipe_id = go.recipe_id
+                                   WHERE go.blob_id = bi.blob_id AND g.verify != 2
+                                     AND NOT EXISTS (SELECT 1 FROM recipe_input gi
+                                                     WHERE gi.recipe_id = g.recipe_id)))
              GROUP BY b.blob_id
              ORDER BY b.size DESC, b.blob_id",
         )?;

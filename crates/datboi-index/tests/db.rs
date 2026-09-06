@@ -1540,4 +1540,20 @@ fn swap_candidates_skip_view_routes_but_keep_decompositions() {
             .collect::<Vec<_>>(),
         vec![(xiso, decomposition)]
     );
+
+    // A GENERATED input as large as the output (a junk stream over the
+    // disc's whole address space, D115) is never packed, so it does not
+    // make the route a view: the disc stays a candidate.
+    let disc = sized(&db, b"disc", 900, Residency::Resident);
+    let junk = sized(&db, b"junk", 900, Residency::Absent);
+    let f1 = sized(&db, b"f1", 500, Residency::Absent);
+    route(&mut db, b"r:junk", &[], junk, 900);
+    let rebuild = route(&mut db, b"r:disc", &[f1, junk], disc, 900);
+    let cands = db.swap_candidates().expect("candidates");
+    assert!(
+        cands
+            .iter()
+            .any(|c| (c.blob_id, c.recipe_id) == (disc, rebuild)),
+        "{cands:?}"
+    );
 }

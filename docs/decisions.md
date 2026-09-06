@@ -3526,3 +3526,79 @@ D111 "piece IS the file" principle is about partial sectors, not
 about storing zeros); an explicit "declines XDVDFS images" guard
 (coupling where the residue gate already concludes); a raw-sector
 mode (a different sector pitch is a different lane).
+
+## D115 — GameCube decomposition + junk regeneration: `gcm-split/1` is D111 on a positional generator (2026-09-06)
+
+A GameCube disc is pure concatenation — boot.bin and bi2.bin at 0,
+the apploader at 0x2440, the DOL and the FST where the boot block
+points, files at absolute FST offsets — and every unused byte is
+written by Nintendo's mastering tool from a lagged Fibonacci
+generator (`k = 521, j = 32`, Dolphin's reconstruction, `nod`'s port)
+that is RESEEDED at every 32 KiB sector from the first four bytes of
+the game ID, the disc number and the sector index. So junk is a pure
+function of position: byte `x` of the disc is `LFG(seed(id, disc,
+x / 32 KiB))[x % 32 KiB]`, no stream state crosses a data extent,
+and nothing is consumed by the data in between — simpler than XGD1,
+where the stream advances only over filler sectors and security
+ranges eat it. Ruled: (1) **the junk stream is a zero-input recipe
+over the disc's whole address space** — `xf-gc-junk fill {id, disc,
+len}` → J, `len` the image length — and the disc's rebuild is a
+builtin assemble whose junk segments are ranges of J at the SAME
+offsets the junk occupies on the disc; the component knows only the
+generator (`serve-range` reseeds the sector and skips), assemble
+composes. J's identity is shared by every disc pressed under one
+game ID and disc number (revisions: Doubutsu no Mori + and its Rev 1
+claim the same J), and never stored. (2) **Prediction + equality,
+per byte.** The analyzer generates the expected junk for each gap
+once and walks the gap as runs: junk where the disc equals the
+generator for at least 16 bytes (2^-128 by chance) or to the run's
+end, fill where one byte value holds for 512 bytes or to the end,
+residue up to wherever the next junk or fill run begins — linear,
+via run lengths precomputed backwards. A file's slack within its last
+sector is junk from the byte after the file (the mastering tool
+writes junk into every unused byte), and the walk confirms it: four
+real discs leave 30 to 339 BYTES of residue each. A wrong guess
+costs residue, never a wrong claim; D4 replay is the proof. A
+zero-padded or NKit-scrubbed master matches nothing, claims no J,
+publishes no component — its pad is fills. (3) **System pieces are
+named ndstool-style** (`sys/bi2.bin`, `sys/apploader.img`,
+`sys/main.dol`, `sys/fst.bin`; boot.bin is 0x440 bytes and rides as
+a literal), files by FST path; two FST entries over one extent are
+one piece. The DOL's length is the end of its furthest section, the
+apploader's its header's code + trailer sizes. Piece volume rides
+`gcm:max-pieces` (molten, 4096) with the D111 coalescing rule. (4)
+**The swap's view filter lets generated inputs through** (D112
+tail, amended here): J is exactly as large as the disc, and a route
+with an input at least as large as its output is a view — unless
+that input is generated, which is never packed and so never the
+"whole" a slice comes from. Nothing about the disc's size is
+assumed: a trimmed image is walked as far as it goes and an FST
+extent past the end is a refusal. A Wii disc (magic at 0x18) is a
+settled Negative naming the other family. Measured on the day (all
+from archive.org, redump-verified): Doubutsu no Mori + (Japan) —
+12 files, 97.4% of the 1.46 GB disc is junk, 32 bytes of residue;
+Rally Championship (USA) — 228 files, 61.9% junk, 339 bytes of
+residue; walks in 3.6–5.3 s of which most is generating and hashing
+J once. Through the whole pipeline on a fresh store: Doubutsu no
+Mori + (Rev 1) packs 37.9 MB and evicts the 1.46 GB disc (swap 9 s,
+full rebuild through the component 8.3 s, verified ranges 10 ms);
+Rally Championship (USA) packs 556 MB. Pairs: the USA/Europe Rally
+discs (different game IDs, so different junk streams) share 99.8% of
+their file bytes and the pair sits at 19.1% of raw after one swap
+pass; the two Doubutsu revisions (one game ID, one J) sit at 2.5% of
+raw. RVZ and NKit forms are NOT ingest forms yet: decoding is
+deterministic (nod's decode of an RVZ reproduces the redump hash),
+but a byte-exact RVZ rebuild pins a compressor, and that is its own
+ruling; the corpus's RVZ discs were decoded offline for these
+gates. Wii is the next family (partitions, the D12 key as an input,
+the same generator inside a partition) and needs its rulings first.
+*Rejected:* one stream that advances only over junk (the XGD1 shape
+— wrong for a positional generator, and it would make J unique per
+disc where the disc address space makes it shared per title); a
+per-gap `fill {id, disc, offset, len}` recipe (thousands of
+zero-input recipes where one range of one stream does); trusting the
+1.46 GB size (an image is what it is); treating the junk after a
+file's end as slack to classify by shape (it is junk, and it
+verifies as junk); depending on the `nod` crate at runtime (the
+generator is 80 lines and must be component-frozen; nod stays the
+reference and the decoder for RVZ/NKit offline).

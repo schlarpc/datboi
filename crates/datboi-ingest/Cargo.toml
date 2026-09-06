@@ -27,6 +27,7 @@ datboi-xf-ecm = { path = "../datboi-xf-ecm" }
 # the seed and verifies every stream sector with the crate the component
 # regenerates from.
 datboi-xf-xgd1-prng = { path = "../datboi-xf-xgd1-prng" }
+datboi-xf-gc-junk = { path = "../datboi-xf-gc-junk" }
 thiserror.workspace = true
 # D92: analyzers consume the logical CAS — the refine sweep reads
 # absent-but-grounded blobs through the executor (bounded spill).

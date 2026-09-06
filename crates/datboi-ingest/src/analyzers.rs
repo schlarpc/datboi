@@ -59,7 +59,7 @@ const SKELETON_LIMIT: u64 = 64 * 1024 * 1024;
 /// its own sweep analyzer but shares the `nds` config family, so the two
 /// vocabularies are deliberately distinct.
 pub const SWEEP_ANALYZERS: &[&str] = &[
-    "noop", "chunk", "preflate", "ecm", "nds", "narc", "xdvdfs", "iso9660",
+    "noop", "chunk", "preflate", "ecm", "nds", "narc", "xdvdfs", "iso9660", "gcm",
 ];
 
 /// Construct a sweep analyzer by name — the shared factory both the CLI
@@ -87,6 +87,7 @@ pub fn sweep_roster() -> Vec<Box<dyn Analyzer>> {
         Box::new(NarcAnalyzer),
         Box::new(XdvdfsAnalyzer::new()),
         Box::new(Iso9660Analyzer),
+        Box::new(GcmAnalyzer::new()),
         Box::new(ChunkAnalyzer),
     ];
     roster.sort_by_key(|a| a.class());
@@ -104,6 +105,7 @@ pub fn analyzer_for(name: &str) -> Option<Box<dyn Analyzer>> {
         "narc" | "narc-split" => Box::new(NarcAnalyzer),
         "xdvdfs" | "xdvdfs-split" | "xiso" => Box::new(XdvdfsAnalyzer::new()),
         "iso9660" | "iso9660-split" | "iso" => Box::new(Iso9660Analyzer),
+        "gcm" | "gcm-split" | "gamecube" | "gcn" => Box::new(GcmAnalyzer::new()),
         _ => return None,
     })
 }
@@ -1579,6 +1581,195 @@ impl Analyzer for XdvdfsAnalyzer {
                 layout
                     .layout_tool_build
                     .map_or_else(|| "absent".to_owned(), |b| b.to_string()),
+            )),
+        })
+    }
+}
+
+/// The canonical `xf-gc-junk` component, embedded like xf-xgd1-prng's.
+pub const XF_GC_JUNK_WASM: &[u8] = include_bytes!(concat!(
+    env!("DATBOI_COMPONENTS_DIR"),
+    "/datboi_xf_gc_junk.wasm"
+));
+
+/// GameCube disc decomposition (D115): a GameCube image split into
+/// system pieces (bi2, apploader, DOL, FST) and per-file pieces (the
+/// D83 shape) with the mastering junk REGENERATED: every unused byte
+/// is verified against the lagged-Fibonacci generator seeded from the
+/// game ID, disc number and position, and the rebuild references a
+/// zero-input `fill` recipe's output at the same offsets instead of
+/// storing the junk (D111's shape on a positional generator). Zero
+/// pads are fills; residue stays literal. Nothing is claimed that was
+/// not matched byte-for-byte at discovery, and D4 replay proves the
+/// recipe before any literal drops.
+pub struct GcmAnalyzer {
+    component_published: bool,
+}
+
+impl GcmAnalyzer {
+    const VERSIONED_NAME: &'static str = "gcm-split/1";
+    /// Piece cap (molten policy `gcm:max-pieces`): past it, pieces are
+    /// contiguous data runs instead of files.
+    const DEFAULT_MAX_PIECES: usize = 4096;
+    /// Role the junk stream carries on the rebuild's input list.
+    const JUNK_ROLE: &'static str = "gc-junk";
+
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            component_published: false,
+        }
+    }
+
+    /// blake3 of the embedded component — the hash `fill` recipes pin.
+    #[must_use]
+    pub fn component_hash() -> Blake3 {
+        Blake3::compute(XF_GC_JUNK_WASM)
+    }
+
+    fn ensure_component(&mut self, store: &Store, db: &mut Db) -> Result<i64, String> {
+        let hash = Self::component_hash();
+        if !self.component_published {
+            store
+                .put(StoreNs::Data, hash, XF_GC_JUNK_WASM)
+                .map_err(|e| e.to_string())?;
+            self.component_published = true;
+        }
+        db.upsert_blob(
+            &hash,
+            Some(XF_GC_JUNK_WASM.len() as u64),
+            IndexNs::Data,
+            Residency::Resident,
+        )
+        .map_err(|e| e.to_string())
+    }
+}
+
+impl Default for GcmAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Analyzer for GcmAnalyzer {
+    fn name(&self) -> &'static str {
+        Self::VERSIONED_NAME
+    }
+
+    fn class(&self) -> AnalyzerClass {
+        AnalyzerClass::Structural
+    }
+
+    fn family(&self) -> &'static str {
+        "gcm"
+    }
+
+    fn id(&self) -> Blake3 {
+        analyzer_tag(Self::VERSIONED_NAME)
+    }
+
+    fn analyze(
+        &mut self,
+        item: &SweepItem,
+        bytes: &Logical<'_, '_>,
+        store: &Store,
+        db: &mut Db,
+        pulse: &mut dyn Pulse,
+    ) -> Result<AnalysisResult, String> {
+        let file = bytes.open(item, db, pulse)?;
+        let mut img = TickRandom { inner: file, pulse };
+
+        let max_pieces = db
+            .config_get("gcm:max-pieces")
+            .map_err(|e| e.to_string())?
+            .and_then(|v| std::str::from_utf8(&v).ok()?.trim().parse::<usize>().ok())
+            .unwrap_or(Self::DEFAULT_MAX_PIECES);
+
+        let layout = match crate::gcm::parse_layout(&mut img, max_pieces) {
+            Ok(layout) => layout,
+            Err(crate::gcm::GcmError::Refused(refusal)) => {
+                return Ok(AnalysisResult {
+                    outcome: AnalysisOutcome::Negative,
+                    detail: Some(refusal.to_string()),
+                });
+            }
+            Err(crate::gcm::GcmError::Io(e)) => return Err(format!("reading image: {e}")),
+        };
+
+        // The junk stream: an absent claim grounded by its own
+        // zero-input recipe (D111/D115) — regenerated, never stored.
+        let mut externs: Vec<(Blake3, &str)> = Vec::new();
+        if let Some(junk) = layout.junk {
+            let component_hash = Self::component_hash();
+            self.ensure_component(store, db)?;
+            if db
+                .blob_by_hash(&junk.hash)
+                .map_err(|e| e.to_string())?
+                .is_none()
+            {
+                db.upsert_blob(&junk.hash, Some(junk.len), IndexNs::Data, Residency::Absent)
+                    .map_err(|e| e.to_string())?;
+            }
+            let (params, n) = datboi_xf_gc_junk::params::Params {
+                id: junk.id,
+                disc: junk.disc,
+                len: junk.len,
+            }
+            .encode();
+            let fill = Recipe {
+                op: Op::Wasm {
+                    component: component_hash,
+                    world: World::Transform1,
+                    export: "fill".into(),
+                },
+                inputs: Vec::new(),
+                outputs: vec![OutputRef {
+                    hash: junk.hash,
+                    size: junk.len,
+                    name: Some(Self::JUNK_ROLE.into()),
+                }],
+                params: params[..n].to_vec(),
+            };
+            crate::mint_recipe(store, db, &fill, SeekClass::Affine).map_err(|e| e.to_string())?;
+            externs.push((junk.hash, Self::JUNK_ROLE));
+        }
+
+        mint_decomposition(
+            store,
+            db,
+            item.hash,
+            layout.total_len,
+            &layout.pieces,
+            &layout.regions,
+            layout.empty_files,
+            &externs,
+            &mut img,
+        )?;
+
+        Ok(AnalysisResult {
+            outcome: AnalysisOutcome::Positive,
+            detail: Some(format!(
+                "split into {} piece(s) ({} file(s), {} dir(s), {} empty{}); game {} disc {}; junk {} B ({:.1}%){}; {} B fill; {} residual byte(s)",
+                layout.pieces.len(),
+                layout.file_count,
+                layout.dir_count,
+                layout.empty_files,
+                if layout.coalesced {
+                    ", coalesced into extents"
+                } else {
+                    ""
+                },
+                String::from_utf8_lossy(&layout.game_id),
+                layout.disc,
+                layout.junk_bytes,
+                layout.junk_bytes as f64 * 100.0 / layout.total_len.max(1) as f64,
+                if layout.junk.is_some() {
+                    " regenerated"
+                } else {
+                    " — none matched, nothing regenerated"
+                },
+                layout.fill_bytes,
+                layout.residual_bytes,
             )),
         })
     }

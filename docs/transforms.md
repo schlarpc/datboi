@@ -52,6 +52,7 @@ verify-without-materializing.
 | bin/cue split, 2352↔2048 | both | yes | yes | no | |
 | CHD | both | **not across chdman versions** | yes | no | pin one impl as versioned wasm module; MAME dats hash the *container*, so byte-repro matters. chd-rs = pure-Rust read |
 | CSO/ZSO/DAX | out | per settings | yes | no | |
+| GameCube decomposition + junk regen | in | yes | yes | no | native parser, all assemble@1 (D115): bi2/apploader/DOL/FST + FST files as pieces; junk = zero-input `xf-gc-junk fill {id, disc, len}` over the disc's address space (positional LFG reseeded per 32 KiB), verified byte-for-byte; 62–97% of real discs regenerated, ≤ 339 B residue |
 | RVZ (GC/Wii) | both | per version | yes incl. junk regen | no | `nod` crate (pure Rust r+w) near-free; read NKit, never write it |
 | XDVDFS decomposition (Xbox/360 redump + XISO) | in | yes | yes | no | native parser, all assemble@1 (D111): files/dir tables as pieces; XGD1 seed-era filler = zero-input `xf-xgd1-prng fill` stream, security ranges + pads = fills; rc4-era filler stays literal gap pieces. Video partition walked as ISO9660, files as pieces (D113) |
 | ISO9660 decomposition (PS2/PSP/PC cooked images, DVD-Video) | in | yes | yes | no | native parser, all assemble@1 (D114): the D113 walker one level up — primary tree only (no Joliet/Rock Ridge/UDF: same extents, double-claim), files/dir tables as pieces, uniform files (PS2 `DUMMY.DAT`) as fills, multi-extent files one piece per extent; residue gate hands redump Xbox images to xdvdfs. Raw 2352 (bin/cue) is a later layering under ECM |
