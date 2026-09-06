@@ -58,7 +58,9 @@ const SKELETON_LIMIT: u64 = 64 * 1024 * 1024;
 /// available-list. Broader than [`crate::refine::FAMILIES`]: `narc` is
 /// its own sweep analyzer but shares the `nds` config family, so the two
 /// vocabularies are deliberately distinct.
-pub const SWEEP_ANALYZERS: &[&str] = &["noop", "chunk", "preflate", "ecm", "nds", "narc", "xdvdfs"];
+pub const SWEEP_ANALYZERS: &[&str] = &[
+    "noop", "chunk", "preflate", "ecm", "nds", "narc", "xdvdfs", "iso9660",
+];
 
 /// Construct a sweep analyzer by name — the shared factory both the CLI
 /// and `POST /v1/sweep` build from, so the accepted vocabulary lives in
@@ -84,6 +86,7 @@ pub fn sweep_roster() -> Vec<Box<dyn Analyzer>> {
         Box::new(NdsAnalyzer),
         Box::new(NarcAnalyzer),
         Box::new(XdvdfsAnalyzer::new()),
+        Box::new(Iso9660Analyzer),
         Box::new(ChunkAnalyzer),
     ];
     roster.sort_by_key(|a| a.class());
@@ -100,6 +103,7 @@ pub fn analyzer_for(name: &str) -> Option<Box<dyn Analyzer>> {
         "nds" | "nds-split" => Box::new(NdsAnalyzer),
         "narc" | "narc-split" => Box::new(NarcAnalyzer),
         "xdvdfs" | "xdvdfs-split" | "xiso" => Box::new(XdvdfsAnalyzer::new()),
+        "iso9660" | "iso9660-split" | "iso" => Box::new(Iso9660Analyzer),
         _ => return None,
     })
 }
@@ -1575,6 +1579,109 @@ impl Analyzer for XdvdfsAnalyzer {
                 layout
                     .layout_tool_build
                     .map_or_else(|| "absent".to_owned(), |b| b.to_string()),
+            )),
+        })
+    }
+}
+
+/// ISO9660 volume decomposition (D114): a cooked 2048-byte-sector
+/// image — PS2 / PSP / PC disc, DVD-Video — split into per-file pieces
+/// by its primary directory tree (the D83 shape, the D113 walker one
+/// level up), directory tables as pieces, uniform files and pads as
+/// fills, everything the tree does not name as classified residue. No
+/// generated streams, no views: the win is cross-image sharing —
+/// regional and revision variants of a disc hold most of their files
+/// in common, and the D112 swap counts every shared piece as reclaim.
+/// A redump Xbox image also carries a DVD-Video volume at sector 16;
+/// its game partition is residue to this walk, so the residue gate
+/// declines it and `xdvdfs-split/1` owns it (D111).
+pub struct Iso9660Analyzer;
+
+impl Iso9660Analyzer {
+    const VERSIONED_NAME: &'static str = "iso9660-split/1";
+    /// Piece cap (molten policy `iso9660:max-pieces`): past it, pieces
+    /// are contiguous data runs instead of files.
+    const DEFAULT_MAX_PIECES: usize = 4096;
+}
+
+impl Analyzer for Iso9660Analyzer {
+    fn name(&self) -> &'static str {
+        Self::VERSIONED_NAME
+    }
+
+    fn class(&self) -> AnalyzerClass {
+        AnalyzerClass::Structural
+    }
+
+    fn family(&self) -> &'static str {
+        "iso9660"
+    }
+
+    fn id(&self) -> Blake3 {
+        analyzer_tag(Self::VERSIONED_NAME)
+    }
+
+    fn analyze(
+        &mut self,
+        item: &SweepItem,
+        bytes: &Logical<'_, '_>,
+        store: &Store,
+        db: &mut Db,
+        pulse: &mut dyn Pulse,
+    ) -> Result<AnalysisResult, String> {
+        let file = bytes.open(item, db, pulse)?;
+        let mut img = TickRandom { inner: file, pulse };
+
+        let max_pieces = db
+            .config_get("iso9660:max-pieces")
+            .map_err(|e| e.to_string())?
+            .and_then(|v| std::str::from_utf8(&v).ok()?.trim().parse::<usize>().ok())
+            .unwrap_or(Self::DEFAULT_MAX_PIECES);
+
+        let layout = match crate::iso9660::parse_layout(&mut img, max_pieces) {
+            Ok(layout) => layout,
+            Err(crate::iso9660::Iso9660Error::Refused(refusal)) => {
+                return Ok(AnalysisResult {
+                    outcome: AnalysisOutcome::Negative,
+                    detail: Some(refusal.to_string()),
+                });
+            }
+            Err(crate::iso9660::Iso9660Error::Io(e)) => {
+                return Err(format!("reading image: {e}"));
+            }
+        };
+
+        mint_decomposition(
+            store,
+            db,
+            item.hash,
+            layout.total_len,
+            &layout.pieces,
+            &layout.regions,
+            layout.empty_files,
+            &[],
+            &mut img,
+        )?;
+
+        Ok(AnalysisResult {
+            outcome: AnalysisOutcome::Positive,
+            detail: Some(format!(
+                "split into {} piece(s) ({} file(s), {} dir table(s){}); {} uniform file(s), {} multi-extent file(s), {} empty file(s); declared {} sector(s) of {}; {} B fill, {} residual byte(s)",
+                layout.pieces.len(),
+                layout.file_count,
+                layout.dir_count,
+                if layout.coalesced {
+                    ", coalesced into extents"
+                } else {
+                    ""
+                },
+                layout.uniform_files,
+                layout.multi_extent_files,
+                layout.empty_files,
+                layout.declared_sectors,
+                layout.total_len / crate::iso9660::SECTOR,
+                layout.fill_bytes,
+                layout.residual_bytes,
             )),
         })
     }

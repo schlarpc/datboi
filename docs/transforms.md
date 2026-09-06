@@ -54,6 +54,7 @@ verify-without-materializing.
 | CSO/ZSO/DAX | out | per settings | yes | no | |
 | RVZ (GC/Wii) | both | per version | yes incl. junk regen | no | `nod` crate (pure Rust r+w) near-free; read NKit, never write it |
 | XDVDFS decomposition (Xbox/360 redump + XISO) | in | yes | yes | no | native parser, all assemble@1 (D111): files/dir tables as pieces; XGD1 seed-era filler = zero-input `xf-xgd1-prng fill` stream, security ranges + pads = fills; rc4-era filler stays literal gap pieces. Video partition walked as ISO9660, files as pieces (D113) |
+| ISO9660 decomposition (PS2/PSP/PC cooked images, DVD-Video) | in | yes | yes | no | native parser, all assemble@1 (D114): the D113 walker one level up — primary tree only (no Joliet/Rock Ridge/UDF: same extents, double-claim), files/dir tables as pieces, uniform files (PS2 `DUMMY.DAT`) as fills, multi-extent files one piece per extent; residue gate hands redump Xbox images to xdvdfs. Raw 2352 (bin/cue) is a later layering under ECM |
 | XISO ↔ Redump Xbox | out | yes | yes | no | views (D113): the XISO (SS-defined game partition slice) and the video volume (as the PVD declares it) are alias-bearing affine slices of the redump image — served, never stored |
 | NSZ / 3DS / WiiU / PS3 decrypt | both | yes/mostly | yes | **console keys** | biggest storage win; key policy = open question |
 | Generic zstd/lz4/xz | both | yes (pin lib) | yes | no | the baseline recipe |

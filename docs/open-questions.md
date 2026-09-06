@@ -153,8 +153,10 @@ Each of these wants its D entry before (or as) the code lands.
 - **Ogg Vorbis/Opus recompression (balrogg)**: feasibility proven,
   design recorded in [transforms.md](transforms.md) §rebuild long-tail
   verdicts (2026-09-06). Deferred on corpus relevance. Triggers: a
-  corpus census finds Ogg members, or M7 LZMA param discovery starts
-  (same forward-encode-in-wasm shape; balrogg is the pathfinder).
+  corpus census finds Ogg members (D114's ISO9660 split now exposes
+  PS2/PSP/PC disc interiors, so the census is a provenance query
+  away), or M7 LZMA param discovery starts (same
+  forward-encode-in-wasm shape; balrogg is the pathfinder).
   Rulings owed at build time: GPL-3.0 component embedded in the MIT
   server binary; the analysis-time forward `pack` op through the
   stream host.
@@ -162,9 +164,10 @@ Each of these wants its D entry before (or as) the code lands.
   design recorded beside balrogg's in [transforms.md](transforms.md)
   (2026-09-06). Pure-Rust preflate/ecm shape, Apache-2.0, nothing to
   rule — one upstream cfg patch for wasm32 (`Instant::now`) to land
-  or carry. Deferred on corpus relevance; triggers: an ISO9660
-  analyzer, a census finding JPEG members, or an artwork/media-
-  library scope ruling.
+  or carry. Deferred on corpus relevance; the ISO9660-analyzer
+  trigger fired (D114, 2026-09-06) — the remaining triggers are a
+  census finding JPEG members inside split discs, or an
+  artwork/media-library scope ruling.
 - **GBA save-type patching (`xf-sram-patch`)**: research pass done,
   design recorded in [transforms.md](transforms.md) §save-type
   patching verdict (2026-09-06). Shape ruled: offline/analysis-time

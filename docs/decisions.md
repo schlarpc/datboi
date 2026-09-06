@@ -3421,3 +3421,64 @@ image and its XISO dedupe by identity whichever arrives first.
 extents as the ISO9660 tree; walking both would double-claim);
 deriving the XISO length from content (the trailing pad is part of
 the identity and unmarked in the image); layering (above).
+
+## D114 — ISO9660 volumes decompose: `iso9660-split/1` walks cooked images by their primary tree (2026-09-06)
+
+D113 wrote an ISO9660 walker to name the files inside a redump Xbox
+image's video partition; the same walker, one level up, is the
+container lane for every cooked 2048-byte-sector disc image — PS2 and
+PSP redump `.iso`, PC discs, DVD-Video — and the trigger both deferred
+media lanes (Lepton, balrogg) named. Ruled: a Structural analyzer
+`iso9660-split/1` (family `iso9660`) parses the primary volume
+descriptor at sector 16 and its directory tree into an exact coverage
+map and mints through the D83 path verbatim: files and directory
+tables as pieces named by path, a builtin `assemble@1` slice per piece
+and one coverage-walk rebuild, every gap classified (fill / inline
+literal / residue piece). Three shapes are decided here, not left to
+the walker's whim: (1) **primary tree only.** Joliet (the
+supplementary descriptor), Rock Ridge and UDF all reference the same
+extents the primary tree does; walking two trees double-claims, so
+one tree names the bytes and the primary is the one every disc has.
+Names are the primary tree's (`;version` stripped); path tables and
+the UDF metadata are residue — content-addressed, small, and never
+the dedupe that matters. (2) **A uniform file is a fill, not a
+piece.** PS2 masters pad with `DUMMY.DAT`-shaped files of zeros, tens
+to hundreds of megabytes, whose only identity is their length; a
+piece claim would pack them. Files of at least 1 MiB are read once
+at layout time and a single-valued one becomes a fill region of its
+length — zero storage, no claim (the file's hash is never minted:
+nothing dedupes against a run of zeros by identity). (3) **The
+residue gate decides ownership between structural families.** A
+redump Xbox image carries a DVD-Video volume at sector 16, so this
+walker sees it too; its game partition is bytes the primary tree
+does not name, and more than a quarter of an image outside the tree
+(above a 4 MiB floor, so descriptor/path-table/UDF overhead never
+trips it) is a settled Negative: "not iso9660-shaped". `xdvdfs-split/1`
+owns the disc, deterministically, in either sweep order — no
+family-to-family coupling. Corollaries: multi-extent files (the
+ISO9660 shape of a > 4 GiB file) are one piece per extent (`path`,
+`path#1`, …); a directory's declared length is its BYTE length,
+sector-rounded or not — an XGD2 video partition declares its root as
+194 bytes, the D111 lesson recurring; the descriptor set (sector 16
+through the terminator, ECMA-167 recognition descriptors tolerated
+in sequence) is a declared range so a zero system area classifies as
+fill on its own; piece volume rides `iso9660:max-pieces` (molten,
+4096) with the D111 coalescing rule. No views, no generated streams:
+a lone image reclaims only its fills and duplicate members (the
+D112 predicate decides, and a plain data disc mostly stays literal),
+and the win is cross-image sharing — regional and revision variants
+of a disc hold most of their files in common, and every shared piece
+is reclaim. Raw 2352-byte images (bin/cue) are out of scope: the ECM
+lane's stream keeps mode-2 subheaders, so it is not a cooked volume;
+layering ISO9660 under ECM is a later ruling. Proven on real discs
+on the day: a PSP image (15 files, 20 MB of fill, swap + bit-exact
+rebuild + verified ranges) and a 1.8 GB Xbox 360 press-kit DVD-ROM
+(278 files, 245 MB reclaimed from duplicate members alone), while
+three redump Xbox images (XGD1, XGD2, XGD3) each concluded Negative
+at the residue gate. *Rejected:* a UDF walk (double-claim, and UDF
+is the tree a disc may lack); Joliet names (same extents, and
+absent on console discs); claiming uniform files as pieces (the
+D111 "piece IS the file" principle is about partial sectors, not
+about storing zeros); an explicit "declines XDVDFS images" guard
+(coupling where the residue gate already concludes); a raw-sector
+mode (a different sector pitch is a different lane).
