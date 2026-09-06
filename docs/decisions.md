@@ -3218,3 +3218,77 @@ gate-tested byte-exact against 7-Zip-written fixtures; shapes upstream
 here too and the container stays literal. sevenz-rust2's reader is
 gone; its writer half survives as a dev-dependency that forges test
 fixtures.
+
+## D111 — XDVDFS decomposition + XGD1 filler regeneration: a disc is an assemble over its files and a seed (2026-09-05)
+
+Xbox game discs — XGD1 through XGD3, as redump images or bare XISOs —
+are XDVDFS: a volume descriptor at sector 32, a binary-tree directory
+at absolute sectors, files at absolute sector-aligned extents, nothing
+compressed or encrypted at the container level. So the container lane
+is the D83 shape verbatim: a native analyzer `xdvdfs-split/1` (family
+`xdvdfs`, class Structural) parses the tree into an exact coverage map
+and mints per-piece derive slices plus a coverage-walk rebuild, every
+recipe a builtin assemble. What is new is the filler. Every non-data
+sector of the game partition is written from a mastering PRNG stream
+that advances ONLY over filler sectors, in disc order. Two generators
+exist: early XGD1 masters (layout-tool build ≤ 4830 — Blade II at 4808
+is the last known seed-era disc, NFL Fever 2003 beta at 4830) use a
+32-bit-seeded generator over GF(2^32 − 5), and the seed falls to a
+meet-in-the-middle solver in ~4 ms (vendored from the xiso-trim
+prototype: sound by construction — a seed is returned only after
+regenerating and comparing all 2048 bytes); later discs use
+rc4-drop-2048 under a 128-bit key and stay literal. Ruled: (1) **the
+filler stream is its own zero-input recipe** — `xf-xgd1-prng fill
+{seed, sectors}` → F, grounded vacuously by the D21 fixpoint (no
+inputs to be absent) — and the disc rebuild is a builtin assemble over
+the pieces, ranges of F, and zero fills. The component knows only the
+generator and its affine stream jump (`serve-range` is arithmetic);
+assemble composes. (2) **Redump facts are discovered, never
+hardcoded.** The references (xbox_shrinker, XboxKit, xbox-dvd-compress)
+and the reasoning agree: stream position 0 is game-partition sector
+0; the 16 security-sector ranges (4096 sectors each, unreadable by any
+drive, zero in every dump) CONSUME the stream — the physical disc
+carries PRNG bytes there; the trailing zero pad and the layer-1 video
+sectors do not. The analyzer's rule is prediction + equality: a
+non-data sector is a stream sector iff it equals the predicted one; a
+zero run of exactly 4096 sectors under a known seed is a security
+range (consumed, Fill 0); every other non-data run is Fill (uniform)
+or residue (a gap piece). A wrong guess costs residue, never a wrong
+claim, and D4 replay is the proof. The layout-tool version is
+advisory (recorded in the verdict detail): recovery is cheap, discs
+between 4808 and 4830 are unknown, the sector decides. (3) **Bare
+XISOs ride the same walk at base 0** — full, trimmed, or extract-xiso
+rebuilt; redump images are detected by the volume-descriptor magic at
+the known partition bases (XGD1, XGD2, XGD2-hybrid, XGD3), and
+everything outside the game partition (video partition, layer gaps)
+is run-classified into pieces and fills, so the video partition dedupes
+across a mastering wave by identity. (4) **Seekable wasm children
+serve ranges in place**: the executor's `open_random` serves a
+declared-seekable, unquarantined wasm node through `serve-range` per
+window instead of spilling it — F under the assemble is the first
+consumer, and the parent's outboard verification still covers every
+served byte. (5) The seed solver runs natively in the analyzer, from
+the rlib the component is built from (xf-ecm's verify-at-discovery
+twin); the analyzer regenerates and compares every filler sector before
+claiming, and hashes the generated stream as F's identity in the same
+pass. rc4-era and Xbox 360 discs still decompose — files dedupe across
+variants; the filler becomes gap pieces, exactly XboxKit's `.filler`
+sidecar in recipe form. Piece volume is bounded by `xdvdfs:max-pieces`
+(molten, default 4096): past it, pieces are contiguous data runs
+(`extent@…`) instead of files — recipe count bounded, filler
+regeneration unchanged. Naming: family `xdvdfs`, because the
+filesystem spans Xbox and 360 (`xiso` would lie by the first XGD2
+disc); component `xf-xgd1-prng` names the GENERATOR, leaving
+`xf-xgd1-rc4` for the day a key surfaces. Fixtures: two real 2 KiB
+game-partition sector-0s ride the component crate (Halo v1.02 for the
+seed era, Halo v1.09 for rc4) — filler bytes, no game content.
+*Rejected:* one `recreate` op over a trimmed blob + layout (the xf-ecm
+shape — it reimplements assemble inside the component and forfeits
+per-file dedupe); an ex-xdvdfs extractor component (nothing to
+sandbox — D83's argument verbatim); hardcoding redump geometry
+(partition lengths vary by wave, security-sector positions vary by
+disc and live in the SS.bin, not the image); treating the last partial
+sector of a file as data (the references do; we slice the exact file
+length and the zero tail is a fill — the piece IS the file); refusing
+rc4-era discs (the decomposition still pays; only the filler is
+literal); a version gate deciding the generator (advisory only).
