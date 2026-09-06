@@ -46,7 +46,7 @@ verify-without-materializing.
 | NDS secure-area KEY1 normalize | in | yes | yes | **BIOS key table** | collapses encrypted/decrypted dumps onto one ARM9 blob; future wasm (D83) |
 | DSi modcrypt strip | both | yes | yes | **console keys** | ARM9i/ARM7i AES-CTR; joins the NSZ/3DS key-policy question; future wasm (D83) |
 | NDS interior decompress (LZ overlays, NARC/SDAT) | in | yes | yes | no | preflate-shaped corrections lane; future wasm (D83); overlay +1Ch flag bits are tool lore, verify before building |
-| SRAM/save-type patch (GBA) | out | yes | one-way | no | original stays in CAS |
+| SRAM/save-type patch (GBA) | out | yes | one-way | no | original stays in CAS; table-driven applier over an offline-generated offsets DB, target-profile-parameterized — see §save-type patching verdict |
 | IPS/BPS/xdelta apply | out | yes | patch separate | no | |
 | **ECM strip (CD EDC/ECC)** | in | yes | yes (recomputable) | no | ~12% of raw sectors; **ideal first wasm transform** |
 | bin/cue split, 2352↔2048 | both | yes | yes | no | |
@@ -210,3 +210,119 @@ structurally free.
   Triggers: an ISO9660 analyzer, a corpus census finding JPEG
   members, or an artwork/media-library scope ruling. Build cost when
   it fires: under a session — it is xf-cso with a different crate.
+
+## Save-type patching verdict (research pass, 2026-09-06)
+
+The `xf-sram-patch` slot in the view-definition sketch
+([views.md](views.md)) had no design behind it. Two research passes
+(GBA in depth; every other system) settle its shape and scope.
+
+- **GBA — the only system where it is a real ROM transform.** State
+  of the art is davidgfnet's
+  [SuperFW](https://github.com/davidgfnet/superfw) +
+  [gba-patch-gen](https://github.com/davidgfnet/gba-patch-gen)
+  (GPL-3.0; firmware 0.21, 2026-08). It replaced blob matching with
+  ANALYSIS: the generator runs offline over the No-Intro set, finds
+  the 19 SDK library tags (`EEPROM_V111..V126`, `FLASH_V120..
+  FLASH1M_V103`, `SRAM_V110..SRAM_F_V110` — GBATEK "cart backup
+  IDs"; there is no header field), locates EEPROM read/write by
+  wildcard Thumb signatures with prologue validation, and locates
+  the Flash identify/read/verify/erase/write routines by running
+  candidate functions through a symbolic ARM7TDMI executor and
+  watching for the `0xAA→0x0E005555, 0x55→0x0E002AAA, 0x90→…` ident
+  sequence; Flash size falls out of the device IDs the game accepts;
+  EEPROM 4K-vs-64K (the tag does not encode it) and dual-library
+  ROMs come from side databases. Output is per-ROM JSON keyed by
+  sha1/sha256/game-code/version giving function `addr`/`size` and
+  subtype, with a manual-override directory (two libraries, password
+  saves); the firmware applies it as a table (~1,700 games in
+  "Direct-Saving mode") with an on-device engine as slow fallback.
+  Write-up: davidgf.net/2024/07/24/arm-emulation-static-analysis.
+  Below it: maintained signature-table patchers —
+  [bbsan2k/Flash1M_Repro_SRAM_Patcher](https://github.com/bbsan2k/Flash1M_Repro_SRAM_Patcher)
+  (MIT, C++, 2024-04; tag → per-version masked marker/replacement
+  blocks; replaces the FLASH1M bank switch with a plain write to
+  `0x09000000` for GE28F128W30-class repros; first match only) and
+  [metroid-maniac/gba-auto-batteryless-patcher](https://github.com/metroid-maniac/gba-auto-batteryless-patcher)
+  (MIT, C, 2023-05; does NOT SRAM-patch — requires one first, then
+  redirects the post-patch write routines by signature to an injected
+  payload that flushes SRAM into the ROM flash; that is the modern
+  bootleg direction). Legacy: GBATA 0.7a (closed, 2006; fails on
+  FLASH512_V133 compilations, multi-tag ROMs, Famicom Mini's
+  compressed code, and its FLASH1M bank "voodoo" matches neither
+  EZ-Flash's flash-protocol bank command nor the repro write);
+  [ezgba](https://github.com/langest/ezgba) is a permissive open
+  reimplementation of GBATA's blocks plus the EZ4 header field.
+  Runtime hypervisors detect rather than ship patches: GBARunner2
+  (tag scan → 16-byte Thumb signatures → in-memory jump injection,
+  which is why pre-patched ROMs break it), open_agb_firm (first 8
+  bytes of ROM SHA-1 against a DB built from MAME `gba.xml`, tag scan
+  fallback), mGBA (no scan at all — infers type from first accesses).
+  **Failure classes any patcher must expect:** two libraries or
+  unused save code in one ROM; EEPROM size not encoded in the tag;
+  games that accept only specific flash manufacturer IDs; duplicate
+  signatures in 2-in-1 packs; compressed code; FLASH1M's 128 KiB in
+  the 64 KiB SRAM window, where the bank-switch method is a property
+  of the TARGET CART, not the ROM.
+- **Databases.** MAME `hash/gba.xml` (CC0, 3,042 SHA-1-keyed entries
+  with an explicit slot type: `gba_eeprom_4k`/`_64k`, `gba_sram`,
+  `gba_flash`/`_512`/`_1m`/`_1m_rtc`, plus oddities) and FlashGBX
+  `config/db_AGB.json` (2,923 SHA-1-keyed entries with type+size;
+  5.1 of 2026-08) are the two worth consuming; mGBA's overrides
+  (~80 game codes) and VBA-M's `vba-over.ini` (2008-era) are not;
+  libretro-database carries no save field for GBA.
+- **Hardware trend.** EverDrive GBA X5/Mini/Pro and EZ-Flash
+  Omega/DE emulate EEPROM and Flash in hardware — no patch. Patching
+  survives for Supercard (now SuperFW's DB) and cheap bootlegs
+  (batteryless). It is a shrinking but real audience; the view slot
+  earns its keep only through profiles.
+- **Every other system: not a ROM transform.** GB/GBC flashcarts and
+  FPGA cores read mapper + RAM size from header bytes 0x147/0x149;
+  the only patching is bootleg-cart batteryless/MBC work, which is
+  hand-made per game (marcrobledo's RGBDS skeleton needs per-game
+  offsets; acocalypso/SkyParrillo ship per-game IPS keyed by the
+  board's flash write method) — no automatic tool exists. WonderSwan
+  has splash5's 54 EEPROM→SRAM IPS files for the WS Flash Masta,
+  obsolescent now that NileSwan emulates EEPROM. Genesis EEPROM→SRAM
+  hacks were for pre-2013 Mega EverDrives; every current cart and
+  emulator handles EEPROM from the header serial; no generator ever
+  existed. N64 is pure DB + homebrew header (Krikzz `save_db.txt`,
+  N64FlashcartMenu `rom_info.c`, mupen64plus.ini by MD5, the `ED`
+  Advanced Homebrew ROM Header at 0x3C/0x3F). SNES/NES/PCE/NGP/
+  Lynx/VB/PokéMini/Atari/SMS: header fields or console-side storage,
+  no practice. DS flashcart menus and 3DS GBA-VC injects carry the
+  type as config (TWiLightMenu ROMList; the AGB_FIRM footer), bytes
+  untouched.
+
+**Design ruled in by this pass (no D-entry needed — it fills an empty
+slot rather than overturning anything):**
+
+1. **Scope: GBA proper + an IPS-from-database lane.** GB/GBC and
+   WonderSwan are served by the existing IPS/BPS apply row over
+   community patch sets; nothing else gets a slot.
+2. **Shape: gba-patch-gen's model, never GBATA's.** Analysis happens
+   OFFLINE (or at analysis time, never at materialization): a
+   Structural `gba-savetype` analyzer records `{tag, subtype, size,
+   function offsets}` per ROM — DB hit (MAME/FlashGBX by SHA-1)
+   first, tag scan + signature/emulation second, Negative with
+   detail when the ROM defeats both (D81). The wasm transform is a
+   dumb applier of that record — a fixed-offset patch recipe, so it
+   is trivially deterministic and versioned, and the analysis can
+   improve without touching pinned components (D64). Seed tables
+   from the MIT lineage (bbsan2k, ezgba); gba-patch-gen's emitted DB
+   is consumable, its GPL-3.0 emulator is not vendorable into the
+   MIT binary (same ruling class balrogg owes).
+3. **Target-specific → lives on the view profile, not the ROM.**
+   everdrive/ezflash-omega profiles: no patch. supercard/repro
+   profiles: SRAM + a bank-switch flavour parameter (`0x09000000`
+   write vs flash-protocol command). bootleg profile: batteryless
+   payload layered on top (its own component; needs the SRAM patch's
+   post-image, so it is a second op over the first's output).
+4. **The analyzer is worth landing before the transform.** Its
+   media-kind verdict is exactly the `{ sram, eeprom, flash, rtc }`
+   vocabulary [saves.md](saves.md) wants for named save components,
+   so it pays off in the saves subsystem even if no view ever patches.
+
+Deferred (no view profile requesting it yet; the GBA analyzer lane
+does not exist). Triggers: the first supercard/repro/bootleg profile,
+or the saves subsystem needing GBA media kinds.

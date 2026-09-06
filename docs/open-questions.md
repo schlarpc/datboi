@@ -165,6 +165,15 @@ Each of these wants its D entry before (or as) the code lands.
   or carry. Deferred on corpus relevance; triggers: an ISO9660
   analyzer, a census finding JPEG members, or an artwork/media-
   library scope ruling.
+- **GBA save-type patching (`xf-sram-patch`)**: research pass done,
+  design recorded in [transforms.md](transforms.md) §save-type
+  patching verdict (2026-09-06). Shape ruled: offline/analysis-time
+  offsets DB (gba-patch-gen's model, MAME `gba.xml` + FlashGBX DB by
+  SHA-1 first, tag scan + signatures second) applied by a dumb
+  fixed-offset transform, bank-switch flavour and batteryless layer
+  on the VIEW PROFILE. GBA-only; GB/GBC + WonderSwan ride IPS-from-DB;
+  no other system patches. Deferred until a supercard/repro/bootleg
+  profile or the saves subsystem asks for GBA media kinds.
 - Shard fanout + inline-outboard threshold: frozen-by-default; the
   gating NFS benchmark is indefinitely deferred (D36 amendment).
 - Detector registry ordering + canonical-orientation preference:
