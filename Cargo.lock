@@ -1358,6 +1358,7 @@ dependencies = [
  "datboi-runtime",
  "datboi-store-fs",
  "datboi-xf-ecm",
+ "datboi-xf-xgd1-prng",
  "fastcdc",
  "flate2",
  "preflate-rs",
@@ -1398,6 +1399,7 @@ dependencies = [
  "blake3",
  "datboi-core",
  "datboi-xf-ecm",
+ "datboi-xf-xgd1-prng",
  "thiserror 2.0.18",
  "wasmtime",
  "wat",
@@ -1457,6 +1459,13 @@ dependencies = [
 
 [[package]]
 name = "datboi-xf-ecm"
+version = "0.1.0"
+dependencies = [
+ "datboi-guest-transform",
+]
+
+[[package]]
+name = "datboi-xf-xgd1-prng"
 version = "0.1.0"
 dependencies = [
  "datboi-guest-transform",

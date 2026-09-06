@@ -114,6 +114,11 @@ pub enum Region {
     /// cap): the header, and small non-uniform gaps like ARM9 post-data
     /// or the DSi extended header.
     Literal { start: u64, len: u64 },
+    /// A range of an input that is NOT a slice of the container — a
+    /// blob the analyzer claims alongside the pieces (D111: the XGD1
+    /// filler stream, a zero-input recipe's output). `input` indexes the
+    /// extern list handed to the mint path.
+    Extern { input: usize, offset: u64, len: u64 },
 }
 
 #[derive(Debug)]
@@ -605,7 +610,9 @@ fn tail_is_pad(regions: &[Region], pieces: &[Piece], candidate: u64) -> bool {
     for region in regions {
         let len = match region {
             Region::Piece(ix) => pieces[*ix].len,
-            Region::Fill { len, .. } | Region::Literal { len, .. } => *len,
+            Region::Fill { len, .. } | Region::Literal { len, .. } | Region::Extern { len, .. } => {
+                *len
+            }
         };
         if offset + len > candidate && !matches!(region, Region::Fill { .. }) {
             return false;

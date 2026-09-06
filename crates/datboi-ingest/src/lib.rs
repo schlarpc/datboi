@@ -30,6 +30,7 @@ pub mod archive;
 pub mod narc;
 pub mod nds;
 pub mod refine;
+pub mod xdvdfs;
 pub mod zip;
 
 use std::fs::{self, File};

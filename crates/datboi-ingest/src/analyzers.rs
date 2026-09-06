@@ -58,7 +58,7 @@ const SKELETON_LIMIT: u64 = 64 * 1024 * 1024;
 /// available-list. Broader than [`crate::refine::FAMILIES`]: `narc` is
 /// its own sweep analyzer but shares the `nds` config family, so the two
 /// vocabularies are deliberately distinct.
-pub const SWEEP_ANALYZERS: &[&str] = &["noop", "chunk", "preflate", "ecm", "nds", "narc"];
+pub const SWEEP_ANALYZERS: &[&str] = &["noop", "chunk", "preflate", "ecm", "nds", "narc", "xdvdfs"];
 
 /// Construct a sweep analyzer by name — the shared factory both the CLI
 /// and `POST /v1/sweep` build from, so the accepted vocabulary lives in
@@ -83,6 +83,7 @@ pub fn sweep_roster() -> Vec<Box<dyn Analyzer>> {
         Box::new(EcmAnalyzer::new()),
         Box::new(NdsAnalyzer),
         Box::new(NarcAnalyzer),
+        Box::new(XdvdfsAnalyzer::new()),
         Box::new(ChunkAnalyzer),
     ];
     roster.sort_by_key(|a| a.class());
@@ -98,6 +99,7 @@ pub fn analyzer_for(name: &str) -> Option<Box<dyn Analyzer>> {
         "ecm" => Box::new(EcmAnalyzer::new()),
         "nds" | "nds-split" => Box::new(NdsAnalyzer),
         "narc" | "narc-split" => Box::new(NarcAnalyzer),
+        "xdvdfs" | "xdvdfs-split" | "xiso" => Box::new(XdvdfsAnalyzer::new()),
         _ => return None,
     })
 }
@@ -1138,6 +1140,7 @@ impl Analyzer for NdsAnalyzer {
             &layout.pieces,
             &layout.regions,
             layout.empty_files,
+            &[],
             &mut rom,
         )?;
 
@@ -1286,6 +1289,7 @@ impl Analyzer for NarcAnalyzer {
             &layout.pieces,
             &layout.regions,
             layout.empty_files,
+            &[],
             &mut narc,
         )?;
 
@@ -1301,13 +1305,210 @@ impl Analyzer for NarcAnalyzer {
     }
 }
 
+/// The canonical `xf-xgd1-prng` component, embedded like xf-ecm's.
+pub const XF_XGD1_PRNG_WASM: &[u8] = include_bytes!(concat!(
+    env!("DATBOI_COMPONENTS_DIR"),
+    "/datboi_xf_xgd1_prng.wasm"
+));
+
+/// XDVDFS disc decomposition (D111): Xbox / Xbox 360 images — redump
+/// or bare XISO — split into per-file pieces (the D83 shape) with the
+/// mastering filler REGENERATED: on seed-era XGD1 discs every gap
+/// sector is verified against the recovered 32-bit-seeded stream and
+/// the rebuild references a zero-input `fill` recipe's output instead
+/// of storing 40% of the disc; security ranges and pads are fills;
+/// rc4-era filler stays literal gap pieces. Nothing is claimed that was
+/// not matched byte-for-byte at discovery, and D4 replay proves the
+/// recipe before any literal drops.
+pub struct XdvdfsAnalyzer {
+    component_published: bool,
+}
+
+impl XdvdfsAnalyzer {
+    const VERSIONED_NAME: &'static str = "xdvdfs-split/1";
+    /// Piece cap (molten policy `xdvdfs:max-pieces`): past it, pieces
+    /// are contiguous data runs instead of files.
+    const DEFAULT_MAX_PIECES: usize = 4096;
+    /// Role the filler stream carries on the rebuild's input list.
+    const FILLER_ROLE: &'static str = "xgd1-filler";
+
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            component_published: false,
+        }
+    }
+
+    /// blake3 of the embedded component — the hash `fill` recipes pin.
+    #[must_use]
+    pub fn component_hash() -> Blake3 {
+        Blake3::compute(XF_XGD1_PRNG_WASM)
+    }
+
+    fn ensure_component(&mut self, store: &Store, db: &mut Db) -> Result<i64, String> {
+        let hash = Self::component_hash();
+        if !self.component_published {
+            store
+                .put(StoreNs::Data, hash, XF_XGD1_PRNG_WASM)
+                .map_err(|e| e.to_string())?;
+            self.component_published = true;
+        }
+        db.upsert_blob(
+            &hash,
+            Some(XF_XGD1_PRNG_WASM.len() as u64),
+            IndexNs::Data,
+            Residency::Resident,
+        )
+        .map_err(|e| e.to_string())
+    }
+}
+
+impl Default for XdvdfsAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Analyzer for XdvdfsAnalyzer {
+    fn name(&self) -> &'static str {
+        Self::VERSIONED_NAME
+    }
+
+    fn class(&self) -> AnalyzerClass {
+        AnalyzerClass::Structural
+    }
+
+    fn family(&self) -> &'static str {
+        "xdvdfs"
+    }
+
+    fn id(&self) -> Blake3 {
+        analyzer_tag(Self::VERSIONED_NAME)
+    }
+
+    fn analyze(
+        &mut self,
+        item: &SweepItem,
+        bytes: &Logical<'_, '_>,
+        store: &Store,
+        db: &mut Db,
+        pulse: &mut dyn Pulse,
+    ) -> Result<AnalysisResult, String> {
+        let file = bytes.open(item, db, pulse)?;
+        let mut img = TickRandom { inner: file, pulse };
+
+        let max_pieces = db
+            .config_get("xdvdfs:max-pieces")
+            .map_err(|e| e.to_string())?
+            .and_then(|v| std::str::from_utf8(&v).ok()?.trim().parse::<usize>().ok())
+            .unwrap_or(Self::DEFAULT_MAX_PIECES);
+
+        let layout = match crate::xdvdfs::parse_layout(&mut img, max_pieces) {
+            Ok(layout) => layout,
+            Err(crate::xdvdfs::XdvdfsError::Refused(refusal)) => {
+                return Ok(AnalysisResult {
+                    outcome: AnalysisOutcome::Negative,
+                    detail: Some(refusal.to_string()),
+                });
+            }
+            Err(crate::xdvdfs::XdvdfsError::Io(e)) => return Err(format!("reading image: {e}")),
+        };
+
+        // The filler stream: an absent claim grounded by its own
+        // zero-input recipe (D111) — the component regenerates it, so
+        // it never needs to be stored.
+        let mut externs: Vec<(Blake3, &str)> = Vec::new();
+        if let Some(filler) = layout.filler {
+            let component_hash = Self::component_hash();
+            self.ensure_component(store, db)?;
+            let size = filler.sectors * crate::xdvdfs::SECTOR;
+            if db
+                .blob_by_hash(&filler.hash)
+                .map_err(|e| e.to_string())?
+                .is_none()
+            {
+                db.upsert_blob(&filler.hash, Some(size), IndexNs::Data, Residency::Absent)
+                    .map_err(|e| e.to_string())?;
+            }
+            let (params, n) = datboi_xf_xgd1_prng::params::Params {
+                seed: filler.seed,
+                sectors: filler.sectors,
+            }
+            .encode();
+            let fill = Recipe {
+                op: Op::Wasm {
+                    component: component_hash,
+                    world: World::Transform1,
+                    export: "fill".into(),
+                },
+                inputs: Vec::new(),
+                outputs: vec![OutputRef {
+                    hash: filler.hash,
+                    size,
+                    name: Some(Self::FILLER_ROLE.into()),
+                }],
+                params: params[..n].to_vec(),
+            };
+            crate::mint_recipe(store, db, &fill, SeekClass::Affine).map_err(|e| e.to_string())?;
+            externs.push((filler.hash, Self::FILLER_ROLE));
+        }
+
+        mint_decomposition(
+            store,
+            db,
+            item.hash,
+            layout.total_len,
+            &layout.pieces,
+            &layout.regions,
+            layout.empty_files,
+            &externs,
+            &mut img,
+        )?;
+
+        let filler_note = match layout.filler {
+            Some(f) => format!(
+                "filler seed {:#010x}: {} stream sector(s) matched + {} security-range sector(s) consumed, {} B fill",
+                f.seed, layout.stream_sectors, layout.security_sectors, layout.fill_bytes
+            ),
+            None => format!(
+                "no seed-era filler (rc4-era or none): {} B fill, filler stays literal",
+                layout.fill_bytes
+            ),
+        };
+        Ok(AnalysisResult {
+            outcome: AnalysisOutcome::Positive,
+            detail: Some(format!(
+                "split into {} piece(s) ({} file(s), {} dir table(s){}) at partition base {:#x}; {}; {} residual byte(s); layout tool build {}",
+                layout.pieces.len(),
+                layout.file_count,
+                layout.dir_count,
+                if layout.coalesced {
+                    ", coalesced into extents"
+                } else {
+                    ""
+                },
+                layout.base,
+                filler_note,
+                layout.residual_bytes,
+                layout
+                    .layout_tool_build
+                    .map_or_else(|| "absent".to_owned(), |b| b.to_string()),
+            )),
+        })
+    }
+}
+
 /// Mint a container decomposition (D83): an absent claim + a
 /// `container→piece` slice recipe per piece, then the coverage-map
-/// rebuild recipe over the regions. Shared by the .nds container and
-/// the NARC interior one level down — the same affine byte-range
-/// arithmetic, so one tested mint path serves both. `container` is the
-/// blob being decomposed, `total_len` its length, `pieces`/`regions`
-/// its exact coverage map (concatenating to `[0, total_len)`).
+/// rebuild recipe over the regions. Shared by the .nds container, the
+/// NARC interior one level down, and the XDVDFS disc (D111) — the same
+/// affine byte-range arithmetic, so one tested mint path serves all.
+/// `container` is the blob being decomposed, `total_len` its length,
+/// `pieces`/`regions` its exact coverage map (concatenating to
+/// `[0, total_len)`). `externs` are inputs the map references that are
+/// NOT slices of the container ([`crate::nds::Region::Extern`]) — the
+/// caller has already claimed them (an absent row + their own route);
+/// they join the rebuild's inputs with the given role.
 #[allow(clippy::too_many_arguments)] // container + map + rom, all load-bearing
 fn mint_decomposition<R: std::io::Read + std::io::Seek>(
     store: &Store,
@@ -1317,6 +1518,7 @@ fn mint_decomposition<R: std::io::Read + std::io::Seek>(
     pieces: &[crate::nds::Piece],
     regions: &[crate::nds::Region],
     empty_files: usize,
+    externs: &[(Blake3, &str)],
     rom: &mut R,
 ) -> Result<(), String> {
     // Claim every piece: hash its range out of the container, then an
@@ -1395,6 +1597,26 @@ fn mint_decomposition<R: std::io::Read + std::io::Seek>(
             crate::nds::Region::Literal { start, len } => Segment::Literal {
                 bytes: read_range(rom, *start, *len).map_err(|e| e.to_string())?,
             },
+            crate::nds::Region::Extern { input, offset, len } => {
+                let (hash, role) = externs.get(*input).ok_or_else(|| {
+                    format!(
+                        "region references extern input {input} of {}",
+                        externs.len()
+                    )
+                })?;
+                let input_ix = *input_ix.entry(*hash).or_insert_with(|| {
+                    inputs.push(InputRef {
+                        hash: *hash,
+                        role: Some((*role).to_owned()),
+                    });
+                    u32::try_from(inputs.len() - 1).expect("input count fits u32")
+                });
+                Segment::BlobRange {
+                    input_ix,
+                    offset: *offset,
+                    len: *len,
+                }
+            }
         });
     }
     let rebuild = Recipe {

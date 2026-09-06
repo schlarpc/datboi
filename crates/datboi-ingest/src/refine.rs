@@ -298,7 +298,7 @@ fn params_key(family: &str) -> String {
 /// (enable/disable + opaque params). The ONE source both the CLI's
 /// `analyzer` subcommand and the daemon's `/v1/analyzers` surface agree
 /// on (D96) — a family added here appears on both without a second edit.
-pub const FAMILIES: &[&str] = &["noop", "chunk", "preflate", "ecm", "nds"];
+pub const FAMILIES: &[&str] = &["noop", "chunk", "preflate", "ecm", "nds", "xdvdfs"];
 
 /// Is the family enabled? Absent means yes (opt-out policy).
 ///
