@@ -1018,7 +1018,7 @@ pub struct ScrubRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SweepRequest {
     /// Analyzer name (canonical or CLI alias): noop, chunk, preflate,
-    /// ecm, nds, narc.
+    /// ecm, nds, narc, xdvdfs.
     pub analyzer: String,
     /// Maximum items to analyze this round. Defaults to 10000 (the CLI
     /// default).
