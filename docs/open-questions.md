@@ -450,7 +450,10 @@ Negative — a decrypted image is not a master; if one ever needs to
 decompose, its bodies are plaintext volumes and the walk is the
 partition walk without the crypto; (6) the H3 table rides as a
 96 KiB piece per partition though it is a function of the plaintext
-— regenerating it is a later refinement, not a correctness matter.
+— regenerating it is a later refinement, not a correctness matter;
+(7) the leaf walk now packs NARC members instead of NARCs on DS (the
+`narc_swap` gate proves the mechanism on a synthetic pair) — the real
+MKDS pair is the measurement to take when the corpus has it.
 
 ## Resolved
 

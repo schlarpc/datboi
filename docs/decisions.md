@@ -3690,6 +3690,16 @@ disc once, and the licensing then runs the wasm AES + SHA-1 pass over
 the 7.46 GB data partition twice (the encrypt route's verify-only
 license, then the top replay's stream through it) — the cost watch
 item in open-questions names the native fast path as the lever.
+*Amendment (same day, one level down on DS):* the leaf walk changes
+D94's swap behaviour, as it should. A NARC piece of a ROM has its own
+assemble over its members — a downward route — so the swap now packs
+the MEMBERS and licenses the NARC's rebuild verify-only instead of
+packing the NARC whole. Gate: two regional variants differing in one
+member inside a NARC swap to one pack of every member once plus the
+ROM's other pieces, neither NARC packed, both ROMs rebuilt and range-
+served through the two-level assemble; before D116 the pair packed
+both NARCs, the shared members twice. This is the cross-variant
+sharing D94 was built for, reached at the swap for the first time.
 *Rejected:* shipping key bytes (D12/D26 stand; hashes are names, not
 keys); an environmental error for a missing key (gates fallback
 forever); a Negative for a missing key (never re-runs); a dedicated
