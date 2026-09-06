@@ -92,7 +92,7 @@ fn xdvdfs_sweep_swaps_evicts_and_serves_ranges_through_the_filler() {
     assert_eq!(report.swapped, 1, "{report:?}");
     assert_eq!(report.packs, 1, "{report:?}");
     let piece_bytes: u64 = image.files.iter().map(|(_, b)| b.len() as u64).sum::<u64>()
-        + 2 * SECTOR // two directory tables
+        + SECTOR + u64::from(synth::SUB_TABLE_LEN) // two directory tables
         + 3 * SECTOR; // the residue tail
     assert_eq!(
         report.bytes_packed, piece_bytes,
@@ -212,4 +212,98 @@ fn generated_threshold_is_policy() {
     assert_eq!(report.swapped, 0, "{report:?}");
     assert_eq!(report.below_threshold, 1, "{report:?}");
     assert!(store.has(StoreNs::Data, &img_hash));
+}
+
+/// Real-disc proof, opt-in: `DATBOI_XDVDFS_IMAGE=/path/to.iso
+/// DATBOI_XDVDFS_WORKDIR=/big/disk cargo test --release -p datboi-exec
+/// --test xdvdfs_shrink real_image_swaps_and_serves -- --ignored
+/// --nocapture`. Ingests the image into a fresh store, sweeps, swaps
+/// (pack + license through the component + evict), then streams the
+/// whole image back and checks its identity, plus a few verified
+/// ranges. Prints the verdict and the swap report.
+#[test]
+#[ignore]
+fn real_image_swaps_and_serves() {
+    let Ok(path) = std::env::var("DATBOI_XDVDFS_IMAGE") else {
+        eprintln!("DATBOI_XDVDFS_IMAGE unset");
+        return;
+    };
+    let workdir = std::env::var("DATBOI_XDVDFS_WORKDIR")
+        .unwrap_or_else(|_| std::env::temp_dir().display().to_string());
+    let dir = tempfile::tempdir_in(&workdir).expect("workdir");
+    let store = Store::open(dir.path().join("store")).expect("store");
+    let mut db = Db::open(dir.path()).expect("db");
+
+    let t0 = std::time::Instant::now();
+    let file = std::fs::File::open(&path).expect("open image");
+    let len = file.metadata().expect("meta").len();
+    let (img_hash, _, _) = store.put_new(StoreNs::Data, file).expect("ingest");
+    db.upsert_blob(
+        &img_hash,
+        Some(len),
+        datboi_index::Namespace::Data,
+        Residency::Resident,
+    )
+    .expect("row");
+    eprintln!("ingested {len} B as {img_hash} in {:.1?}", t0.elapsed());
+
+    let t1 = std::time::Instant::now();
+    let sweep = sweep_all(&mut db, &store, &mut XdvdfsAnalyzer::new(), 10);
+    assert_eq!(sweep.errors.len(), 0, "{:?}", sweep.errors);
+    assert_eq!(sweep.positive, 1, "image split");
+    let detail: String = db
+        .cache()
+        .query_row("SELECT COALESCE(detail,'') FROM analysis", [], |r| r.get(0))
+        .expect("detail");
+    eprintln!("verdict ({:.1?}): {detail}", t1.elapsed());
+    let (filler_hash, filler_len) = filler_of(&db, &img_hash);
+    eprintln!(
+        "filler {filler_hash}: {filler_len} B ({:.1}% of the image)",
+        filler_len as f64 * 100.0 / len as f64
+    );
+
+    let t2 = std::time::Instant::now();
+    let exec = Executor::new(&store, ExecConfig::default()).expect("executor");
+    let report = exec.swap_covered(&mut db).expect("swap phase");
+    eprintln!("swap ({:.1?}): {report:?}", t2.elapsed());
+    assert_eq!(report.swapped, 1, "{report:?}");
+    assert!(!store.has(StoreNs::Data, &img_hash), "literal gone");
+    assert!(
+        !store.has(StoreNs::Data, &filler_hash),
+        "filler never stored"
+    );
+
+    let t3 = std::time::Instant::now();
+    let mut hasher = blake3::Hasher::new();
+    std::io::copy(
+        &mut exec.open_stream(&db, &img_hash).expect("route"),
+        &mut hasher,
+    )
+    .expect("stream");
+    assert_eq!(
+        Blake3(*hasher.finalize().as_bytes()),
+        img_hash,
+        "image rebuilds bit-exact"
+    );
+    eprintln!("full rebuild streamed + verified in {:.1?}", t3.elapsed());
+
+    let mut original = std::fs::File::open(&path).expect("open image");
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let t4 = std::time::Instant::now();
+    for (offset, wlen) in [
+        (0x1830_0000u64, 4096u64),          // game-partition sector 0: pure stream
+        (0x1830_0000 + 0x10000 - 100, 300), // stream -> volume descriptor
+        (len / 2, 1 << 20),                 // somewhere in the middle
+        (len - 100_000, 200_000),           // EOF clamp
+    ] {
+        let got = exec
+            .serve_range(&db, &img_hash, offset, wlen)
+            .expect("range");
+        let end = offset.saturating_add(wlen).min(len);
+        let mut want = vec![0u8; usize::try_from(end - offset).expect("small")];
+        original.seek(SeekFrom::Start(offset)).expect("seek");
+        original.read_exact(&mut want).expect("read");
+        assert_eq!(got, want, "window {offset}+{wlen}");
+    }
+    eprintln!("4 verified ranges in {:.1?}", t4.elapsed());
 }

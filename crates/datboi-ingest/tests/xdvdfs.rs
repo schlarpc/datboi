@@ -302,9 +302,19 @@ fn layout_classifies_every_shape() {
     assert_eq!(filler.sectors, image.stream_sectors);
     assert_eq!(layout.stream_sectors, 43);
     assert_eq!(layout.security_sectors, 4096);
-    // Slack tails: a.bin (1096 B), c.bin (2047 B); pad: 3 sectors; the
-    // security range: 4096 sectors.
-    assert_eq!(layout.fill_bytes, 1096 + 2047 + 3 * SECTOR + 4096 * SECTOR);
+    // Slack tails: a.bin (1096 B), c.bin (2047 B), the sub table's 0xFF
+    // pad (2008 B); pad: 3 sectors; the security range: 4096 sectors.
+    assert_eq!(
+        layout.fill_bytes,
+        1096 + 2047 + (SECTOR - u64::from(synth::SUB_TABLE_LEN)) + 3 * SECTOR + 4096 * SECTOR
+    );
+    assert!(
+        layout
+            .pieces
+            .iter()
+            .any(|p| p.name == "dir:/sub" && p.len == u64::from(synth::SUB_TABLE_LEN)),
+        "a table piece is its declared bytes"
+    );
     assert_eq!(layout.residual_bytes, 3 * SECTOR);
     // Regions concatenate to the whole image.
     let total: u64 = layout

@@ -206,7 +206,11 @@ pub fn parse_layout<R: Read + Seek>(img: &mut R, max_pieces: usize) -> Result<La
         if size == 0 {
             continue;
         }
-        if size > MAX_DIR_TABLE || !size.is_multiple_of(SECTOR) {
+        // A table's declared size is its BYTE length — sector-rounded on
+        // some masters (Halo v1.09: 0x800), exact on others (Halo v1.02:
+        // 88). The piece is the declared bytes; the slack classifies
+        // like a file's tail.
+        if size > MAX_DIR_TABLE {
             return Err(Refusal::Directory(format!(
                 "table {} has implausible size {size}",
                 display_path(&path)
@@ -753,6 +757,10 @@ pub mod synth {
         out
     }
 
+    /// The sub table's declared size: its exact entry bytes (two 20-byte
+    /// entries), the Halo v1.02 shape — the rest of its sector is 0xFF pad.
+    pub const SUB_TABLE_LEN: u32 = 40;
+
     /// Build the fixture. `trimmed` cuts the image after the last file
     /// extent (XboxKit's `--trim`), dropping the security range, pad,
     /// and residue tail.
@@ -818,7 +826,7 @@ pub mod synth {
         // 34: root table: a.bin @36 (3000 B), sub @40, empty.bin (0 B).
         out.extend_from_slice(&table(&[
             (36, 3000, 0x20, "a.bin"),
-            (40, SECTOR as u32, 0x10, "sub"),
+            (40, SUB_TABLE_LEN, 0x10, "sub"),
             (0, 0, 0x20, "empty.bin"),
         ]));
         // 35: filler (stream 32).
@@ -840,11 +848,17 @@ pub mod synth {
             &mut junk_state,
             2,
         );
-        // 40: sub table: b.bin @41 (2 sectors), c.bin @43 (1 sector + 1 B).
-        out.extend_from_slice(&table(&[
+        // 40: sub table: b.bin @41 (2 sectors), c.bin @43 (1 sector + 1 B);
+        // declared at its exact 40 bytes, 0xFF-padded to the sector.
+        let sub = table(&[
             (41, 2 * SECTOR as u32, 0x20, "b.bin"),
             (43, SECTOR as u32 + 1, 0x20, "c.bin"),
-        ]));
+        ]);
+        assert_eq!(
+            sub[SUB_TABLE_LEN as usize], 0xFF,
+            "declared length is the entry bytes"
+        );
+        out.extend_from_slice(&sub);
         // 41..43: b.bin.
         out.extend_from_slice(&b);
         // 43..45: c.bin + zero slack.
