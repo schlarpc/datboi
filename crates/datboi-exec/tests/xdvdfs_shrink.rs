@@ -307,3 +307,114 @@ fn real_image_swaps_and_serves() {
     }
     eprintln!("4 verified ranges in {:.1?}", t4.elapsed());
 }
+
+/// Two real discs in one store, opt-in: `DATBOI_XDVDFS_IMAGE` and
+/// `DATBOI_XDVDFS_IMAGE_B` (plus `DATBOI_XDVDFS_WORKDIR`). Ingests both,
+/// sweeps, runs the swap phase twice (the second disc's sharing
+/// evidence exists only after the first swapped), and prints resident
+/// bytes against the raw pair — the measured cross-variant dedupe.
+#[test]
+#[ignore]
+fn real_pair_dedupe() {
+    let (Ok(a), Ok(b)) = (
+        std::env::var("DATBOI_XDVDFS_IMAGE"),
+        std::env::var("DATBOI_XDVDFS_IMAGE_B"),
+    ) else {
+        eprintln!("DATBOI_XDVDFS_IMAGE / DATBOI_XDVDFS_IMAGE_B unset");
+        return;
+    };
+    let workdir = std::env::var("DATBOI_XDVDFS_WORKDIR")
+        .unwrap_or_else(|_| std::env::temp_dir().display().to_string());
+    let dir = tempfile::tempdir_in(&workdir).expect("workdir");
+    let store = Store::open(dir.path().join("store")).expect("store");
+    let mut db = Db::open(dir.path()).expect("db");
+
+    let resident = |db: &Db| -> u64 {
+        db.cache()
+            .query_row(
+                "SELECT COALESCE(SUM(size),0) FROM blob WHERE namespace = 0 AND residency = 0",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .expect("sum") as u64
+    };
+
+    let mut raw = 0u64;
+    let mut hashes = Vec::new();
+    for path in [&a, &b] {
+        let file = std::fs::File::open(path).expect("open image");
+        let len = file.metadata().expect("meta").len();
+        let (hash, _, _) = store.put_new(StoreNs::Data, file).expect("ingest");
+        db.upsert_blob(
+            &hash,
+            Some(len),
+            datboi_index::Namespace::Data,
+            Residency::Resident,
+        )
+        .expect("row");
+        raw += len;
+        hashes.push(hash);
+        eprintln!("ingested {path} ({len} B) as {hash}");
+    }
+    let sweep = sweep_all(&mut db, &store, &mut XdvdfsAnalyzer::new(), 10);
+    assert_eq!(sweep.errors.len(), 0, "{:?}", sweep.errors);
+    assert_eq!(sweep.positive, 2, "both split");
+    let details: Vec<String> = db
+        .cache()
+        .prepare("SELECT COALESCE(detail,'') FROM analysis")
+        .expect("q")
+        .query_map([], |r| r.get(0))
+        .expect("q")
+        .collect::<Result<_, _>>()
+        .expect("q");
+    for d in &details {
+        eprintln!("verdict: {d}");
+    }
+    eprintln!(
+        "resident after sweep: {} B (raw pair {} B)",
+        resident(&db),
+        raw
+    );
+
+    let exec = Executor::new(&store, ExecConfig::default()).expect("executor");
+    for pass in 1..=2 {
+        let report = exec.swap_covered(&mut db).expect("swap phase");
+        eprintln!("swap pass {pass}: {report:?}");
+        eprintln!(
+            "resident after pass {pass}: {} B = {:.1}% of the raw pair",
+            resident(&db),
+            resident(&db) as f64 * 100.0 / raw as f64
+        );
+    }
+    for hash in &hashes {
+        let row = db.blob_by_hash(hash).expect("q").expect("row");
+        let inputs = db
+            .rebuild_inputs(db.recipes_for_output(row.blob_id).expect("r")[0].recipe_id)
+            .expect("inputs");
+        let total: u64 = inputs
+            .iter()
+            .filter(|i| !i.generated)
+            .filter_map(|i| i.size)
+            .sum();
+        let shared: u64 = inputs
+            .iter()
+            .filter(|i| {
+                !i.generated && (i.covering_claims >= 2 || i.residency == Residency::Resident)
+            })
+            .filter_map(|i| i.size)
+            .sum();
+        let generated: u64 = inputs
+            .iter()
+            .filter(|i| i.generated)
+            .filter_map(|i| i.size)
+            .sum();
+        eprintln!(
+            "{hash}: residency {:?}; inputs {} B packable, {} B shared/resident ({:.1}%), {} B generated",
+            row.residency,
+            total,
+            shared,
+            shared as f64 * 100.0 / total.max(1) as f64,
+            generated
+        );
+    }
+}
