@@ -22,7 +22,8 @@
 /// v6: sweep_absent_eligible (D92 grounded-not-resident sweeps).
 /// v7: blob.obao dropped (D109 — shipped in v1 anticipating index-side
 /// outboard tracking, never read or written; presence is a store fact).
-pub const CACHE_SCHEMA_VERSION: u32 = 7;
+/// v8: sweep_deferred (D116 — an analysis waiting on a named blob).
+pub const CACHE_SCHEMA_VERSION: u32 = 8;
 
 /// cache.db migration ladder, same shape and rules as
 /// [`STATE_MIGRATIONS`]: `CACHE_MIGRATIONS[i]` migrates version `i + 1`
@@ -116,6 +117,16 @@ CREATE TABLE sweep_absent_eligible (
     // keeping the migrated_cache_equals_fresh_schema guarantee.
     "
 ALTER TABLE blob DROP COLUMN obao;
+",
+    // v7 → v8 (D116): sweep_deferred — purely additive.
+    "
+CREATE TABLE sweep_deferred (
+  blob_id    INTEGER NOT NULL REFERENCES blob(blob_id),
+  analyzer   BLOB NOT NULL,
+  waiting_on BLOB NOT NULL,
+  PRIMARY KEY (blob_id, analyzer)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX sweep_deferred_by_waiting ON sweep_deferred(waiting_on);
 ",
 ];
 
@@ -410,6 +421,22 @@ CREATE TABLE sweep_absent_eligible (
   blob_id INTEGER PRIMARY KEY REFERENCES blob(blob_id)
 ) STRICT, WITHOUT ROWID;
 
+-- D116: an analysis that cannot conclude until a NAMED blob is held —
+-- a Wii disc whose common key (D12, found by its known hash) is not in
+-- the store. Neither queued (a queue row would gate the blob's fallback
+-- families forever, D108) nor settled (a Negative would never re-run):
+-- the item leaves the queue and waits here, and the next queue refresh
+-- re-enqueues it once `waiting_on` is a resident data blob. Cache-grade:
+-- lost on rebuild, and the sweep simply re-derives it (the analyzer
+-- defers again in a few small reads).
+CREATE TABLE sweep_deferred (
+  blob_id    INTEGER NOT NULL REFERENCES blob(blob_id),
+  analyzer   BLOB NOT NULL,
+  waiting_on BLOB NOT NULL,
+  PRIMARY KEY (blob_id, analyzer)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX sweep_deferred_by_waiting ON sweep_deferred(waiting_on);
+
 -- D72: the eviction singleton guard — the one lease that IS a
 -- correctness gate (two concurrent grounding computations can jointly
 -- approve stranding a mutually-inverse recipe pair). Single seeded row;
@@ -451,6 +478,7 @@ CREATE INDEX ph_by_blob ON peer_have(blob_id);
 /// `gc_guard` is deliberately absent: its single seeded row must exist
 /// for claims to UPDATE, and a stale holder is already handled by TTL.
 pub const CACHE_TABLES_CHILD_FIRST: &[&str] = &[
+    "sweep_deferred",
     "sweep_absent_eligible",
     "orphan_candidate",
     "sweep_queue",

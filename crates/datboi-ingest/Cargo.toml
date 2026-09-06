@@ -28,6 +28,10 @@ datboi-xf-ecm = { path = "../datboi-xf-ecm" }
 # regenerates from.
 datboi-xf-xgd1-prng = { path = "../datboi-xf-xgd1-prng" }
 datboi-xf-gc-junk = { path = "../datboi-xf-gc-junk" }
+# And for Wii partitions (D116): the analyzer decrypts, recomputes the
+# hash tree and compares it to the disc's own blocks with the crate the
+# component re-encrypts with.
+datboi-xf-wii-crypt = { path = "../datboi-xf-wii-crypt" }
 thiserror.workspace = true
 # D92: analyzers consume the logical CAS — the refine sweep reads
 # absent-but-grounded blobs through the executor (bounded spill).

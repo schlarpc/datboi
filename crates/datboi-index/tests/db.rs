@@ -167,7 +167,7 @@ fn version_skew_recreates_cache_and_protects_state() {
         conn.execute_batch(
             "DROP TABLE sweep_queue; DROP TABLE analysis; DROP TABLE seek_quarantine;
              DROP TABLE gc_guard; DROP TABLE orphan_candidate;
-             DROP TABLE sweep_absent_eligible; DROP INDEX sf_by_blob;
+             DROP TABLE sweep_absent_eligible; DROP TABLE sweep_deferred; DROP INDEX sf_by_blob;
              ALTER TABLE blob ADD COLUMN obao INTEGER NOT NULL DEFAULT 0;",
         )
         .expect("devolve");
@@ -269,7 +269,7 @@ fn migrated_cache_equals_fresh_schema() {
         conn.execute_batch(
             "DROP TABLE sweep_queue; DROP TABLE analysis; DROP TABLE seek_quarantine;
              DROP TABLE gc_guard; DROP TABLE orphan_candidate;
-             DROP TABLE sweep_absent_eligible; DROP INDEX sf_by_blob;
+             DROP TABLE sweep_absent_eligible; DROP TABLE sweep_deferred; DROP INDEX sf_by_blob;
              ALTER TABLE blob ADD COLUMN obao INTEGER NOT NULL DEFAULT 0;",
         )
         .expect("devolve");
@@ -1556,4 +1556,54 @@ fn swap_candidates_skip_view_routes_but_keep_decompositions() {
             .any(|c| (c.blob_id, c.recipe_id) == (disc, rebuild)),
         "{cands:?}"
     );
+}
+
+/// D116: a deferred item leaves the queue without a conclusion, stays
+/// out while the blob it waits on is absent, and re-enqueues once that
+/// blob is a resident data blob; a conclusion ends the wait.
+#[test]
+fn deferred_sweep_items_wait_for_a_named_blob() {
+    use datboi_index::AnalysisOutcome;
+
+    let (_dir, mut db) = open_db();
+    let analyzer = Blake3::compute(b"analyzer-wii");
+    let disc = blob(&db, b"disc", Residency::Resident);
+    let key_hash = Blake3::compute(b"the-common-key");
+
+    assert_eq!(db.enqueue_unanalyzed(&analyzer, 1).unwrap(), 1);
+    let claimed = db.claim_sweep_items(&analyzer, &[], 10, 10, 60).unwrap();
+    assert_eq!(claimed.len(), 1);
+    db.defer_sweep_item(disc, &analyzer, &key_hash).unwrap();
+    assert_eq!(db.sweep_queue_len(&analyzer).unwrap(), 0, "left the queue");
+    assert_eq!(
+        db.deferred_sweep_items(&analyzer).unwrap(),
+        vec![(disc, key_hash)]
+    );
+    let disc_queued = |db: &Db| -> i64 {
+        db.cache()
+            .query_row(
+                "SELECT COUNT(*) FROM sweep_queue WHERE blob_id = ?1",
+                [disc],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    // Absent key: the refresh does not resurrect the item...
+    assert_eq!(db.enqueue_unanalyzed(&analyzer, 2).unwrap(), 0);
+    // ...nor does an absent CLAIM of the key (a peer's advertisement —
+    // the claim itself is a fresh unanalyzed blob, the disc stays out)...
+    db.upsert_blob(&key_hash, Some(16), Namespace::Data, Residency::Absent)
+        .unwrap();
+    db.enqueue_unanalyzed(&analyzer, 3).unwrap();
+    assert_eq!(disc_queued(&db), 0, "still waiting");
+    // ...but the key's arrival does.
+    db.upsert_blob(&key_hash, Some(16), Namespace::Data, Residency::Resident)
+        .unwrap();
+    assert_eq!(db.enqueue_unanalyzed(&analyzer, 4).unwrap(), 1);
+    assert_eq!(disc_queued(&db), 1, "re-enqueued");
+    // A conclusion clears the wait; a later refresh sees a settled blob.
+    db.complete_sweep_item(disc, &analyzer, AnalysisOutcome::Positive, None, 5)
+        .unwrap();
+    assert!(db.deferred_sweep_items(&analyzer).unwrap().is_empty());
+    assert_eq!(db.enqueue_unanalyzed(&analyzer, 6).unwrap(), 0);
 }

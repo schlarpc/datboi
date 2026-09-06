@@ -167,11 +167,62 @@ pub fn parse_layout<R: Read + Seek>(img: &mut R, max_pieces: usize) -> Result<La
     if !looks_like_gcm(&boot) {
         return Err(Refusal::NotGcm.into());
     }
+    let id4: [u8; 4] = boot[..4].try_into().expect("4 bytes");
+    parse_volume(
+        img,
+        max_pieces,
+        VolumeOpts {
+            junk_id: id4,
+            junk_disc: boot[6],
+            wii: false,
+            hash_junk: true,
+        },
+    )
+}
+
+/// How a volume is walked (D116 shares this walker between a GameCube
+/// image and a Wii partition's plaintext): the junk stream its gaps are
+/// compared against — a GameCube disc's own ID, or for a Wii partition
+/// the DISC header's ID over the partition's plaintext address space,
+/// the mastering tool's rule — whether the boot block and FST carry
+/// Wii's `>> 2` offsets, and whether the stream's identity is hashed
+/// here (a Wii disc hashes ONE stream for all its partitions and gaps).
+#[derive(Debug, Clone, Copy)]
+pub struct VolumeOpts {
+    pub junk_id: [u8; 4],
+    pub junk_disc: u8,
+    pub wii: bool,
+    pub hash_junk: bool,
+}
+
+/// Parse a GameCube-shaped volume — a disc image, or a Wii partition's
+/// plaintext — into its coverage map. The boot block's magic is the
+/// caller's business ([`parse_layout`] checks GameCube's; a Wii
+/// partition's boot block carries the Wii magic and is checked here
+/// when `opts.wii`).
+///
+/// # Errors
+/// [`GcmError::Refused`] is a settled conclusion; `Io` is environmental.
+pub fn parse_volume<R: Read + Seek>(
+    img: &mut R,
+    max_pieces: usize,
+    opts: VolumeOpts,
+) -> Result<Layout, GcmError> {
+    let total_len = img.seek(SeekFrom::End(0))?;
+    if total_len < APPLOADER_OFFSET + APPLOADER_HEADER {
+        return Err(Refusal::Truncated("no room for the boot block and apploader header").into());
+    }
+    let boot = read_at(img, 0, usize::try_from(BOOT_LEN).expect("small"))?;
+    if opts.wii && boot[0x18..0x1C] != WII_MAGIC {
+        return Err(Refusal::Header("partition boot block lacks the wii magic".into()).into());
+    }
     let game_id: [u8; 6] = boot[..6].try_into().expect("6 bytes");
     let disc = boot[6];
-    let dol_offset = be32(&boot, 0x420);
-    let fst_offset = be32(&boot, 0x424);
-    let fst_size = be32(&boot, 0x428);
+    // Wii stores every offset (and the FST size) shifted right by two.
+    let shift = if opts.wii { 2 } else { 0 };
+    let dol_offset = be32(&boot, 0x420) << shift;
+    let fst_offset = be32(&boot, 0x424) << shift;
+    let fst_size = be32(&boot, 0x428) << shift;
 
     let mut entries: Vec<Entry> = vec![
         Entry {
@@ -285,6 +336,7 @@ pub fn parse_layout<R: Read + Seek>(img: &mut R, max_pieces: usize) -> Result<La
                 stack.push((length, full));
             }
             0 => {
+                let offset = offset << shift;
                 if length == 0 {
                     empty_files += 1;
                     continue;
@@ -344,8 +396,7 @@ pub fn parse_layout<R: Read + Seek>(img: &mut R, max_pieces: usize) -> Result<La
         entries
     };
 
-    let id4: [u8; 4] = game_id[..4].try_into().expect("4 bytes");
-    let mut cls = Classifier::new(img, id4, disc);
+    let mut cls = Classifier::new(img, opts.junk_id, opts.junk_disc);
     let mut pieces: Vec<Piece> = Vec::new();
     let mut regions: Vec<Region> = Vec::new();
     let mut cursor = 0u64;
@@ -370,24 +421,11 @@ pub fn parse_layout<R: Read + Seek>(img: &mut R, max_pieces: usize) -> Result<La
 
     // The stream's identity: hash the whole address space once. Only
     // when something matched — a zero-padded master claims no junk.
-    let junk = (cls.junk_bytes > 0).then(|| {
-        let mut hasher = blake3::Hasher::new();
-        let mut lfg = Lfg::default();
-        let mut buf = vec![0u8; SCAN_BYTES];
-        let mut pos = 0u64;
-        while pos < total_len {
-            let n = usize::try_from((total_len - pos).min(SCAN_BYTES as u64)).expect("bounded");
-            fill_at(&mut lfg, id4, disc, pos, &mut buf[..n]);
-            hasher.update(&buf[..n]);
-            pos += n as u64;
-        }
-        Junk {
-            id: id4,
-            disc,
-            len: total_len,
-            hash: Blake3(*hasher.finalize().as_bytes()),
-        }
-    });
+    let junk = (opts.hash_junk && cls.junk_bytes > 0)
+        .then(|| junk_stream(opts.junk_id, opts.junk_disc, total_len));
+    let junk_bytes = cls.junk_bytes;
+    let fill_bytes = cls.fill_bytes;
+    let residual_bytes = cls.residual_bytes;
 
     Ok(Layout {
         total_len,
@@ -399,11 +437,33 @@ pub fn parse_layout<R: Read + Seek>(img: &mut R, max_pieces: usize) -> Result<La
         file_count,
         dir_count,
         empty_files,
-        junk_bytes: cls.junk_bytes,
-        fill_bytes: cls.fill_bytes,
-        residual_bytes: cls.residual_bytes,
+        junk_bytes,
+        fill_bytes,
+        residual_bytes,
         coalesced,
     })
+}
+
+/// The junk stream's identity over `[0, len)`: generate and hash it
+/// once. Seconds per GiB — the dominant cost of a walk (D115 watch item).
+#[must_use]
+pub fn junk_stream(id: [u8; 4], disc: u8, len: u64) -> Junk {
+    let mut hasher = blake3::Hasher::new();
+    let mut lfg = Lfg::default();
+    let mut buf = vec![0u8; SCAN_BYTES];
+    let mut pos = 0u64;
+    while pos < len {
+        let n = usize::try_from((len - pos).min(SCAN_BYTES as u64)).expect("bounded");
+        fill_at(&mut lfg, id, disc, pos, &mut buf[..n]);
+        hasher.update(&buf[..n]);
+        pos += n as u64;
+    }
+    Junk {
+        id,
+        disc,
+        len,
+        hash: Blake3(*hasher.finalize().as_bytes()),
+    }
 }
 
 /// A run of like-classified bytes, pending emission as one region.
@@ -427,16 +487,17 @@ enum Run {
 
 /// The gap classifier: reads the gaps between declared ranges
 /// sequentially, comparing each against the generator at its own
-/// position.
-struct Classifier<'r, R> {
+/// position. Shared with the Wii walker (D116), whose disc-level gaps
+/// classify against the same generator at disc offsets.
+pub(crate) struct Classifier<'r, R> {
     img: &'r mut R,
     id: [u8; 4],
     disc: u8,
     lfg: Lfg,
     pending: Option<Run>,
-    junk_bytes: u64,
-    fill_bytes: u64,
-    residual_bytes: u64,
+    pub(crate) junk_bytes: u64,
+    pub(crate) fill_bytes: u64,
+    pub(crate) residual_bytes: u64,
     buf: Vec<u8>,
     junk_buf: Vec<u8>,
     eq_run: Vec<usize>,
@@ -444,7 +505,7 @@ struct Classifier<'r, R> {
 }
 
 impl<'r, R: Read + Seek> Classifier<'r, R> {
-    fn new(img: &'r mut R, id: [u8; 4], disc: u8) -> Self {
+    pub(crate) fn new(img: &'r mut R, id: [u8; 4], disc: u8) -> Self {
         Self {
             img,
             id,
@@ -461,7 +522,7 @@ impl<'r, R: Read + Seek> Classifier<'r, R> {
         }
     }
 
-    fn classify(
+    pub(crate) fn classify(
         &mut self,
         start: u64,
         len: u64,
@@ -691,6 +752,17 @@ pub mod synth {
     /// created from the paths. Total size: a few MiB.
     #[must_use]
     pub fn image(id: [u8; 6], disc: u8, files: &[(&str, Vec<u8>)], pad: Pad) -> Image {
+        volume(id, disc, files, pad, false)
+    }
+
+    /// [`image`], or with `wii` the plaintext of a Wii partition: the
+    /// Wii magic at 0x18, the boot block's offsets and the FST's file
+    /// offsets stored `>> 2`, junk seeded exactly as a GameCube disc's
+    /// would be (the D116 walker's rule: the disc ID over the
+    /// partition's own address space).
+    #[must_use]
+    pub fn volume(id: [u8; 6], disc: u8, files: &[(&str, Vec<u8>)], pad: Pad, wii: bool) -> Image {
+        let shift = if wii { 2 } else { 0 };
         let apploader = {
             let body = pattern(5000, 0xA11);
             let mut a = vec![0u8; 0x20];
@@ -758,7 +830,7 @@ pub mod synth {
             nodes.push(Node {
                 dir: false,
                 name,
-                offset: u32::try_from(offset).unwrap(),
+                offset: u32::try_from(offset >> shift).unwrap(),
                 length: u32::try_from(bytes.len()).unwrap(),
             });
             if let Some(d) = &dir {
@@ -789,6 +861,11 @@ pub mod synth {
             strings.push(0);
         }
         fst.extend_from_slice(&strings);
+        // Wii stores the FST size `>> 2`: keep it a multiple of four
+        // (a real master's string table is padded the same way).
+        while fst.len() % 4 != 0 {
+            fst.push(0);
+        }
         assert!(fst.len() as u64 <= fst_size_guess, "fst guess holds");
 
         // A residue gap and a zero pad after the last file, then the end.
@@ -811,15 +888,23 @@ pub mod synth {
         out[..6].copy_from_slice(&id);
         out[6] = disc;
         out[7] = 0;
-        out[8..0x1C].fill(0);
-        out[0x1C..0x20].copy_from_slice(&MAGIC);
+        out[8..0x20].fill(0);
+        if wii {
+            out[0x18..0x1C].copy_from_slice(&super::WII_MAGIC);
+        } else {
+            out[0x1C..0x20].copy_from_slice(&MAGIC);
+        }
         out[0x20..0x60].fill(0);
         out[0x20..0x2B].copy_from_slice(b"DATBOI TEST");
         out[0x60..0x420].fill(0);
-        out[0x420..0x424].copy_from_slice(&u32::try_from(dol_offset).unwrap().to_be_bytes());
-        out[0x424..0x428].copy_from_slice(&u32::try_from(fst_offset).unwrap().to_be_bytes());
-        out[0x428..0x42C].copy_from_slice(&(fst.len() as u32).to_be_bytes());
-        out[0x42C..0x430].copy_from_slice(&(fst.len() as u32).to_be_bytes());
+        out[0x420..0x424]
+            .copy_from_slice(&u32::try_from(dol_offset >> shift).unwrap().to_be_bytes());
+        out[0x424..0x428]
+            .copy_from_slice(&u32::try_from(fst_offset >> shift).unwrap().to_be_bytes());
+        out[0x428..0x42C]
+            .copy_from_slice(&u32::try_from(fst.len() >> shift).unwrap().to_be_bytes());
+        out[0x42C..0x430]
+            .copy_from_slice(&u32::try_from(fst.len() >> shift).unwrap().to_be_bytes());
         out[0x430..0x440].fill(0);
         let bi2 = pattern(usize::try_from(BI2_LEN).unwrap(), 0xB12);
         out[usize::try_from(BOOT_LEN).unwrap()..usize::try_from(APPLOADER_OFFSET).unwrap()]

@@ -33,6 +33,12 @@ pub struct AnalysisResult {
     pub outcome: AnalysisOutcome,
     /// Analyzer-owned annotation (why negative / what was minted).
     pub detail: Option<String>,
+    /// D116: the analysis cannot conclude until this blob is held (a
+    /// Wii disc's common key, D12). The driver records no conclusion —
+    /// the item leaves the queue and waits ([`Db::defer_sweep_item`]),
+    /// re-enqueued once the blob is resident. `outcome` is then advisory
+    /// (what the analyzer would have said: Negative).
+    pub waiting_on: Option<Blake3>,
 }
 
 /// Liveness-as-progress (D71): analyzers pulse this as bytes move
@@ -261,6 +267,7 @@ impl Analyzer for NoopAnalyzer {
         _pulse: &mut dyn Pulse,
     ) -> Result<AnalysisResult, String> {
         Ok(AnalysisResult {
+            waiting_on: None,
             outcome: AnalysisOutcome::Negative,
             detail: None,
         })
@@ -273,6 +280,8 @@ pub struct SweepReport {
     pub analyzed: usize,
     pub positive: usize,
     pub negative: usize,
+    /// Items that left the queue to wait on a named blob (D116).
+    pub deferred: usize,
     /// (blob hash, error) — items left queued for a later sweep.
     pub errors: Vec<(Blake3, String)>,
     /// The analyzer family is disabled (D60): nothing ran.
@@ -299,7 +308,7 @@ fn params_key(family: &str) -> String {
 /// `analyzer` subcommand and the daemon's `/v1/analyzers` surface agree
 /// on (D96) — a family added here appears on both without a second edit.
 pub const FAMILIES: &[&str] = &[
-    "noop", "chunk", "preflate", "ecm", "nds", "xdvdfs", "iso9660", "gcm",
+    "noop", "chunk", "preflate", "ecm", "nds", "xdvdfs", "iso9660", "gcm", "wii",
 ];
 
 /// Is the family enabled? Absent means yes (opt-out policy).
@@ -520,6 +529,14 @@ pub fn process_round(
         let mut pulse = LeaseHeartbeat::new(&keeper, id, item.blob_id);
         match analyzer.analyze(&item, bytes, store, db, &mut pulse) {
             Ok(result) => {
+                if let Some(waiting_on) = result.waiting_on {
+                    // D116: no conclusion — the item waits for the blob
+                    // it names and re-enqueues when that blob arrives.
+                    db.defer_sweep_item(item.blob_id, &id, &waiting_on)?;
+                    report.deferred += 1;
+                    observer.item_finished(&item, Ok(result.outcome));
+                    continue;
+                }
                 db.complete_sweep_item(
                     item.blob_id,
                     &id,

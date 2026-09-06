@@ -32,6 +32,7 @@ pub mod iso9660;
 pub mod narc;
 pub mod nds;
 pub mod refine;
+pub mod wii;
 pub mod xdvdfs;
 pub mod zip;
 

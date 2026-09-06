@@ -59,7 +59,7 @@ const SKELETON_LIMIT: u64 = 64 * 1024 * 1024;
 /// its own sweep analyzer but shares the `nds` config family, so the two
 /// vocabularies are deliberately distinct.
 pub const SWEEP_ANALYZERS: &[&str] = &[
-    "noop", "chunk", "preflate", "ecm", "nds", "narc", "xdvdfs", "iso9660", "gcm",
+    "noop", "chunk", "preflate", "ecm", "nds", "narc", "xdvdfs", "iso9660", "gcm", "wii",
 ];
 
 /// Construct a sweep analyzer by name — the shared factory both the CLI
@@ -88,6 +88,7 @@ pub fn sweep_roster() -> Vec<Box<dyn Analyzer>> {
         Box::new(XdvdfsAnalyzer::new()),
         Box::new(Iso9660Analyzer),
         Box::new(GcmAnalyzer::new()),
+        Box::new(WiiAnalyzer::new()),
         Box::new(ChunkAnalyzer),
     ];
     roster.sort_by_key(|a| a.class());
@@ -106,6 +107,7 @@ pub fn analyzer_for(name: &str) -> Option<Box<dyn Analyzer>> {
         "xdvdfs" | "xdvdfs-split" | "xiso" => Box::new(XdvdfsAnalyzer::new()),
         "iso9660" | "iso9660-split" | "iso" => Box::new(Iso9660Analyzer),
         "gcm" | "gcm-split" | "gamecube" | "gcn" => Box::new(GcmAnalyzer::new()),
+        "wii" | "wii-split" | "rvl" => Box::new(WiiAnalyzer::new()),
         _ => return None,
     })
 }
@@ -336,6 +338,7 @@ impl Analyzer for PreflateZipAnalyzer {
         let n = file.read(&mut head).map_err(|e| e.to_string())?;
         if !crate::zip::looks_like_zip(&head[..n]) {
             return Ok(AnalysisResult {
+                waiting_on: None,
                 outcome: AnalysisOutcome::Negative,
                 detail: Some("not a zip container".into()),
             });
@@ -348,6 +351,7 @@ impl Analyzer for PreflateZipAnalyzer {
             Ok(parsed) => parsed,
             Err(e) => {
                 return Ok(AnalysisResult {
+                    waiting_on: None,
                     outcome: AnalysisOutcome::Negative,
                     detail: Some(format!("zip parse failed: {e}; container stays literal")),
                 });
@@ -355,6 +359,7 @@ impl Analyzer for PreflateZipAnalyzer {
         };
         if !parsed.skipped.is_empty() {
             return Ok(AnalysisResult {
+                waiting_on: None,
                 outcome: AnalysisOutcome::Negative,
                 // D24: unsupported members leave the container literal.
                 detail: Some(format!(
@@ -370,6 +375,7 @@ impl Analyzer for PreflateZipAnalyzer {
             .collect();
         if deflate_members.is_empty() {
             return Ok(AnalysisResult {
+                waiting_on: None,
                 outcome: AnalysisOutcome::Negative,
                 detail: Some("no deflate members to rebuild".into()),
             });
@@ -385,6 +391,7 @@ impl Analyzer for PreflateZipAnalyzer {
         for &(start, len, _) in &ranges {
             if start < prev_end || start.checked_add(len).is_none_or(|e| e > container_size) {
                 return Ok(AnalysisResult {
+                    waiting_on: None,
                     outcome: AnalysisOutcome::Negative,
                     detail: Some("overlapping or out-of-bounds member ranges".into()),
                 });
@@ -455,6 +462,7 @@ impl Analyzer for PreflateZipAnalyzer {
         }
         if covered.is_empty() {
             return Ok(AnalysisResult {
+                waiting_on: None,
                 outcome: AnalysisOutcome::Negative,
                 // D24: no member splits, so the container stays literal.
                 detail: Some(format!(
@@ -466,6 +474,7 @@ impl Analyzer for PreflateZipAnalyzer {
         let skeleton_len = container_size - covered.iter().map(|&(_, len, _)| len).sum::<u64>();
         if skeleton_len > SKELETON_LIMIT {
             return Ok(AnalysisResult {
+                waiting_on: None,
                 outcome: AnalysisOutcome::Negative,
                 detail: Some(format!(
                     "skeleton would be {skeleton_len} bytes (> {SKELETON_LIMIT}); container stays literal"
@@ -626,6 +635,7 @@ impl Analyzer for PreflateZipAnalyzer {
             )
         };
         Ok(AnalysisResult {
+            waiting_on: None,
             outcome: AnalysisOutcome::Positive,
             detail: Some(format!(
                 "rebuildable: {}/{} member(s) split; plaintext {pt_total} B, corrections {corr_total} B, skeleton {} B{refused}",
@@ -698,6 +708,7 @@ impl Analyzer for ChunkAnalyzer {
         };
         if size < CHUNK_THRESHOLD {
             return Ok(AnalysisResult {
+                waiting_on: None,
                 outcome: AnalysisOutcome::Negative,
                 detail: Some(format!("below {CHUNK_THRESHOLD}-byte chunking threshold")),
             });
@@ -712,6 +723,7 @@ impl Analyzer for ChunkAnalyzer {
             .map(|row| row.residency);
         if residency != Some(Residency::Resident) {
             return Ok(AnalysisResult {
+                waiting_on: None,
                 outcome: AnalysisOutcome::Negative,
                 detail: Some("not a resident literal — chunking would materialize it".into()),
             });
@@ -731,6 +743,7 @@ impl Analyzer for ChunkAnalyzer {
             .map_err(|e| e.to_string())?
         {
             return Ok(AnalysisResult {
+                waiting_on: None,
                 outcome: AnalysisOutcome::Negative,
                 // D59: an existing grounding route already covers this.
                 detail: Some("already covered by a grounding route".into()),
@@ -763,6 +776,7 @@ impl Analyzer for ChunkAnalyzer {
             // A single chunk would be a self-referential recipe (output
             // == input) — no decomposition happened.
             return Ok(AnalysisResult {
+                waiting_on: None,
                 outcome: AnalysisOutcome::Negative,
                 detail: Some("indivisible: content is a single chunk".into()),
             });
@@ -799,6 +813,7 @@ impl Analyzer for ChunkAnalyzer {
         crate::mint_recipe(store, db, &recipe, SeekClass::Affine).map_err(|e| e.to_string())?;
 
         Ok(AnalysisResult {
+            waiting_on: None,
             outcome: AnalysisOutcome::Positive,
             detail: Some(format!("chunked into {} pieces", chunk_ids.len())),
         })
@@ -975,6 +990,7 @@ impl Analyzer for EcmAnalyzer {
             .ok_or("blob size unknown")?;
         if size < datboi_xf_ecm::SECTOR as u64 {
             return Ok(AnalysisResult {
+                waiting_on: None,
                 outcome: AnalysisOutcome::Negative,
                 detail: Some("smaller than one raw CD sector".into()),
             });
@@ -984,6 +1000,7 @@ impl Analyzer for EcmAnalyzer {
         file.read_exact(&mut head).map_err(|e| e.to_string())?;
         if head != datboi_xf_ecm::SYNC {
             return Ok(AnalysisResult {
+                waiting_on: None,
                 outcome: AnalysisOutcome::Negative,
                 detail: Some("no CD sync pattern at offset 0".into()),
             });
@@ -1002,6 +1019,7 @@ impl Analyzer for EcmAnalyzer {
             // Sync at 0 but nothing verified — scrambled or nonstandard.
             // The stripped blob equals the original; harmless orphan row.
             return Ok(AnalysisResult {
+                waiting_on: None,
                 outcome: AnalysisOutcome::Negative,
                 detail: Some("sync present but no sector regenerates bit-exactly".into()),
             });
@@ -1058,6 +1076,7 @@ impl Analyzer for EcmAnalyzer {
             .map_err(|e| e.to_string())?;
 
         Ok(AnalysisResult {
+            waiting_on: None,
             outcome: AnalysisOutcome::Positive,
             detail: Some(format!(
                 "regenerable: {regenerable} sector(s) (m1 {}, m2f1 {}, m2f2 {}), {} literal byte(s); stripped {} B + layout {} B replace {size} B",
@@ -1129,6 +1148,7 @@ impl Analyzer for NdsAnalyzer {
             Ok(layout) => layout,
             Err(crate::nds::NdsError::Refused(refusal)) => {
                 return Ok(AnalysisResult {
+                    waiting_on: None,
                     outcome: AnalysisOutcome::Negative,
                     detail: Some(refusal.to_string()),
                 });
@@ -1147,6 +1167,7 @@ impl Analyzer for NdsAnalyzer {
             &layout.regions,
             layout.empty_files,
             &[],
+            &std::collections::HashMap::new(),
             &mut rom,
         )?;
 
@@ -1194,6 +1215,7 @@ impl Analyzer for NdsAnalyzer {
         }
 
         Ok(AnalysisResult {
+            waiting_on: None,
             outcome: AnalysisOutcome::Positive,
             detail: Some(format!(
                 "split into {} piece(s) ({} nitrofs file(s), {} residual byte(s)); trim {}",
@@ -1263,6 +1285,7 @@ impl Analyzer for NarcAnalyzer {
             Ok(layout) => layout,
             Err(crate::nds::NdsError::Refused(refusal)) => {
                 return Ok(AnalysisResult {
+                    waiting_on: None,
                     outcome: AnalysisOutcome::Negative,
                     detail: Some(refusal.to_string()),
                 });
@@ -1279,6 +1302,7 @@ impl Analyzer for NarcAnalyzer {
             .unwrap_or(Self::DEFAULT_MAX_MEMBERS);
         if layout.file_count > max {
             return Ok(AnalysisResult {
+                waiting_on: None,
                 outcome: AnalysisOutcome::Negative,
                 detail: Some(format!(
                     "{} members exceed the narc:max-members cap ({max})",
@@ -1296,10 +1320,12 @@ impl Analyzer for NarcAnalyzer {
             &layout.regions,
             layout.empty_files,
             &[],
+            &std::collections::HashMap::new(),
             &mut narc,
         )?;
 
         Ok(AnalysisResult {
+            waiting_on: None,
             outcome: AnalysisOutcome::Positive,
             detail: Some(format!(
                 "split into {} piece(s) ({} member(s), {} residual byte(s))",
@@ -1428,6 +1454,7 @@ impl Analyzer for XdvdfsAnalyzer {
             Ok(layout) => layout,
             Err(crate::xdvdfs::XdvdfsError::Refused(refusal)) => {
                 return Ok(AnalysisResult {
+                    waiting_on: None,
                     outcome: AnalysisOutcome::Negative,
                     detail: Some(refusal.to_string()),
                 });
@@ -1483,6 +1510,7 @@ impl Analyzer for XdvdfsAnalyzer {
             &layout.regions,
             layout.empty_files,
             &externs,
+            &std::collections::HashMap::new(),
             &mut img,
         )?;
 
@@ -1562,6 +1590,7 @@ impl Analyzer for XdvdfsAnalyzer {
             ),
         };
         Ok(AnalysisResult {
+            waiting_on: None,
             outcome: AnalysisOutcome::Positive,
             detail: Some(format!(
                 "split into {} piece(s) ({} file(s), {} dir table(s){}) at partition base {:#x}; {}; {}; {}; {} residual byte(s); layout tool build {}",
@@ -1689,6 +1718,7 @@ impl Analyzer for GcmAnalyzer {
             Ok(layout) => layout,
             Err(crate::gcm::GcmError::Refused(refusal)) => {
                 return Ok(AnalysisResult {
+                    waiting_on: None,
                     outcome: AnalysisOutcome::Negative,
                     detail: Some(refusal.to_string()),
                 });
@@ -1743,10 +1773,12 @@ impl Analyzer for GcmAnalyzer {
             &layout.regions,
             layout.empty_files,
             &externs,
+            &std::collections::HashMap::new(),
             &mut img,
         )?;
 
         Ok(AnalysisResult {
+            waiting_on: None,
             outcome: AnalysisOutcome::Positive,
             detail: Some(format!(
                 "split into {} piece(s) ({} file(s), {} dir(s), {} empty{}); game {} disc {}; junk {} B ({:.1}%){}; {} B fill; {} residual byte(s)",
@@ -1770,6 +1802,452 @@ impl Analyzer for GcmAnalyzer {
                 },
                 layout.fill_bytes,
                 layout.residual_bytes,
+            )),
+        })
+    }
+}
+
+/// The canonical `xf-wii-crypt` component, embedded like xf-gc-junk's.
+pub const XF_WII_CRYPT_WASM: &[u8] = include_bytes!(concat!(
+    env!("DATBOI_COMPONENTS_DIR"),
+    "/datboi_xf_wii_crypt.wasm"
+));
+
+/// Wii disc decomposition (D116): a Wii image split into its header
+/// structures, per-partition tickets / TMDs / certificate chains / H3
+/// tables and BODIES as pieces of the disc (the D83 shape, junk between
+/// them regenerated as on GameCube), and each verified body decomposed
+/// one level further: its plaintext — decrypted through `xf-wii-crypt`
+/// with the common key the ticket names, found in the store by its
+/// known hash (D12) — walks as a GameCube volume into system + FST-file
+/// pieces with the junk regenerated, and the body's rebuild is one
+/// `encrypt` recipe over that plaintext and the key. Two routes per
+/// intermediate (a body: slice of the disc / encrypt; a plaintext:
+/// decrypt / assemble), so the disc plans through the resident side
+/// before the swap and through the packed leaves after it (the D116
+/// swap walks the graph down to its grounding leaves). Nothing is
+/// claimed that was not decrypted, re-hashed and compared byte for byte
+/// at discovery, and D4 replay proves every recipe before any literal
+/// drops. A disc whose key is not held is DEFERRED, not concluded: it
+/// leaves the sweep queue and returns when the key arrives.
+pub struct WiiAnalyzer {
+    keys: Vec<crate::wii::KnownKey>,
+    junk_component_published: bool,
+    crypt_component_published: bool,
+}
+
+impl WiiAnalyzer {
+    const VERSIONED_NAME: &'static str = "wii-split/1";
+    /// Piece cap per partition (molten policy `wii:max-pieces`): past
+    /// it, a partition's pieces are contiguous data runs instead of files.
+    const DEFAULT_MAX_PIECES: usize = 4096;
+    /// Role the junk stream carries on rebuild input lists.
+    const JUNK_ROLE: &'static str = "gc-junk";
+    /// Role the common key carries on the crypt recipes (docs/recipes.md).
+    const KEY_ROLE: &'static str = "keys";
+
+    /// With the console common keys this build knows by hash.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_keys(crate::wii::known_keys())
+    }
+
+    /// With a caller-supplied key table — the gates' synthetic discs
+    /// are encrypted under a test key that is not a console's.
+    #[must_use]
+    pub fn with_keys(keys: Vec<crate::wii::KnownKey>) -> Self {
+        Self {
+            keys,
+            junk_component_published: false,
+            crypt_component_published: false,
+        }
+    }
+
+    /// blake3 of the embedded crypt component — the hash the
+    /// `encrypt` / `decrypt` recipes pin.
+    #[must_use]
+    pub fn component_hash() -> Blake3 {
+        Blake3::compute(XF_WII_CRYPT_WASM)
+    }
+
+    fn ensure_component(
+        published: &mut bool,
+        bytes: &'static [u8],
+        store: &Store,
+        db: &mut Db,
+    ) -> Result<Blake3, String> {
+        let hash = Blake3::compute(bytes);
+        if !*published {
+            store
+                .put(StoreNs::Data, hash, bytes)
+                .map_err(|e| e.to_string())?;
+            *published = true;
+        }
+        db.upsert_blob(
+            &hash,
+            Some(bytes.len() as u64),
+            IndexNs::Data,
+            Residency::Resident,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(hash)
+    }
+
+    /// Claim a junk stream: the component, the absent output row, and
+    /// the zero-input `fill` recipe (D115's shape).
+    fn mint_junk(
+        &mut self,
+        store: &Store,
+        db: &mut Db,
+        junk: &crate::gcm::Junk,
+    ) -> Result<(), String> {
+        let component_hash = Self::ensure_component(
+            &mut self.junk_component_published,
+            XF_GC_JUNK_WASM,
+            store,
+            db,
+        )?;
+        if db
+            .blob_by_hash(&junk.hash)
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
+            db.upsert_blob(&junk.hash, Some(junk.len), IndexNs::Data, Residency::Absent)
+                .map_err(|e| e.to_string())?;
+        }
+        let (params, n) = datboi_xf_gc_junk::params::Params {
+            id: junk.id,
+            disc: junk.disc,
+            len: junk.len,
+        }
+        .encode();
+        let fill = Recipe {
+            op: Op::Wasm {
+                component: component_hash,
+                world: World::Transform1,
+                export: "fill".into(),
+            },
+            inputs: Vec::new(),
+            outputs: vec![OutputRef {
+                hash: junk.hash,
+                size: junk.len,
+                name: Some(Self::JUNK_ROLE.into()),
+            }],
+            params: params[..n].to_vec(),
+        };
+        crate::mint_recipe(store, db, &fill, SeekClass::Affine).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// The 16 bytes of a held key, or `None` when the store does not
+    /// hold it (absent claims do not count: the analyzer needs bytes).
+    fn key_bytes(store: &Store, db: &Db, hash: &Blake3) -> Result<Option<[u8; 16]>, String> {
+        let held = db
+            .blob_by_hash(hash)
+            .map_err(|e| e.to_string())?
+            .is_some_and(|row| row.residency == Residency::Resident)
+            && store.has(StoreNs::Data, hash);
+        if !held {
+            return Ok(None);
+        }
+        let mut file = store
+            .get(StoreNs::Data, hash)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("key {hash} vanished between index and store"))?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|e| e.to_string())?;
+        let key: [u8; 16] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| format!("key blob {hash} is {} bytes, not 16", bytes.len()))?;
+        Ok(Some(key))
+    }
+}
+
+impl Default for WiiAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Analyzer for WiiAnalyzer {
+    fn name(&self) -> &'static str {
+        Self::VERSIONED_NAME
+    }
+
+    fn class(&self) -> AnalyzerClass {
+        AnalyzerClass::Structural
+    }
+
+    fn family(&self) -> &'static str {
+        "wii"
+    }
+
+    fn id(&self) -> Blake3 {
+        analyzer_tag(Self::VERSIONED_NAME)
+    }
+
+    fn analyze(
+        &mut self,
+        item: &SweepItem,
+        bytes: &Logical<'_, '_>,
+        store: &Store,
+        db: &mut Db,
+        pulse: &mut dyn Pulse,
+    ) -> Result<AnalysisResult, String> {
+        use crate::wii::{self, WiiError};
+
+        let file = bytes.open(item, db, pulse)?;
+        let mut img = TickRandom { inner: file, pulse };
+
+        let negative = |detail: String| AnalysisResult {
+            waiting_on: None,
+            outcome: AnalysisOutcome::Negative,
+            detail: Some(detail),
+        };
+
+        let header = match wii::read_disc_header(&mut img) {
+            Ok(h) => h,
+            Err(WiiError::Refused(r)) => return Ok(negative(r.to_string())),
+            Err(WiiError::Io(e)) => return Err(format!("reading image: {e}")),
+        };
+        let parts = match wii::read_partitions(&mut img) {
+            Ok(p) => p,
+            Err(WiiError::Refused(r)) => return Ok(negative(r.to_string())),
+            Err(WiiError::Io(e)) => return Err(format!("reading image: {e}")),
+        };
+
+        // Key discovery (D12/D116): every partition's ticket names a
+        // common key; the key is found in the store by its known hash.
+        // A missing key defers the item — no conclusion, no queue row.
+        let mut keys: Vec<[u8; 16]> = Vec::with_capacity(parts.len());
+        for part in &parts {
+            let Some(known) = wii::key_for(&self.keys, &part.ticket) else {
+                return Ok(negative(
+                    wii::Refusal::UnknownKey(
+                        part.index,
+                        part.ticket.issuer.clone(),
+                        part.ticket.common_key_index,
+                    )
+                    .to_string(),
+                ));
+            };
+            match Self::key_bytes(store, db, &known.hash)? {
+                Some(key) => keys.push(key),
+                None => {
+                    return Ok(AnalysisResult {
+                        waiting_on: Some(known.hash),
+                        outcome: AnalysisOutcome::Negative,
+                        detail: Some(format!(
+                            "wii disc; partition {} needs common key {:?}/{} ({}), not held — waiting",
+                            part.index,
+                            part.ticket.issuer,
+                            part.ticket.common_key_index,
+                            known.hash
+                        )),
+                    });
+                }
+            }
+        }
+
+        let max_pieces = db
+            .config_get("wii:max-pieces")
+            .map_err(|e| e.to_string())?
+            .and_then(|v| std::str::from_utf8(&v).ok()?.trim().parse::<usize>().ok())
+            .unwrap_or(Self::DEFAULT_MAX_PIECES);
+
+        let layout = match wii::parse_layout(&mut img, max_pieces, header, &parts, &keys) {
+            Ok(layout) => layout,
+            Err(WiiError::Refused(r)) => return Ok(negative(r.to_string())),
+            Err(WiiError::Io(e)) => return Err(format!("reading image: {e}")),
+        };
+
+        // The junk streams (D116): the disc's over its whole address
+        // space (shared by every partition seeded like the disc), and
+        // one per partition seeded from its own boot block — each an
+        // absent claim grounded by its own zero-input recipe.
+        let mut externs: Vec<(Blake3, &str)> = Vec::new();
+        if let Some(junk) = layout.junk {
+            self.mint_junk(store, db, &junk)?;
+            externs.push((junk.hash, Self::JUNK_ROLE));
+        }
+        for part in &layout.partitions {
+            if let Some(junk) = part.junk {
+                self.mint_junk(store, db, &junk)?;
+            }
+        }
+
+        // The disc first: its structures and bodies as slices, so a
+        // body's FIRST route is the slice of the still-resident disc.
+        mint_decomposition(
+            store,
+            db,
+            item.hash,
+            layout.total_len,
+            &layout.pieces,
+            &layout.regions,
+            0,
+            &externs,
+            &layout.prehashed,
+            &mut img,
+        )?;
+
+        // Then each verified partition one level down: decrypt (derive)
+        // before the plaintext's own decomposition, encrypt (rebuild)
+        // after — so the plaintext's first route is the decrypt of the
+        // resident body, and the body's second route is the encrypt.
+        let mut walked = 0usize;
+        let mut files = 0usize;
+        let mut partition_junk = 0u64;
+        let mut partition_residue = 0u64;
+        let mut opaque: Vec<String> = Vec::new();
+        for (part, key) in layout.partitions.iter().zip(&keys) {
+            let Some(plain) = &part.plain else {
+                opaque.push(format!(
+                    "{}: {}",
+                    part.header.prefix(),
+                    part.opaque_reason.as_deref().unwrap_or("opaque")
+                ));
+                continue;
+            };
+            let component_hash = Self::ensure_component(
+                &mut self.crypt_component_published,
+                XF_WII_CRYPT_WASM,
+                store,
+                db,
+            )?;
+            let key_hash = Blake3::compute(key);
+            let body_hash = part.verdict.body_hash;
+            let plain_hash = part.verdict.plain_hash;
+            let plain_len = part.header.plain_len();
+            if db
+                .blob_by_hash(&plain_hash)
+                .map_err(|e| e.to_string())?
+                .is_none()
+            {
+                db.upsert_blob(
+                    &plain_hash,
+                    Some(plain_len),
+                    IndexNs::Data,
+                    Residency::Absent,
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            let (params, n) = datboi_xf_wii_crypt::params::Params {
+                wrapped_title_key: part.header.ticket.wrapped_title_key,
+                title_id: part.header.ticket.title_id,
+                sectors: part.header.sectors(),
+            }
+            .encode();
+            let params = params[..n].to_vec();
+            let prefix = part.header.prefix();
+            let decrypt = Recipe {
+                op: Op::Wasm {
+                    component: component_hash,
+                    world: World::Transform1,
+                    export: "decrypt".into(),
+                },
+                inputs: vec![
+                    InputRef {
+                        hash: body_hash,
+                        role: None,
+                    },
+                    InputRef {
+                        hash: key_hash,
+                        role: Some(Self::KEY_ROLE.into()),
+                    },
+                ],
+                outputs: vec![OutputRef {
+                    hash: plain_hash,
+                    size: plain_len,
+                    name: Some(format!("{prefix}/plain")),
+                }],
+                params: params.clone(),
+            };
+            crate::mint_recipe(store, db, &decrypt, SeekClass::Affine)
+                .map_err(|e| e.to_string())?;
+
+            let own_junk: Vec<(Blake3, &str)> = part
+                .junk
+                .iter()
+                .map(|j| (j.hash, Self::JUNK_ROLE))
+                .collect();
+            let mut reader = wii::PlainReader::new(&mut img, &part.header, key);
+            mint_decomposition(
+                store,
+                db,
+                plain_hash,
+                plain_len,
+                &plain.pieces,
+                &plain.regions,
+                plain.empty_files,
+                if part.junk.is_some() {
+                    &own_junk
+                } else {
+                    &externs
+                },
+                &std::collections::HashMap::new(),
+                &mut reader,
+            )?;
+
+            let encrypt = Recipe {
+                op: Op::Wasm {
+                    component: component_hash,
+                    world: World::Transform1,
+                    export: "encrypt".into(),
+                },
+                inputs: vec![
+                    InputRef {
+                        hash: plain_hash,
+                        role: None,
+                    },
+                    InputRef {
+                        hash: key_hash,
+                        role: Some(Self::KEY_ROLE.into()),
+                    },
+                ],
+                outputs: vec![OutputRef {
+                    hash: body_hash,
+                    size: part.header.data_len,
+                    name: Some(format!("{prefix}/body.bin")),
+                }],
+                params,
+            };
+            crate::mint_recipe(store, db, &encrypt, SeekClass::Affine)
+                .map_err(|e| e.to_string())?;
+            walked += 1;
+            files += plain.file_count;
+            partition_junk += plain.junk_bytes;
+            partition_residue += plain.residual_bytes;
+        }
+
+        let total_junk = layout.junk_bytes + partition_junk;
+        Ok(AnalysisResult {
+            waiting_on: None,
+            outcome: AnalysisOutcome::Positive,
+            detail: Some(format!(
+                "split into {} disc piece(s); {} partition(s), {} walked ({} file(s)){}; game {} disc {}; junk {} B ({:.1}%){}; {} B fill; {} residual byte(s) on the disc, {} inside partitions",
+                layout.pieces.len(),
+                layout.partitions.len(),
+                walked,
+                files,
+                if opaque.is_empty() {
+                    String::new()
+                } else {
+                    format!("; opaque: {}", opaque.join(", "))
+                },
+                String::from_utf8_lossy(&layout.header.game_id),
+                layout.header.disc,
+                total_junk,
+                total_junk as f64 * 100.0 / layout.total_len.max(1) as f64,
+                if layout.junk.is_some() || layout.partitions.iter().any(|p| p.junk.is_some()) {
+                    " regenerated"
+                } else {
+                    " — none matched, nothing regenerated"
+                },
+                layout.fill_bytes,
+                layout.residual_bytes,
+                partition_residue,
             )),
         })
     }
@@ -1833,6 +2311,7 @@ impl Analyzer for Iso9660Analyzer {
             Ok(layout) => layout,
             Err(crate::iso9660::Iso9660Error::Refused(refusal)) => {
                 return Ok(AnalysisResult {
+                    waiting_on: None,
                     outcome: AnalysisOutcome::Negative,
                     detail: Some(refusal.to_string()),
                 });
@@ -1851,10 +2330,12 @@ impl Analyzer for Iso9660Analyzer {
             &layout.regions,
             layout.empty_files,
             &[],
+            &std::collections::HashMap::new(),
             &mut img,
         )?;
 
         Ok(AnalysisResult {
+            waiting_on: None,
             outcome: AnalysisOutcome::Positive,
             detail: Some(format!(
                 "split into {} piece(s) ({} file(s), {} dir table(s){}); {} uniform file(s), {} multi-extent file(s), {} empty file(s); declared {} sector(s) of {}; {} B fill, {} residual byte(s)",
@@ -1899,14 +2380,20 @@ fn mint_decomposition<R: std::io::Read + std::io::Seek>(
     regions: &[crate::nds::Region],
     empty_files: usize,
     externs: &[(Blake3, &str)],
+    prehashed: &std::collections::HashMap<usize, Blake3>,
     rom: &mut R,
 ) -> Result<(), String> {
-    // Claim every piece: hash its range out of the container, then an
-    // absent row (never blind-upserted — a piece already resident from an
-    // earlier ingest, the dedupe hit, must not be demoted) + the slice.
+    // Claim every piece: hash its range out of the container (unless the
+    // walk already did — a Wii body is hashed by its verification pass,
+    // D116), then an absent row (never blind-upserted — a piece already
+    // resident from an earlier ingest, the dedupe hit, must not be
+    // demoted) + the slice.
     let mut piece_hashes: Vec<Blake3> = Vec::with_capacity(pieces.len());
-    for piece in pieces {
-        let hash = hash_range(rom, piece.start, piece.len).map_err(|e| e.to_string())?;
+    for (ix, piece) in pieces.iter().enumerate() {
+        let hash = match prehashed.get(&ix) {
+            Some(h) => *h,
+            None => hash_range(rom, piece.start, piece.len).map_err(|e| e.to_string())?,
+        };
         if db.blob_by_hash(&hash).map_err(|e| e.to_string())?.is_none() {
             db.upsert_blob(&hash, Some(piece.len), IndexNs::Data, Residency::Absent)
                 .map_err(|e| e.to_string())?;

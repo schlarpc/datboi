@@ -909,18 +909,20 @@ pub fn sweep(
                 "analyzed": report.analyzed,
                 "positive": report.positive,
                 "negative": report.negative,
+                "deferred": report.deferred,
                 "errors": report.errors.iter().map(|(h, e)| json!({"blob": h.to_hex(), "error": e})).collect::<Vec<_>>(),
                 "queue_remaining": remaining,
             })
         );
     } else {
         println!(
-            "sweep {}: {} enqueued, {} analyzed ({} positive, {} negative), {} error(s), {} queued",
+            "sweep {}: {} enqueued, {} analyzed ({} positive, {} negative), {} deferred, {} error(s), {} queued",
             analyzer.name(),
             report.enqueued,
             report.analyzed,
             report.positive,
             report.negative,
+            report.deferred,
             report.errors.len(),
             remaining
         );

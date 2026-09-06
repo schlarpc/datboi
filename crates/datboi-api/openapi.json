@@ -2405,7 +2405,7 @@
         "description": "Run one analyzer sweep round on demand — the manual equivalent of the\nambient refiner's per-family drain (D71). Long-running (a preflate\nsplit is minutes), so it answers a `JobStartResponse`; the finished\nRefine job's note carries the enqueued/analyzed/positive/negative\ncounts and the remaining queue depth.",
         "properties": {
           "analyzer": {
-            "description": "Analyzer name (canonical or CLI alias): noop, chunk, preflate,\necm, nds, narc, xdvdfs, iso9660, gcm.",
+            "description": "Analyzer name (canonical or CLI alias): noop, chunk, preflate,\necm, nds, narc, xdvdfs, iso9660, gcm, wii.",
             "type": "string"
           },
           "limit": {

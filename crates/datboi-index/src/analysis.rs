@@ -190,6 +190,11 @@ impl Db {
     /// that isn't already queued. Candidate selection is DAT-BLIND (D47):
     /// what gets analyzed is a function of the bytes we hold, never of
     /// which dats are loaded. Returns how many rows were enqueued.
+    ///
+    /// A DEFERRED item (D116, [`Db::defer_sweep_item`]) has no analysis
+    /// row but is skipped while the blob it waits on is not a resident
+    /// data blob; once it is, the item re-enqueues like any other and
+    /// the analyzer re-runs.
     pub fn enqueue_unanalyzed(&self, analyzer: &Blake3, at_unix: i64) -> Result<usize, IndexError> {
         let n = self.cache().execute(
             "INSERT OR IGNORE INTO sweep_queue (blob_id, analyzer, priority, enqueued_at)
@@ -197,10 +202,60 @@ impl Db {
              WHERE b.namespace = 0
                AND NOT EXISTS (
                  SELECT 1 FROM analysis a
-                 WHERE a.blob_id = b.blob_id AND a.analyzer = ?1)",
+                 WHERE a.blob_id = b.blob_id AND a.analyzer = ?1)
+               AND NOT EXISTS (
+                 SELECT 1 FROM sweep_deferred d
+                 WHERE d.blob_id = b.blob_id AND d.analyzer = ?1
+                   AND NOT EXISTS (
+                     SELECT 1 FROM blob w
+                     WHERE w.hash = d.waiting_on AND w.namespace = 0 AND w.residency = 0))",
             params![analyzer.0.as_slice(), at_unix],
         )?;
         Ok(n)
+    }
+
+    /// D116: the analysis of `blob_id` by `analyzer` cannot conclude
+    /// until the blob `waiting_on` is held (a Wii disc without its
+    /// common key). The queue row is released — so the D108 class gate
+    /// stops holding the blob's fallback families — and NO analysis row
+    /// is written: the item waits, and [`Db::enqueue_unanalyzed`]
+    /// re-enqueues it once the wanted blob is a resident data blob.
+    pub fn defer_sweep_item(
+        &mut self,
+        blob_id: i64,
+        analyzer: &Blake3,
+        waiting_on: &Blake3,
+    ) -> Result<(), IndexError> {
+        let tx = self.cache.transaction()?;
+        tx.execute(
+            "INSERT INTO sweep_deferred (blob_id, analyzer, waiting_on)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(blob_id, analyzer) DO UPDATE SET
+               waiting_on = excluded.waiting_on",
+            params![blob_id, analyzer.0.as_slice(), waiting_on.0.as_slice()],
+        )?;
+        tx.execute(
+            "DELETE FROM sweep_queue WHERE blob_id = ?1 AND analyzer = ?2",
+            params![blob_id, analyzer.0.as_slice()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Deferred items (D116) for `analyzer`, with the blob each waits on.
+    pub fn deferred_sweep_items(
+        &self,
+        analyzer: &Blake3,
+    ) -> Result<Vec<(i64, Blake3)>, IndexError> {
+        let mut stmt = self.cache().prepare_cached(
+            "SELECT blob_id, waiting_on FROM sweep_deferred WHERE analyzer = ?1 ORDER BY blob_id",
+        )?;
+        let rows = stmt
+            .query_map(params![analyzer.0.as_slice()], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, [u8; 32]>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows.into_iter().map(|(id, h)| (id, Blake3(h))).collect())
     }
 
     /// Fresh-content ORDERING (D47/D71): just-ingested blobs jump to the
@@ -445,6 +500,11 @@ impl Db {
         )?;
         tx.execute(
             "DELETE FROM sweep_queue WHERE blob_id = ?1 AND analyzer = ?2",
+            params![blob_id, analyzer.0.as_slice()],
+        )?;
+        // A conclusion ends any D116 wait.
+        tx.execute(
+            "DELETE FROM sweep_deferred WHERE blob_id = ?1 AND analyzer = ?2",
             params![blob_id, analyzer.0.as_slice()],
         )?;
         tx.commit()?;
