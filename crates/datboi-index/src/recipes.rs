@@ -72,6 +72,10 @@ pub struct RebuildInput {
     pub size: Option<u64>,
     pub residency: crate::Residency,
     pub covering_claims: u64,
+    /// The input has a non-failed route with NO inputs (D111: the XGD1
+    /// filler stream) — regenerable from nothing, so it never needs
+    /// materializing and its bytes are pure reclaim for the D91 swap.
+    pub generated: bool,
 }
 
 /// A legal target for [`Db::set_verify_state`]: the Failed⇔detail
@@ -681,7 +685,13 @@ impl Db {
                     (SELECT COUNT(DISTINCT ro2.recipe_id)
                      FROM recipe_output ro2
                      JOIN recipe r2 ON r2.recipe_id = ro2.recipe_id
-                     WHERE ro2.blob_id = b.blob_id AND r2.verify != 2)
+                     WHERE ro2.blob_id = b.blob_id AND r2.verify != 2),
+                    EXISTS (SELECT 1
+                            FROM recipe_output ro3
+                            JOIN recipe r3 ON r3.recipe_id = ro3.recipe_id
+                            WHERE ro3.blob_id = b.blob_id AND r3.verify != 2
+                              AND NOT EXISTS (SELECT 1 FROM recipe_input ri3
+                                              WHERE ri3.recipe_id = r3.recipe_id))
              FROM recipe_input ri
              JOIN blob b ON b.blob_id = ri.blob_id
              WHERE ri.recipe_id = ?1
@@ -696,20 +706,24 @@ impl Db {
                     row.get::<_, Option<i64>>(3)?,
                     row.get::<_, i64>(4)?,
                     row.get::<_, i64>(5)?,
+                    row.get::<_, bool>(6)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         rows.into_iter()
-            .map(|(position, blob_id, hash, size, residency, claims)| {
-                Ok(RebuildInput {
-                    position: u32::try_from(position).unwrap_or(u32::MAX),
-                    blob_id,
-                    hash: Blake3(hash),
-                    size: size.and_then(|s| u64::try_from(s).ok()),
-                    residency: Residency::from_code(residency)?,
-                    covering_claims: u64::try_from(claims).unwrap_or(0),
-                })
-            })
+            .map(
+                |(position, blob_id, hash, size, residency, claims, generated)| {
+                    Ok(RebuildInput {
+                        position: u32::try_from(position).unwrap_or(u32::MAX),
+                        blob_id,
+                        hash: Blake3(hash),
+                        size: size.and_then(|s| u64::try_from(s).ok()),
+                        residency: Residency::from_code(residency)?,
+                        covering_claims: u64::try_from(claims).unwrap_or(0),
+                        generated,
+                    })
+                },
+            )
             .collect()
     }
 

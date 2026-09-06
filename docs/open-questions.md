@@ -278,6 +278,30 @@ archives (policy cuts awaiting demand, not ABI); PPMd as a BCJ2
 side-stream coder refuses (absurd-but-legal shape — revisit only if
 a real archive surfaces).
 
+**Position as of 2026-09-06 — D111 BUILT**: XDVDFS decomposition +
+XGD1 filler regeneration. `xdvdfs-split/1` (family `xdvdfs`,
+Structural) decomposes Xbox / Xbox 360 images — redump or bare XISO —
+into per-file pieces; seed-era XGD1 filler is verified sector by
+sector against the recovered stream and becomes ranges of a
+ZERO-INPUT `xf-xgd1-prng fill` recipe (security ranges consume the
+stream, pads and slack are fills, rc4-era filler stays gap pieces);
+the executor serves seekable wasm children in place; the D91 swap
+counts generated inputs as free and fires on the regeneration trigger
+alone. Watch items: (1) no seed-era redump image was on hand — the
+seed-era path is proven on the two real sectors + the synthetic
+fixture, and the rc4-era Halo v1.09 walk (21 residue pieces, 44%
+filler, 16 security ranges recognized as zero runs) — the first real
+seed-era disc through the sweep is the remaining proof, and its
+verdict detail carries everything needed to judge it; (2) the
+security-range rule is "exactly 4096 zero sectors AND the next sector
+predicts from the jumped position" — a disc whose last security range
+is followed only by pad leaves those 4096 stream sectors unconsumed,
+which changes nothing byte-wise (F is just shorter); (3) the video
+partition classifies as residue pieces (dedupes across a wave by
+identity) — a UDF-aware split is a someday; (4) `xdvdfs:max-pieces`
+(4096) coalesces to extents past the cap — a 10k-file disc's per-file
+dedupe is deferred to that knob.
+
 ## Resolved
 
-See [decisions.md](decisions.md) (D1–D110).
+See [decisions.md](decisions.md) (D1–D111).

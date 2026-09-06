@@ -18,6 +18,7 @@ pub const KEY_SWAP_ENABLED: &str = "swap:enabled";
 /// shared (claimed by ≥2 decompositions) or already resident before
 /// the swap pays — the never-eager gate.
 pub const KEY_SWAP_SHARE_PCT: &str = "swap:share-min-pct";
+const KEY_SWAP_GENERATED_PCT: &str = "swap:generated-min-pct";
 /// D91/D59 pack-per-chunking: consolidate a chunk set's loose pieces
 /// into one sealed pack (on/off).
 pub const KEY_CHUNK_PACK_ENABLED: &str = "chunk:pack";
@@ -36,6 +37,11 @@ pub const DEFAULT_GRACE_SECS: i64 = 24 * 60 * 60;
 /// D91: a lone decomposition (0% sharing) never trips this; a variant
 /// pair (MKDS-shaped, ~98% shared) always does.
 pub const DEFAULT_SWAP_SHARE_PCT: u8 = 50;
+/// A seed-era XGD1 disc regenerates ~40% of its bytes (Halo v1.09's
+/// game partition is 44% filler by sector count); a lone NDS ROM
+/// regenerates nothing. 25 clears the former with margin and never
+/// touches the latter.
+const DEFAULT_SWAP_GENERATED_PCT: u8 = 25;
 /// Pack-per-chunking: below this many loose pieces the inode saving
 /// (N files → 1 pack) doesn't clear the rewrite cost. A CDC set of a
 /// ≥4 MiB literal (D59) is dozens of chunks, well past this.
@@ -161,6 +167,21 @@ pub fn swap_enabled(db: &Db) -> Result<bool, IndexError> {
     Ok(db
         .config_get(KEY_SWAP_ENABLED)?
         .is_none_or(|v| v != b"0" && !v.eq_ignore_ascii_case(b"off")))
+}
+
+/// D111 regeneration threshold (percent of the container's bytes that
+/// its rebuild regenerates from zero-input routes). At or above it the
+/// swap fires regardless of sharing: regenerable bytes are pure reclaim,
+/// and the packing IO is the one-time price of never storing them.
+///
+/// # Errors
+/// Index I/O.
+pub fn swap_generated_min_pct(db: &Db) -> Result<u8, IndexError> {
+    Ok(db
+        .config_get(KEY_SWAP_GENERATED_PCT)?
+        .and_then(|v| std::str::from_utf8(&v).ok()?.trim().parse().ok())
+        .filter(|p| *p <= 100)
+        .unwrap_or(DEFAULT_SWAP_GENERATED_PCT))
 }
 
 /// D91 sharing threshold (percent). Unparsable falls back to the

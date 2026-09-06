@@ -73,6 +73,13 @@ documentation + UI/ACL affordance; positions are normative.
 
 Everything else is a pinned wasm component (D5/D6).
 
+**Zero-input recipes** (D111) are legal and ordinary: `inputs: []`,
+one output whose bytes are a pure function of the op and its params —
+the XGD1 filler stream `xf-xgd1-prng fill {seed, sectors}` is the
+first. The D21 fixpoint grounds them vacuously (no input can be
+absent), the license replay verifies them like any claim, and the D91
+swap treats them as free: never packed, always reclaimable.
+
 ## Recipes vs policies (D23)
 
 Recipes: pure replayable claims, bit-exact forever, shareable, verified by
