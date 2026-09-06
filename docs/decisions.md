@@ -3344,3 +3344,80 @@ assemble is caught through the composite, quarantined, and served
 correctly on the next read. On the real disc the spill-based replay
 is faster than per-window instantiation (full rebuild 15 s, swap
 25 s).
+
+## D112 — The swap fires on reclaimed bytes, not a ratio (2026-09-06)
+
+D91's predicate ("≥ 50% of the rebuild's input bytes shared or
+resident") and D111's second trigger ("≥ 25% of the container
+generated") both expressed the swap's economics as a ratio, and the
+two-disc measurement showed the ratio was the wrong shape twice over.
+Halo v1.09 beside its seed-era twin has 36.6% of its packable bytes
+already resident — under 50%, so it stayed a 7.8 GB literal — while
+swapping it would write 4.38 GB once and reclaim 3.45 GB forever
+(the pair sits at 73.9% of raw; it would sit at 51.9%). And a lone
+rc4-era disc reclaims 0.92 GB of zero pads at "12%", which a ratio
+refuses while accepting an NDS pair whose whole saving is a few
+megabytes. The cost and the benefit are absolute byte counts with
+different lifetimes — one write of the packed bytes plus one inode,
+against reclaimed bytes forever — so dividing the benefit by the
+container size compares it to neither, and throws away scale
+besides. Ruled: ONE predicate, `swap:reclaim-min-bytes` (molten,
+default 4 MiB — the D59 unit the system already treats as worth a
+recipe): the swap fires when the container's size minus the bytes it
+would have to pack (absent, single-claimed, non-generated inputs,
+deduped) clears the floor. Resident pieces, pieces claimed by ≥ 2
+decompositions (D91's pair-breaking heuristic, kept: the first
+variant's pack IS the second's sharing), generated streams (D111) and
+fill bytes are all reclaim. `swap:share-min-pct` and
+`swap:generated-min-pct` are gone. Against the corpus: lone Halo
+v1.02 reclaims 4.09 GB, v1.09 beside it 3.45 GB, lone v1.09 0.92 GB,
+an NDS variant pair nearly its whole size — all swap; a lone padded
+NDS ROM's pad is the one case under the floor, which is the outcome
+D91 wanted for it. *Rejected:* a reclaim-fraction-of-container ratio
+(same shape, same two failures); a cost/benefit ratio (reclaim ÷
+packed — penalizes exactly the big partially-shared discs where the
+absolute saving is largest); keeping the sharing ratio alongside a
+floor (two knobs saying one thing).
+
+## D113 — The video partition is a filesystem, and the disc's two halves are views (2026-09-06)
+
+D111 classified everything outside the game partition by zero runs:
+bit-exact under replay, but the video partition's pieces were named
+`gap@…` and split wherever a zero run happened to fall — dedupe by
+accident of layout, not by what the bytes are. The video partition of
+a redump image is a plain ISO9660 DVD-Video volume (Halo: 6,992
+sectors declared in the PVD, seven files under VIDEO_TS, byte-identical
+across both discs). Ruled: (1) the analyzer walks it as ISO9660 —
+PVD at sector 16, directory records in tree order, files as pieces
+named `video:/VIDEO_TS/…`, directory extents as pieces, the
+descriptors and UDF structures as the residue they are — so a video
+file dedupes by identity wherever it recurs: across an XGD1/XGD2
+mastering wave, and on XGD3 where every disc's video partition is
+unique EXCEPT the system update file inside it, which this split
+frees for the whole 360 corpus. (2) Two identities are claimed as
+affine views over the image, alias tuples and all, so files shaped by
+the community's tools dat-match without ever being stored: the
+**video volume** — `[0, PVD volume space size)`, the ISO9660 volume
+as it declares itself — and the **XISO**, the game partition as the
+security-sector geometry defines it. The XISO's length is not
+derivable from the image (it lives in the SS, which no drive reads),
+so the XGD table that already carried the partition bases now carries
+the partition lengths too (XGD1 through XGD3, XboxKit's values) —
+advisory data for a view claim, never a decoding rule; an image whose
+partition does not fit the table's length simply claims no XISO view.
+XboxKit's video ISO pads the volume out to the physical layer lengths;
+ours is the declared volume — the principled identity, and the one
+that survives a re-mastering with the same content. (3) No layering:
+the alternative — the disc splits into an XISO blob and a video blob,
+and `xdvdfs-split` runs one level down on the XISO (the NDS→NARC
+shape) — was rejected because the D91 swap materializes every absent
+piece of a candidate, and an XISO piece is 3.4 GB with the regenerable
+filler INSIDE it: the layer would put the filler back into a pack and
+undo D111. One flat coverage map keeps the filler a zero-input stream
+and the XISO a slice. A bare XISO ingested on its own is walked by the
+same analyzer at base 0 and claims the same file pieces, so a redump
+image and its XISO dedupe by identity whichever arrives first.
+*Rejected:* a UDF walk (the UDF descriptors reference the same
+extents as the ISO9660 tree; walking both would double-claim);
+deriving the XISO length from content (the trailing pad is part of
+the identity and unmarked in the image); layering (above).

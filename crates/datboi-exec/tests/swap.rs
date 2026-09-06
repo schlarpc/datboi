@@ -124,6 +124,11 @@ fn swap_packs_carry_piece_obao_with_no_loose_sidecar() {
     // piece serves verified reads with no lazy stall and no loose
     // `.obao4` inode.
     let (_dir, store, mut db) = world();
+    // D112: the reclaim floor is a scale knob (4 MiB by default); these
+    // ROMs are a few KiB, so set it where a shared pair clears it and
+    // the loner's pad does not.
+    db.config_set("swap:reclaim-min-bytes", b"1024")
+        .expect("policy");
     let shared_len = 20 * 1024;
     let usa = variant_nds(b"BIG USA", 0, &pattern(600, 100), shared_len);
     let eur = variant_nds(b"BIG EUR", 0, &pattern(600, 101), shared_len);
@@ -169,6 +174,11 @@ fn swap_packs_carry_piece_obao_with_no_loose_sidecar() {
 #[test]
 fn variants_swap_into_packs_and_serve_byte_exact() {
     let (dir, store, mut db) = world();
+    // D112: the reclaim floor is a scale knob (4 MiB by default); these
+    // ROMs are a few KiB, so set it where a shared pair clears it and
+    // the loner's pad does not.
+    db.config_set("swap:reclaim-min-bytes", b"1024")
+        .expect("policy");
 
     // Variants USA/EUR share arm9 + fnt + fat + f1..f3 (~79% of piece
     // bytes); f4 differs. The loner shares nothing with anyone.

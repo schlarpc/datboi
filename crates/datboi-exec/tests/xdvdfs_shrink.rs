@@ -82,11 +82,11 @@ fn xdvdfs_sweep_swaps_evicts_and_serves_ranges_through_the_filler() {
     let (filler_hash, filler_len) = filler_of(&db, &img_hash);
     assert_eq!(filler_len, image.stream_sectors * SECTOR);
 
-    // The D91 swap, production path: a LONE disc shares nothing, so the
-    // sharing predicate says no — the D111 regeneration trigger says yes
-    // (this fixture regenerates ~97% of its bytes; a real seed-era disc
-    // ~40%, above the 25% default). Pieces pack, the filler does not,
-    // the rebuild licenses (running the component), the image evicts.
+    // The D91 swap, production path: a LONE disc shares nothing, but
+    // everything it regenerates and fills is reclaim (D112) — this
+    // fixture reclaims ~97% of its bytes; a real seed-era disc ~52%.
+    // Pieces pack, the filler does not, the rebuild licenses (running
+    // the component), the image evicts.
     let exec = Executor::new(&store, ExecConfig::default()).expect("executor");
     let report = exec.swap_covered(&mut db).expect("swap phase");
     assert_eq!(report.swapped, 1, "{report:?}");
@@ -179,33 +179,44 @@ fn xdvdfs_sweep_swaps_evicts_and_serves_ranges_through_the_filler() {
     assert_eq!(again.swapped, 0, "{again:?}");
 }
 
-/// The regeneration trigger is a threshold, not a switch: an rc4-era
-/// disc (nothing generated, nothing shared) stays below both predicates
-/// and keeps its literal.
+/// D112: a lone rc4-era disc has nothing generated and nothing shared,
+/// but its zero fills (the security range, the pad, the slack) are
+/// reclaim too — 8.4 MiB here, well past the 4 MiB floor — so it swaps
+/// and its literal gaps pack. Trimmed, the same disc's fills are a few
+/// KiB and it stays literal.
 #[test]
-fn rc4_era_lone_disc_does_not_swap() {
+fn rc4_era_lone_disc_swaps_on_fills_but_not_below_the_floor() {
     let (_dir, store, mut db) = world();
     let image = synth::image(Filler::Random, false);
     let img_hash = ingest(&store, &db, &image.bytes);
+    let trimmed = synth::image(Filler::Random, true);
+    let trimmed_hash = ingest(&store, &db, &trimmed.bytes);
     let sweep = sweep_all(&mut db, &store, &mut XdvdfsAnalyzer::new(), 1000);
-    assert_eq!(sweep.positive, 1);
+    assert_eq!(sweep.positive, 2);
     let exec = Executor::new(&store, ExecConfig::default()).expect("executor");
     let report = exec.swap_covered(&mut db).expect("swap phase");
-    assert_eq!(report.swapped, 0, "{report:?}");
-    assert_eq!(report.below_threshold, 1, "{report:?}");
-    assert!(store.has(StoreNs::Data, &img_hash));
+    assert_eq!(report.swapped, 1, "{report:?}");
+    assert!(
+        !store.has(StoreNs::Data, &img_hash),
+        "the full disc swapped"
+    );
+    assert!(
+        store.has(StoreNs::Data, &trimmed_hash),
+        "the trimmed disc stays literal"
+    );
+    assert!(report.below_threshold >= 1, "{report:?}");
 }
 
-/// The knob is molten: raising `swap:generated-min-pct` above the
-/// fixture's regeneration fraction holds the swap back.
+/// The floor is policy: raising `swap:reclaim-min-bytes` past the
+/// fixture's reclaim holds the swap back.
 #[test]
-fn generated_threshold_is_policy() {
+fn reclaim_floor_is_policy() {
     let (_dir, store, mut db) = world();
     let image = synth::image(Filler::Seed(SEED), false);
     let img_hash = ingest(&store, &db, &image.bytes);
     let sweep = sweep_all(&mut db, &store, &mut XdvdfsAnalyzer::new(), 1000);
     assert_eq!(sweep.positive, 1);
-    db.config_set("swap:generated-min-pct", b"100")
+    db.config_set("swap:reclaim-min-bytes", b"1099511627776")
         .expect("policy");
     let exec = Executor::new(&store, ExecConfig::default()).expect("executor");
     let report = exec.swap_covered(&mut db).expect("swap phase");
