@@ -722,7 +722,18 @@ impl<'s> Executor<'s> {
             .iter()
             .position(|o| o.hash == *target)
             .ok_or_else(|| ExecError::Malformed("recipe row does not claim target".into()))?;
-        let op = self.resolve_op(&recipe)?;
+        let mut op = self.resolve_op(&recipe)?;
+        // A seek-quarantined component (D49 rule 3) is opaque everywhere
+        // in the plan: the top-level range path and the D111 in-place
+        // child path both read this one field.
+        if let OpImpl::Transform {
+            component, seek, ..
+        } = &mut op
+            && *seek != datboi_runtime::SeekClass::Opaque
+            && db.is_seek_quarantined(component)?
+        {
+            *seek = datboi_runtime::SeekClass::Opaque;
+        }
         let mut children = Vec::with_capacity(recipe.inputs.len());
         for input in &recipe.inputs {
             children.push(self.plan(db, &input.hash, depth + 1, visiting)?);
@@ -991,9 +1002,15 @@ impl<'s> Executor<'s> {
         Ok(inputs)
     }
 
-    /// Random access over a plan node. Affine nodes translate; everything
+    /// Random access over a plan node. Affine nodes translate; a
+    /// declared-seekable wasm node serves each window through
+    /// `serve-range` in place (D111 — the XGD1 filler stream under a
+    /// disc's assemble is the first consumer: spilling it would
+    /// regenerate gigabytes per range read of the disc); everything
     /// else spills to a temp file first (the spill rule: correctness
-    /// first, the planner treats spills as cost).
+    /// first, the planner treats spills as cost). Bytes a child serves
+    /// are verified by whoever consumes the top-level window (D49), so
+    /// a lying child cannot serve — it can only fail the parent's check.
     fn open_random(&self, plan: &Plan) -> Result<Box<dyn RangeRead>, ExecError> {
         match plan {
             Plan::Literal { hash, .. } => {
@@ -1010,6 +1027,28 @@ impl<'s> Executor<'s> {
                         AssembleRandom::new(params.clone(), children)
                             .map_err(ExecError::Malformed)?,
                     ))
+                }
+                OpImpl::Transform {
+                    transform,
+                    op,
+                    params,
+                    seek,
+                    ..
+                } if *seek != datboi_runtime::SeekClass::Opaque => {
+                    let children = self.open_children_random(&op_plan.children)?;
+                    Ok(Box::new(TransformRandom {
+                        host: Arc::clone(&self.stream_host),
+                        transform: Arc::clone(transform),
+                        op: op.clone(),
+                        params: params.clone(),
+                        children: children
+                            .into_iter()
+                            .map(|c| Arc::new(Mutex::new(c)))
+                            .collect(),
+                        output_ix: u32::try_from(op_plan.output_ix).expect("output count fits u32"),
+                        len: plan.len(),
+                        fuel: fuel_budget(&op_plan.children, &op_plan.outputs),
+                    }))
                 }
                 _ => self.spill(plan),
             },
@@ -1332,6 +1371,78 @@ impl Write for VecSink {
     }
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+/// Random access over a declared-seekable wasm node (D111): every
+/// `read_at` is one `serve-range` call on a fresh deterministic
+/// instance, with the node's children shared across calls behind a
+/// mutex (the world takes its inputs by value per call).
+struct TransformRandom {
+    host: Arc<StreamHost>,
+    transform: Arc<StreamTransform>,
+    op: String,
+    params: Vec<u8>,
+    children: Vec<Arc<Mutex<Box<dyn RangeRead>>>>,
+    output_ix: u32,
+    len: u64,
+    fuel: u64,
+}
+
+impl RangeRead for TransformRandom {
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+        if offset >= self.len || buf.is_empty() {
+            return Ok(0);
+        }
+        let want =
+            usize::try_from((self.len - offset).min(buf.len() as u64)).expect("bounded by buf");
+        let inputs: Vec<Box<dyn RangeRead>> = self
+            .children
+            .iter()
+            .map(|c| Box::new(SharedRange(Arc::clone(c))) as Box<dyn RangeRead>)
+            .collect();
+        let sink = VecSink::default();
+        self.host
+            .serve_range_fueled(
+                &self.transform,
+                &self.op,
+                &self.params,
+                inputs,
+                datboi_runtime::stream::RangeRequest {
+                    output_ix: self.output_ix,
+                    offset,
+                    len: want as u64,
+                },
+                Box::new(sink.clone()),
+                Some(self.fuel),
+            )
+            .map_err(|e| io::Error::other(format!("serve-range: {e}")))?;
+        let out = sink.take();
+        if out.len() != want {
+            return Err(io::Error::other(format!(
+                "serve-range produced {} of {want} bytes at {offset}",
+                out.len()
+            )));
+        }
+        buf[..want].copy_from_slice(&out);
+        Ok(want)
+    }
+
+    fn len(&self) -> u64 {
+        self.len
+    }
+}
+
+/// A child handle reused across `serve-range` calls.
+struct SharedRange(Arc<Mutex<Box<dyn RangeRead>>>);
+
+impl RangeRead for SharedRange {
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+        self.0.lock().expect("child mutex").read_at(offset, buf)
+    }
+
+    fn len(&self) -> u64 {
+        self.0.lock().expect("child mutex").len()
     }
 }
 
