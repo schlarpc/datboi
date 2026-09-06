@@ -328,11 +328,12 @@ redump geometry the image cannot tell us; a disc whose partition does
 not fit the table claims no XISO view and says so in the verdict;
 (2) the video volume view is the PVD-declared volume, not XboxKit's
 layer-padded `.video.iso` — if a community dat ever names the padded
-form, a second view is one table entry away; (3) a swap candidate
-list now includes every packed piece's own slice route (1,220 rows on
-the Halo pair, all below the floor) — harmless, but `swap_candidates`
-could exclude outputs whose only route derives from an evicted
-container; (4) first XGD2/XGD3 image through the walk is still owed.
+form, a second view is one table entry away; (3) DONE
+2026-09-06 (later): `swap_candidates` excludes view routes (an input
+at least as large as the output) per ROUTE — the 1,220 slice rows are
+gone, and a bare XISO ingested after its redump image is a candidate
+by its own decomposition, not the image's older view claim; (4) first
+XGD2/XGD3 image through the walk is still owed.
 
 ## Resolved
 

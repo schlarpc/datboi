@@ -516,9 +516,23 @@ impl Db {
     }
 
     /// D91 swap candidates: resident data blobs with an affine,
-    /// pure-builtin assemble rebuild route in trusted verify state.
-    /// One row per blob (lowest recipe id wins — any affine route
-    /// serves; the planner re-derives inputs from the returned id).
+    /// pure-builtin assemble DECOMPOSITION route in trusted verify
+    /// state. One row per blob (lowest qualifying recipe id wins — any
+    /// decomposition route serves; the planner re-derives inputs from
+    /// the returned id).
+    ///
+    /// A route with an input at least as large as its output is a
+    /// VIEW, not a decomposition — a piece's own slice of its container
+    /// (D83), a NARC member's slice of the NARC (D94), the XISO and
+    /// video-volume views of a redump image (D113). Packing a whole to
+    /// free a part can never clear the reclaim floor (D112), so those
+    /// routes are excluded here rather than rejected one
+    /// `rebuild_inputs` round-trip at a time (1,220 rows on a swapped
+    /// Xbox pair). The exclusion is per ROUTE, not per blob: a bare
+    /// XISO ingested after its redump image carries both the image's
+    /// view claim (older, lower id) and its own base-0 decomposition,
+    /// and MIN over all routes would have handed the swap the view and
+    /// refused a container whose pieces are already resident.
     pub fn swap_candidates(&self) -> Result<Vec<SwapCandidate>, IndexError> {
         let mut stmt = self.cache().prepare_cached(
             "SELECT MIN(r.recipe_id), b.blob_id, b.hash, b.size
@@ -528,6 +542,10 @@ impl Db {
              WHERE b.namespace = 0 AND b.residency = 0
                AND r.op_kind = 0 AND r.op_name = 'assemble@1'
                AND r.seek_class = 0 AND r.verify IN (1, 3)
+               AND NOT EXISTS (SELECT 1 FROM recipe_input ri
+                               JOIN blob bi ON bi.blob_id = ri.blob_id
+                               WHERE ri.recipe_id = r.recipe_id
+                                 AND bi.size >= ro.size)
              GROUP BY b.blob_id
              ORDER BY b.size DESC, b.blob_id",
         )?;

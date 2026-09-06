@@ -1445,3 +1445,99 @@ fn root_blobs_are_the_underived_resident_literals() {
         "a produced blob leaves the roots scope"
     );
 }
+
+/// D91/D112 swap candidates are DECOMPOSITION routes only: a route
+/// with an input at least as large as its output is a view (a piece's
+/// slice of its container, a redump image's XISO view), and packing a
+/// whole can never free a part. The exclusion is per route — a blob
+/// carrying both an older view route and its own decomposition is a
+/// candidate BY the decomposition.
+#[test]
+fn swap_candidates_skip_view_routes_but_keep_decompositions() {
+    let (_dir, mut db) = open_db();
+    let sized = |db: &Db, seed: &[u8], size: u64, residency: Residency| {
+        db.upsert_blob(
+            &Blake3::compute(seed),
+            Some(size),
+            Namespace::Data,
+            residency,
+        )
+        .expect("upsert")
+    };
+    let route = |db: &mut Db, seed: &[u8], inputs: &[i64], output: i64, size: u64| {
+        let recipe_blob = db
+            .upsert_blob(
+                &Blake3::compute(seed),
+                Some(128),
+                Namespace::Meta,
+                Residency::Resident,
+            )
+            .expect("recipe blob");
+        let ins: Vec<(u32, i64, Option<&str>)> = inputs
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| (u32::try_from(i).unwrap(), b, None))
+            .collect();
+        let id = db
+            .insert_recipe(&NewRecipe {
+                blob_id: recipe_blob,
+                op_kind: OpKind::Builtin,
+                op_name: "assemble@1",
+                seek_class: SeekClass::Affine,
+                source: RecipeSource::LocalIngest,
+                inputs: &ins,
+                outputs: &[(0, output, size, None)],
+            })
+            .expect("insert");
+        db.set_verify_state(id, VerifyAdvance::Verified, 1)
+            .expect("verified");
+        id
+    };
+
+    // An image decomposed into two absent pieces; each piece also
+    // carries its slice route back out of the image.
+    let image = sized(&db, b"image", 1000, Residency::Resident);
+    let p1 = sized(&db, b"p1", 400, Residency::Absent);
+    let p2 = sized(&db, b"p2", 600, Residency::Absent);
+    let p1_slice = route(&mut db, b"r:p1", &[image], p1, 400);
+    let p2_slice = route(&mut db, b"r:p2", &[image], p2, 600);
+    let image_rebuild = route(&mut db, b"r:image", &[p1, p2], image, 1000);
+    let _ = (p1_slice, p2_slice);
+
+    let cands = db.swap_candidates().expect("candidates");
+    assert_eq!(
+        cands
+            .iter()
+            .map(|c| (c.blob_id, c.recipe_id))
+            .collect::<Vec<_>>(),
+        vec![(image, image_rebuild)],
+        "only the decomposition; the pieces' slice routes are views"
+    );
+
+    // After the swap the pieces are resident and the image evicted:
+    // nothing is a candidate — a resident piece's only route packs its
+    // whole container.
+    db.set_residency(image, Residency::EvictedCovered)
+        .expect("evict");
+    db.set_residency(p1, Residency::Resident).expect("p1");
+    db.set_residency(p2, Residency::Resident).expect("p2");
+    assert!(db.swap_candidates().expect("candidates").is_empty());
+
+    // A bare XISO arriving after its redump image: the image's view
+    // claim (older) AND its own base-0 decomposition. The candidate
+    // rides the decomposition, not the older view.
+    let xiso = sized(&db, b"xiso", 700, Residency::Resident);
+    let q1 = sized(&db, b"q1", 300, Residency::Absent);
+    let q2 = sized(&db, b"q2", 400, Residency::Absent);
+    let view = route(&mut db, b"r:xiso-view", &[image], xiso, 700);
+    let decomposition = route(&mut db, b"r:xiso", &[q1, q2], xiso, 700);
+    assert!(view < decomposition);
+    let cands = db.swap_candidates().expect("candidates");
+    assert_eq!(
+        cands
+            .iter()
+            .map(|c| (c.blob_id, c.recipe_id))
+            .collect::<Vec<_>>(),
+        vec![(xiso, decomposition)]
+    );
+}
