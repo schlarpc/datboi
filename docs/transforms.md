@@ -186,10 +186,26 @@ structurally free.
   interop change bytes; we never interoperate). Skip
   `encode_lepton_verify` (1.9× encode): D4/D25 replay is the
   verification. WHY deferred: JPEG is commoner than Ogg near a ROM
-  corpus but still not IN console dumps — Switch NACP icons are JPEG
-  but ~100 KB, PC discs need ISO9660 first, and the real reservoir
-  (box art / screenshot / manual-scan media libraries) is a scope
-  datboi has not ruled on. Triggers: an ISO9660 analyzer, a corpus
-  census finding JPEG members, or an artwork/media-library scope
-  ruling. Build cost when it fires: under a session — it is xf-cso
-  with a different crate.
+  corpus but still not IN console dumps. Candidate homes were
+  checked, not assumed (2026-09-06): **PSP EBOOT.PBP** carries
+  ICON0/PIC0/PIC1 as PNG and ICON1 as PMF (pspsdk `pack-pbp`) — no
+  JPEG; the PSP does have a Media-Engine JPEG path (`sceJpeg`,
+  HLE'd in PPSSPP) but its use is per-game (Gods Eater Burst save
+  portraits, Yu-Gi-Oh! 5D's Tag Force 6 card art). **PS3** content
+  files ICON0/PIC0/PIC1 are PNG by requirement (24/32-bit,
+  non-interlaced; ICON1 is PAM video); JPEG only where a game calls
+  the SDK's `cellJpgDec` (RPCS3 HLEs it) — per-game, no census.
+  **Wii opening.bnr** is U8 archives of TPL textures (wiibrew); Wii
+  game data is TPL-dominant with no system JPEG decoder. **MAME snap
+  packs** (progettoSNAPS snaps, titles, cabinets) are PNG; manuals
+  are PDF; flyers are offline and unverified. **Switch** control-NCA
+  icons (`icon_<Language>.dat`) ARE 256×256 JPEG — verified, but
+  ~100 KB apiece. So the console-adjacent JPEG mass is per-game
+  interior data reachable only through disc/package decomposition,
+  and the PNG cases above point at a different lane entirely
+  (preflate over the concatenated IDAT zlib stream). PC discs need
+  ISO9660 first, and the real reservoir (box art / screenshot /
+  manual-scan media libraries) is a scope datboi has not ruled on.
+  Triggers: an ISO9660 analyzer, a corpus census finding JPEG
+  members, or an artwork/media-library scope ruling. Build cost when
+  it fires: under a session — it is xf-cso with a different crate.
