@@ -105,3 +105,44 @@ structurally free.
   forbids using its source to recreate compression. The
   extraction-based ingest (D9/D58: members carry derive recipes, the
   container stays a literal) is the final answer.
+- **Ogg Vorbis / Opus — balrogg, feasible, deferred (research pass,
+  2026-09-06).** [balrogg](https://github.com/iczelia/balrogg) (C99,
+  GPL-3.0, v1.1, format unstable until 2.0) re-entropy-codes the
+  Vorbis/Opus packet syntax with an all-integer context-mixing model —
+  a bitstream transform, not a codec; README claims 8–12% on Vorbis,
+  3–8% on Opus. Proven in-session: the tree compiles to wasm32-wasi
+  with one flag (`-std=gnu99`, fseeko) and the scalar mixer kernel;
+  wasm and native builds emit BYTE-IDENTICAL archives; wasm runs ~2×
+  native (1.1 MB Vorbis decodes in 1.2 s); peak memory <10 MiB native.
+  Level `-4` is the right pin: `-4`..`-9` decode identically and `-9`
+  is a 13-trial tune search costing 13× encode time for ~0.05%.
+  Candidate design: `datboi-xf-balrogg` on the transform lane with
+  two ops in ONE component (`pack` at analysis time, `unpack` as the
+  derive recipe's op, so the recipe pins exactly the encoder that
+  wrote its archive), opaque seek class, ex-7z build pattern
+  (hash-pinned tarball → `DATBOI_BALROGG_SRC`, ~35 TUs, no libc++);
+  a Structural `balrogg` analyzer gated by balrogg's own sniff (OggS +
+  `\x01vorbis`/`OpusHead`) running `pack` through the stream host.
+  Engineering notes: the encoder's FATAL is noreturn+exit — map it to
+  a trap (the unrar-shim pattern) and let the analyzer read a trap on
+  `pack` as Negative (upstream's longjmp bail mode needs wasm
+  exception handling, which the runtime does not enable); output must
+  be guest-buffered (the tune search seeks/truncates its output);
+  the flake's wasi-toolchain gate keys on the `datboi-ex-` prefix and
+  would become a per-crate list; decode fuel looked like ~1–2k/byte
+  against the 4096/byte budget — measure in the gate. Format churn is
+  harmless under D64 (component hash pinned, old components replay
+  forever), vendored-snapshot posture as unrar/dust. Two rulings owed
+  before code: a GPL-3.0 component embedded via `include_bytes!` in
+  the MIT server binary (stronger coupling than D84's dust web asset
+  or unrar's redistribution-friendly terms; the D89 publishing path
+  could vend it instead), and the deferral itself. WHY deferred:
+  corpus relevance is low — console formats don't carry Ogg (SDAT,
+  ADPCM, ATRAC; Nintendo's Opus is a non-Ogg wrapper balrogg
+  refuses), the real reservoir is PC game data inside Redump PC discs
+  and no ISO9660/UDF decomposition exists, so Ogg blobs only arrive
+  as loose drops or archive members; ~10% on rare files vs ECM's 12%
+  on every CD image. Build triggers: a corpus census finds Ogg
+  members, or M7 LZMA param discovery starts — that work needs
+  exactly this shape (a C encoder cross-compiled to wasm, run FORWARD
+  from an analyzer) and balrogg is a two-session pathfinder for it.

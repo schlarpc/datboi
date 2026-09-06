@@ -150,6 +150,14 @@ Each of these wants its D entry before (or as) the code lands.
 
 ## Open (minor / deferred)
 
+- **Ogg Vorbis/Opus recompression (balrogg)**: feasibility proven,
+  design recorded in [transforms.md](transforms.md) §rebuild long-tail
+  verdicts (2026-09-06). Deferred on corpus relevance. Triggers: a
+  corpus census finds Ogg members, or M7 LZMA param discovery starts
+  (same forward-encode-in-wasm shape; balrogg is the pathfinder).
+  Rulings owed at build time: GPL-3.0 component embedded in the MIT
+  server binary; the analysis-time forward `pack` op through the
+  stream host.
 - Shard fanout + inline-outboard threshold: frozen-by-default; the
   gating NFS benchmark is indefinitely deferred (D36 amendment).
 - Detector registry ordering + canonical-orientation preference:
