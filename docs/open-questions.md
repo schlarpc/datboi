@@ -407,6 +407,51 @@ instant, deferred until a sweep queue shows it; (4) multi-disc titles
 files by identity, unmeasured; (5) the piece cap is unexercised by
 a real disc (the largest here has 228 files).
 
+**Position as of 2026-09-06 (overnight, latest) — D116 BUILT**:
+`wii-split/1` (family `wii`, Structural) decomposes Wii images: disc
+structures and partition bodies as pieces of the disc, each verified
+body one level further into system + FST-file pieces (the shared
+GameCube walker) with the junk regenerated, the body rebuilt by
+`xf-wii-crypt encrypt` over the plaintext and the common key. The
+three rulings landed together: key discovery by known hash with a
+missing key DEFERRING the item (`sweep_deferred`, cache v8), the swap
+packing GROUNDING LEAVES with intermediates licensed verify-only
+(`Executor::license`), and the re-encrypt Affine at a 2 MiB quantum.
+Proven on Super Smash Bros. Brawl (redump, 8.5 GB dual-layer, 15
+partitions, all verified, 9.0% regenerated) — see D116. Gates:
+`DATBOI_WII_IMAGE` + `DATBOI_WII_KEY` (a 16-byte key file) with
+`--test wii real_image_from_env` (walk) and `--test wii_shrink
+real_image_swaps_and_serves` (pipeline, `DATBOI_WII_WORKDIR`,
+optional `DATBOI_WII_MAX_PIECES`). Corpus: `~/corpus/wii` — Brawl is
+the one redump image reachable (the archive.org Wii RVZ collections
+are access-locked); three WBFS rips converted with nodtool are there
+too and correctly come out OPAQUE (scrubbed sectors carry zero hash
+blocks). Watch items: (1) **the swap's cost on a Wii disc** — packing
+7.5 GB of leaves and licensing the encrypt route means the wasm
+AES+SHA-1 pass over the whole plaintext twice (license, then the top
+replay), then the rebuild check a third time; measured 1,703 s for the
+swap and 364 s for the rebuild on Brawl (D116's amendment) against
+27 s for the walk — a native fast path for the verify-only license
+(the analyzer's twin already re-encrypts at AES-NI speed) is the
+obvious lever; (2) **the piece
+cap bites** — Brawl's data partition coalesces 5,880 files into 3
+extents at 4096, so cross-disc file sharing on big titles is behind
+`wii:max-pieces`; raising the default, or a per-partition cap, is a
+ruling when a second big disc arrives; (3) **no regional pair
+measured** — one redump disc; the sharing case (a USA/EUR pair, or
+two discs with one system menu) is the first thing to run when one is
+reachable; (4) **piece hashing decrypts a third time** — the walker
+verifies (one AES pass), classifies gaps (a second), and the mint
+hashes pieces through the decrypting reader (a third); folding the
+piece hashes into the verify pass is a straightforward optimization
+if walk time ever matters (18 s for 8.5 GB today); (5) **flag-set
+images** (no hashes / no encryption at 0x60/0x61) are a settled
+Negative — a decrypted image is not a master; if one ever needs to
+decompose, its bodies are plaintext volumes and the walk is the
+partition walk without the crypto; (6) the H3 table rides as a
+96 KiB piece per partition though it is a function of the plaintext
+— regenerating it is a later refinement, not a correctness matter.
+
 ## Resolved
 
 See [decisions.md](decisions.md) (D1–D115).

@@ -3466,6 +3466,14 @@ among discs pressed with the same update — the per-file split is
 what makes either sharing reachable at all (a whole-partition
 piece would share nothing across those three).
 
+*Amendment (2026-09-06, D116):* the "no layering" rejection above
+rested on the swap materializing a candidate's DIRECT inputs. D116
+changed the swap to pack the route graph's grounding leaves, so a
+layered decomposition no longer packs its intermediate; the flat
+XDVDFS map stands because it is also the simpler map (the filler is a
+stream over the disc's own address space), not because layering is
+unsafe.
+
 ## D114 — ISO9660 volumes decompose: `iso9660-split/1` walks cooked images by their primary tree (2026-09-06)
 
 D113 wrote an ISO9660 walker to name the files inside a redump Xbox
@@ -3602,3 +3610,95 @@ file's end as slack to classify by shape (it is junk, and it
 verifies as junk); depending on the `nod` crate at runtime (the
 generator is 80 lines and must be component-frozen; nod stays the
 reference and the decoder for RVZ/NKit offline).
+
+## D116 — Wii decomposition: the swap packs grounding leaves, keys are found by hash, and the re-encrypt serves in place (2026-09-06)
+
+A Wii disc is partitions — each an AES-128-CBC body under a title key
+that the ticket carries wrapped under a console COMMON key, with a
+SHA-1 hash tree (H0 per KiB, H1 per sector, H2 per 8-sector subgroup,
+one block per 32 KiB sector, recomputable from the data) — and the
+same mastering junk as GameCube around and inside them. So the
+container lane is D115 one level down: `wii-split/1` (family `wii`,
+Structural) claims the disc's structures and the partition BODIES as
+pieces of the disc, and a verified body decomposes further — its
+plaintext walks as a GameCube volume (`gcm::parse_volume`, shared,
+with the `>> 2` offsets) into system + FST-file pieces with the junk
+regenerated; the body's rebuild is one `xf-wii-crypt encrypt
+{wrapped title key, title id, sectors}` over the plaintext and the
+key, its derive the `decrypt` inverse. The update partition dedupes
+across every disc pressed with the same system menu; the channel
+partitions too. Three rulings make it fit: (1) **key discovery by
+known hash (D12 made concrete).** The build knows the six console
+common keys by the blake3 of their 16 bytes — retail, Korean, vWii
+and their debug twins — never by value; a ticket's issuer string and
+key index name which one, and the analyzer reads it from the store
+like any blob. A disc whose key is not held is neither an
+environmental error (a queue row would gate the disc's fallback
+families forever, D108) nor a settled Negative (it would never
+re-run): it is DEFERRED — the item leaves the queue with no analysis
+row and waits in `sweep_deferred` (cache v8) on the key's hash, and
+the next queue refresh re-enqueues it once that hash is a resident
+data blob. Cache-grade: a rebuilt cache re-derives the wait in three
+small reads. (2) **The swap packs grounding leaves, not direct inputs
+(D91/D112 extended).** An absent, non-generated input with a DOWNWARD
+route — a non-failed route of its own that is not a view by D112's
+test (no non-generated input at least as large as its output) — is an
+intermediate: never packed, walked instead, and its route licensed
+bottom-up WITHOUT materializing (`Executor::license`, the D25 proof
+over a hashing sink) before the container evicts; an input with no
+downward route is a leaf and packs. The body (encrypt < slice of the
+disc) and the plaintext (assemble < decrypt) are intermediates; the
+files are leaves. One-level decompositions are unchanged (every input
+is a leaf), and the existing gates prove it. (3) **The re-encrypt's
+seek class is Affine at a 2 MiB quantum.** A sector's ciphertext
+needs its group's H2s, so `serve-range` hashes one 2 MiB group and
+encrypts the sectors a window touches; `decrypt` is sector-granular.
+The executor already serves a declared-seekable wasm child in place
+(D111), so an evicted disc's range read costs one group of AES + SHA-1
+in wasm, never a spill of the partition. Verification precedes every
+claim (D111's rule): the analyzer decrypts every sector natively,
+recomputes the tree, and compares each hash block BYTE FOR BYTE,
+padding included; a partition that disagrees stays an opaque piece of
+the disc — a converted WBFS rip (whose scrubbed sectors carry zero
+hash blocks) does exactly that, and its disc still decomposes around
+it. One correction the real disc forced: a partition's junk is seeded
+from the PARTITION's own boot-block ID and disc number, not the disc
+header's — under the disc's ID the update and channel partitions of
+Super Smash Bros. Brawl matched nothing and left 6–40 KB of residue
+each; under their own IDs they match and leave 56–84 BYTES. A
+partition seeded like the disc (the data partition) shares the disc's
+one junk stream (the same generator over a prefix of the same address
+space); any other claims its own `fill {id, disc, len}`. `nod` seeds
+every partition from the disc header and is wrong for those; ours is
+verified by equality either way. Measured on the day: Super Smash
+Bros. Brawl (Europe, Australia), redump, 8.51 GB dual-layer — 15
+partitions (update, data, 13 channels), every body verified; 769 MB
+of junk regenerated (9.0% of the image: 323 MB between partitions,
+447 MB inside the 7.46 GB data partition, ~0.3 MB inside the rest);
+679 bytes of residue on the disc, 870 inside partitions; the data
+partition's 5,880 files coalesced to 3 extents at `wii:max-pieces`
+(4096) — the first real disc to exercise a piece cap; walk 18 s.
+*Amendment (same day, the pipeline on the real disc):* Brawl through
+ingest → sweep → swap → evict → rebuild on a fresh store: ingest 25 s,
+walk + mint 27 s; the swap packed 7.29 GB of leaves (never the bodies,
+never the plaintexts) and evicted the 8.51 GB disc — 85.7% of raw
+resident for a lone disc (the 9% junk, the 3% of hash blocks and the
+fills are the reclaim; the sharing case needs a second disc); full
+rebuild through the component streamed and verified in 364 s; four
+verified ranges in 149 ms. The swap took 1,703 s: packing reads the
+disc once, and the licensing then runs the wasm AES + SHA-1 pass over
+the 7.46 GB data partition twice (the encrypt route's verify-only
+license, then the top replay's stream through it) — the cost watch
+item in open-questions names the native fast path as the lever.
+*Rejected:* shipping key bytes (D12/D26 stand; hashes are names, not
+keys); an environmental error for a missing key (gates fallback
+forever); a Negative for a missing key (never re-runs); a dedicated
+key table in the index (a key is a blob like any other, and the
+sweep already knows how to wait); packing the body or the plaintext
+(disc-sized, regenerable — the D113 layering objection, now removed
+at the swap); replay-licensing the intermediates (writes both,
+disc scale each); seeding partition junk from the disc header
+(nod's rule, measured wrong); a UDF-style second tree for the
+partition (the FST is the one tree); Opaque for the re-encrypt (every
+range read would spill 4+ GB); keeping D113's "no layering"
+rationale (superseded, amended there).

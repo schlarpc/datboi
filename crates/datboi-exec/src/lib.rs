@@ -87,6 +87,15 @@ pub enum ExecError {
     InsufficientHeadroom { hash: Blake3, need: u64, have: u64 },
     #[error("range verification failed for {hash}: {detail}")]
     RangeVerifyFailed { hash: Blake3, detail: String },
+    // D116: a verify-only license found the op's output disagreeing
+    // with its claim — a claim failure, exactly as a store put's
+    // HashMismatch is.
+    #[error("output claim {expected} not met: produced {actual} ({len} bytes)")]
+    ClaimMismatch {
+        expected: Blake3,
+        actual: Blake3,
+        len: u64,
+    },
 }
 
 impl ExecError {
@@ -98,7 +107,9 @@ impl ExecError {
     #[must_use]
     pub fn is_claim_failure(&self) -> bool {
         match self {
-            Self::Store(StoreError::HashMismatch { .. }) | Self::Malformed(_) => true,
+            Self::Store(StoreError::HashMismatch { .. })
+            | Self::ClaimMismatch { .. }
+            | Self::Malformed(_) => true,
             Self::Runtime(e @ RuntimeError::Trap(_)) => !e.is_fuel_exhaustion(),
             Self::Runtime(RuntimeError::Transform(_)) => true,
             // Instantiation/link failures are host wiring (a linker
@@ -288,6 +299,61 @@ impl<'s> Executor<'s> {
                     db.set_verified(id, now_unix())?;
                 }
                 Ok(ReplayReport { recipe_id, outputs })
+            }
+            Err(e) => {
+                if e.is_claim_failure() {
+                    db.set_verify_state(
+                        recipe_id,
+                        VerifyAdvance::Failed {
+                            error: &e.to_string(),
+                            peer: None,
+                        },
+                        now_unix(),
+                    )?;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// License one recipe WITHOUT materializing its outputs (D116): the
+    /// D25 proof — the op ran here and every claimed output hashed to
+    /// its claim — over a hashing sink instead of the store. The swap
+    /// uses it for the intermediates between a container and its
+    /// grounding leaves (a Wii partition's plaintext and encrypted
+    /// body): they must be proven before the container evicts, and
+    /// must never become resident — a replay would write both, disc
+    /// scale each. Advances the verify state exactly as [`Self::replay`]
+    /// does, including the recipes that executed inside the plan;
+    /// poisons the recipe on a claim-level failure.
+    ///
+    /// # Errors
+    /// Claim failures, missing inputs ([`ExecError::NoRoute`]), or I/O.
+    pub fn license(&self, db: &Db, recipe_id: i64) -> Result<(), ExecError> {
+        let row = db.recipe_by_id(recipe_id)?;
+        if row.verify == VerifyState::Failed {
+            return Err(ExecError::Poisoned(recipe_id));
+        }
+        let recipe = self.load_recipe(db, recipe_id)?;
+        let mut participants = Vec::new();
+        let result = self.execute_with(db, &recipe, &mut participants, &|hash, size, reader| {
+            verify_stream(hash, size, reader)
+        });
+        match result {
+            Ok(_) => {
+                if row.verify != VerifyState::ReplayedLocal {
+                    db.set_verify_state(recipe_id, VerifyAdvance::ReplayedLocal, now_unix())?;
+                }
+                for child_id in participants {
+                    if child_id == recipe_id {
+                        continue;
+                    }
+                    let child = db.recipe_by_id(child_id)?;
+                    if child.verify == VerifyState::Verified {
+                        db.set_verify_state(child_id, VerifyAdvance::ReplayedLocal, now_unix())?;
+                    }
+                }
+                Ok(())
             }
             Err(e) => {
                 if e.is_claim_failure() {
@@ -1220,6 +1286,24 @@ impl<'s> Executor<'s> {
         recipe: &Recipe,
         participants: &mut Vec<i64>,
     ) -> Result<Vec<(Blake3, PutOutcome)>, ExecError> {
+        self.execute_with(db, recipe, participants, &|hash, size, reader| {
+            Ok(self
+                .store
+                .put_with_obao(StoreNs::Data, hash, size, reader)?)
+        })
+    }
+
+    /// Execute `recipe`, handing each claimed output's stream to
+    /// `consume` (the store's verified put, or a hashing sink for
+    /// [`Self::license`]). One consumer per output runs on its own
+    /// thread for multi-output transforms, so `consume` is `Sync`.
+    fn execute_with<T: Send>(
+        &self,
+        db: &Db,
+        recipe: &Recipe,
+        participants: &mut Vec<i64>,
+        consume: &(dyn Fn(Blake3, u64, Box<dyn Read + Send>) -> Result<T, ExecError> + Sync),
+    ) -> Result<Vec<(Blake3, T)>, ExecError> {
         let op = self.resolve_op(recipe)?;
         let mut children = Vec::with_capacity(recipe.inputs.len());
         for input in &recipe.inputs {
@@ -1243,9 +1327,7 @@ impl<'s> Executor<'s> {
                     recipe_id: None,
                 };
                 let reader = self.open_builtin_sequential(&plan)?;
-                let outcome =
-                    self.store
-                        .put_with_obao(StoreNs::Data, outputs[0].0, outputs[0].1, reader)?;
+                let outcome = consume(outputs[0].0, outputs[0].1, reader)?;
                 Ok(vec![(outputs[0].0, outcome)])
             }
             OpImpl::Extractor {
@@ -1279,10 +1361,7 @@ impl<'s> Executor<'s> {
                             Some(fuel),
                         )
                     });
-                    let consumer = scope.spawn(|| {
-                        self.store
-                            .put_with_obao(StoreNs::Data, outputs[0].0, outputs[0].1, r)
-                    });
+                    let consumer = scope.spawn(|| consume(outputs[0].0, outputs[0].1, Box::new(r)));
                     let guest_result = guest.join().expect("guest thread never panics");
                     // Verdict first, then finish: a consumer blocked at
                     // channel-disconnect waits for it (pipe race fix).
@@ -1329,9 +1408,7 @@ impl<'s> Executor<'s> {
                         .zip(&outputs)
                         .map(|((reader, _), (hash, size))| {
                             let (hash, size) = (*hash, *size);
-                            scope.spawn(move || {
-                                self.store.put_with_obao(StoreNs::Data, hash, size, reader)
-                            })
+                            scope.spawn(move || consume(hash, size, Box::new(reader)))
                         })
                         .collect();
                     let guest_result = guest.join().expect("guest thread never panics");
@@ -1349,7 +1426,7 @@ impl<'s> Executor<'s> {
                         match consumer.join().expect("consumer thread never panics") {
                             Ok(outcome) => results.push((*hash, outcome)),
                             Err(e) => {
-                                first_err.get_or_insert(e.into());
+                                first_err.get_or_insert(e);
                             }
                         }
                     }
@@ -1366,6 +1443,36 @@ impl<'s> Executor<'s> {
             }
         }
     }
+}
+
+/// Consume an output stream to its end and check the claim: exactly
+/// `size` bytes hashing to `expected`. Nothing is written anywhere —
+/// the D25 proof without the bytes ([`Executor::license`]).
+fn verify_stream(
+    expected: Blake3,
+    size: u64,
+    mut reader: Box<dyn Read + Send>,
+) -> Result<(), ExecError> {
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = vec![0u8; 1 << 20];
+    let mut len = 0u64;
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        len += n as u64;
+    }
+    let actual = Blake3(*hasher.finalize().as_bytes());
+    if actual != expected || len != size {
+        return Err(ExecError::ClaimMismatch {
+            expected,
+            actual,
+            len,
+        });
+    }
+    Ok(())
 }
 
 /// Shared Vec sink: the host consumes it as `Box<dyn Write + Send>`, the

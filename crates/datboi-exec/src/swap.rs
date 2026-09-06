@@ -6,9 +6,20 @@
 //! Per candidate (a resident container with an affine builtin-assemble
 //! rebuild route), in order:
 //!
+//! 0. **Leaves** (D116): the swap packs the route graph's GROUNDING
+//!    LEAVES, not the candidate's direct inputs. An absent input with a
+//!    DOWNWARD route — a non-failed route that is not a view (no
+//!    non-generated input at least as large as its output, D112's
+//!    test) — is an intermediate: it is never packed, its downward
+//!    route is walked instead, and the route is licensed before the
+//!    container evicts. An absent input with no downward route is a
+//!    leaf. On a one-level decomposition (NDS, Xbox, GameCube) every
+//!    input is a leaf and nothing changes; on a Wii disc the encrypted
+//!    body (rebuilt by `encrypt`) and the plaintext (rebuilt by an
+//!    assemble) are intermediates, and the leaves are the files.
 //! 1. **Predicate** (never eager, D112): the bytes the swap RECLAIMS —
 //!    the container's size minus what would have to be packed (absent,
-//!    single-claimed, non-generated inputs) — must clear the molten
+//!    single-claimed, non-generated leaves) — must clear the molten
 //!    floor (`swap:reclaim-min-bytes`, 4 MiB). Resident pieces, pieces
 //!    claimed by ≥2 decompositions (D91's pair-breaking heuristic: the
 //!    first variant's pack is the second's sharing), GENERATED inputs
@@ -18,13 +29,16 @@
 //! 2. **Headroom** (D56): absent piece bytes + slack must fit before
 //!    anything is written — the swap is transiently double-resident by
 //!    design.
-//! 3. **Pack**: absent pieces stream through the executor (their
+//! 3. **Pack**: absent leaves stream through the executor (their
 //!    derive routes ground in the still-resident container) into ONE
-//!    sealed pack, coverage order, every member verified on the way
-//!    in. Residency flips to Resident per member after the pack
-//!    publishes (bytes first, rows second — recovery's direction).
-//! 4. **License**: the rebuild route replays if it hasn't (D25 — the
-//!    drop needs ReplayedLocal, not just Verified).
+//!    sealed pack, walk order, every member verified on the way in.
+//!    Residency flips to Resident per member after the pack publishes
+//!    (bytes first, rows second — recovery's direction).
+//! 4. **License**: every intermediate's downward route is licensed
+//!    bottom-up WITHOUT materializing it ([`Executor::license`] — a
+//!    replay would write disc-sized intermediates into the store),
+//!    then the rebuild route replays if it hasn't (D25 — the drop
+//!    needs ReplayedLocal, not just Verified).
 //! 5. **Evict** the container through the ordinary planner path (D21
 //!    grounding counterfactual, D49 outboard, D27 protections). The
 //!    caller holds the D72 singleton guard across this step.
@@ -35,8 +49,10 @@
 //! evicted container is just an eviction candidate; nothing here has a
 //! state the next ambient cycle can't finish or redo.
 
+use std::collections::HashSet;
+
 use datboi_core::hash::Blake3;
-use datboi_index::{Db, Residency, SwapCandidate, VerifyState};
+use datboi_index::{Db, RebuildInput, Residency, SwapCandidate, VerifyState};
 use datboi_store_fs::{Namespace as StoreNs, PackMember};
 
 use crate::evict::EvictOutcome;
@@ -95,18 +111,20 @@ impl<'s> Executor<'s> {
         reclaim_min: u64,
         report: &mut SwapReport,
     ) -> Result<(), SwapSkip> {
-        let inputs = db
-            .rebuild_inputs(candidate.recipe_id)
-            .map_err(|e| SwapSkip::Other(e.to_string()))?;
-        if inputs.is_empty() {
-            return Err(SwapSkip::Other("rebuild route has no inputs".into()));
-        }
         let Some(container_size) = candidate.size else {
             return Err(SwapSkip::Other("container has no recorded size".into()));
         };
+        // The grounding leaves under the route (D116), and the
+        // intermediates' routes to license, bottom-up.
+        let leaves = collect_leaves(db, candidate.recipe_id).map_err(SwapSkip::Other)?;
+        if leaves.direct_inputs == 0 {
+            return Err(SwapSkip::Other("rebuild route has no inputs".into()));
+        }
+        let inputs = leaves.inputs;
         // What must be written: absent, single-claimed, non-generated
-        // inputs (deduped by hash). Everything else in the container is
-        // reclaim — resident or shared pieces, generated streams, fills.
+        // leaves (deduped by hash). Everything else in the container is
+        // reclaim — resident or shared pieces, generated streams, fills,
+        // and every intermediate.
         let mut must_pack = 0u64;
         let mut packable = 0u64;
         let mut seen_hash = std::collections::HashSet::new();
@@ -193,7 +211,18 @@ impl<'s> Executor<'s> {
             }
         }
 
-        // License the rebuild if Verified-only (D25).
+        // License every intermediate's downward route, bottom-up and
+        // without materializing (D116), then the rebuild itself if
+        // Verified-only (D25).
+        for route in &leaves.routes {
+            let row = db
+                .recipe_by_id(*route)
+                .map_err(|e| SwapSkip::Other(e.to_string()))?;
+            if row.verify != VerifyState::ReplayedLocal {
+                self.license(db, *route)
+                    .map_err(|e| SwapSkip::Other(format!("licensing route {route}: {e}")))?;
+            }
+        }
         let row = db
             .recipe_by_id(candidate.recipe_id)
             .map_err(|e| SwapSkip::Other(e.to_string()))?;
@@ -223,6 +252,106 @@ impl<'s> Executor<'s> {
 enum SwapSkip {
     BelowThreshold,
     Other(String),
+}
+
+/// The D116 leaf walk's result.
+struct Leaves {
+    /// Grounding leaves under the route, in walk order (coverage order
+    /// of each route, depth first), deduped by hash: what the swap
+    /// weighs and packs.
+    inputs: Vec<RebuildInput>,
+    /// Intermediates' downward routes, post-order — each licensed
+    /// before the container evicts.
+    routes: Vec<i64>,
+    /// The top route's input count (a route with none is not a swap).
+    direct_inputs: usize,
+}
+
+/// Walk a rebuild route down to its grounding leaves (D116). An absent,
+/// non-generated input is an INTERMEDIATE when it has a downward route
+/// — a non-failed route of its own that is not a view (D112: no
+/// non-generated input at least as large as its output) — and a LEAF
+/// otherwise. Resident and generated inputs end the walk where they
+/// are (reclaim, nothing to pack or prove); a blob on the current path
+/// is never re-entered (a route back into the path is the derive
+/// direction, never a way down).
+fn collect_leaves(db: &Db, recipe_id: i64) -> Result<Leaves, String> {
+    let mut out = Leaves {
+        inputs: Vec::new(),
+        routes: Vec::new(),
+        direct_inputs: 0,
+    };
+    let mut seen: HashSet<Blake3> = HashSet::new();
+    let mut path: Vec<Blake3> = Vec::new();
+    walk(db, recipe_id, &mut seen, &mut path, &mut out, true)?;
+    Ok(out)
+}
+
+fn walk(
+    db: &Db,
+    recipe_id: i64,
+    seen: &mut HashSet<Blake3>,
+    path: &mut Vec<Blake3>,
+    out: &mut Leaves,
+    top: bool,
+) -> Result<(), String> {
+    let inputs = db.rebuild_inputs(recipe_id).map_err(|e| e.to_string())?;
+    if top {
+        out.direct_inputs = inputs.len();
+    }
+    for input in inputs {
+        if input.generated || !seen.insert(input.hash) {
+            continue;
+        }
+        if input.residency == Residency::Resident {
+            // Reclaim as it stands; the predicate still wants its size.
+            out.inputs.push(input);
+            continue;
+        }
+        if path.contains(&input.hash) {
+            continue;
+        }
+        match downward_route(db, &input)? {
+            Some(route) => {
+                path.push(input.hash);
+                walk(db, route, seen, path, out, false)?;
+                path.pop();
+                out.routes.push(route);
+            }
+            None => out.inputs.push(input),
+        }
+    }
+    Ok(())
+}
+
+/// The first non-failed route of `input` that rebuilds it from smaller
+/// parts — `None` when every route is a view (a slice of a whole, a
+/// decrypt of a larger ciphertext) or there is none: a grounding leaf.
+fn downward_route(db: &Db, input: &RebuildInput) -> Result<Option<i64>, String> {
+    let Some(size) = input.size else {
+        return Ok(None);
+    };
+    for route in db
+        .recipes_for_output(input.blob_id)
+        .map_err(|e| e.to_string())?
+    {
+        if route.verify == VerifyState::Failed {
+            continue;
+        }
+        let ins = db
+            .rebuild_inputs(route.recipe_id)
+            .map_err(|e| e.to_string())?;
+        if ins.is_empty() {
+            continue;
+        }
+        let view = ins
+            .iter()
+            .any(|i| !i.generated && i.size.is_some_and(|s| s >= size));
+        if !view {
+            return Ok(Some(route.recipe_id));
+        }
+    }
+    Ok(None)
 }
 
 #[derive(Debug, Default)]
