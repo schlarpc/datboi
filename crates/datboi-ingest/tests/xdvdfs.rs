@@ -11,7 +11,7 @@ use std::io::{Cursor, Read as _};
 use datboi_core::assemble::{self, AssembleParams, Segment};
 use datboi_core::hash::Blake3;
 use datboi_core::recipe::{Op, Recipe};
-use datboi_index::{Db, Namespace as IndexNs, Residency};
+use datboi_index::{AliasAlgo, Db, Namespace as IndexNs, Residency};
 use datboi_ingest::analyzers::XdvdfsAnalyzer;
 use datboi_ingest::nds::Region;
 use datboi_ingest::refine::run_sweep;
@@ -436,5 +436,93 @@ fn real_image_from_env() {
     );
     for p in layout.pieces.iter().filter(|p| p.name.starts_with("gap@")) {
         eprintln!("  residue {} ({} B)", p.name, p.len);
+    }
+}
+
+/// D113: the redump shape — an ISO9660 video volume before the game
+/// partition. Its files are named pieces, the volume and the XISO are
+/// claimed as alias-bearing views over the image, and the whole thing
+/// still round-trips through the coverage map.
+#[test]
+fn redump_image_walks_the_video_volume_and_claims_views() {
+    let image = synth::redump_image(Filler::Seed(SEED));
+    let layout = xdvdfs::parse_layout_with(
+        &mut Cursor::new(&image.bytes),
+        4096,
+        Some((image.base, image.xiso_len)),
+    )
+    .expect("layout");
+    assert_eq!(layout.base, synth::REDUMP_BASE);
+    let video = layout.video.expect("video volume walked");
+    assert_eq!((video.file_count, video.dir_count), (2, 2));
+    assert_eq!(video.sectors * SECTOR, image.video_volume.len() as u64);
+    let names: Vec<&str> = layout.pieces.iter().map(|p| p.name.as_str()).collect();
+    assert!(names.contains(&"video:dir:/"), "{names:?}");
+    assert!(names.contains(&"video:dir:/VIDEO_TS"), "{names:?}");
+    assert!(names.contains(&"video:/VIDEO_TS/VTS_01_1.VOB"), "{names:?}");
+    assert!(names.contains(&"/sub/b.bin"), "{names:?}");
+    assert_eq!(
+        layout.views,
+        vec![
+            xdvdfs::View {
+                name: "xiso",
+                role: "xgd:xiso",
+                ranges: vec![(image.base, image.xiso_len)],
+            },
+            xdvdfs::View {
+                name: "video",
+                role: "xgd:video",
+                ranges: vec![(0, image.video_volume.len() as u64)],
+            },
+        ]
+    );
+    assert_eq!(layout.filler.expect("seed").sectors, image.stream_sectors);
+
+    // Through the sweep: pieces, views, aliases, round trip.
+    let (_dir, store, mut db) = world();
+    let img_hash = put(&store, &db, &image.bytes);
+    let exec =
+        datboi_exec::Executor::new(&store, datboi_exec::ExecConfig::default()).expect("executor");
+    let bytes = datboi_ingest::refine::Logical::new(&store, &exec);
+    let mut analyzer = XdvdfsAnalyzer::with_geometry(image.base, image.xiso_len);
+    let report = run_sweep(&mut db, &store, &bytes, &mut analyzer, 100).expect("sweep");
+    assert_eq!(report.positive, 1, "{:?}", analysis_details(&db));
+    let detail = analysis_details(&db).join("\n");
+    assert!(detail.contains("video volume"), "{detail}");
+    assert!(detail.contains("views: xiso"), "{detail}");
+
+    let (_, out) = round_trip(&store, &db, &image.bytes, &img_hash);
+    assert_eq!(out, image.bytes);
+    for (name, data) in &image.video_files {
+        let hash = Blake3::compute(data);
+        assert_eq!(
+            derive_piece(&store, &db, &image.bytes, &img_hash, &hash),
+            *data,
+            "{name}"
+        );
+    }
+
+    // Views: identity claimed absent with a full alias tuple, served as
+    // an affine slice of the image.
+    let xiso = &image.bytes[usize::try_from(image.base).unwrap()..];
+    for (name, expected) in [("xiso", xiso), ("video", image.video_volume.as_slice())] {
+        let hash = Blake3::compute(expected);
+        let row = db
+            .blob_by_hash(&hash)
+            .expect("q")
+            .unwrap_or_else(|| panic!("{name} view claimed"));
+        assert_eq!(row.residency, Residency::Absent, "{name}");
+        let crc = crc32fast::hash(expected).to_be_bytes();
+        let hits = db.alias_lookup(AliasAlgo::Crc32, &crc).expect("lookup");
+        assert!(
+            hits.contains(&row.blob_id),
+            "{name} view carries a crc32 alias"
+        );
+        let recipe = recipes_for(&store, &db, &hash)
+            .into_iter()
+            .find(|r| r.inputs.len() == 1 && r.inputs[0].hash == img_hash)
+            .unwrap_or_else(|| panic!("{name} view has an image-derive recipe"));
+        let params = AssembleParams::decode(&recipe.params).expect("params");
+        assert_eq!(materialize(&params, &[&image.bytes]), expected, "{name}");
     }
 }

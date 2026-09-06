@@ -47,10 +47,20 @@ pub const MAGIC: &[u8; 20] = b"MICROSOFT*XBOX*MEDIA";
 /// XGD1/XGD2 discs carry a mastering-tool signature sector right after
 /// the volume descriptor.
 pub const LAYOUT_SIG: &[u8; 24] = b"XBOX_DVD_LAYOUT_TOOL_SIG";
-/// Game-partition byte offsets probed for the magic: a bare XISO, then
-/// the redump image layouts (XGD1, XGD2, XGD2-hybrid, XGD3 — XboxKit's
-/// table). Advisory: the magic decides, the table only says where to look.
-pub const PARTITION_BASES: &[u64] = &[0, 0x1830_0000, 0x0FD9_0000, 0x89D8_0000, 0x0208_0000];
+/// Redump image geometry (XGD1, XGD2, XGD2-hybrid, XGD3 — XboxKit's
+/// table): the game partition's byte offset, and its length as the
+/// security-sector layout defines it — the XISO a bare dump of the
+/// partition is (D113). The magic decides where the partition IS; the
+/// length is advisory data for the XISO view claim (it lives in the
+/// SS, which no drive reads, so it cannot be discovered from the
+/// image), never a decoding rule. A bare XISO sits at base 0 and has
+/// no views.
+pub const XGD_GEOMETRY: &[(u64, u64)] = &[
+    (0x1830_0000, 0x1_A2DB_0000),
+    (0x0FD9_0000, 0x1_B388_0000),
+    (0x89D8_0000, 0x0_BF8A_0000),
+    (0x0208_0000, 0x2_0451_0000),
+];
 /// Every security-sector range is exactly this many sectors (16 of
 /// them on XGD1, two on XGD2/3).
 pub const SECURITY_RANGE_SECTORS: u64 = 4096;
@@ -95,6 +105,38 @@ pub struct Filler {
     pub hash: Blake3,
 }
 
+/// A derived identity claimed as an affine view over the image (D113):
+/// the XISO (game partition slice) and the video volume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct View {
+    pub name: &'static str,
+    /// Input role on the view's recipe.
+    pub role: &'static str,
+    /// `(offset, len)` ranges of the image, concatenated in order.
+    pub ranges: Vec<(u64, u64)>,
+}
+
+impl View {
+    #[must_use]
+    pub fn len(&self) -> u64 {
+        self.ranges.iter().map(|(_, l)| l).sum()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// What the video partition's ISO9660 walk found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoSummary {
+    /// Declared volume space, in sectors.
+    pub sectors: u64,
+    pub file_count: usize,
+    pub dir_count: usize,
+}
+
 #[derive(Debug)]
 pub struct Layout {
     pub total_len: u64,
@@ -122,6 +164,13 @@ pub struct Layout {
     /// True when the entry count exceeded the piece cap and pieces are
     /// contiguous data runs instead of files.
     pub coalesced: bool,
+    /// The video partition's filesystem (redump images only).
+    pub video: Option<VideoSummary>,
+    /// Why the video partition did not walk as ISO9660, when it didn't
+    /// (its bytes then classify by shape, as before D113).
+    pub video_refusal: Option<String>,
+    /// Derived identities to claim over the image.
+    pub views: Vec<View>,
 }
 
 /// One declared byte range: a file, a directory table, or the
@@ -141,18 +190,25 @@ pub fn looks_like_vd(head: &[u8]) -> bool {
     head.len() >= SECTOR_LEN && &head[..20] == MAGIC && &head[0x7EC..0x800] == MAGIC
 }
 
-/// Probe the known partition bases for the volume descriptor.
+/// Probe for the volume descriptor: a bare XISO at base 0, then the
+/// known redump geometries. Returns the base and, for a redump image,
+/// the partition's SS-defined length.
 ///
 /// # Errors
 /// I/O only; `Ok(None)` when nothing sniffs.
-pub fn find_partition<R: Read + Seek>(img: &mut R, total_len: u64) -> io::Result<Option<u64>> {
-    for &base in PARTITION_BASES {
+pub fn find_partition<R: Read + Seek>(
+    img: &mut R,
+    total_len: u64,
+) -> io::Result<Option<(u64, Option<u64>)>> {
+    let candidates = std::iter::once((0u64, None))
+        .chain(XGD_GEOMETRY.iter().map(|&(base, len)| (base, Some(len))));
+    for (base, len) in candidates {
         let at = base + VD_OFFSET;
         if at + SECTOR > total_len {
             continue;
         }
         if looks_like_vd(&read_at(img, at, SECTOR_LEN)?) {
-            return Ok(Some(base));
+            return Ok(Some((base, len)));
         }
     }
     Ok(None)
@@ -167,8 +223,31 @@ pub fn find_partition<R: Read + Seek>(img: &mut R, total_len: u64) -> io::Result
 /// [`XdvdfsError::Refused`] is a settled conclusion about the bytes;
 /// [`XdvdfsError::Io`] is environmental.
 pub fn parse_layout<R: Read + Seek>(img: &mut R, max_pieces: usize) -> Result<Layout, XdvdfsError> {
+    parse_layout_with(img, max_pieces, None)
+}
+
+/// [`parse_layout`] with an explicit `(base, xiso_len)` geometry instead
+/// of the probe — the gates' hook for redump-shaped fixtures at a
+/// test-sized base. The volume descriptor must still be at the base.
+///
+/// # Errors
+/// As [`parse_layout`].
+pub fn parse_layout_with<R: Read + Seek>(
+    img: &mut R,
+    max_pieces: usize,
+    geometry: Option<(u64, u64)>,
+) -> Result<Layout, XdvdfsError> {
     let total_len = img.seek(SeekFrom::End(0))?;
-    let base = find_partition(img, total_len)?.ok_or(Refusal::NotXdvdfs)?;
+    let (base, xiso_len) = match geometry {
+        Some((base, len)) => {
+            let at = base + VD_OFFSET;
+            if at + SECTOR > total_len || !looks_like_vd(&read_at(img, at, SECTOR_LEN)?) {
+                return Err(Refusal::NotXdvdfs.into());
+            }
+            (base, Some(len))
+        }
+        None => find_partition(img, total_len)?.ok_or(Refusal::NotXdvdfs)?,
+    };
     let vd = read_at(img, base + VD_OFFSET, SECTOR_LEN)?;
     let root_sector = u32_at(&vd, 20);
     let root_size = u32_at(&vd, 24);
@@ -261,6 +340,40 @@ pub fn parse_layout<R: Read + Seek>(img: &mut R, max_pieces: usize) -> Result<La
         }
     }
 
+    // The video partition (D113): a redump image's bytes before the
+    // game partition are an ISO9660 DVD-Video volume — its files and
+    // directory extents are pieces too, and the declared volume is a
+    // view. A partition that does not walk classifies by shape.
+    let mut video = None;
+    let mut video_refusal = None;
+    let mut video_bytes = 0u64;
+    if base > 0 {
+        match crate::iso9660::parse_volume(img, 0, base) {
+            Ok(vol) => {
+                for e in &vol.entries {
+                    entries.push(Entry {
+                        name: if e.is_dir {
+                            format!("video:dir:{}", e.path)
+                        } else {
+                            format!("video:{}", e.path)
+                        },
+                        start: e.lba * SECTOR,
+                        len: e.len,
+                        literal: false,
+                    });
+                }
+                video_bytes = vol.sectors * SECTOR;
+                video = Some(VideoSummary {
+                    sectors: vol.sectors,
+                    file_count: vol.file_count,
+                    dir_count: vol.dir_count,
+                });
+            }
+            Err(crate::iso9660::Iso9660Error::Refused(r)) => video_refusal = Some(r.to_string()),
+            Err(crate::iso9660::Iso9660Error::Io(e)) => return Err(e.into()),
+        }
+    }
+
     // Order, dedupe exact aliases (two names over one extent are one
     // piece), refuse partial overlaps.
     entries.sort_by_key(|e| (e.start, e.len));
@@ -342,6 +455,27 @@ pub fn parse_layout<R: Read + Seek>(img: &mut R, max_pieces: usize) -> Result<La
     cls.classify(cursor, total_len - cursor, &mut regions, &mut pieces)?;
 
     let filler = cls.finish();
+
+    // Views (D113): the XISO as the SS geometry defines it, and the
+    // video volume as it declares itself — each only when it fits.
+    let mut views = Vec::new();
+    if base > 0
+        && let Some(len) = xiso_len
+        && base.checked_add(len).is_some_and(|end| end <= total_len)
+    {
+        views.push(View {
+            name: "xiso",
+            role: "xgd:xiso",
+            ranges: vec![(base, len)],
+        });
+    }
+    if video.is_some() && video_bytes > 0 && video_bytes <= base {
+        views.push(View {
+            name: "video",
+            role: "xgd:video",
+            ranges: vec![(0, video_bytes)],
+        });
+    }
     Ok(Layout {
         total_len,
         base,
@@ -357,6 +491,9 @@ pub fn parse_layout<R: Read + Seek>(img: &mut R, max_pieces: usize) -> Result<La
         fill_bytes: cls.fill_bytes,
         residual_bytes: cls.residual_bytes,
         coalesced,
+        video,
+        video_refusal,
+        views,
     })
 }
 
@@ -712,6 +849,51 @@ pub mod synth {
         pub stream_sectors: u64,
         /// Sector index of the residue tail.
         pub residue_sector: u64,
+        /// Redump shape only: the game partition's byte offset and
+        /// SS-defined length (0 for a bare XISO).
+        pub base: u64,
+        pub xiso_len: u64,
+        /// Redump shape only: (piece name, bytes) of the video files.
+        pub video_files: Vec<(String, Vec<u8>)>,
+        /// Redump shape only: the declared video volume's bytes.
+        pub video_volume: Vec<u8>,
+    }
+
+    /// Where the redump-shaped fixture puts its game partition: past a
+    /// small ISO9660 video volume and a zero pad — a test-sized stand-in
+    /// for XGD1's 0x18300000, injected through `parse_layout_with` /
+    /// `XdvdfsAnalyzer::with_geometry`.
+    pub const REDUMP_BASE: u64 = 0x40000;
+
+    /// The redump shape (D113): an ISO9660 DVD-Video volume, zero pad up
+    /// to [`REDUMP_BASE`], then the bare XISO of [`image`] as the game
+    /// partition, whose full length is the fixture's XISO length.
+    #[must_use]
+    pub fn redump_image(filler: Filler) -> Image {
+        let ifo = vec![0x5Au8; 12288];
+        let vob = pattern(70_000, 0xE);
+        let volume = crate::iso9660::synth::volume(&[
+            ("VIDEO_TS.IFO", ifo.clone()),
+            ("VTS_01_1.VOB", vob.clone()),
+        ]);
+        assert!(volume.len() as u64 <= REDUMP_BASE);
+        let xiso = image(filler, false);
+        let mut bytes = volume.clone();
+        bytes.resize(usize::try_from(REDUMP_BASE).expect("small"), 0);
+        bytes.extend_from_slice(&xiso.bytes);
+        Image {
+            bytes,
+            files: xiso.files,
+            stream_sectors: xiso.stream_sectors,
+            residue_sector: xiso.residue_sector + REDUMP_BASE / SECTOR,
+            base: REDUMP_BASE,
+            xiso_len: xiso.bytes.len() as u64,
+            video_files: vec![
+                ("video:/VIDEO_TS/VIDEO_TS.IFO".to_owned(), ifo),
+                ("video:/VIDEO_TS/VTS_01_1.VOB".to_owned(), vob),
+            ],
+            video_volume: volume,
+        }
     }
 
     fn pattern(len: usize, seed: u64) -> Vec<u8> {
@@ -875,6 +1057,10 @@ pub mod synth {
                 files,
                 stream_sectors,
                 residue_sector: 0,
+                base: 0,
+                xiso_len: 0,
+                video_files: Vec::new(),
+                video_volume: Vec::new(),
             };
         }
         // 45..49: filler (stream 35..38).
@@ -917,6 +1103,10 @@ pub mod synth {
             files,
             stream_sectors,
             residue_sector,
+            base: 0,
+            xiso_len: 0,
+            video_files: Vec::new(),
+            video_volume: Vec::new(),
         }
     }
 }

@@ -308,6 +308,23 @@ identity) — a UDF-aware split is a someday; (4) `xdvdfs:max-pieces`
 (4096) coalesces to extents past the cap — a 10k-file disc's per-file
 dedupe is deferred to that knob.
 
+**Position as of 2026-09-06 (later) — D112, D113 BUILT**: the swap
+fires on reclaimed bytes (`swap:reclaim-min-bytes`, 4 MiB; both ratio
+knobs gone), and the video partition walks as ISO9660 with the XISO
+and video volume claimed as alias-bearing views. Measured on the Halo
+pair before D112: 73.9% of raw resident (v1.09 refused by the 50%
+sharing ratio); D112 lets it swap for 51.9%. Watch items: (1) the
+XISO view length rides XboxKit's per-XGD table — the one piece of
+redump geometry the image cannot tell us; a disc whose partition does
+not fit the table claims no XISO view and says so in the verdict;
+(2) the video volume view is the PVD-declared volume, not XboxKit's
+layer-padded `.video.iso` — if a community dat ever names the padded
+form, a second view is one table entry away; (3) a swap candidate
+list now includes every packed piece's own slice route (1,220 rows on
+the Halo pair, all below the floor) — harmless, but `swap_candidates`
+could exclude outputs whose only route derives from an evicted
+container; (4) first XGD2/XGD3 image through the walk is still owed.
+
 ## Resolved
 
-See [decisions.md](decisions.md) (D1–D111).
+See [decisions.md](decisions.md) (D1–D113).

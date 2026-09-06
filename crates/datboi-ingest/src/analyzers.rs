@@ -1322,6 +1322,9 @@ pub const XF_XGD1_PRNG_WASM: &[u8] = include_bytes!(concat!(
 /// recipe before any literal drops.
 pub struct XdvdfsAnalyzer {
     component_published: bool,
+    /// Test hook: an explicit `(base, xiso_len)` instead of the redump
+    /// geometry probe (see `xdvdfs::parse_layout_with`).
+    geometry: Option<(u64, u64)>,
 }
 
 impl XdvdfsAnalyzer {
@@ -1336,6 +1339,18 @@ impl XdvdfsAnalyzer {
     pub fn new() -> Self {
         Self {
             component_published: false,
+            geometry: None,
+        }
+    }
+
+    /// The gates' redump-shaped fixture sits at a test-sized base the
+    /// probe table does not know; this pins its geometry explicitly.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_geometry(base: u64, xiso_len: u64) -> Self {
+        Self {
+            component_published: false,
+            geometry: Some((base, xiso_len)),
         }
     }
 
@@ -1403,7 +1418,7 @@ impl Analyzer for XdvdfsAnalyzer {
             .and_then(|v| std::str::from_utf8(&v).ok()?.trim().parse::<usize>().ok())
             .unwrap_or(Self::DEFAULT_MAX_PIECES);
 
-        let layout = match crate::xdvdfs::parse_layout(&mut img, max_pieces) {
+        let layout = match crate::xdvdfs::parse_layout_with(&mut img, max_pieces, self.geometry) {
             Ok(layout) => layout,
             Err(crate::xdvdfs::XdvdfsError::Refused(refusal)) => {
                 return Ok(AnalysisResult {
@@ -1465,6 +1480,71 @@ impl Analyzer for XdvdfsAnalyzer {
             &mut img,
         )?;
 
+        // Views (D113): the XISO and the video volume, claimed with full
+        // alias tuples so community-shaped files dat-match — served as
+        // affine slices, never stored.
+        for view in &layout.views {
+            let tuple = alias_ranges(&mut img, &view.ranges).map_err(|e| e.to_string())?;
+            let size = view.len();
+            let id = match db.blob_by_hash(&tuple.blake3).map_err(|e| e.to_string())? {
+                Some(row) => row.blob_id,
+                None => db
+                    .upsert_blob(&tuple.blake3, Some(size), IndexNs::Data, Residency::Absent)
+                    .map_err(|e| e.to_string())?,
+            };
+            db.insert_aliases(id, &tuple).map_err(|e| e.to_string())?;
+            let recipe = Recipe {
+                op: Op::Builtin {
+                    name: "assemble".into(),
+                    major: 1,
+                },
+                inputs: vec![InputRef {
+                    hash: item.hash,
+                    role: Some(view.role.to_owned()),
+                }],
+                outputs: vec![OutputRef {
+                    hash: tuple.blake3,
+                    size,
+                    name: Some(view.name.to_owned()),
+                }],
+                params: AssembleParams {
+                    segments: view
+                        .ranges
+                        .iter()
+                        .map(|&(offset, len)| Segment::BlobRange {
+                            input_ix: 0,
+                            offset,
+                            len,
+                        })
+                        .collect(),
+                }
+                .encode()
+                .map_err(|e| e.to_string())?,
+            };
+            crate::mint_recipe(store, db, &recipe, SeekClass::Affine).map_err(|e| e.to_string())?;
+        }
+
+        let video_note = match (layout.video, &layout.video_refusal) {
+            (Some(v), _) => format!(
+                "video volume {} sector(s): {} file(s), {} dir(s)",
+                v.sectors, v.file_count, v.dir_count
+            ),
+            (None, Some(why)) => format!("video partition not walked ({why})"),
+            (None, None) => "no video partition".to_owned(),
+        };
+        let views_note = if layout.views.is_empty() {
+            "no views".to_owned()
+        } else {
+            format!(
+                "views: {}",
+                layout
+                    .views
+                    .iter()
+                    .map(|v| format!("{} ({} B)", v.name, v.len()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
         let filler_note = match layout.filler {
             Some(f) => format!(
                 "filler seed {:#010x}: {} stream sector(s) matched + {} security-range sector(s) consumed, {} B fill",
@@ -1478,7 +1558,7 @@ impl Analyzer for XdvdfsAnalyzer {
         Ok(AnalysisResult {
             outcome: AnalysisOutcome::Positive,
             detail: Some(format!(
-                "split into {} piece(s) ({} file(s), {} dir table(s){}) at partition base {:#x}; {}; {} residual byte(s); layout tool build {}",
+                "split into {} piece(s) ({} file(s), {} dir table(s){}) at partition base {:#x}; {}; {}; {}; {} residual byte(s); layout tool build {}",
                 layout.pieces.len(),
                 layout.file_count,
                 layout.dir_count,
@@ -1489,6 +1569,8 @@ impl Analyzer for XdvdfsAnalyzer {
                 },
                 layout.base,
                 filler_note,
+                video_note,
+                views_note,
                 layout.residual_bytes,
                 layout
                     .layout_tool_build
@@ -1695,6 +1777,27 @@ fn alias_range<R: std::io::Read + std::io::Seek>(
         rom.read_exact(&mut buf[..want])?;
         hasher.update(&buf[..want]);
         remaining -= want as u64;
+    }
+    Ok(hasher.finalize())
+}
+
+/// Full alias tuple over the concatenation of `ranges`, streamed — a
+/// view's identity (D113).
+fn alias_ranges<R: std::io::Read + std::io::Seek>(
+    rom: &mut R,
+    ranges: &[(u64, u64)],
+) -> std::io::Result<datboi_core::alias::AliasTuple> {
+    let mut hasher = datboi_core::alias::AliasHasher::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    for &(start, len) in ranges {
+        rom.seek(std::io::SeekFrom::Start(start))?;
+        let mut remaining = len;
+        while remaining > 0 {
+            let want = usize::try_from(remaining.min(buf.len() as u64)).expect("bounded");
+            rom.read_exact(&mut buf[..want])?;
+            hasher.update(&buf[..want]);
+            remaining -= want as u64;
+        }
     }
     Ok(hasher.finalize())
 }
