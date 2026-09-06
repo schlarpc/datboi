@@ -3315,3 +3315,18 @@ literal); a version gate deciding the generator (advisory only).
 *Swap (same day):* the D91 amendment above makes generated inputs
 free and adds the regeneration trigger, so a lone seed-era disc swaps
 on day one — see the D91 amendment for the evidence.
+*Amendment (2026-09-06, the real seed-era disc):* Halo: Combat
+Evolved v1.02 (build 3926) through the whole pipeline on a fresh
+store — 1,230 pieces (1,166 files, 58 tables), seed 0x4E998EB0,
+1,545,266 stream sectors matched + 65,536 consumed across the 16
+security ranges: 3.30 GB of filler, 42.2% of the image, zero residue
+inside the game partition (the 12.4 MB of residue is the video
+partition and the layer-1 tail). Walk 10 s, sweep 17 s, swap 35 s
+(3.74 GB packed, 7.83 GB reclaimed), full rebuild streamed and
+verified 32 s, verified ranges in milliseconds. One correction it
+forced: a directory table's declared size is its BYTE length —
+sector-rounded on the v1.09 master, exact (88 bytes, 0xFF slack) on
+v1.02 — so a table piece is its declared bytes and the slack
+classifies like a file tail; the multiple-of-2048 refusal was wrong
+and is gone. The wiki's "always a multiple of 0x800" is a lie the
+first seed-era disc disproved.

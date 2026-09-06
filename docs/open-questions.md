@@ -287,12 +287,18 @@ ZERO-INPUT `xf-xgd1-prng fill` recipe (security ranges consume the
 stream, pads and slack are fills, rc4-era filler stays gap pieces);
 the executor serves seekable wasm children in place; the D91 swap
 counts generated inputs as free and fires on the regeneration trigger
-alone. Watch items: (1) no seed-era redump image was on hand — the
-seed-era path is proven on the two real sectors + the synthetic
-fixture, and the rc4-era Halo v1.09 walk (21 residue pieces, 44%
-filler, 16 security ranges recognized as zero runs) — the first real
-seed-era disc through the sweep is the remaining proof, and its
-verdict detail carries everything needed to judge it; (2) the
+alone. PROVEN on both real discs: Halo v1.02 (seed era, 42.2%
+regenerated, full ingest→sweep→swap→evict→rebuild round trip in ~2
+minutes, see the D111 amendment) and Halo v1.09 (rc4 era: 21 residue
+pieces, 44% filler literal, 16 security ranges as zero runs). The
+opt-in real-image gates: `DATBOI_XDVDFS_IMAGE` with
+`datboi-ingest --test xdvdfs real_image_from_env` (walk only) and
+`datboi-exec --test xdvdfs_shrink real_image_swaps_and_serves` (the
+whole pipeline; set `DATBOI_XDVDFS_WORKDIR` to a big disk). Watch
+items: (1) only Halo has been through it — a disc with thousands of
+files, and an XGD2/XGD3 image, are the next shapes worth a walk (the
+piece cap and the 360 partition bases are exercised only by the
+fixture); (2) the
 security-range rule is "exactly 4096 zero sectors AND the next sector
 predicts from the jumped position" — a disc whose last security range
 is followed only by pad leaves those 4096 stream sectors unconsumed,
