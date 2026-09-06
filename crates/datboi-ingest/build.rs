@@ -24,6 +24,7 @@ const COMPONENT_CRATES: &[&str] = &[
     "datboi-xf-preflate",
     "datboi-xf-reference",
     "datboi-xf-reference-stream",
+    "datboi-xf-xgd1-prng",
     "datboi-ex-unrar",
     "datboi-ex-7z",
 ];

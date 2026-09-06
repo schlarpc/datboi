@@ -18,6 +18,9 @@ wasmtime.workspace = true
 # Native twin of the committed component fixture: the ECM gate builds
 # its vectors with the crate and asserts the WASM component agrees.
 datboi-xf-ecm = { path = "../datboi-xf-ecm" }
+# Same twin pattern for the XGD1 filler generator (D111): the gate
+# generates the expected stream natively and asserts the component agrees.
+datboi-xf-xgd1-prng = { path = "../datboi-xf-xgd1-prng" }
 blake3.workspace = true
 wat.workspace = true
 
