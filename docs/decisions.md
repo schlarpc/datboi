@@ -3344,6 +3344,40 @@ assemble is caught through the composite, quarantined, and served
 correctly on the next read. On the real disc the spill-based replay
 is faster than per-window instantiation (full rebuild 15 s, swap
 25 s).
+*Amendment (2026-09-06, later — XGD2, XGD3, and seven bare XISOs):*
+the shapes the position note named, all from archive.org. **XGD2**
+(Dante's Inferno, redump, 7.84 GB): partition base 0xFD90000 by
+magic, 7 files + 2 tables (EA packs everything into a few files),
+rc4-era, 442 MB of fill, 1.40 GB of literal filler residue (17.9%),
+video partition walked (13 files: the VIDEO_TS set plus a
+`_SYSTEMU` directory — the system update rides the video partition
+on XGD2 too, not only XGD3), both views claimed; swap packed 7.40 GB
+and reclaimed 442 MB; full rebuild 5.8 s, verified ranges 30 ms.
+**XGD3** (Devil May Cry HD Collection, redump, 8.74 GB): base
+0x2080000, 142 files + 8 tables, rc4-era, 26 MB fill, 1.52 GB
+literal filler (17.4%), video partition walked (1 file, 1 dir: the
+system update alone), XISO view claimed; swap packed 8.71 GB to
+reclaim 26 MB (the D112 floor fires on 26 MB — the ruling's
+"one write, reclaim forever", measured at its least flattering);
+full rebuild 9.9 s. **Seven extract-xiso-rebuilt XISOs** (base 0,
+19 to 3,220 files): no filler of any era (the tool writes none), a
+6,144-byte residue at sector 15 on every one (a fake ISO9660 PVD
+extract-xiso stamps, dedupes by identity), walks in 1–260 ms; Jet
+Set Radio Future (3,220 files, 2.5 GB) through the whole pipeline
+packs 3,257 members into one pack in 11 s and reclaims 163 MB of
+duplicate files and fill, rebuild 5.6 s — the piece cap (4,096) is
+still unexercised by a real disc. Two
+corrections the discs forced, both in the shared ISO9660 walker:
+an XGD2 video partition declares its root directory as 194 bytes,
+so a directory extent is its declared BYTES (the D111 table lesson
+again — the multiple-of-2048 refusal was wrong here too), and the
+descriptor set tolerates ECMA-167 recognition descriptors in
+sequence. Watch: XGD3's declared video volume (25,062 sectors,
+51 MB) is LARGER than the layer-0 chunk before the game partition
+(34 MB) — the volume spans both layers, so no video view is claimed
+on XGD3 (a two-range view over the layer-0 head and the layer-1
+tail would need the SS to place the tail; deferred until a dat
+names it).
 
 ## D112 — The swap fires on reclaimed bytes, not a ratio (2026-09-06)
 
@@ -3421,6 +3455,16 @@ image and its XISO dedupe by identity whichever arrives first.
 extents as the ISO9660 tree; walking both would double-claim);
 deriving the XISO length from content (the trailing pad is part of
 the identity and unmarked in the image); layering (above).
+*Amendment (2026-09-06, later — measured across a wave):* the
+96 MB heads of three XGD2 images walked by the same tree. Dante's
+Inferno (2010) and Tomb Raider (2013) carry byte-identical VIDEO_TS
+files (the five-file "this disc is for Xbox 360" video, 2.26 MB)
+under different system updates; WALL-E (2008, another master)
+shares nothing with either. So the video files dedupe across the
+wave by identity as ruled, and the system update dedupes only
+among discs pressed with the same update — the per-file split is
+what makes either sharing reachable at all (a whole-partition
+piece would share nothing across those three).
 
 ## D114 — ISO9660 volumes decompose: `iso9660-split/1` walks cooked images by their primary tree (2026-09-06)
 

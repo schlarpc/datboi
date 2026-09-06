@@ -434,8 +434,27 @@ fn real_image_from_env() {
         layout.regions.len(),
         t0.elapsed()
     );
-    for p in layout.pieces.iter().filter(|p| p.name.starts_with("gap@")) {
+    eprintln!(
+        "  video {:?} / refusal {:?} / views {:?} / coalesced {}",
+        layout.video,
+        layout.video_refusal,
+        layout
+            .views
+            .iter()
+            .map(|v| (v.name, v.len()))
+            .collect::<Vec<_>>(),
+        layout.coalesced
+    );
+    let residue: Vec<_> = layout
+        .pieces
+        .iter()
+        .filter(|p| p.name.starts_with("gap@"))
+        .collect();
+    for p in residue.iter().take(12) {
         eprintln!("  residue {} ({} B)", p.name, p.len);
+    }
+    if residue.len() > 12 {
+        eprintln!("  … {} residue pieces in all", residue.len());
     }
 }
 

@@ -54,6 +54,12 @@ fn ingest(store: &Store, db: &Db, bytes: &[u8]) -> Blake3 {
 
 /// The rebuild's filler input: the one whose route has no inputs.
 fn filler_of(db: &Db, img_hash: &Blake3) -> (Blake3, u64) {
+    try_filler_of(db, img_hash).expect("a seed-era disc has exactly one generated input")
+}
+
+/// `None` on an rc4-era disc (no generated input — the filler stays
+/// literal gap pieces).
+fn try_filler_of(db: &Db, img_hash: &Blake3) -> Option<(Blake3, u64)> {
     let img_id = db.get_blob_id(img_hash).expect("q").expect("row");
     let rebuild = db
         .recipes_for_output(img_id)
@@ -63,10 +69,10 @@ fn filler_of(db: &Db, img_hash: &Blake3) -> (Blake3, u64) {
         .expect("rebuild route");
     let inputs = db.rebuild_inputs(rebuild.recipe_id).expect("inputs");
     let generated: Vec<_> = inputs.iter().filter(|i| i.generated).collect();
-    assert_eq!(generated.len(), 1, "exactly one generated input");
-    let f = generated[0];
+    assert!(generated.len() <= 1, "at most one generated input");
+    let f = generated.first()?;
     assert_eq!(f.residency, Residency::Absent);
-    (f.hash, f.size.expect("size"))
+    Some((f.hash, f.size.expect("size")))
 }
 
 #[test]
@@ -267,11 +273,14 @@ fn real_image_swaps_and_serves() {
         .query_row("SELECT COALESCE(detail,'') FROM analysis", [], |r| r.get(0))
         .expect("detail");
     eprintln!("verdict ({:.1?}): {detail}", t1.elapsed());
-    let (filler_hash, filler_len) = filler_of(&db, &img_hash);
-    eprintln!(
-        "filler {filler_hash}: {filler_len} B ({:.1}% of the image)",
-        filler_len as f64 * 100.0 / len as f64
-    );
+    let filler = try_filler_of(&db, &img_hash);
+    match filler {
+        Some((filler_hash, filler_len)) => eprintln!(
+            "filler {filler_hash}: {filler_len} B ({:.1}% of the image)",
+            filler_len as f64 * 100.0 / len as f64
+        ),
+        None => eprintln!("no generated filler (rc4-era): the swap rides fills and sharing alone"),
+    }
 
     let t2 = std::time::Instant::now();
     let exec = Executor::new(&store, ExecConfig::default()).expect("executor");
@@ -279,10 +288,12 @@ fn real_image_swaps_and_serves() {
     eprintln!("swap ({:.1?}): {report:?}", t2.elapsed());
     assert_eq!(report.swapped, 1, "{report:?}");
     assert!(!store.has(StoreNs::Data, &img_hash), "literal gone");
-    assert!(
-        !store.has(StoreNs::Data, &filler_hash),
-        "filler never stored"
-    );
+    if let Some((filler_hash, _)) = filler {
+        assert!(
+            !store.has(StoreNs::Data, &filler_hash),
+            "filler never stored"
+        );
+    }
 
     let t3 = std::time::Instant::now();
     let mut hasher = blake3::Hasher::new();

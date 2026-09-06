@@ -1,7 +1,7 @@
 # Open questions & active research
 
 [decisions.md](decisions.md) is the authoritative record (through
-D105); the subsystem docs (see [README.md](README.md)) are the design
+D114); the subsystem docs (see [README.md](README.md)) are the design
 record. This file holds only what is genuinely open: flags awaiting a
 ruling, deferred design work, watch items, and the pick-up-here
 position note. Condensed 2026-07-17 — resolved entries were deleted
@@ -335,9 +335,46 @@ form, a second view is one table entry away; (3) DONE
 2026-09-06 (later): `swap_candidates` excludes view routes (an input
 at least as large as the output) per ROUTE — the 1,220 slice rows are
 gone, and a bare XISO ingested after its redump image is a candidate
-by its own decomposition, not the image's older view claim; (4) first
-XGD2/XGD3 image through the walk is still owed.
+by its own decomposition, not the image's older view claim; (4) DONE
+2026-09-06 (later): XGD2 and XGD3 redump images through the whole
+pipeline — see the D111 amendment.
+
+**Position as of 2026-09-06 (overnight) — D114 BUILT, corpus soak
+DONE**: `iso9660-split/1` (family `iso9660`, Structural) decomposes
+cooked disc images by their primary tree — the D113 walker one level
+up — with uniform pad files as fills, multi-extent files one piece
+per extent, and the residue gate (a quarter of the image outside the
+tree, above a 4 MiB floor) declining redump Xbox images so xdvdfs
+owns them in either sweep order. Proven on a PSP image and a 1.8 GB
+Xbox 360 press-kit DVD-ROM (swap, bit-exact rebuild, verified
+ranges; the press kit reclaimed 245 MB from duplicate members alone)
+and Negative on three redump Xbox images. Gates:
+`DATBOI_ISO9660_IMAGE` with `--test iso9660 real_image_from_env`
+(walk) and `--test iso9660_shrink real_image_swaps_and_serves`
+(pipeline, `DATBOI_ISO9660_WORKDIR`). The corpus soak walked XGD2,
+XGD3 and seven bare XISOs (D111 amendment) and measured the video
+partition across an XGD2 wave (D113 amendment). Watch items: (1)
+**the residue gate's cost** — a Negative on a 7.8 GB Xbox image
+costs 2–14 s of gap classification before the gate fires; a cheaper
+pre-gate on declared coverage would need to know fills without
+reading them, so it stays as is until the sweep queue shows it;
+(2) **the XGD3 video view** is unclaimed (declared volume spans
+both layers — see the D111 amendment); (3) **PS2 is unmeasured** —
+every PS2 redump item on archive.org is access-locked; the PSP disc
+and the DVD-ROM stand in, and a PS2 regional pair (the sharing case
+the family was built for) is the first thing to run when one is
+reachable; (4) **XGD3 fires the swap for 26 MB** — the D112 floor
+as ruled, but 8.7 GB written once to reclaim 0.3% is the number to
+look at if a cost term is ever reconsidered; (5) raw 2352 images
+(bin/cue) are a later layering under ECM; (6) the system-area
+classifier splits only a TRAILING uniform run, so a PSP disc's
+non-zero system area becomes a 28 KB residue piece with its zero
+tail attached — cosmetic. **Pick up here**: the D34 channel design
+and the recon ACL remain the next architectural work; corpus-wise,
+a PS2 pair when reachable, and a first look at what the split discs
+expose (a JPEG/Ogg census inside PSP/PS2 interiors decides the
+deferred media lanes).
 
 ## Resolved
 
-See [decisions.md](decisions.md) (D1–D113).
+See [decisions.md](decisions.md) (D1–D114).
