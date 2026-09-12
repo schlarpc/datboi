@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/nix-installer-action@v23
 
       # Nix store cache over the GitHub Actions cache — check and publish
       # share store paths across runs (the wasm/crane trees are the win).
@@ -46,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/nix-installer-action@v23
 
       # Same store cache as the check job: the publish build mostly
       # re-realizes what check already built this run.
