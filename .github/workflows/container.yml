@@ -32,7 +32,7 @@ jobs:
       # share store paths across runs (the wasm/crane trees are the win).
       # FlakeHub cache is off: we're not registered, so it only 401-spammed
       # the log; the GitHub Actions cache is the one we actually use.
-      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: DeterminateSystems/magic-nix-cache-action@v15
         with:
           use-flakehub: "disabled"
 
@@ -50,7 +50,7 @@ jobs:
 
       # Same store cache as the check job: the publish build mostly
       # re-realizes what check already built this run.
-      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: DeterminateSystems/magic-nix-cache-action@v15
         with:
           use-flakehub: "disabled"
 
