@@ -3712,3 +3712,71 @@ disc scale each); seeding partition junk from the disc header
 partition (the FST is the one tree); Opaque for the re-encrypt (every
 range read would spill 4+ GB); keeping D113's "no layering"
 rationale (superseded, amended there).
+
+## D117 — A dat revision names the bytes, not the sighting (2026-09-20)
+
+Importing a dat whose bytes the current revision of that source already
+carries is a **no-op**: `import_dat` returns the existing revision and
+writes nothing. It used to mint a fresh revision every time — new
+`dat_revision` row, a full re-insert of entries and claims, re-unify,
+re-rollup, and `set_current_revision` onto the new one, with D38 then
+demoting the old. Measured on a real MAME 0.287 listxml: two imports of
+one file gave revisions 1 and 2, both blob `31021e1d…`, 49,860 entries
+and 400,003 claims each, ~22 s of pure churn for the second. This is
+D15 read consistently — rows are a deterministic function of the blob,
+so identical bytes cannot mean a different revision — and it is what
+makes `dat import` safe to put in a boot-time unit or a timer, which is
+how the arcade cabinet's rom server (hosts/datboi in schlarpc-flake)
+consumes it. The check is per `(source, blob)` and only against the
+source's **current** revision: re-importing an older blob still moves
+the source back to it as a new revision, because that is a real change
+of what the source currently says. A demoted current revision (D38
+header-only, rows deleted) re-materializes rather than short-circuits —
+the no-op promises the rows are already there. The blob still lands in
+CAS on every import, unchanged; `put_new` was always idempotent. The
+report gains an `unchanged` flag so the CLI can say "already current"
+instead of lying about work it did not do.
+
+*Rejected:* keeping the churn and telling consumers to guard with their
+own stamps (they did, and it is a worse version of this check placed
+further from the facts); updating `imported_at` on a no-op re-import (a
+revision would then carry a time that no longer identifies when its
+content was first seen — "when did we last look" belongs to a sighting
+log, which nothing has asked for); comparing header fields rather than
+the blob (a dat whose only change is its date IS a new revision by this
+same rule, and byte equality is the only comparison that cannot drift);
+short-circuiting on the blob alone regardless of which source it was
+imported under (provider/system are half the durable source identity,
+dats.md — the same bytes filed under two names are two sources).
+
+## D118 — A view snapshot hash is a function of its content (2026-09-20)
+
+`created_at` leaves the manifest. `ViewSnapshot` carried the evaluation
+time inside the CBOR that `evaluate_view` hashes, so every `view eval`
+minted a new snapshot even when the ViewDef, the source revision and
+the held set were all identical — measured: four consecutive evals over
+one source and one store, four hashes. That made the snapshot hash
+useless for the question every consumer actually has ("did this view
+change?"), accumulated one meta blob per eval, and — because fileids
+beneath a view are keyed `(snapshot, path)` (D33) — meant a no-op
+re-eval stale every handle a mounted client held, re-walking a console's
+tree for nothing. A snapshot is the content-addressed *result* of an
+evaluation (D23); the time an evaluation happened is an event, and the
+`tag` row the flip writes already records it with the exact same value.
+So the time was never lost, only misplaced. The object goes to
+`datboi/viewsnap/2`, which is what the version in the header is for:
+v2 has no key 1 and rejects one, v1 still decodes (its `created_at` is
+read and kept in the struct, so pinned snapshots and GC roots from
+before this ruling stay readable), and nothing writes v1 again. Re-eval
+of an unchanged view now re-mints the identical hash, `set_tag` writes
+the same value it already held, and the flip is genuinely a no-op.
+
+*Rejected:* keeping the field and hashing a subset of the manifest (two
+notions of "the bytes" for one object, and the stored blob would no
+longer be what its hash attests); zeroing `created_at` in the encoding
+(the field would be a lie rather than absent, and a decoder could not
+tell a zeroed one from an epoch one); a v1-tolerant decode that ignores
+key 1 without a version bump (decode-then-encode would change the hash
+of an existing object, which is the one thing a content-addressed
+object may never do); leaving it and having consumers diff the row set
+themselves (that is the snapshot's whole job).
