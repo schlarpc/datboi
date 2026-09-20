@@ -60,10 +60,20 @@ pub fn detect(head: &[u8]) -> Option<DatFormat> {
         return Some(DatFormat::RomCenter);
     }
     if t.starts_with("<?xml") || t.starts_with('<') {
-        if t.contains("<mame") || t.contains("mame.dtd") {
+        // The DOCTYPE checks are not redundant with the element ones. MAME
+        // emits its DTD *inline* rather than as a system identifier, and
+        // that internal subset is ~7 KB of ELEMENT/ATTLIST declarations —
+        // so on a real `mame -listxml` the root `<mame build=...>` sits
+        // well past this window and "mame.dtd" never appears at all.
+        // The DOCTYPE is the first thing after the XML declaration either
+        // way, so matching it makes the window size stop mattering.
+        if t.contains("<!DOCTYPE mame") || t.contains("<mame") || t.contains("mame.dtd") {
             return Some(DatFormat::MameListXml);
         }
-        if t.contains("<softwarelist") || t.contains("softwarelist.dtd") {
+        if t.contains("<!DOCTYPE softwarelist")
+            || t.contains("<softwarelist")
+            || t.contains("softwarelist.dtd")
+        {
             return Some(DatFormat::MameSoftwareList);
         }
         if t.contains("<datafile") || t.contains("datafile.dtd") {
@@ -97,5 +107,25 @@ mod tests {
             Some(DatFormat::MameSoftwareList)
         );
         assert_eq!(detect(b"NES\x1a"), None);
+    }
+
+    /// A real `mame -listxml` opens with an inline DTD, so neither the
+    /// root element nor a system identifier is anywhere near the head of
+    /// the file: 0.287's internal subset runs ~7 KB before `<mame build=`.
+    /// Detection has to land on the DOCTYPE alone.
+    #[test]
+    fn detects_mame_listxml_behind_an_inline_dtd() {
+        let mut head = String::from("<?xml version=\"1.0\"?>\n<!DOCTYPE mame [\n");
+        head.push_str("<!ELEMENT mame (machine+)>\n");
+        // Pad past the 4096-byte sniff window the way the real DTD does.
+        for _ in 0..200 {
+            head.push_str("\t<!ATTLIST machine sourcefile CDATA #IMPLIED>\n");
+        }
+        head.push_str("]>\n<mame build=\"0.287\">");
+        assert!(head.len() > 4096);
+        assert_eq!(detect(head.as_bytes()), Some(DatFormat::MameListXml));
+
+        let soft = "<?xml version=\"1.0\"?>\n<!DOCTYPE softwarelist [\n<!ELEMENT softwarelist (software+)>\n]>";
+        assert_eq!(detect(soft.as_bytes()), Some(DatFormat::MameSoftwareList));
     }
 }
