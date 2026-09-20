@@ -457,8 +457,13 @@ pub fn evaluate_view(
         (bucketed_dirs, overfull_dirs) = bucket_overfull_dirs(&mut rows, cap, &mut disambiguated);
     }
 
+    // D118: no time in here. `now` still reaches the record — set_tag
+    // below writes it on the flip — but it is no longer hashed, so an
+    // unchanged view re-mints the identical snapshot and the flip is a
+    // genuine no-op instead of staling every client fileid.
     let snap = ViewSnapshot {
-        created_at: u64::try_from(now).unwrap_or(0),
+        // Only ever non-zero on a decoded pre-D118 object; never minted.
+        created_at_v1: 0,
         view_name: def.name.clone(),
         sources: vec![ViewSource {
             provider: def.provider.clone(),

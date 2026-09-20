@@ -13,26 +13,6 @@ web-ui.md (the nav ruling). History lives in git.
 
 Each of these wants its D entry before (or as) the code lands.
 
-- **A view snapshot hash is a function of the clock, not the content.**
-  `ViewSnapshot.created_at` is inside the CBOR that `evaluate_view`
-  hashes, so every `view eval` mints a new snapshot even when the
-  ViewDef, the source revision and the held set are all unchanged —
-  measured: four consecutive evals over one source and one store gave
-  four hashes. Two consequences. (1) NFS fileids beneath a view are
-  keyed `(snapshot, path)` (D33), so a no-op re-eval stales every
-  handle a mounted client holds; a console mid-read survives it by
-  design, but the client re-walks from scratch and nothing was gained.
-  (2) The snapshot hash cannot answer "did this view change?", which
-  is the question every consumer actually has — the arcade cabinet's
-  rom server (hosts/datboi in schlarpc-flake) ends up guarding eval
-  behind a config stamp because it has no cheaper way to ask. Also one
-  meta blob accumulates per eval. The fix if ruled: hash the content
-  (view name, sources, rows) and carry `created_at` alongside the tag
-  rather than inside the hashed manifest, so an unchanged view
-  re-mints the same hash and the flip is a no-op. Against: a snapshot
-  is also an event with a time, and D27's pinning may want each eval
-  distinguishable. Rule it; it touches D23/D27/D33.
-
 - **Is a dat revision an import event or a content state?** `dat
   import` of a byte-identical file mints a NEW revision every time:
   `import_dat` stores the blob (a no-op re-put, same hash), then

@@ -78,7 +78,7 @@ fn minted(w: &mut World) -> (ImageReport, Vec<(String, u64)>) {
         })
         .collect();
     let snap = ViewSnapshot {
-        created_at: 1_780_000_000,
+        created_at_v1: 0,
         view_name: "carveout".into(),
         sources: vec![],
         rows,
@@ -442,7 +442,7 @@ fn pinned_view_opaque_rows_refuse_eviction() {
     let opaque = put_content(&mut w, &content(31, 5000));
     let affine = put_content(&mut w, &content(32, 5000));
     let snap = ViewSnapshot {
-        created_at: 1,
+        created_at_v1: 0,
         view_name: "pins".into(),
         sources: vec![],
         rows: vec![

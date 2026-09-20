@@ -14,13 +14,22 @@ use crate::hash::Blake3;
 use crate::object::{self, ObjectKind};
 use crate::snapshot::SnapshotError;
 
-const VIEWSNAP_HEADER: &[u8] = b"datboi/viewsnap/1\n";
-const VIEWSNAP_VERSION: u32 = 1;
+const VIEWSNAP_HEADER: &[u8] = b"datboi/viewsnap/2\n";
+const VIEWSNAP_VERSION: u32 = 2;
+/// The pre-D118 encoding, which carried `created_at` as payload key 1.
+/// Still decoded so snapshots pinned before that ruling stay readable;
+/// never written.
+const VIEWSNAP_VERSION_V1: u32 = 1;
 
-// payload: {1: created_at, 2: view name, 3: sources, 4: rows};
-// source {1: provider, 2: system, 3: dat blob, 4: revision}; row
-// {1: path, 2: hash, 3: size, 4: seek class}.
-const PAYKEY_CREATED_AT: u64 = 1;
+// payload: {2: view name, 3: sources, 4: rows}; source {1: provider,
+// 2: system, 3: dat blob, 4: revision}; row {1: path, 2: hash,
+// 3: size, 4: seek class}.
+//
+// Key 1 was `created_at` and is gone (D118): the hash of a snapshot has
+// to be a function of the snapshot's content, and the time an evaluation
+// ran is an event the `tag` row already records. v1 objects still carry
+// it; v2 rejects it.
+const PAYKEY_CREATED_AT_V1: u64 = 1;
 const PAYKEY_VIEW_NAME: u64 = 2;
 const PAYKEY_SOURCES: u64 = 3;
 const PAYKEY_ROWS: u64 = 4;
@@ -56,7 +65,10 @@ pub struct ViewRow {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ViewSnapshot {
-    pub created_at: u64,
+    /// Evaluation time, and NOT part of the encoding or the hash (D118).
+    /// Populated only when decoding a v1 object; the live record of when
+    /// a view was last evaluated is the `tag` row the flip writes.
+    pub created_at_v1: u64,
     pub view_name: String,
     pub sources: Vec<ViewSource>,
     pub rows: Vec<ViewRow>,
@@ -85,7 +97,6 @@ impl ViewSnapshot {
             }
         }
         let body = cbor::encode(&Value::Map(vec![
-            (PAYKEY_CREATED_AT, Value::Uint(self.created_at)),
             (PAYKEY_VIEW_NAME, Value::Text(self.view_name.clone())),
             (
                 PAYKEY_SOURCES,
@@ -136,7 +147,7 @@ impl ViewSnapshot {
         if kind != ObjectKind::ViewSnapshot {
             return Err(SnapshotError::WrongKind("viewsnap"));
         }
-        if version != VIEWSNAP_VERSION {
+        if version != VIEWSNAP_VERSION && version != VIEWSNAP_VERSION_V1 {
             return Err(SnapshotError::Version("viewsnap", version));
         }
         let map = cbor::decode(&bytes[body_at..])?;
@@ -146,7 +157,11 @@ impl ViewSnapshot {
         let mut snap = ViewSnapshot::default();
         for (key, value) in pairs {
             match (key, value) {
-                (PAYKEY_CREATED_AT, Value::Uint(v)) => snap.created_at = v,
+                // Only a v1 object may carry it; in v2 key 1 is an
+                // unknown key and falls through to the reject below.
+                (PAYKEY_CREATED_AT_V1, Value::Uint(v)) if version == VIEWSNAP_VERSION_V1 => {
+                    snap.created_at_v1 = v;
+                }
                 (PAYKEY_VIEW_NAME, Value::Text(v)) => snap.view_name = v,
                 (PAYKEY_SOURCES, Value::Array(items)) => {
                     for item in items {
@@ -250,7 +265,7 @@ mod tests {
 
     fn sample() -> ViewSnapshot {
         ViewSnapshot {
-            created_at: 1_780_000_000,
+            created_at_v1: 0,
             view_name: "gba-everdrive".into(),
             sources: vec![ViewSource {
                 provider: "no-intro".into(),
@@ -275,6 +290,55 @@ mod tests {
         }
     }
 
+    /// D118's whole point: the encoding is a function of the content,
+    /// so two mints of the same manifest are the same bytes and the
+    /// same hash. Before the ruling this was false by construction —
+    /// `created_at` rode inside the hashed payload.
+    #[test]
+    fn encoding_carries_no_time() {
+        let a = sample().encode().expect("encode");
+        let b = sample().encode().expect("encode");
+        assert_eq!(a, b);
+        assert!(a.starts_with(b"datboi/viewsnap/2\n"));
+        // Key 1 is retired in v2 and must not be accepted back.
+        let mut forged = a.clone();
+        let body_at = VIEWSNAP_HEADER.len();
+        forged.splice(body_at..body_at, []); // no-op; keep the shape obvious
+        assert!(
+            ViewSnapshot::decode(&forged).is_ok(),
+            "untouched v2 still decodes"
+        );
+    }
+
+    /// Pre-D118 snapshots stay readable — pins and GC roots minted
+    /// before the ruling must not become undecodable — and the time
+    /// they carry is preserved rather than dropped on the floor.
+    #[test]
+    fn v1_objects_still_decode_and_keep_their_time() {
+        let snap = sample();
+        // Rebuild a v1 object: old header, payload key 1 back in front.
+        let v2 = snap.encode().expect("encode");
+        let v2_body = &v2[VIEWSNAP_HEADER.len()..];
+        let Value::Map(mut pairs) = cbor::decode(v2_body).expect("decode body") else {
+            panic!("payload is a map");
+        };
+        pairs.insert(0, (PAYKEY_CREATED_AT_V1, Value::Uint(1_780_000_000)));
+        let mut v1 = b"datboi/viewsnap/1\n".to_vec();
+        v1.extend_from_slice(&cbor::encode(&Value::Map(pairs)).expect("encode body"));
+
+        let decoded = ViewSnapshot::decode(&v1).expect("v1 decodes");
+        assert_eq!(decoded.created_at_v1, 1_780_000_000);
+        assert_eq!(decoded.rows.len(), 2);
+        assert_eq!(decoded.view_name, "gba-everdrive");
+
+        // The same payload under the v2 header is a malformed object:
+        // key 1 does not exist there, and tolerating it would let one
+        // manifest have two encodings.
+        let mut forged = VIEWSNAP_HEADER.to_vec();
+        forged.extend_from_slice(&v1[b"datboi/viewsnap/1\n".len()..]);
+        assert!(ViewSnapshot::decode(&forged).is_err(), "v2 rejects key 1");
+    }
+
     #[test]
     fn roundtrips_and_sorts_canonically() {
         let encoded = sample().encode().expect("encode");
@@ -294,8 +358,10 @@ mod tests {
             Blake3::compute(&encoded).to_hex(),
             Blake3::compute(&sample().encode().expect("encode")).to_hex()
         );
-        // Structural pin: header + deterministic length.
-        assert_eq!(encoded.len(), 203, "encoding changed: format event");
+        // Structural pin: header + deterministic length. 203 under
+        // viewsnap/1; 197 since D118 dropped the six bytes of
+        // `created_at` (key + uint) out of the hashed payload.
+        assert_eq!(encoded.len(), 197, "encoding changed: format event");
     }
 
     #[test]

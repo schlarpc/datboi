@@ -57,7 +57,7 @@ fn fixture() -> Fixture {
     let big = put_data(&store, &db, &big_bytes());
 
     let snap = ViewSnapshot {
-        created_at: 1_780_000_000,
+        created_at_v1: 0,
         view_name: "test".into(),
         sources: vec![],
         rows: vec![

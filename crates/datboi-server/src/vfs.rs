@@ -27,6 +27,11 @@ pub(crate) struct RowMeta {
 pub(crate) struct ViewIndex {
     pub snapshot: Blake3,
     pub view_name: String,
+    /// When this snapshot was last tagged current — the mtime every
+    /// serving surface reports for its rows. Since D118 the manifest is
+    /// content-addressed and carries no time of its own, so this comes
+    /// from the `tag` row the flip writes (or, for a pre-D118 object, the
+    /// `created_at` that is still inside it).
     pub created_at: u64,
     rows: BTreeMap<String, RowMeta>,
 }
@@ -106,7 +111,19 @@ pub(crate) fn snapshot_index(app: &App, snapshot: Blake3) -> Result<Arc<ViewInde
             .map_err(|e| LookupError::Internal(e.to_string()))?;
     }
     let snap = ViewSnapshot::decode(&bytes).map_err(|e| LookupError::Corrupt(e.to_string()))?;
-    let idx = Arc::new(ViewIndex::from_snapshot(snapshot, snap));
+    // D118: the mtime is the tag's, not the manifest's. Read once per
+    // snapshot — everything below this point is served from the cache.
+    // A snapshot no tag points at (addressed by hash) falls back to the
+    // v1 field, which is zero on anything minted since.
+    let tagged_at = {
+        let db = app.readers.get();
+        db.tag_created_at(&snapshot)
+            .map_err(|e| LookupError::Internal(e.to_string()))?
+    };
+    let created_at = tagged_at
+        .and_then(|t| u64::try_from(t).ok())
+        .unwrap_or(snap.created_at_v1);
+    let idx = Arc::new(ViewIndex::from_snapshot(snapshot, snap, created_at));
     let mut cache = app
         .manifests
         .lock()
@@ -119,7 +136,7 @@ pub(crate) fn snapshot_index(app: &App, snapshot: Blake3) -> Result<Arc<ViewInde
 }
 
 impl ViewIndex {
-    pub fn from_snapshot(snapshot: Blake3, snap: ViewSnapshot) -> Self {
+    pub fn from_snapshot(snapshot: Blake3, snap: ViewSnapshot, created_at: u64) -> Self {
         let rows = snap
             .rows
             .into_iter()
@@ -137,7 +154,7 @@ impl ViewIndex {
         Self {
             snapshot,
             view_name: snap.view_name,
-            created_at: snap.created_at,
+            created_at,
             rows,
         }
     }
@@ -219,7 +236,7 @@ mod tests {
 
     fn index() -> ViewIndex {
         let snap = ViewSnapshot {
-            created_at: 1,
+            created_at_v1: 0,
             view_name: "v".into(),
             sources: vec![],
             rows: vec![
@@ -229,7 +246,7 @@ mod tests {
                 row("loose.txt"),
             ],
         };
-        ViewIndex::from_snapshot(Blake3::compute(b"snap"), snap)
+        ViewIndex::from_snapshot(Blake3::compute(b"snap"), snap, 1)
     }
 
     fn row(path: &str) -> ViewRow {

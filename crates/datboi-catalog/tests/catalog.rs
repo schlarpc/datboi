@@ -1,7 +1,10 @@
 //! End-to-end catalog tests: unification matrix, six-state audit against
 //! a real ingest, D38 demotion, dir2dat round-trip.
 
-use datboi_catalog::{ImportOptions, audit, export_dat, import_dat, refresh_rollups, relink_all};
+use datboi_catalog::{
+    ImportOptions, ViewDef, audit, define_view, evaluate_view, export_dat, import_dat,
+    refresh_rollups, relink_all,
+};
 use datboi_core::alias::AliasHasher;
 use datboi_formats::parse;
 use datboi_index::Db;
@@ -426,6 +429,52 @@ fn ingest_after_import_needs_relink() {
     assert_eq!(
         audit(&f.db, "p", "s").expect("audit").totals.have_verified,
         1
+    );
+}
+
+/// D118: a snapshot hash is a function of the snapshot's content, so
+/// evaluating an unchanged view twice — at two different wall clocks —
+/// re-mints the identical hash. Before the ruling `created_at` rode
+/// inside the hashed manifest and every eval produced a new snapshot,
+/// staling every fileid a mounted client held (D33).
+#[test]
+fn re_evaluating_an_unchanged_view_remints_the_same_snapshot() {
+    let mut f = fixture();
+    let game = r#"<game name="g"><description>d</description><rom name="g.bin" size="1" crc="deadbeef"/></game>"#;
+    import_dat(&f.store, &mut f.db, dat(game).as_bytes(), &opts("p", "s")).expect("import");
+
+    let def = ViewDef {
+        name: "v".into(),
+        provider: "p".into(),
+        system: "s".into(),
+        template: "{name}".into(),
+        selection: None,
+        profile: None,
+        image: None,
+        mame: None,
+    };
+    define_view(&f.db, &def).expect("define");
+
+    let first = evaluate_view(&mut f.db, &f.store, &def, 1_780_000_000).expect("eval 1");
+    let later = evaluate_view(&mut f.db, &f.store, &def, 1_790_000_000).expect("eval 2");
+
+    assert_eq!(
+        first.snapshot, later.snapshot,
+        "ten million seconds apart, same content, same snapshot"
+    );
+    assert_eq!(first.rows, later.rows);
+
+    // And the flip still records WHEN, on the tag rather than in the
+    // object: the second eval moves the timestamp without moving the hash.
+    assert_eq!(
+        f.db.get_tag("view/v").expect("tag"),
+        Some(first.snapshot),
+        "tag points at the one snapshot"
+    );
+    assert_eq!(
+        f.db.tag_created_at(&first.snapshot).expect("tag time"),
+        Some(1_790_000_000),
+        "the later eval is what the tag remembers"
     );
 }
 

@@ -485,8 +485,10 @@ mod tests {
     }
 
     fn mint_snapshot(store: &Store, db: &Db, rows: Vec<ViewRow>, created_at: u64) -> Blake3 {
+        // `created_at` reaches the tag, not the manifest (D118): the
+        // snapshot hash is a function of its rows alone.
         let snap = ViewSnapshot {
-            created_at,
+            created_at_v1: 0,
             view_name: "test".into(),
             sources: vec![],
             rows,

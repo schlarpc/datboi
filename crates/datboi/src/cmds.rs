@@ -1756,6 +1756,14 @@ pub fn view_list(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
 }
 
 /// Resolve a view's current snapshot (tag → decoded manifest).
+/// When the view was last flipped onto this snapshot. Since D118 that
+/// time lives on the tag rather than inside the manifest, so an
+/// unchanged view re-mints the same hash; a pre-D118 object still
+/// carries its own and is the fallback.
+fn tag_created_at(env: &Env, snap_hash: &datboi_core::hash::Blake3) -> anyhow::Result<Option<i64>> {
+    Ok(env.db.tag_created_at(snap_hash)?)
+}
+
 fn load_view_snapshot(
     env: &Env,
     name: &str,
@@ -1785,7 +1793,7 @@ pub fn view_manifest(env: &Env, name: &str, json: bool) -> anyhow::Result<ExitCo
             json!({
                 "view": name,
                 "snapshot": snap_hash.to_hex(),
-                "created_at": snap.created_at,
+                "created_at": tag_created_at(env, &snap_hash)?,
                 "rows": snap.rows.iter().map(|r| json!({
                     "path": r.path, "hash": r.hash.to_hex(),
                     "size": r.size, "seek": r.seek,

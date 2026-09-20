@@ -86,7 +86,7 @@ fn sample_snapshot(fx: &mut Fixture) -> (Blake3, ViewSnapshot) {
         },
     ];
     let snap = ViewSnapshot {
-        created_at: 1_780_000_000,
+        created_at_v1: 0,
         view_name: "gba-test".into(),
         sources: vec![],
         rows,

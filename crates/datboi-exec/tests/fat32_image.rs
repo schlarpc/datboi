@@ -86,7 +86,7 @@ fn minted(w: &mut World, name: &str, partition: bool) -> (ImageReport, Vec<ViewR
         })
         .collect();
     let snap = ViewSnapshot {
-        created_at: 1_780_000_000,
+        created_at_v1: 0,
         view_name: name.to_owned(),
         sources: vec![],
         rows: rows.clone(),

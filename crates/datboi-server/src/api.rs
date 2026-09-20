@@ -2799,7 +2799,7 @@ mod tests {
 
         let (_dir, app) = test_app();
         let snap = ViewSnapshot {
-            created_at: 7,
+            created_at_v1: 0,
             view_name: "gba".into(),
             sources: vec![],
             rows: [

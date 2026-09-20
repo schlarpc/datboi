@@ -19,6 +19,23 @@ impl Db {
         Ok(())
     }
 
+    /// When a tag was last moved onto `hash` — the minting time of a
+    /// content-addressed object, which since D118 is no longer inside the
+    /// object itself. Newest wins if several tags point at one hash.
+    /// `None` for an object no tag references (a snapshot addressed by
+    /// hash alone, say).
+    pub fn tag_created_at(&self, hash: &Blake3) -> Result<Option<i64>, IndexError> {
+        Ok(self
+            .state()
+            .query_row(
+                "SELECT MAX(created_at) FROM tag WHERE hash = ?1",
+                params![hash.0.as_slice()],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
     pub fn get_tag(&self, name: &str) -> Result<Option<Blake3>, IndexError> {
         Ok(self
             .state()

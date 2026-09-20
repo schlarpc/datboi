@@ -11,11 +11,17 @@ D23 (views are policies), D27 (seekability-aware residency), D32
   "current dat revision" — deliberately not deterministic over time.
   Authoritative small state (SQLite + D15 snapshot).
 - **ViewSnapshot** (fact, immutable, content-addressed
-  `datboi/viewsnap/1`): result of evaluating a view at a moment — a
+  `datboi/viewsnap/2`): result of evaluating a view at a moment — a
   canonical manifest of `(path, output_hash, size, attrs)` rows, each
   backed by a blob or verified recipe, recording which dat revisions were
   used (reproducible even though the view says "current"). Diffable,
   pinnable (GC roots), p2p-shareable ("my curated GBA set" = a ticket).
+  Content-addressed *strictly*: the hash is a function of the manifest
+  and nothing else, so re-evaluating an unchanged view re-mints the
+  same hash and the flip is a no-op (D118). When an evaluation ran is
+  on the `view/<name>` tag, not in the object — `viewsnap/1` carried a
+  `created_at` inside the hashed payload and is still decoded, never
+  written.
 - **Serving surface**: protocol adapter presenting snapshots only —
   consoles never see a tree mutate mid-read; updates are atomic snapshot
   flips.
