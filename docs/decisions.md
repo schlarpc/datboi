@@ -3780,3 +3780,43 @@ key 1 without a version bump (decode-then-encode would change the hash
 of an existing object, which is the one thing a content-addressed
 object may never do); leaving it and having consumers diff the row set
 themselves (that is the snapshot's whole job).
+
+## D119 — An entry name is a label, not a key (2026-09-20)
+
+`entry` drops `UNIQUE (revision_id, name)`. Real dats carry several
+entries with one name: No-Intro's Game Boy set lists "Lion King, The
+(USA, Europe) (Beta)" four times over four genuinely different dumps
+(131,072 / 262,144 / 524,288 / 524,288 bytes, four distinct CRCs), and
+"Small Town Emo (World)" twice over two, distinguished only by release
+date. The constraint turned that into `UNIQUE constraint failed:
+entry.revision_id, entry.name` and rejected the whole file: six of nine
+No-Intro dats fetched for one adoption — NES, SNES, N64, Game Boy, Game
+Boy Color and Game Boy Advance — were entirely unimportable, which is
+most of a rom manager's reason to exist. A dat's `name` is the
+publisher's display label; identity is `entry_id`, and the thing that
+was meant to carry cross-revision identity is `stable_key` (the
+No-Intro id where present, rom-content overlap otherwise, dats.md §61).
+Conflating the two made the label load-bearing and the loudest dats in
+the world unreadable.
+
+What replaces it: nothing, by design — duplicate names are simply
+allowed, and `entry_by_name (revision_id, name)` (non-unique) keeps the
+parent-resolution lookup and the autoindex's former users fast. The one
+place uniqueness was implicitly relied on is `cloneof`/`romof`
+resolution, a correlated subquery that would silently take whichever
+row the planner reached first; it now takes `MIN(entry_id)` explicitly,
+so an ambiguous parent reference resolves the same way on every build
+and every re-import rather than by query-plan luck. The ambiguity is
+the dat's, not ours, and a deterministic arbitrary choice is the honest
+reading of it. cache.db goes to v9 with a ladder step that rebuilds the
+table, since SQLite cannot drop a table constraint in place.
+
+*Rejected:* disambiguating duplicates on import by suffixing the second
+(inventing a name no dat contains, which then leaks into every view
+path and every frontend list); skipping duplicate entries with a count
+in the report (silently losing real dumps — three of the four Lion King
+betas would vanish); keeping the constraint and declaring these dats
+malformed (they are what the publishers ship, and a manager that reads
+only hypothetical dats is not a manager); making `stable_key` unique
+instead (it is nullable and derived, and a dat with no ids would
+collapse to one entry).
