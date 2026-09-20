@@ -45,6 +45,10 @@ pub struct ImportReport {
     pub claims: u64,
     /// Revisions demoted to header-only by this import (D38).
     pub demoted_revisions: Vec<i64>,
+    /// The bytes were already this source's current revision, so nothing
+    /// was written and `revision_id` names the revision that was already
+    /// there (D117).
+    pub unchanged: bool,
 }
 
 /// Import one dat file: CAS blob, revision rows, unification, rollups.
@@ -83,6 +87,29 @@ pub fn import_dat(
         .unwrap_or("unknown");
 
     let source_id = db.upsert_dat_source(provider, system)?;
+
+    // D117: a dat revision names the bytes, not the sighting. If this
+    // source's current revision already IS these bytes, there is nothing
+    // to do — rows are a deterministic function of the blob (D15), so
+    // re-deriving them could only produce what is already there, at the
+    // cost of a full re-insert, a re-unify, a re-rollup and a D38
+    // demotion of the revision it just replaced. The blob above still
+    // lands (put_new is idempotent), so the CAS is identical either way.
+    // Scoped to the CURRENT revision on purpose: re-importing an older
+    // blob is a real change of what the source says and still mints.
+    if let Some(revision_id) = db.current_revision_with_blob(source_id, blob_id)? {
+        let (entries, claims) = revision_counts(db, revision_id)?;
+        return Ok(ImportReport {
+            source_id,
+            revision_id,
+            dat_blob: hash,
+            entries,
+            claims,
+            demoted_revisions: Vec::new(),
+            unchanged: true,
+        });
+    }
+
     let header_json = header_to_json(&dat.header);
     let revision_id = db.insert_dat_revision(
         source_id,
@@ -112,7 +139,29 @@ pub fn import_dat(
         entries,
         claims,
         demoted_revisions,
+        unchanged: false,
     })
+}
+
+/// (entries, claims) already recorded for a revision — what an import
+/// would have reported had it done the work (D117's no-op path).
+fn revision_counts(db: &Db, revision_id: i64) -> Result<(u64, u64), CatalogError> {
+    let conn = db.cache();
+    let entries: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM entry WHERE revision_id = ?1",
+        [revision_id],
+        |row| row.get(0),
+    )?;
+    let claims: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM rom_claim rc JOIN entry e ON e.entry_id = rc.entry_id
+         WHERE e.revision_id = ?1",
+        [revision_id],
+        |row| row.get(0),
+    )?;
+    Ok((
+        u64::try_from(entries).unwrap_or(0),
+        u64::try_from(claims).unwrap_or(0),
+    ))
 }
 
 /// The un-overridden provider, from a survey of the real header

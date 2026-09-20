@@ -4,7 +4,7 @@
 //! index-later escape hatch).
 
 use datboi_core::hash::Blake3;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use crate::types::{ClaimKind, ClaimStatus};
 use crate::{Db, IndexError};
@@ -121,6 +121,29 @@ impl Db {
             |row| row.get(0),
         )?;
         Ok(id)
+    }
+
+    /// The source's current revision, when it is materialized and its
+    /// payload is exactly `blob_id`. D117's no-op test: identical bytes
+    /// already current mean there is nothing to import. Deliberately
+    /// excludes a demoted revision (D38 header-only, rows deleted) —
+    /// the no-op promises the rows are there, so a demoted one has to
+    /// re-materialize the ordinary way.
+    pub fn current_revision_with_blob(
+        &self,
+        source_id: i64,
+        blob_id: i64,
+    ) -> Result<Option<i64>, IndexError> {
+        Ok(self
+            .cache()
+            .query_row(
+                "SELECT r.revision_id FROM dat_source s
+                 JOIN dat_revision r ON r.revision_id = s.current_revision_id
+                 WHERE s.source_id = ?1 AND r.blob_id = ?2 AND r.materialized = 1",
+                params![source_id, blob_id],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     /// Flip the source's "current" pointer (dats: revisions are

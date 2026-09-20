@@ -13,6 +13,12 @@ Dats are **claims about content**; datboi is content-addressed. So identity
 - **DatRevision** — one imported dat file (itself a CAS object): source
   ref, version, date, format, raw header, emitter hints (forcemerging,
   forcepacking, skipper reference). Immutable; "current" is a pointer.
+  A revision names the *bytes*, not the sighting (D117): importing the
+  blob a source is already current on is a no-op that writes nothing
+  and reports `unchanged`, so `dat import` is safe on a timer or at
+  boot. Two revisions therefore always differ in bytes — though not
+  necessarily in content, since a header-only version bump is new
+  bytes listing the same games, and that pair diffs empty.
 - **Entry** — game/machine/software within a revision: name, description,
   structured fields, flags (isbios/isdevice), parent refs
   (cloneof/romof/sampleof + No-Intro id/cloneofid), releases[], extensible

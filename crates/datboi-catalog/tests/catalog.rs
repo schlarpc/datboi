@@ -478,6 +478,70 @@ fn re_evaluating_an_unchanged_view_remints_the_same_snapshot() {
     );
 }
 
+/// D117: re-importing the bytes a source is already on is a no-op —
+/// no new revision, no re-insert, no D38 demotion — and the report
+/// says so rather than claiming work.
+#[test]
+fn reimporting_identical_bytes_is_a_no_op() {
+    let mut f = fixture();
+    let game = r#"<game name="g"><description>d</description><rom name="g.bin" size="1" crc="deadbeef"/></game>"#;
+    let bytes = dat(game);
+
+    let first = import_dat(&f.store, &mut f.db, bytes.as_bytes(), &opts("p", "s")).expect("first");
+    assert!(!first.unchanged);
+
+    let again = import_dat(&f.store, &mut f.db, bytes.as_bytes(), &opts("p", "s")).expect("again");
+    assert!(again.unchanged, "identical bytes are not a new revision");
+    assert_eq!(again.revision_id, first.revision_id);
+    assert_eq!(again.dat_blob, first.dat_blob);
+    assert_eq!(again.entries, first.entries);
+    assert_eq!(again.claims, first.claims);
+    assert!(again.demoted_revisions.is_empty());
+
+    assert_eq!(count(&f.db, "SELECT COUNT(*) FROM dat_revision"), 1);
+    assert_eq!(
+        count(&f.db, "SELECT COUNT(*) FROM entry"),
+        i64::try_from(first.entries).unwrap(),
+        "entries were not re-inserted"
+    );
+}
+
+/// The no-op is per (source, bytes): the same dat filed under a second
+/// provider/system is a different source and imports normally.
+#[test]
+fn identical_bytes_under_another_source_still_import() {
+    let mut f = fixture();
+    let game = r#"<game name="g"><description>d</description><rom name="g.bin" size="1" crc="deadbeef"/></game>"#;
+    let bytes = dat(game);
+
+    let a = import_dat(&f.store, &mut f.db, bytes.as_bytes(), &opts("p1", "s1")).expect("a");
+    let b = import_dat(&f.store, &mut f.db, bytes.as_bytes(), &opts("p2", "s2")).expect("b");
+    assert!(!b.unchanged);
+    assert_ne!(a.source_id, b.source_id);
+    assert_ne!(a.revision_id, b.revision_id);
+    assert_eq!(a.dat_blob, b.dat_blob, "one blob, two sources");
+}
+
+/// Going BACK to an older blob is a real change of what the source
+/// says, so it mints rather than short-circuiting.
+#[test]
+fn reimporting_a_superseded_blob_mints_a_revision() {
+    let mut f = fixture();
+    let game = r#"<game name="g"><description>d</description><rom name="g.bin" size="1" crc="deadbeef"/></game>"#;
+    let v = |n: u32| dat(game).replace("<version>1</version>", &format!("<version>{n}</version>"));
+
+    let r1 = import_dat(&f.store, &mut f.db, v(1).as_bytes(), &opts("p", "s")).expect("v1");
+    import_dat(&f.store, &mut f.db, v(2).as_bytes(), &opts("p", "s")).expect("v2");
+    let back = import_dat(&f.store, &mut f.db, v(1).as_bytes(), &opts("p", "s")).expect("back");
+
+    assert!(
+        !back.unchanged,
+        "v1 is no longer current, so this is a change"
+    );
+    assert_ne!(back.revision_id, r1.revision_id);
+    assert_eq!(back.dat_blob, r1.dat_blob);
+}
+
 #[test]
 fn third_import_demotes_oldest_revision() {
     let mut f = fixture();

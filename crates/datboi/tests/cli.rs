@@ -586,8 +586,21 @@ fn dat_diff_categories() {
         serde_json::json!([{"from": "Fixed", "to": "Fixed"}])
     );
 
-    // Re-import v2: identical revisions diff empty, exit 0.
+    // Re-importing v2 verbatim is a no-op now (D117), so it cannot
+    // manufacture a third revision and the diff is still v1 -> v2.
     import(&v2, "v2-again");
+    u.cmd()
+        .args(["dat", "diff", "test/diffy", "--json"])
+        .assert()
+        .code(1);
+
+    // Two revisions whose CONTENT is identical is still reachable, and
+    // is the case this last leg is really about: a dat that bumps only
+    // its header version is new bytes, so a new revision, listing the
+    // same games. That diffs empty, exit 0.
+    let v3 = v2.replace("<version>1</version>", "<version>2</version>");
+    assert_ne!(v3, v2, "header bump makes new bytes");
+    import(&v3, "v3");
     u.cmd()
         .args(["dat", "diff", "test/diffy"])
         .assert()

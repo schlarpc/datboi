@@ -239,7 +239,16 @@ pub fn dat_import(
                 "entries": report.entries,
                 "claims": report.claims,
                 "demoted_revisions": report.demoted_revisions,
+                "unchanged": report.unchanged,
             })
+        );
+    } else if report.unchanged {
+        // D117: say what actually happened. Reporting an import here
+        // would be a lie, and it is the line an operator running this
+        // on a timer or at boot reads to know it is cheap.
+        println!(
+            "already current: revision {} ({} entries, {} claims), blob {} unchanged",
+            report.revision_id, report.entries, report.claims, report.dat_blob
         );
     } else {
         println!(
