@@ -13,6 +13,27 @@ web-ui.md (the nav ruling). History lives in git.
 
 Each of these wants its D entry before (or as) the code lands.
 
+- **Is a dat revision an import event or a content state?** `dat
+  import` of a byte-identical file mints a NEW revision every time:
+  `import_dat` stores the blob (a no-op re-put, same hash), then
+  unconditionally `insert_dat_revision` + entries + unify + rollup,
+  and `set_current_revision` moves to it. Measured on a real MAME
+  0.287 listxml: two imports of the same file gave rev 1 and rev 2,
+  both blob `31021e1d…`, 49,860 entries and 400,003 claims each; the
+  second cost 22 s of pure churn and demoted the first under D38.
+  This matters to any host that imports on a schedule or on every
+  boot — the arcade cabinet's rom server (hosts/datboi in
+  schlarpc-flake) wants exactly that, and its contract says a view is
+  re-evaluated "when the source's revision changes", which today is
+  "always". D15 already says rows are a deterministic function of the
+  blob, which argues for the content reading: when the source's
+  current revision already points at this blob, return it and touch
+  nothing. Against: a revision is also the audit trail of when a dat
+  was seen, and the header can carry a new date with identical
+  payload. Rule it, then either early-return or keep the churn and
+  say so; consumers are working around it with a store-path stamp in
+  the meantime.
+
 - **Recon ACL before any discovery/advertisement tier** (D100/D102
   residual): today the recon ALPN reveals the recipe/roots inventory
   to anyone holding the unlisted EndpointId — capability-addressed
