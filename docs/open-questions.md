@@ -13,6 +13,22 @@ web-ui.md (the nav ruling). History lives in git.
 
 Each of these wants its D entry before (or as) the code lands.
 
+- **`import_dat` is not atomic past the blob.** Its own comment
+  promises a failed import "leaves no trace", and that holds for a
+  malformed file (validation precedes storage) but not for one that
+  parses and then fails on insert: the `dat_source` and
+  `dat_revision` rows are already committed, so the source survives
+  with a zero-entry revision and a NULL current pointer. Observed
+  live — six No-Intro dats rejected by the pre-D119 UNIQUE constraint
+  left six empty sources in `dat list`. D119 removes that particular
+  trigger, but any insert-time failure still leaves the debris.
+  Real atomicity means `insert_entries`, `unify_revision` and
+  `refresh_rollups` taking a caller's transaction instead of opening
+  their own (rusqlite will not nest), which is a wider refactor than
+  the bug warrants on its own — worth doing when one of those is
+  being touched anyway. A compensating delete on the error path is
+  the cheap alternative and is strictly better than the status quo.
+
 - **Recon ACL before any discovery/advertisement tier** (D100/D102
   residual): today the recon ALPN reveals the recipe/roots inventory
   to anyone holding the unlisted EndpointId — capability-addressed

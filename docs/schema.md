@@ -50,7 +50,9 @@ batch, never whole-store sweeps.
 
 Per dats.md: `dat_source` (provider, system, current pointer) →
 `dat_revision` (CAS blob ref, format, header JSONB, detector ref,
-**materialized** flag) → `entry` (name, stable_key = No-Intro id,
+**materialized** flag) → `entry` (name — a LABEL, **not unique** within
+a revision (D119): real sets list several different dumps under one
+name, and identity is `entry_id` — stable_key = No-Intro id,
 parent name+resolved refs, flags, **attrs JSONB** for the long tail:
 sourcefile, device_ref[], softlist parts/dataareas, unknown attrs) →
 `rom_claim` (kind rom/disk/sample, partial hash tuple as written,

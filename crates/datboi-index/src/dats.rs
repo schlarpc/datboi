@@ -233,8 +233,16 @@ impl Db {
             for column in ["cloneof", "romof"] {
                 tx.execute(
                     &format!(
+                        // MIN, not a bare SELECT: names are not unique
+                        // within a revision (D119), so a parent
+                        // reference can match several entries and a
+                        // scalar subquery would take whichever row the
+                        // planner reached first -- a different answer
+                        // on a different build or after a VACUUM. The
+                        // ambiguity is the dat's; resolving it the same
+                        // way every time is ours.
                         "UPDATE entry SET {column}_id = (
-                           SELECT p.entry_id FROM entry p
+                           SELECT MIN(p.entry_id) FROM entry p
                            WHERE p.revision_id = ?1 AND p.name = entry.{column})
                          WHERE revision_id = ?1 AND {column} IS NOT NULL"
                     ),

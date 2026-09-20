@@ -23,7 +23,9 @@
 /// v7: blob.obao dropped (D109 — shipped in v1 anticipating index-side
 /// outboard tracking, never read or written; presence is a store fact).
 /// v8: sweep_deferred (D116 — an analysis waiting on a named blob).
-pub const CACHE_SCHEMA_VERSION: u32 = 8;
+/// v9: entry loses UNIQUE(revision_id, name), gains entry_by_name
+/// (D119 — a dat name is a label; several entries may share one).
+pub const CACHE_SCHEMA_VERSION: u32 = 9;
 
 /// cache.db migration ladder, same shape and rules as
 /// [`STATE_MIGRATIONS`]: `CACHE_MIGRATIONS[i]` migrates version `i + 1`
@@ -127,6 +129,91 @@ CREATE TABLE sweep_deferred (
   PRIMARY KEY (blob_id, analyzer)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX sweep_deferred_by_waiting ON sweep_deferred(waiting_on);
+",
+    // v8 -> v9 (D119): entry drops UNIQUE(revision_id, name). SQLite
+    // cannot drop a table constraint in place, so the table is rebuilt --
+    // and the constraint's implicit autoindex goes with the old table,
+    // which is why entry_by_name is created explicitly to keep the
+    // cloneof/romof parent lookup indexed.
+    //
+    // The shape is "stage aside, drop, recreate, copy back" rather than
+    // the usual "build beside, rename into place", because of three
+    // SQLite behaviours that between them rule every shorter route out:
+    //
+    // 1. `ALTER TABLE ... RENAME TO` rewrites the stored DDL with the
+    //    new name QUOTED, leaving `CREATE TABLE "entry"` where a fresh
+    //    database has `CREATE TABLE entry`. Cosmetic to SQLite, but
+    //    migrated_cache_equals_fresh_schema compares the text and is
+    //    right to -- two spellings of one schema is how drift starts.
+    //    So the final CREATE has to be executed literally, which means
+    //    the old table must be GONE first, which means staging the rows
+    //    somewhere in between.
+    // 2. The same RENAME also rewrites REFERENCES clauses in other
+    //    tables to follow the rename, silently repointing release,
+    //    rom_claim, annotation and entry_audit at the staging table.
+    //    `PRAGMA legacy_alter_table` would suppress that, but it is a
+    //    no-op inside a transaction and every ladder step runs in one.
+    //    DROP, unlike RENAME, leaves other tables' text alone.
+    // 3. Foreign keys are ON (Db::open), so DROP TABLE entry does an
+    //    implicit delete that the children's references reject. The one
+    //    pragma that DOES work inside a transaction is
+    //    `defer_foreign_keys`: violations are checked at COMMIT, by
+    //    which point the rows are back under the same entry_ids and
+    //    every child resolves again.
+    "
+PRAGMA defer_foreign_keys=ON;
+CREATE TABLE entry_migrate (
+  entry_id      INTEGER PRIMARY KEY,
+  revision_id   INTEGER NOT NULL REFERENCES dat_revision(revision_id),
+  name          TEXT NOT NULL,
+  stable_key    TEXT,
+  description   TEXT,
+  year          TEXT,
+  manufacturer  TEXT,
+  is_bios       INTEGER NOT NULL DEFAULT 0,
+  is_device     INTEGER NOT NULL DEFAULT 0,
+  is_mechanical INTEGER NOT NULL DEFAULT 0,
+  runnable      INTEGER NOT NULL DEFAULT 1,
+  cloneof       TEXT,
+  romof         TEXT,
+  sampleof      TEXT,
+  cloneof_id    INTEGER,
+  romof_id      INTEGER,
+  attrs         BLOB
+) STRICT;
+INSERT INTO entry_migrate SELECT
+  entry_id, revision_id, name, stable_key, description, year, manufacturer,
+  is_bios, is_device, is_mechanical, runnable, cloneof, romof, sampleof,
+  cloneof_id, romof_id, attrs
+FROM entry;
+DROP TABLE entry;
+CREATE TABLE entry (
+  entry_id      INTEGER PRIMARY KEY,
+  revision_id   INTEGER NOT NULL REFERENCES dat_revision(revision_id),
+  name          TEXT NOT NULL,
+  stable_key    TEXT,
+  description   TEXT,
+  year          TEXT,
+  manufacturer  TEXT,
+  is_bios       INTEGER NOT NULL DEFAULT 0,
+  is_device     INTEGER NOT NULL DEFAULT 0,
+  is_mechanical INTEGER NOT NULL DEFAULT 0,
+  runnable      INTEGER NOT NULL DEFAULT 1,
+  cloneof       TEXT,
+  romof         TEXT,
+  sampleof      TEXT,
+  cloneof_id    INTEGER,
+  romof_id      INTEGER,
+  attrs         BLOB
+) STRICT;
+INSERT INTO entry SELECT
+  entry_id, revision_id, name, stable_key, description, year, manufacturer,
+  is_bios, is_device, is_mechanical, runnable, cloneof, romof, sampleof,
+  cloneof_id, romof_id, attrs
+FROM entry_migrate;
+DROP TABLE entry_migrate;
+CREATE INDEX entry_stable ON entry(revision_id, stable_key);
+CREATE INDEX entry_by_name ON entry(revision_id, name);
 ",
 ];
 
@@ -313,10 +400,14 @@ CREATE TABLE entry (
   sampleof      TEXT,
   cloneof_id    INTEGER,
   romof_id      INTEGER,
-  attrs         BLOB,
-  UNIQUE (revision_id, name)
+  attrs         BLOB
 ) STRICT;
 CREATE INDEX entry_stable ON entry(revision_id, stable_key);
+-- Non-unique by ruling (D119): real dats list several different dumps
+-- under one name. Identity is entry_id; this index only keeps the
+-- cloneof/romof parent lookup fast, the job the dropped UNIQUE
+-- constraint's autoindex used to do on the side.
+CREATE INDEX entry_by_name ON entry(revision_id, name);
 
 CREATE TABLE release (
   entry_id   INTEGER NOT NULL REFERENCES entry(entry_id),

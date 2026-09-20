@@ -432,6 +432,64 @@ fn ingest_after_import_needs_relink() {
     );
 }
 
+/// D119: a dat name is a label, not a key. No-Intro's Game Boy set
+/// lists "Lion King, The (USA, Europe) (Beta)" four times over four
+/// genuinely different dumps; the old UNIQUE(revision_id, name)
+/// rejected the whole file, taking six of nine real No-Intro dats with
+/// it. Distinct entries, distinct claims, one name.
+#[test]
+fn entries_may_share_a_name() {
+    let mut f = fixture();
+    let dup = format!(
+        "{}{}{}",
+        r#"<game name="Lion King, The (Beta)"><description>a</description><rom name="a.gb" size="131072" crc="4267aac1"/></game>"#,
+        r#"<game name="Lion King, The (Beta)"><description>b</description><rom name="b.gb" size="262144" crc="ba4993be"/></game>"#,
+        r#"<game name="Lion King, The (Beta)"><description>c</description><rom name="c.gb" size="524288" crc="03bd0d82"/></game>"#,
+    );
+    let report = import_dat(&f.store, &mut f.db, dat(&dup).as_bytes(), &opts("p", "s"))
+        .expect("a duplicate-named dat must import");
+    assert_eq!(report.entries, 3, "all three dumps survive");
+    assert_eq!(report.claims, 3);
+    assert_eq!(count(&f.db, "SELECT COUNT(*) FROM entry"), 3);
+    assert_eq!(
+        count(&f.db, "SELECT COUNT(DISTINCT name) FROM entry"),
+        1,
+        "one name across three entries"
+    );
+}
+
+/// An ambiguous parent reference resolves deterministically rather than
+/// by query-plan luck: lowest entry_id wins, the same way every time.
+#[test]
+fn an_ambiguous_parent_resolves_to_the_lowest_entry() {
+    let mut f = fixture();
+    let games = format!(
+        "{}{}{}",
+        r#"<game name="Parent"><description>p1</description><rom name="p1.bin" size="1" crc="11111111"/></game>"#,
+        r#"<game name="Parent"><description>p2</description><rom name="p2.bin" size="1" crc="22222222"/></game>"#,
+        r#"<game name="Child" cloneof="Parent"><description>c</description><rom name="c.bin" size="1" crc="33333333"/></game>"#,
+    );
+    import_dat(&f.store, &mut f.db, dat(&games).as_bytes(), &opts("p", "s")).expect("import");
+
+    let lowest: i64 =
+        f.db.cache()
+            .query_row(
+                "SELECT MIN(entry_id) FROM entry WHERE name = 'Parent'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("lowest parent");
+    let resolved: i64 =
+        f.db.cache()
+            .query_row(
+                "SELECT cloneof_id FROM entry WHERE name = 'Child'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("child cloneof_id");
+    assert_eq!(resolved, lowest);
+}
+
 /// D118: a snapshot hash is a function of the snapshot's content, so
 /// evaluating an unchanged view twice — at two different wall clocks —
 /// re-mints the identical hash. Before the ruling `created_at` rode
