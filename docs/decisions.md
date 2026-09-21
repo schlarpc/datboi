@@ -4197,3 +4197,66 @@ seekability rule 3's "cache tier", which does not exist in the code —
 but a cache tier is its own ruling with its own eviction policy, and
 inventing one inside a CLI flag is exactly the quiet settling this
 repo's rules forbid).
+
+*Amendment (2026-09-21, second): two defects found by the first live
+run, and the reporting change that would have made them obvious.* A
+`bless --materialize --min-size 16M --jobs 8` on the deployment reported
+"examined 637, already blessed 261, blessed 376, nothing outstanding"
+against a corpus that a straight SQL count put at 763 absent members of
+16 MiB or more. Neither the number nor the word was right.
+
+**Defect 1 — the goal state was read off the wrong artifact.** Triage
+skipped any candidate with a sidecar, in BOTH modes. Blessing is indeed
+finished when a tree exists; materializing is finished when the BYTES
+exist, and a sidecar over absent bytes is not partial progress toward
+that — it is the signature of a member some reader already paid a full
+materialization for inside its own read, under the first amendment's
+on-demand blessing. Those are by construction the members a client has
+already proved are painful: 251 of them, including one of two distinct
+276,826,264-byte blobs whose twin had been materialized and whose own
+reads still hung for ten minutes. The one flag that would have fixed
+them was the one that skipped them. The predicate is now per-mode, and
+`materialize_does_not_skip_an_already_blessed_but_absent_member` pins it.
+
+**Defect 2 — the size floor was exclusive.** The candidate query asked
+`size > :min_size`, so `--min-size 16M` meant "strictly more than
+16 MiB". On a rom corpus that is not an edge case: rom sizes are powers
+of two, so the floor deleted a whole class. The floor is now inclusive,
+and the chunk-group rule — blobs at or under one group have an empty
+outboard by construction — is expressed by the caller passing
+`GROUP_BYTES + 1`, not by an off-by-one in SQL. While there:
+`blob.size` records STORE knowledge and a candidate's bytes are by
+definition not local, so the size now COALESCEs over the recipe's
+claimed output size, which is the only size an `ensure_blob` row ever
+has.
+
+**The paging was sound, and is now pinned rather than trusted.** The
+keyset cursor is `blob_id`, which is unique, so a page boundary has no
+ties to straddle; `keyset_paging_loses_nothing_across_boundaries_or_ties`
+walks 300 identically-sized candidates at five page sizes and
+`the_walk_covers_a_population_many_pages_deep` runs the pass itself over
+9,001 candidates — three pages — and asserts every one was examined. The
+remaining gap between two live runs (706 vs 637 candidates) is drift:
+that host has a refine worker and a MAME verify running, and the
+population moves.
+
+**So the report stops inferring completion.** `Db::bless_candidate_count`
+is a count twin of the paging query — literally the same SQL predicate,
+in one string — read before the run and again after. The report carries
+`population`, `population_after` and `walked_it_all`, "nothing
+outstanding" is printed only when the walk covered the population it was
+handed, and a run that did not says `INCOMPLETE WALK: examined N of M`
+and exits 1. A non-zero `population_after` is NOT a shortfall and says
+so: SQL cannot see a sidecar, so a blessing run leaves the count exactly
+where it found it, and a materializing run leaves whatever the carve-out
+declined.
+
+*Ruled out, having looked:* `--min-size 16M` parsing (K/M/G are powers
+of two, so 16M is 16,777,216 — and either reading would have WIDENED the
+set, not narrowed it); `affine_carveout`/`plan()` silently declining
+members whose container the swap evicted (a member whose container has
+no rebuild route lands in `no_route`, which the run reported as zero,
+and preflate-split members are resident anyway); and inconsistent
+counting of a blob claimed by several recipes (the predicate is an
+`EXISTS` subquery, so a blob appears once however many parent and clone
+sets name it).
