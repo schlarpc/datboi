@@ -68,6 +68,13 @@ enum Command {
         /// previously unidentifiable blob identifiable.
         #[arg(long)]
         rescan: bool,
+        /// How many files to hash at once (D120). The wall clock of an
+        /// ingest is the hash chain, not the disk: one core of it left
+        /// seven idle adopting a 549 GB set over a mount ten times
+        /// faster than the pipeline read it. Default: the machine's
+        /// core count.
+        #[arg(long, value_name = "N")]
+        jobs: Option<usize>,
         #[arg(long)]
         json: bool,
     },
@@ -662,8 +669,9 @@ fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
             paths,
             mv,
             rescan,
+            jobs,
             json,
-        } => cmds::ingest(cli.global.open()?, &paths, mv, rescan, json),
+        } => cmds::ingest(cli.global.open()?, &paths, mv, rescan, jobs, json),
         Command::Fetch { peer, wants, json } => {
             cmds::fetch_peer(cli.global.open()?, &peer, &wants, json)
         }

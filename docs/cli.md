@@ -14,6 +14,7 @@ datboi ingest <path>...              # hash + claim content into the store
     --copy                           # default: source untouched (D40)
     --move                           # rename into store (bulk adoption; destroys source layout)
     --rescan                         # force full rescan (ignore O(changed) cache)
+    --jobs <n>                       # files hashed at once (D120); default: core count
 
 datboi audit --against <dir>         # audit-only: hash + report, take no custody (D40)
 

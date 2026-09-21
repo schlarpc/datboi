@@ -47,6 +47,7 @@ pub fn ingest(
     paths: &[PathBuf],
     mv: bool,
     rescan: bool,
+    jobs: Option<usize>,
     json: bool,
 ) -> anyhow::Result<ExitCode> {
     if mv {
@@ -66,6 +67,8 @@ pub fn ingest(
     let report = Ingester::new(&env.store, &mut env.db, &detectors)
         .with_config(datboi_ingest::IngestConfig {
             rescan,
+            // 0 = derive from the machine (D120).
+            parallelism: jobs.unwrap_or(0),
             ..datboi_ingest::IngestConfig::default()
         })
         .ingest(paths);
