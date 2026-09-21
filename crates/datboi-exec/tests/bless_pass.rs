@@ -786,3 +786,169 @@ fn the_walk_covers_a_population_many_pages_deep() {
     assert!(report.walked_it_all());
     assert_eq!(report.failed, Vec::<(String, String)>::new());
 }
+
+/// D122: a materializing run interrupted between the store write and
+/// the index write leaves bytes durable and the row saying `Absent`.
+/// The run must not throw away the rest of the queue to get there, and
+/// a re-run must converge.
+///
+/// The interruption is simulated with a READ-ONLY `Db` — the same
+/// mechanical fence D93 put on the server's read pool. Workers publish
+/// bytes to the store (a different medium, unaffected), every index
+/// write fails, and what comes out is the exact fingerprint a crash or
+/// a `database is locked` leaves.
+#[test]
+fn an_interrupted_materialization_converges_on_a_re_run() {
+    let w = corpus();
+    let read_only = Db::open_read_only(w.dir.path()).expect("read-only connection");
+
+    let interrupted = w
+        .exec()
+        .bless_corpus(
+            &read_only,
+            &BlessOptions {
+                materialize: true,
+                parallelism: 2,
+                ..BlessOptions::default()
+            },
+            &mut |_| {},
+        )
+        .expect("an index failure does not abort the run");
+
+    assert!(
+        interrupted.unrecorded > 0,
+        "the index writes really did fail"
+    );
+    assert_eq!(interrupted.materialized, 0);
+    assert!(
+        !interrupted.complete(),
+        "and the run does not claim success"
+    );
+    assert!(!interrupted.failed.is_empty(), "it says which hashes");
+
+    // The fingerprint: bytes on disk, rows still Absent.
+    let stranded: Vec<Blake3> = w
+        .deflated
+        .iter()
+        .map(|b| Blake3::compute(b))
+        .filter(|h| w.store.has(StoreNs::Data, h))
+        .collect();
+    assert!(!stranded.is_empty(), "some bytes were published");
+    for hash in &stranded {
+        assert_eq!(
+            w.db.blob_by_hash(hash).expect("q").expect("row").residency,
+            Residency::Absent,
+            "the row did not land — this is the D122 drift",
+        );
+    }
+
+    // A re-run repairs them for the price of the stat it already does,
+    // and materializes whatever never got bytes.
+    let healed = w.bless(&BlessOptions {
+        materialize: true,
+        parallelism: 4,
+        ..BlessOptions::default()
+    });
+    assert_eq!(healed.failed, Vec::<(String, String)>::new());
+    assert_eq!(healed.unrecorded, 0);
+    assert_eq!(
+        healed.reconciled as usize,
+        stranded.len(),
+        "every stranded row was repaired, not skipped"
+    );
+    assert!(healed.complete());
+
+    for bytes in &w.deflated {
+        let hash = Blake3::compute(bytes);
+        assert!(w.store.has(StoreNs::Data, &hash));
+        assert_eq!(
+            w.db.blob_by_hash(&hash).expect("q").expect("row").residency,
+            Residency::Resident,
+            "residency converged",
+        );
+    }
+
+    // Idempotent once converged: resident rows leave the candidate set
+    // entirely, so there is nothing left to reconcile.
+    let quiet = w.bless(&BlessOptions {
+        materialize: true,
+        ..BlessOptions::default()
+    });
+    assert_eq!(quiet.reconciled, 0);
+    assert_eq!(quiet.selected, 0);
+}
+
+/// Repair claims residency and NOTHING else (D122). Finding a file at
+/// its address proves the bytes are here; it proves nothing about the
+/// route that made them, so the recipe stays unlicensed and the blob
+/// stays un-evictable until something actually replays it. Kept rather
+/// than dropped is the safe direction.
+#[test]
+fn reconciling_a_row_does_not_license_its_route() {
+    // Publish one member's bytes behind the index's back — a `rename`
+    // that outlived its row, which is what an interrupt leaves.
+    let fresh = corpus();
+    let hash = Blake3::compute(&fresh.deflated[0]);
+    let bytes = fresh.deflated[0].clone();
+    fresh
+        .store
+        .put_with_obao(
+            StoreNs::Data,
+            hash,
+            bytes.len() as u64,
+            std::io::Cursor::new(bytes),
+        )
+        .expect("publish bytes behind the index's back");
+    let blob_id = fresh.db.get_blob_id(&hash).expect("q").expect("claimed");
+    assert_eq!(
+        fresh
+            .db
+            .blob_by_hash(&hash)
+            .expect("q")
+            .expect("row")
+            .residency,
+        Residency::Absent,
+    );
+
+    let report = fresh.bless(&BlessOptions {
+        materialize: true,
+        ..BlessOptions::default()
+    });
+    assert_eq!(report.reconciled, 1);
+    assert_eq!(
+        fresh
+            .db
+            .blob_by_hash(&hash)
+            .expect("q")
+            .expect("row")
+            .residency,
+        Residency::Resident,
+        "residency repaired",
+    );
+    assert!(
+        fresh.db.blob_verified_at(blob_id).expect("q").is_none(),
+        "a stat is not a verification (D122)",
+    );
+    let recipes = fresh.db.recipes_for_output(blob_id).expect("q");
+    assert_eq!(recipes[0].verify, VerifyState::Verified);
+    assert_ne!(
+        recipes[0].verify,
+        VerifyState::ReplayedLocal,
+        "finding a file licenses no route",
+    );
+    assert!(
+        !fresh.db.is_evictable(blob_id).expect("q"),
+        "unlicensed means kept, which is the safe direction",
+    );
+
+    // The contrast: a blob this pass actually MATERIALIZED did replay
+    // its route, so that one is licensed and evictable. Repair is the
+    // weaker claim on purpose.
+    let materialized = Blake3::compute(&fresh.deflated[1]);
+    let other_id = fresh
+        .db
+        .get_blob_id(&materialized)
+        .expect("q")
+        .expect("claimed");
+    assert!(fresh.db.is_evictable(other_id).expect("q"));
+}

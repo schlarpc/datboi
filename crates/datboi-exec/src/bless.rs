@@ -144,9 +144,11 @@ pub struct BlessReport {
     pub examined: u64,
     /// Already had a tree (a previous run, ingest, or the daemon).
     pub already_blessed: u64,
-    /// Bytes are local after all: `serve_range` reads them directly
-    /// under D4's cheap default, so there is nothing to materialize.
-    pub resident: u64,
+    /// Candidates whose bytes turned out to be ON DISK while the index
+    /// called them absent — the D122 drift, repaired in place rather
+    /// than skipped. Nothing was materialized for these; a `rename`
+    /// that outlived its row was.
+    pub reconciled: u64,
     /// The D63 affine carve-out already serves every byte of these.
     /// Skipped unless [`BlessOptions::include_affine`].
     pub carved_out: u64,
@@ -165,6 +167,11 @@ pub struct BlessReport {
     /// Blobs whose bytes were KEPT (resident), not just hashed —
     /// [`BlessOptions::materialize`]. A subset of [`Self::blessed`].
     pub materialized: u64,
+    /// Blobs whose bytes were published but whose index row could not
+    /// be written (a contended `Db`, D122). The bytes are durable; a
+    /// re-run reconciles the row. Never zero silently — a run with any
+    /// of these does not call itself complete.
+    pub unrecorded: u64,
     /// Set when the D56 headroom guard stopped the run: the store
     /// filesystem ran out of room for more resident bytes. Everything
     /// already published stands; re-run after making room.
@@ -196,7 +203,7 @@ impl BlessReport {
     /// given, it either did or accounted for.
     #[must_use]
     pub fn complete(&self) -> bool {
-        self.is_clean() && self.outstanding() == 0 && self.walked_it_all()
+        self.is_clean() && self.outstanding() == 0 && self.walked_it_all() && self.unrecorded == 0
     }
 
     /// Blessings still owed after this run — non-zero when a `--limit`
@@ -405,7 +412,7 @@ impl Executor<'_> {
                 let seq = next_seq;
                 next_seq += 1;
                 state.report.examined += 1;
-                let Some(plan) = self.bless_triage(db, &hash, opts, state, seq)? else {
+                let Some(plan) = self.bless_triage(db, &hash, len, opts, state, seq)? else {
                     state.tick();
                     continue;
                 };
@@ -469,8 +476,25 @@ impl Executor<'_> {
                         // they MEAN — resident, verified, and a licensed
                         // route back — is index state, written here and
                         // nowhere else.
-                        self.record_materialized(db, &d.hash, d.len, d.license)?;
-                        state.report.materialized += 1;
+                        //
+                        // A failure here must NOT leave the run (D122).
+                        // The bytes are already durable, and propagating
+                        // would discard every finished-but-unretired job
+                        // behind this one — which is exactly how 250
+                        // rows went stale when a contended `Db` timed
+                        // out 45 s into the first live run. Stop
+                        // staging, keep draining, and count what could
+                        // not be written; a re-run reconciles it.
+                        match self.record_materialized(db, &d.hash, d.len, d.license) {
+                            Ok(()) => state.report.materialized += 1,
+                            Err(e) => {
+                                state.report.unrecorded += 1;
+                                state.fail(d.seq, &d.hash.to_string(), &e.to_string());
+                                walking = false;
+                                page.clear();
+                                held = None;
+                            }
+                        }
                     }
                 }
                 // Someone else got there between triage and the
@@ -537,18 +561,33 @@ impl Executor<'_> {
         &self,
         db: &Db,
         hash: &Blake3,
+        len: u64,
         opts: &BlessOptions,
         state: &mut State<'_>,
         seq: u64,
     ) -> Result<Option<Plan>, ExecError> {
-        // The index said non-resident; the store is the authority (a
-        // recovery window, or a materialize since the page was read).
-        // Local bytes serve under D4's cheap default, so nothing here
-        // is unreadable — and `ensure_obao` over every resident blob is
-        // a full pass over the corpus, which is the cost D63 refused.
-        // `datboi scrub` is where a whole-corpus read belongs.
+        // Bytes on disk under a row that calls them absent is the D122
+        // drift, and every candidate here is one by construction: the
+        // query already filtered `residency != 0`, so if the store has
+        // the file the row is stale. It is the residue of any writer
+        // interrupted between its `rename` and its row — this pass very
+        // much included, whose workers publish bytes while only the
+        // coordinator may write the `Db`.
+        //
+        // Repairing it is a `stat` we already paid for plus an upsert,
+        // which is why it belongs here and not in `scrub` (a full
+        // re-hash of the corpus to learn what the stat just said).
+        // Residency ONLY: finding a file proves the bytes are here and
+        // nothing else, so no `verified_at` and no licensing (D122).
+        // Nothing is materialized for these — the bytes already are.
         if self.store.has(StoreNs::Data, hash) {
-            state.report.resident += 1;
+            db.upsert_blob(
+                hash,
+                Some(len),
+                datboi_index::Namespace::Data,
+                datboi_index::Residency::Resident,
+            )?;
+            state.report.reconciled += 1;
             return Ok(None);
         }
         // THE GOAL STATE DIFFERS BY MODE, and conflating them skipped
