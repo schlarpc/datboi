@@ -592,6 +592,9 @@ fn drone(
                         for (hash, error) in &report.errors {
                             debug!("refine drone {ix}: {hash}: {error}");
                         }
+                        for (hash, why) in &report.trapped {
+                            error!("refine drone {ix}: {hash}: {why}");
+                        }
                     }
                     Err(e) => {
                         warn!("refine drone {ix}: {e}");
@@ -699,6 +702,14 @@ fn drain_family(
         // graph just lost a route an operator may care about.
         for (hash, why) in &report.unobtainable {
             warn!("refine job {job}: {hash}: {why}");
+        }
+        // A panic is a bug in the analyzer or in what it calls, and the
+        // payload is the only trace of it that survives the sweep (the
+        // item itself is settled Negative). ERROR, not WARN: an
+        // unobtainable route is the system working as designed, this is
+        // not.
+        for (hash, why) in &report.trapped {
+            error!("refine job {job}: {hash}: {why}");
         }
         let remaining = db.sweep_queue_len(&id).unwrap_or(0);
         jobs.refine_progress(job, done, done + remaining);

@@ -5033,3 +5033,113 @@ directory's name order and its rows' path order genuinely differ —
 name-sorted order pagination is specified against); an LRU over the
 listing cache (a wholesale drop at a byte ceiling is what `manifests`
 already does, and correctness does not depend on the cache surviving).
+
+## D128 — A panicking analyzer settles its item; a dead worker is not a live one (2026-09-21)
+
+`chd-verify` was enabled, registered, and had produced zero analyses
+behind a queue of 654,489 items. The queue was not the problem. The
+refinement fleet was dead, and had been dying about one minute after
+every start for the whole life of the deployment:
+
+    22:34:58  refinement: 4 worker(s) (1 prime + 3 drone(s))
+    22:35:34  refine job 101: preflate-split-0.7.6-w4m-p32m/1 — 33408 item(s) queued
+    22:35:35  thread panicked at preflate-rs-0.7.6/src/tree_predictor.rs:169:22:
+              index out of bounds: the len is 10 but the index is 10
+    22:35:36  ... three more ...
+    (no job 102, ever)
+
+Jobs 97, 98, 99, 100 and 101 are the same shape at five different
+restarts. The daemon then sat at 4.6% CPU with nine threads, having
+silently stopped doing ambient refinement, and nothing in the log said
+so.
+
+Two faults stacked, and the second is the one worth writing down.
+
+**preflate-rs 0.7.6 panics on some of our deflate streams.** Native
+code, pinned version, deterministic on the same bytes. D126 recorded the
+same upstream bug reached through the wasm guest, where wasmtime turns
+it into a trap; this is the native split path, where it is an unwind on
+the calling thread.
+
+**Nothing caught it, and the fleet's bookkeeping could not notice.**
+Drones were `std::thread::spawn` with the `JoinHandle` dropped, so a
+panicking drone simply ceased. `resize_drones` grows on
+`drones.len() < target`, but `drones` held stop *flags* — a dead thread
+never removes its own — so the prime read a fleet of corpses as full.
+The ambient resize then asked `want != drones.len()`, which is precisely
+the question that bookkeeping answers wrongly. The death was permanent
+by construction, not by bad luck.
+
+### The verdict is D81's, not D126's
+
+The neighbouring case looks close enough to borrow from, and must not
+be. D126's trapping route means the analyzer **never reached the bytes**
+— no conclusion is available, so the item waits (D116) on its own hash
+and the route is poisoned. A panic means the analyzer **did** reach
+them and its own code fell over. That is a statement about the
+analyzer's competence on this input, which is exactly what D81 says
+settles: same bytes, same pinned version, same crash. Retrying is the
+bug.
+
+So a panic records a `Negative` carrying the panic text, through the
+same `complete_sweep_item` the success path uses — which is also what
+releases the claim, so containment cannot leak one.
+
+D126's mechanism could not be reused even if the ruling allowed it.
+There is no route to poison: the bytes are a resident literal, and
+`Logical::open` returns them out of the store before any route is
+consulted. And a D116 wait would not settle anything — `enqueue_unanalyzed`
+re-admits a wait whose `waiting_on` blob is a resident data blob on the
+very next ambient pass, which is the same forever-loop with extra steps.
+
+The escape hatch is analyzer identity, and it is the reason this is safe
+to settle. `PreflateZipAnalyzer`'s versioned name embeds its dependency
+version (`preflate-split-0.7.6-w4m-p32m/1`) — alone among the ten roster
+families. Bumping preflate-rs mints a new analyzer tag and re-sweeps
+every blob settled this way. D126 explicitly could not rely on that,
+because there the panicking code was a recipe's pinned wasm component
+rather than the analyzer itself.
+
+### Where the containment goes
+
+At `process_round`'s call into `analyze`, not in the daemon's fleet.
+That is the single point every sweep driver funnels through — prime,
+drone, `datboi sweep`, `/v1/sweep` — so the CLI and the HTTP job are
+covered by the same guard rather than only the one caller whose symptom
+was noticed.
+
+The panic payload is **kept**, departing from the three older
+`catch_unwind` sites in this tree (`datboi-ingest/src/lib.rs`,
+`unpack.rs`, `datboi-exec/src/bless.rs`), all of which discard it. Those
+contain a panic inside an interactive run whose coordinator already
+knows which item failed. This one settles a durable verdict on an
+unattended sweep, where the panic text is the only thing that will ever
+tell an operator which upstream bug they hit.
+
+### And the fleet counts threads, not flags
+
+`drones` carries its `JoinHandle`s; `reap_drones` drops entries whose
+thread has exited and joins each one for its payload. The fleet target
+is tracked across iterations and re-asserted on every wake rather than
+only when the policy number moves, so a death is replaced within one
+wake. `active_drones` becomes a Drop guard: the old fetch_add/fetch_sub
+pair leaked its increment on any escape, and a leaked increment pins
+`fleet_busy` true forever, turning the prime's job completion into a
+permanent 250 ms busy-wait.
+
+The prime's own spawn is wrapped so its death is loud. It is not
+restarted: `worker` owns the fleet's stop flags in a local, so a
+restarted prime would stack a second fleet on one it can no longer
+retire. Supervising it properly wants those flags in `Shared` first.
+
+### Not chosen
+
+Disabling the preflate family (the live mitigation, `datboi analyzer
+disable preflate`, which did restore the fleet to 194% CPU across 15
+threads) — it works and it is reversible, but it trades one analyzer
+away to survive a bug in the worker pool, and the next panicking
+dependency would cost the next family. Treating the panic as
+`Environmental` — that is precisely the forever-retry D81 was written
+against. A blanket `panic = "abort"` — it would make the failure loud
+immediately, at the cost of taking the whole daemon down for one bad
+blob in a corpus of millions.
