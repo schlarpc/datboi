@@ -4966,3 +4966,70 @@ the exact node that trapped rather than the top route (the streaming
 composition does not know which thread failed by the time the reader
 sees it, and `replay` already poisons the top route for a claim failure
 anywhere in its tree — matching it is consistency, not a compromise).
+
+## D127 — A READDIR cookie names the snapshot its walk is reading (2026-09-21)
+
+`ls` on a view root does not terminate. Measured on bagel against
+`/mnt/arcade-view`, ~36,833 entries: 2,067 READDIR calls and 204 MB
+received for a directory whose honest enumeration is 288 calls and
+4.0 MB, zero timeouts, ~62 ms per call — the server answering promptly
+and wrongly, roughly fifty times over, while the client sat in `D` at
+`rpc_wait_bit_killable` ignoring everything but SIGKILL. Two defects,
+each survivable alone, jointly non-terminating.
+
+The load-bearing one is an identity mismatch this log already contains
+half of. D33 keys everything beneath a view `(snapshot, path)` and
+names the view directory itself by view — correct, and the reason an
+`eval` mid-read never changes bytes under a held id. READDIR is where
+the two classes meet: the directory is named by view, the cookies it
+hands out are snapshot-keyed. It re-resolved the view by NAME on every
+call, so a flip between call K and K+1 moved the enumeration to a tree
+in which no outstanding cookie existed, and the only answer left was
+`NFS3ERR_BAD_COOKIE` — whose only legal client response is to restart
+the walk from zero. Every restart was itself long enough to catch
+another flip. The fix needs no state, because the cookie IS a fileid
+and a fileid already resolves to a node: a view root's children are
+`Node::Path(snapshot, name)`, so the snapshot a walk is reading is
+recoverable from the walk's own cookie. `start_after` names the tree;
+only a first page (cookie 0) or a cookie not shaped like a view root's
+child resolves the view by name. That pins an enumeration to the
+snapshot it started on for free, and it does not weaken D33 — it is
+D33 applied one level up: an in-progress READDIR is a held id like any
+other, and a fresh walk still sees the new tree on its first page.
+
+The second defect made the window wide enough to hit. Every call
+rebuilt the entire child list from the index — walking the manifest,
+allocating an owned `String` per entry, sorting, then LINEAR-SCANNING
+the result for the resume cookie — to return one page and discard the
+rest, so listing N entries in pages of P cost `N/P` × `O(N log N)`.
+Listings are now built once per `(snapshot, path)` and kept, with a
+`fileid -> position` index so resume is a hash lookup. A snapshot is
+immutable, so such a listing can never go stale and needs no
+invalidation; the export root, whose children are the mutable `view/`
+tags, is the one directory still built per call (it is O(#views)). The
+cache is a performance device only and must stay one: `IdTable` mints
+ids deterministically, so a rebuild after a wholesale drop yields the
+identical entries under the identical cookies. Measured over a
+synthetic 36,833-entry view root, pages of 128: 288 calls and 4.0 MB
+before and after, 288 child-list builds and 3.12 s of server CPU
+before, 1 build and 64 ms after (48×). Pages after the first now touch
+neither the tag row nor the store.
+
+*Rejected:* caching the listing WITHOUT pinning the snapshot (the
+cheap half of the work and none of the termination — a flip still
+invalidates every cookie, and a faster walk that restarts forever
+still never finishes); a server-side enumeration handle keyed by
+client (state in a protocol that has none, and it would have to expire
+on a timer that is another way to strand a walk); resolving the view
+once and freezing it for some interval (picks an arbitrary staleness
+window and still strands whoever crosses it); gating the pin on the
+pinned snapshot's `view_name` matching the view (it fails a renamed
+view for no gain — a cookie from an unrelated tree can already be
+handed to READDIR on that tree's own directory id, so the pin grants
+nothing the id table did not already); streaming pages straight off
+the manifest's `BTreeMap` range instead of materializing a listing (a
+directory's name order and its rows' path order genuinely differ —
+`Alpha.txt` sorts before `Alpha/` — so the range walk cannot emit the
+name-sorted order pagination is specified against); an LRU over the
+listing cache (a wholesale drop at a byte ceiling is what `manifests`
+already does, and correctness does not depend on the cache surviving).
