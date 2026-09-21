@@ -1644,10 +1644,10 @@ fn hash_and_bless_member(
     let counted = tee.count;
     let (root, sidecar) = match computed {
         Ok(v) => v,
-        Err(e) if counted < member.uncomp_size => {
-            // Keep the non-blessing path's diagnosis: the directory
-            // over-declared, which is a claim verdict, not an I/O fault.
-            let _ = e;
+        // Keep the non-blessing path's diagnosis: a reader that ran dry
+        // means the directory over-declared, which is a claim verdict,
+        // not the I/O fault `compute` reports it as.
+        Err(_) if counted < member.uncomp_size => {
             return Err(size_mismatch(member, counted));
         }
         Err(e) => return Err(format!("member data unreadable: {e}")),
