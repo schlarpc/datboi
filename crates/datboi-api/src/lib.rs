@@ -1338,7 +1338,7 @@ pub struct IngestReportBody {
     pub files_stored: u64,
     /// Content already in the store (dupes).
     pub files_already_present: u64,
-    pub chd_v5: u64,
+    pub chd_declared: u64,
     /// Zip members claimed in place (the container stays the literal).
     pub members_claimed: u64,
     /// 7z/rar members extracted as resident blobs.

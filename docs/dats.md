@@ -73,7 +73,14 @@ per-provider plugins with politeness (rate limits, conditional GET).
    tuple always.
 3. **CHD `disk` entries hash the internal data, not the file**; container
    versions change bytes without changing content. Distinguish "satisfies
-   the dat claim" from "byte-identical file".
+   the dat claim" from "byte-identical file". Which internal digest a
+   file declares depends on its version: v4/v5 carry the combined
+   raw+metadata sha1 dats reference, v3 carries a sha1 of the raw data
+   only, and v1/v2 predate sha1 entirely — they carry an md5, so no
+   modern disk claim can name them at all. A header's declaration is
+   only ever `probable`; the `chd-verify` sweep decompresses the file
+   and computes the digest itself, which is what grades it have-verified
+   (D44 and its 2026-09-21 amendment).
 4. **Zero-byte roms are legal**; identical hashes under multiple names in
    one game are common — claims→identity is many-to-one, name-carrying.
 5. **nodump/baddump/mia/optional** must be respected in completeness math

@@ -34,8 +34,9 @@ pub use blobs::BlobRow;
 pub use gc::{GuardHolder, OrphanCandidate};
 pub use recipes::{GroundingMode, RebuildInput, SwapCandidate, VerifyAdvance};
 pub use types::{
-    AliasAlgo, ClaimKind, ClaimStatus, JobKind, JobState, Namespace, OpKind, RecipeSource,
-    Residency, Role, SeekClass, VerifyState,
+    AliasAlgo, BASIS_CRC_SIZE, BASIS_DECLARED, BASIS_MD5, BASIS_SHA1, BASIS_SHA256, ClaimKind,
+    ClaimStatus, JobKind, JobState, Namespace, OpKind, RecipeSource, Residency, Role, SeekClass,
+    VerifyState,
 };
 
 #[derive(Debug, thiserror::Error)]

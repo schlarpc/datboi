@@ -161,6 +161,10 @@ over the container, so the carve-out already guarantees every byte.
 - Switch NSP: derive `decrypt(NSP, keys{role:keys}) → D`; rebuild
   `xf-nca-crypt@1/encrypt(D, keys, params{sections,nonces}) → NSP`;
   planner drops NSP literal, keeps D (D12: keys are ordinary blobs).
-- CHD: raw track image `R` stored; rebuild pins one chdman-port component
-  forever; container sha1 aliases the rebuild output, softlist internal
-  sha1 aliases `R`. Version drift dead by construction.
+- CHD: **not built, ruled out for now (D124)** — the shape would be raw
+  track image `R` stored with a rebuild pinning one chdman-port
+  component forever, container sha1 aliasing the rebuild output and the
+  softlist internal sha1 aliasing `R`. What exists today is the read
+  half: CHDs stay literals, and the `chd-verify` family decompresses one
+  to grade its disk claims have-verified (D44 amendment). The write half
+  needs a byte-exact recompressor per codec, which is why it waits.

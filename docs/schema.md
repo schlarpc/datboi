@@ -62,7 +62,12 @@ status/mia/optional, merge_name, identity ref, attrs JSONB) ·
 `content_identity` (merged partial tuple + strength; **no UNIQUE** —
 sha1 collisions legal; unification in code: no conflicts + strong-hash
 match, crc+size ⇒ probable) · `identity_blob` (multi-hit, basis
-strength).
+strength: 3=sha256, 2=sha1, 1=md5, 0=crc+size, −1=declared — a
+container header's self-attestation, D44. ≥1 audits as have; ≤0 is
+`probable`. The codes live in `datboi-index` beside the DDL, since
+both the catalog's unification and the `chd-verify` analyzer write
+them, and a link is always raised to the MAX of what is there and what
+a pass found — never demoted).
 
 JSONB-over-EAV rationale: the long tail is preserved-not-queried
 (losslessness lives in the CAS dat blob anyway); audit-path fields are

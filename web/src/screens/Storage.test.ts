@@ -152,7 +152,7 @@ test('scrub row runs a background job, then refreshes the last-run line', async 
       {
         id: 7, name: 'scrub — 100% sample', kind: 'scrub', state: 'done', progress: 100, started_at: 1, finished_at: 2,
         files_total: 0, files_done: 0, bytes_total: 0, bytes_done: 0,
-        current: null, report: { files_scanned: 0, files_unchanged: 0, files_stored: 0, files_already_present: 0, chd_v5: 0, members_claimed: 0, members_extracted: 0, detector_hits: 0, skipper_skipped_large: 0, dats_imported: [], errors: [], member_skips: [], notes: [] },
+        current: null, report: { files_scanned: 0, files_unchanged: 0, files_stored: 0, files_already_present: 0, chd_declared: 0, members_claimed: 0, members_extracted: 0, detector_hits: 0, skipper_skipped_large: 0, dats_imported: [], errors: [], member_skips: [], notes: [] },
         matched: [], matched_total: 0, error: null,
       },
     ],
@@ -190,7 +190,7 @@ test('manual reclaim previews the plan, then confirms the drop', async () => {
       {
         id: 5, name: 'evict — on demand', kind: 'gc', state: 'done', progress: 100, started_at: 1, finished_at: 2,
         files_total: 0, files_done: 0, bytes_total: 0, bytes_done: 0,
-        current: null, report: { files_scanned: 0, files_unchanged: 0, files_stored: 0, files_already_present: 0, chd_v5: 0, members_claimed: 0, members_extracted: 0, detector_hits: 0, skipper_skipped_large: 0, dats_imported: [], errors: [], member_skips: [], notes: [] },
+        current: null, report: { files_scanned: 0, files_unchanged: 0, files_stored: 0, files_already_present: 0, chd_declared: 0, members_claimed: 0, members_extracted: 0, detector_hits: 0, skipper_skipped_large: 0, dats_imported: [], errors: [], member_skips: [], notes: [] },
         matched: [], matched_total: 0, error: null,
       },
     ],
@@ -233,7 +233,7 @@ test('optimization panel toggles a family and runs a sweep', async () => {
       {
         id: 9, name: 'refine — preflate', kind: 'refine', state: 'done', progress: 100, started_at: 1, finished_at: 2,
         files_total: 0, files_done: 0, bytes_total: 0, bytes_done: 0,
-        current: null, report: { files_scanned: 0, files_unchanged: 0, files_stored: 0, files_already_present: 0, chd_v5: 0, members_claimed: 0, members_extracted: 0, detector_hits: 0, skipper_skipped_large: 0, dats_imported: [], errors: [], member_skips: [], notes: [] },
+        current: null, report: { files_scanned: 0, files_unchanged: 0, files_stored: 0, files_already_present: 0, chd_declared: 0, members_claimed: 0, members_extracted: 0, detector_hits: 0, skipper_skipped_large: 0, dats_imported: [], errors: [], member_skips: [], notes: [] },
         matched: [], matched_total: 0, error: null,
       },
     ],

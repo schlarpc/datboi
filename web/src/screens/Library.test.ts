@@ -52,7 +52,7 @@ function doneJob(report: Partial<IngestReport>): JobDetailBody {
       files_unchanged: 0,
       files_stored: 0,
       files_already_present: 0,
-      chd_v5: 0,
+      chd_declared: 0,
       members_claimed: 0,
       members_extracted: 0,
       detector_hits: 0,

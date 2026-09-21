@@ -551,7 +551,7 @@ pub(crate) fn translate(report: IngestReport, staged: &StagedUpload) -> IngestRe
         files_unchanged: report.files_unchanged as u64,
         files_stored: report.files_stored as u64,
         files_already_present: report.files_already_present as u64,
-        chd_v5: report.chd_v5 as u64,
+        chd_declared: report.chd_declared as u64,
         members_claimed: report.members_claimed as u64,
         members_extracted: report.members_extracted as u64,
         detector_hits: report.detector_hits as u64,
@@ -586,7 +586,7 @@ fn merge(into: &mut IngestReportBody, from: IngestReportBody) {
     into.files_unchanged += from.files_unchanged;
     into.files_stored += from.files_stored;
     into.files_already_present += from.files_already_present;
-    into.chd_v5 += from.chd_v5;
+    into.chd_declared += from.chd_declared;
     into.members_claimed += from.members_claimed;
     into.members_extracted += from.members_extracted;
     into.detector_hits += from.detector_hits;

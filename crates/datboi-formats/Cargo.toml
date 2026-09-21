@@ -1,6 +1,6 @@
 [package]
 name = "datboi-formats"
-description = "Dat parsers (Logiqx XML, clrmamepro, MAME listxml/softlist) and header-skipper interpreter"
+description = "Dat parsers (Logiqx XML, clrmamepro, MAME listxml/softlist), header-skipper interpreter, and the CHD reader"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -11,6 +11,27 @@ repository.workspace = true
 datboi-core.workspace = true
 quick-xml.workspace = true
 thiserror.workspace = true
+# The CHD reader (D44's decompressing verify). Every hunk codec MAME
+# ships is decoded here, so the crate carries their decompressors:
+# DEFLATE (zlib/cdzl and every CD subcode run), raw LZMA1 (lzma/cdlz),
+# and the digests a CHD declares about itself.
+flate2.workspace = true
+# Raw LZMA1 only — chdman writes no `.lzma` header, so the standard
+# entry points cannot read it; `raw_decoder` is the API that takes the
+# properties directly.
+lzma-rs = { version = "0.3", default-features = false, features = ["raw_decoder"] }
+crc32fast.workspace = true
+md-5.workspace = true
+sha1.workspace = true
+
+[dev-dependencies]
+# Cross-check only: the CD sector parity this crate regenerates for
+# `cd*` hunks must agree with the shipped ecm component's, which is
+# pinned by every ecm recipe ever minted.
+datboi-xf-ecm = { path = "../datboi-xf-ecm" }
+# The ignored `chd_dedup` harness hashes hunks to count repeats.
+blake3.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

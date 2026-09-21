@@ -181,6 +181,46 @@ impl Db {
         Ok(())
     }
 
+    /// Record the internal sha1 a full decompression actually produced,
+    /// and link it to every disk claim it answers (D44 amendment).
+    ///
+    /// Only the `chd-verify` analyzer calls this, and only after every
+    /// hunk decoded: it is what moves a CHD from `probable` to
+    /// have-verified. The link is written here rather than waiting for
+    /// the catalog's next full relink because the relink walks every
+    /// identity in the catalog — far too much work to hang off each
+    /// swept blob — while the claims this digest answers are one
+    /// indexed lookup. The catalog's own pass still covers the other
+    /// order (the dat arriving after the verify).
+    ///
+    /// A *sizeless* sha1-bearing identity is the shape of a disk claim;
+    /// a rom claim carries a size, and its sha1 means the file's bytes,
+    /// which a CHD's internal digest is not. The basis is raised to the
+    /// maximum of what is there and sha1 strength, so a row already
+    /// written at declared grade is upgraded rather than left behind.
+    ///
+    /// Answers how many claims the verify lit up.
+    pub fn link_verified_chd_sha1(
+        &self,
+        blob_id: i64,
+        sha1: &[u8; 20],
+    ) -> Result<usize, IndexError> {
+        let conn = self.cache();
+        conn.execute(
+            "INSERT OR IGNORE INTO alias (algo, digest, blob_id) VALUES (?1, ?2, ?3)",
+            params![AliasAlgo::ChdSha1Verified.code(), sha1.as_slice(), blob_id],
+        )?;
+        let linked = conn.execute(
+            "INSERT INTO identity_blob (identity_id, blob_id, basis)
+             SELECT identity_id, ?2, ?3 FROM content_identity
+             WHERE sha1 = ?1 AND size IS NULL
+             ON CONFLICT (identity_id, blob_id)
+             DO UPDATE SET basis = MAX(basis, excluded.basis)",
+            params![sha1.as_slice(), blob_id, crate::BASIS_SHA1],
+        )?;
+        Ok(linked)
+    }
+
     /// All blobs a dat-hash digest resolves to (multi-hit tolerant; the
     /// caller matches on the dat's full hash set, D2).
     pub fn alias_lookup(&self, algo: AliasAlgo, digest: &[u8]) -> Result<Vec<i64>, IndexError> {

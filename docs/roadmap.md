@@ -24,7 +24,8 @@ ingest a messy directory (zips, raw, headered/headerless NES, bin/cue,
 CHDs) against No-Intro GBA + NES (forces skippers), Redump PS2 (forces
 multi-GB streaming), MAME listxml + one softlist; streaming single-pass
 full-alias-tuple hashing; skipper dual identities both directions;
-CHD v5 header internal-sha1 audit (no decompression); `audit` with
+CHD v5 header internal-sha1 audit (no decompression — the decompressing
+verify and v1–v4 parsing landed later, D44 amendment); `audit` with
 have(verified)/missing/unknown honoring nodump/baddump/mia, non-merged
 (D31); `dat diff` revision diffing; dir2dat with import→export→semantic-
 diff-empty; Redump auto-fetch + No-Intro manual drop (D16); kill -9
@@ -150,7 +151,11 @@ recovery-equivalence as a property test.
 - **M7+ — frontier**: platform rebuild long tail (CHD/RVZ/NSZ, D12 key
   flows; 7z-LZMA pinned-encoder param discovery rides here — the
   C-to-wasm component lane it needs lands early via D58's unrar
-  extractor, design recorded in open-questions),
+  extractor, design recorded in open-questions). CHD's *read* half
+  landed early — *2026-09-21*: v1–v5 parsing and the decompressing
+  `chd-verify` sweep D44 deferred, which is what closes M1's
+  "no decompression" caveat above. CHD *rebuild* stays here, and D124
+  rules out the decomposition that would have preceded it,
   read-only SMB1 server (D32), curated channels, waddup ZKP swarms,
   browser emulator cores.
 

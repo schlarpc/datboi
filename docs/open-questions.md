@@ -236,9 +236,11 @@ Each of these wants its D entry before (or as) the code lands.
   if resumption traffic warrants); D98 staging is MemStore — FsStore
   when GB-scale wholesale fetch arrives; the disaster-restore verb
   (snapshot → want-list, no design risk).
-- Fuzz targets for the in-house wild-byte parsers (zip walker, CHD
-  header, cue, ECM splitter) in CI; a conformance test crate for
-  shipped components stays a someday (D58 hygiene tail).
+- Fuzz targets for the in-house wild-byte parsers (zip walker, the CHD
+  reader — now a whole decompressor, maps and huffman trees and a FLAC
+  frame decoder, all of it fed by files off the internet — cue, ECM
+  splitter) in CI; a conformance test crate for shipped components
+  stays a someday (D58 hygiene tail).
 - D89 tail: crates.io publication of the guest crates (wit vendoring
   at publish time designed, not built — a git dep serves until
   someone external asks); world-level extractor params forwarding
@@ -509,6 +511,57 @@ as a slice of the buffer would halve it; (3) **the 7z/rar lane runs on
 the writer** (lazily-built wasm host, recipe per member) — it already
 fans out internally per D89, and a container-heavy corpus is the
 measurement that would justify a host per worker.
+
+**Position as of 2026-09-21 — D44's deferred verify BUILT, D124 ruled
+NOT to build**: CHDs stop being the corpus's blind spot. All five header
+versions and both map encodings parse (v1–v4 were opaque bytes with a
+note — 102 files on the live set), the `chd-verify` sweep family
+decompresses a CHD and upgrades its disk claims from `probable` to
+have-verified through a second alias namespace, and hunk decomposition
+is ruled out because FastCDC over the same blobs already generalises it.
+
+Residuals and watch items:
+
+- **The dedup measurement was never run.** D124's argument is
+  structural, not empirical; the harness
+  (`cargo test -p datboi-formats --test chd_dedup -- --ignored
+  --nocapture`, `DATBOI_CHD_DIR=...`) exists precisely so the ruling can
+  be checked against the live corpus. The number to compare it against
+  is what the `chunk` family already claims on the same blobs — a
+  cross-file saving that merely matches FastCDC's is not a case for
+  building anything.
+- **It is on by default, and it is the most expensive family shipped.**
+  Like every other analyzer it is opt-out (D60), so the first ambient
+  sweep after this lands starts decompressing the whole CHD corpus —
+  522.5 GB compressed, more than that inflated, hours of CPU. That is
+  the point of the work and the sweep is leased, priority-ordered and
+  resumable, so nothing is at risk; but it is a workload that appears
+  without anyone asking for it, and `datboi analyzer disable
+  chd-verify` is the brake if it ever needs one. Worth a look at
+  whether the first run wants to be paced.
+- **Codecs still refused**: `avhu` (AV-era CHDs, essentially extinct
+  outside laserdisc sets) and any delta CHD, whose data lives in a
+  parent file. Both are named in the verdict rather than skipped.
+  Adding one bumps `chd-verify/1` to `/2`, which re-sweeps the corpus
+  by construction.
+- **The FLAC decoder is in-house.** `flac`/`cdfl` hunks are decoded by
+  a frame-level subset written here, because CHD stores bare frames
+  with no STREAMINFO and `cdfl` needs to know where the FLAC data
+  *ends* (the deflated subcode run starts there) — something a
+  whole-stream decoder does not report. It is exercised by synthesised
+  fixtures covering verbatim, constant and fixed-predictor subframes
+  with Rice residuals; LPC subframes are implemented but only a real
+  chdman-produced CHD will exercise them. First thing to suspect if a
+  live `cdfl` set reports frame CRC failures.
+- **A verified CHD's rollup is refreshed at the end of a sweep**, not
+  per item — cheap bulk SQL once, and the audit is what reads it. The
+  corpus-wide relink is deliberately NOT run there; the analyzer links
+  the claims its digest answers itself.
+- **A CHD that contradicts its own header keeps the `probable` link.**
+  The declared alias ingest wrote still points at whatever the header
+  claimed, which will show that disk as probable forever. Harmless
+  (nothing grades it higher) but it is a stale row, and a `doctor` pass
+  over declared aliases whose verify concluded otherwise would clear it.
 
 ## Resolved
 

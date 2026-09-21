@@ -1177,7 +1177,7 @@
       "IngestReportBody": {
         "description": "The ingest pipeline's report (datboi-ingest `IngestReport`), as\nwire JSON. Same counters the CLI prints.",
         "properties": {
-          "chd_v5": {
+          "chd_declared": {
             "format": "int64",
             "minimum": 0,
             "type": "integer"
@@ -1259,7 +1259,7 @@
           "files_unchanged",
           "files_stored",
           "files_already_present",
-          "chd_v5",
+          "chd_declared",
           "members_claimed",
           "members_extracted",
           "detector_hits",

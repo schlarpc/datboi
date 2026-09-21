@@ -467,6 +467,80 @@ ruling favors strictness — a truncated CHD with an intact header must
 not audit as have. Unsupported CHD versions (v1–v4) are stored as opaque
 bytes and reported.
 
+*Amendment (2026-09-21, the deferred verify landed):* the decompressing
+verify this entry deferred now exists as the `chd-verify` analyzer, and
+the grading it gates changes accordingly. **A CHD whose every hunk this
+build decompressed, and whose logical data hashes to what the header
+declares, links at `BASIS_SHA1` — have-verified.** That is not a
+softening of the ruling, it is the ruling's own exit condition: the
+grade rises because the evidence changed from an attestation we read to
+a digest we computed over bytes we produced ourselves. Everything else
+about D44 stands. The declared alias namespace is untouched, still
+answering nothing but disk claims at `BASIS_DECLARED`; a CHD nobody has
+verified yet is still `probable`; and a truncated CHD with an intact
+header still fails, now for the reason the entry named — the hunks are
+not there.
+
+The mechanism is a second alias namespace, `AliasAlgo::ChdSha1Verified`,
+written only by the analyzer and only after a full decompression. Two
+namespaces rather than one column: the *claim* a header makes and the
+*conclusion* a verify reached are different facts about different
+evidence, and a shared row would make "who said this" a matter of
+reading a flag correctly. Neither namespace ever answers a real sha1
+lookup (the digest describes decompressed content, not the blob), which
+is the invariant this entry set and the new one inherits verbatim.
+`link_identities_to_blobs` now upserts the basis to the MAXIMUM of what
+it has and what it found, so a re-link cannot silently demote a
+verified CHD back to probable — the old `INSERT OR IGNORE` would have
+frozen whichever grade got there first.
+
+Three consequences, ruled explicitly.
+
+**v1–v4 parse.** The legacy headers and hunk maps are read now, so those
+files stop being opaque bytes with a note. What they get is honesty
+about what each version declares, not a promotion: v4 carries the
+combined raw+metadata sha1 dats reference and behaves exactly like v5;
+v3's `sha1` field covers the RAW data only, and is recorded as the
+declared disk digest because that is what a v3-era dat listed; **v1 and
+v2 declare an md5 and no sha1 at all**, so they are parsed, verified,
+reported — and then held as ordinary literals with no disk-claim alias,
+because there is no sha1 they could answer with and offering their md5
+in a sha1's place is precisely the lie this entry forbids.
+
+**Partial verification is not verification.** The analyzer refuses a
+file *before* decompressing anything if any hunk in its map needs a
+codec this build lacks (`avhu`, today), or if it is a delta against a
+parent. `zlib`, `lzma`, `huff`, `flac`, `cdzl`, `cdlz`, `cdfl` and
+uncompressed hunks are all decoded. A refusal is a `Negative` naming
+the codec, not an `Err` (D81): the file will not become decodable by
+retrying, only by a new analyzer version — which is exactly the event
+the fixpoint is built on (D45).
+
+**Already-ingested CHDs are swept, not re-ingested.** A new analyzer
+identity means every blob is unanalyzed for it (D45), so the existing
+corpus is re-covered by the ordinary ambient sweep with no migration,
+no re-scan and no operator step. The alternative — verifying at ingest
+— was rejected on D45's own terms: a full decompression of 522 GB is
+the most expensive thing in the pipeline and belongs in the background
+by construction.
+
+*Rejected:* a `verified` boolean on the existing `identity_blob` row
+(the same shared-row confusion, one indirection later, and it would
+make the grade depend on reading a flag rather than on which namespace
+the evidence lives in); trusting the map's per-hunk CRCs as a cheap
+"verify" (they are written by the same tool as the sha1 — the identical
+self-attestation this entry refused, at a weaker checksum; they are
+checked, but as corruption detection *inside* a real verify, never as a
+substitute for one); promoting v1/v2 by hashing their decompressed data
+and offering the result as a sha1 (nothing in the file attests to it,
+so it is our number, not the dumper's, and it answers no claim anyone
+makes); linking the COMPUTED digest when it disagrees with the header
+(tempting — the content genuinely is whatever it hashes to — but a
+file that contradicts itself is damage, the disagreeing content
+matches no dat in practice, and laundering it into a have on our own
+authority is the inverse of what this entry ruled; the mismatch is
+reported and the link stays `probable`).
+
 ## D45 — Ingest is custody; analysis is a refinement fixpoint (2026-07-06)
 
 Ingest = custody + identity (single-pass full alias tuple) + only the
@@ -4531,3 +4605,75 @@ floor on containers (the read tax is per-member and the storage trade is
 per-container; there is no one number, and a zip's members are not
 independently droppable anyway — the gate is all-or-nothing by
 construction).
+||||||| 0104388
+
+## D124 — CHD hunk decomposition is not built; FastCDC already generalises it (2026-09-21)
+
+With the `chd-verify` sweep landed (D44 amendment), the remaining CHD
+question was storage: decompose each file into hunk blobs plus a
+reassembly recipe, so hunks shared between CHDs are stored once. Ruled:
+**not built**, and the reason is not "unmeasured" — it is that the
+design is strictly dominated by something already running.
+
+**The win it could deliver is a subset of what `chunk` already finds.**
+A repeated compressed hunk is a repeated run of bytes. FastCDC over the
+CHD as opaque bytes finds repeated runs of bytes *at content-defined
+boundaries*, so it catches every hunk-aligned repeat plus every repeat a
+fixed 19584-byte grid would miss. CHDs are over the 4 MiB chunk
+threshold by orders of magnitude, so the fallback family already covers
+this corpus. Hunk decomposition would add a second, weaker mechanism for
+the same saving.
+
+**And the alignment it depends on does not survive the cases that
+matter.** CHD hunks sit on a fixed grid at fixed offsets. Two CHDs share
+a hunk blob only if the same bytes met the same codec at the same
+settings on the same boundary — which holds exactly when the two files
+are byte-identical, and whole-file dedup already handles that for free.
+Between a disc and its re-dump by a later chdman, the per-hunk codec
+choice and the codec's own settings both move; between regional
+variants, one inserted byte shifts every subsequent hunk off the grid.
+Repetition *inside* one file is already free too: CHD's own
+`COMPRESSION_SELF` map entries point a repeated hunk at an earlier one,
+so a disc's padding costs one hunk, not N.
+
+**The index cost is not small.** 522.5 GB of CHD across 767 files is
+~26M hunks at CD hunk size before counting the hard-disk sets — a blob
+row and a recipe input per hunk, against an index that holds hundreds of
+thousands of blobs today. A hundredfold index for a saving predicted
+near zero, and a non-seekable rebuild path for files that are currently
+plain literals.
+
+**Serving is not a motivation here, and that is the load-bearing
+difference from D35.** CHDs were ingested as literals, so a range read
+of one is a file read. The zip-member problem (a range read that has to
+inflate a member) does not arise, so none of D121/D122's urgency
+transfers.
+
+**The measurement, and what would reopen this.** The harness is in the
+tree — `cargo test -p datboi-formats --test chd_dedup -- --ignored
+--nocapture` with `DATBOI_CHD_DIR` — and it reports the number that
+matters: bytes saved ACROSS files, separated from the within-file
+repeats CHD already handles and with byte-identical files excluded so
+blob-level dedup cannot flatter the result. It could not be run here:
+this work had no access to the live corpus, by instruction. Reopen if
+cross-file saving exceeds a few percent of hunk bytes AND exceeds what
+the `chunk` family is already claiming on the same blobs — the second
+half is the real test, because the first alone would be re-finding
+savings we already have.
+
+**The decompressed variant is a different and much larger project.**
+Storing inflated hunks is where real dedup lives (transforms.md ranks it
+third), but serving a `.chd` again needs byte-exact recompression, which
+that same table records as NOT reproducible across chdman versions. It
+would want a preflate-shaped corrections lane per codec — for zlib, for
+LZMA, and for FLAC, which has no preflate analogue — on top of a corpus
+that inflates by the compression ratio. The harness prices both halves
+(`DATBOI_CHD_DECOMPRESS=1` reports the inflated resident size against
+today's); nothing should be built until it has.
+
+*Rejected:* building it and measuring after (the measurement is cheap
+and the build is not); hunk-as-blob "because it is the obvious
+decomposition" (obvious for a format with content-defined or
+uncompressed pieces — CHD is neither); treating per-file hunk repetition
+as the win (the format already collapses it).
+
