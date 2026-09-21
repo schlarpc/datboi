@@ -174,8 +174,9 @@ pub struct IngestReport {
     pub files_unchanged: usize,
     pub files_stored: usize,
     pub files_already_present: usize,
-    /// CHD v5 files whose declared internal sha1 was recorded.
-    pub chd_v5: usize,
+    /// CHDs whose declared internal sha1 was recorded (v3 and up; v1/v2
+    /// declare only an md5 and are held as plain literals).
+    pub chd_declared: usize,
     pub members_claimed: usize,
     /// 7z/rar members extracted into the CAS as resident blobs.
     pub members_extracted: usize,
@@ -664,9 +665,9 @@ impl<'a> Ingester<'a> {
         }
         match work.inside {
             Inside::Opaque => {}
-            Inside::ChdV5(sha1) => {
+            Inside::ChdDeclared(sha1) => {
                 self.db.insert_declared_chd_sha1(blob_id, &sha1)?;
-                report.chd_v5 += 1;
+                report.chd_declared += 1;
             }
             Inside::Zip(members) => self.claim_zip_members(members, report)?,
             Inside::Component(fmt) => {
@@ -1106,12 +1107,13 @@ struct FileWork {
 
 /// What the head sniff found, and what the writer owes the index for it.
 enum Inside {
-    /// Nothing to look into (or a CHD version we don't parse — the
-    /// note carries that).
+    /// Nothing to look into (or a CHD that declares no sha1 at all —
+    /// the note carries that).
     Opaque,
-    /// CHD v5's declared internal sha1: the identity MAME disk claims
-    /// reference. Header-only, so audit grades it `probable` (D44).
-    ChdV5([u8; 20]),
+    /// A CHD's declared internal sha1 (v3, v4 or v5): the identity MAME
+    /// disk claims reference. Header-only, so audit grades it
+    /// `probable` (D44) until the `chd-verify` sweep decompresses it.
+    ChdDeclared([u8; 20]),
     Zip(Vec<MemberClaim>),
     /// 7z/rar: extraction runs on the writer (D120).
     Component(ExFormat),
@@ -1167,8 +1169,8 @@ fn hash_file(
     // a CHD v5 header is 124).
     let mut head = [0u8; datboi_formats::chd::CHD_V5_HEADER_LEN];
     let head_len = read_head(&mut blob, &mut head).map_err(|e| IngestError::io(&job.path, e))?;
-    if let Some(chd) = datboi_formats::chd::parse_header(&head[..head_len]) {
-        work.inside = read_chd(&job.path, &chd, &mut work.notes);
+    if let Some(chd) = datboi_formats::chd::try_parse_header(&head[..head_len]) {
+        work.inside = read_chd(&job.path, chd, &mut work.notes);
     } else if zip::looks_like_zip(&head[..head_len]) {
         match hash_zip_members(store, &hash, &mut blob, &mut work.member_skips) {
             Ok(members) => work.inside = Inside::Zip(members),
@@ -1193,24 +1195,41 @@ fn hash_file(
     Ok(work)
 }
 
-/// CHD v5: record the header's declared internal sha1 (the identity
-/// MAME disk claims reference). Header-only — the declaration grades as
-/// `probable` in audit (D44) until a decompressing verify exists (M3).
-fn read_chd(path: &Path, chd: &datboi_formats::chd::ChdHeader, notes: &mut Vec<String>) -> Inside {
-    match chd {
-        datboi_formats::chd::ChdHeader::V5(v5) => {
-            if v5.has_parent() {
-                notes.push(format!(
-                    "{}: delta CHD (has a parent); recorded, but standalone rebuild is impossible",
-                    path.display()
-                ));
-            }
-            Inside::ChdV5(v5.sha1)
+/// Record the header's declared internal sha1 — the identity MAME disk
+/// claims reference. Header-only, so the declaration grades as
+/// `probable` in audit (D44); the `chd-verify` sweep is what upgrades
+/// it by actually decompressing the file.
+///
+/// v1 and v2 predate sha1 in the format, so they are parsed, reported
+/// and then held as ordinary opaque literals: there is no digest they
+/// could answer a modern disk claim with, and offering their md5 in a
+/// sha1's place would be a lie of exactly the kind D44 forbids.
+fn read_chd(
+    path: &Path,
+    chd: Result<datboi_formats::chd::ChdHeader, datboi_formats::chd::ChdError>,
+    notes: &mut Vec<String>,
+) -> Inside {
+    let header = match chd {
+        Ok(h) => h,
+        Err(e) => {
+            notes.push(format!("{}: {e}; stored as opaque bytes", path.display()));
+            return Inside::Opaque;
         }
-        datboi_formats::chd::ChdHeader::Unsupported { version } => {
+    };
+    if header.has_parent() {
+        notes.push(format!(
+            "{}: delta CHD (has a parent); recorded, but standalone rebuild is impossible",
+            path.display()
+        ));
+    }
+    match header.declared_disk_sha1() {
+        Some(sha1) => Inside::ChdDeclared(sha1),
+        None => {
             notes.push(format!(
-                "{}: CHD v{version} header not supported (v5 only); stored as opaque bytes",
-                path.display()
+                "{}: CHD v{} declares an md5 and no sha1, so no MAME disk claim can name it; \
+                 stored as opaque bytes",
+                path.display(),
+                header.version
             ));
             Inside::Opaque
         }
