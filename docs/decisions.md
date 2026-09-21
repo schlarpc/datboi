@@ -3820,3 +3820,96 @@ malformed (they are what the publishers ship, and a manager that reads
 only hypothetical dats is not a manager); making `stable_key` unique
 instead (it is nullable and derived, and a dat with no ids would
 collapse to one entry).
+
+## D120 — Ingest fans out on files; one writer owns the database (2026-09-20)
+
+`Ingester::ingest` walks serially and the wall clock is one core's hash
+chain. Measured adopting a 549 GB MAME set (35,494 zips, ~767 CHDs) over
+NFS on an 8-core EPYC 9124: **142 MB/s, 8 files/s, 71% of ONE core** —
+seven cores idle while the same mount reads 1,519 MB/s cold, 10x what
+ingest consumes. The constraint is `AliasHasher`: every byte goes through
+crc32 + md5 + sha1 + sha256 + blake3 serially (D2's full tuple — dats
+identify by the legacy digests, the store addresses by blake3), and every
+zip member is inflated and run through the same five again. sha1, sha256
+and blake3 each have a hardware path on this host; md5 does not, and is
+roughly half the chain's cost on its own. The chain is not going to get
+faster, so the files have to overlap.
+
+The pipeline splits in two. A bounded pool of workers does everything
+that is pure CPU or source I/O — open the file, stream it through
+`put_new`, sniff the head, hash every zip member out of the stored blob,
+evaluate detectors, build the recipes — and hands back a fully-formed
+`FileWork` saying what to record. One writer thread applies it: every
+`Db` mutation in the process happens there, in walk order. SQLite has a
+single writer under WAL regardless, so only the hashing is worth fanning
+out; the store is a different matter and workers write it directly, since
+every store write is content-addressed, idempotent and already safe from
+several threads (`Store` is `Sync` — the D89 extract path has published
+from consumer threads since rar landed).
+
+**Determinism comes from ordering the commit queue, not the work.** The
+walk stamps a sequence number on every item it produces — files,
+symlink notes, `read_dir` failures alike — and the writer retires them
+strictly in that order out of a small reorder buffer. Every
+`IngestReport` field keeps its meaning and its order: counters, `notes`,
+`errors`, `member_skips` and `fresh_blobs` all land exactly as the serial
+walk produced them, which is what makes "same corpus, same report" a
+testable claim rather than a hope.
+
+**Crash discipline is unchanged.** All of a file's rows are written by
+one thread in the old order, and its `source_file` row is still written
+last — a crash re-processes that file, every write is a content-addressed
+upsert, at-least-once holds. Ordering the commits also means a crash
+truncates the run at a walk-order prefix instead of leaving a lattice of
+whichever files happened to finish.
+
+Three placements fall out of the split. The rescan-cache lookup is a `Db`
+read, so it stays on the writer and happens *before* dispatch — a cache
+hit must never reach a worker, since not reading the file is the entire
+point of the cache. 7z/rar extraction also stays on the writer:
+`ensure_extractor` lazily builds and publishes wasm state and each member
+mints a recipe, and that path already fans out internally (D89 batch
+pipes, a consumer thread per member), so a container is parallel where it
+counts and containers are the rare case in the corpora that hurt.
+Everything else — the zip lane, detectors, the CHD header — is worker
+work.
+
+**In-flight work is bounded by bytes, not by file count.** The thing being
+bounded is not the serial pipeline's footprint: measured mid-run its
+working set is ~106 MB of anon (the 12–14 GB systemd reports as
+`MemoryPeak` is the cgroup's reclaimable page cache from streaming
+hundreds of GB over NFS, not heap — measure RSS or cgroup `anon`, never
+`MemoryPeak`, on an I/O-heavy unit). It is that skipper evaluation
+buffers a whole file under `skipper_cap` (256 MB default), so N workers
+multiply one such buffer by N. The writer therefore dispatches only while
+the summed size of dispatched-but-unretired files fits a cap derived from
+the worker count, and a file bigger than the whole cap is admitted alone.
+Dispatch is in walk order and the queue is FIFO, so the lowest unretired
+sequence number always holds its slot and always runs: the budget cannot
+deadlock against the reorder buffer that is waiting on it.
+
+Parallelism defaults to `available_parallelism` and is configurable —
+`IngestConfig::parallelism` (0 = derive it) and `datboi ingest --jobs`,
+wired like `--rescan`. One worker is not a special case: it is the same
+pipeline with a pool of one, so there is no second code path to keep
+honest.
+
+*Rejected:* parallelising the five hashes *within* a file (they are
+independent over the same byte stream, but a tee with per-chunk
+synchronization is paid by every `AliasHasher` caller — `put_new`, member
+hashing, detector variants — to win a case we do not have: 35,494 files
+saturate 8 cores without it. The residual, one huge CHD alone on an idle
+box, is a watch item and not a reason to complicate the hasher); several
+DB writers or a connection per worker (SQLite takes one writer under WAL;
+it converts a hash bottleneck into lock contention and throws away the
+commit order that makes reports deterministic); letting workers write the
+DB behind a mutex (same lost ordering, and the mutex would serialize them
+anyway); `rayon` over the walk (collects the path list whole — the D36
+"10M small files" case is exactly where that bites — with no byte bound
+and no ordered commit); bounding in-flight work by file count (a count
+tuned for 35k small zips is N × 256 MB the moment the files are the ones
+that matter); sorting the report at the end instead of ordering the queue
+(`notes`, `errors` and `fresh_blobs` have no sort key that reproduces
+walk order, and `fresh_blobs` is deliberately id order); a separate serial
+implementation kept beside the parallel one for the `-j1` case (two
+pipelines, one of them untested by the deployment that matters).
