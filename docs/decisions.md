@@ -3913,3 +3913,25 @@ that matter); sorting the report at the end instead of ordering the queue
 walk order, and `fresh_blobs` is deliberately id order); a separate serial
 implementation kept beside the parallel one for the `-j1` case (two
 pipelines, one of them untested by the deployment that matters).
+
+*Amendment (same day):* the in-flight budget charges what a file may
+BUFFER, not what a file is. Weighing every file by its size throttles
+the lane the pool exists for — eight 1 GB CHDs each stream through a
+64 KiB buffer, and a size-weighted budget admits them one at a time —
+while still not naming the thing it bounds. Skipper evaluation is the
+only lane that holds a whole file, and it holds it twice (`apply`
+copies the variant out beside the buffer), so `stage` charges a file
+its size when a detector set is loaded and the file is under
+`skipper_cap`, and charges zero otherwise; over-charging a container
+that merely looks eligible is the safe direction. A file heavier than
+the whole cap runs alone rather than never, and the lanes charged
+nothing are bounded by the worker count and a 256-entry reorder buffer
+instead. Measured, 10 × 200 MiB detector-lane files at 8 workers:
+512 MiB of budget, two files in flight, 812 MiB peak RSS against
+411 MiB for the same corpus serial — the doubling is the variant copy,
+so the practical heap ceiling is ~2× the cap and the parallelism a
+big-file detector corpus gets is cap/size, by design. The lanes that
+matter are untouched: 1.9 GiB of loose files and zips with no detector
+set ingests in 6.46 s at `--jobs 1` and 0.55 s at `--jobs 16` (11.7x
+on 16 cores, 14.7 cores busy, 304 MB/s → 3.5 GB/s) with peak RSS
+moving 12 MiB → 14 MiB.
