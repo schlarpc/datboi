@@ -1329,6 +1329,7 @@ dependencies = [
 name = "datboi-formats"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "crc32fast",
  "datboi-core",
  "datboi-xf-ecm",
@@ -1337,6 +1338,7 @@ dependencies = [
  "md-5",
  "quick-xml 0.38.4",
  "sha1 0.10.6",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

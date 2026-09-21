@@ -29,6 +29,9 @@ sha1.workspace = true
 # `cd*` hunks must agree with the shipped ecm component's, which is
 # pinned by every ecm recipe ever minted.
 datboi-xf-ecm = { path = "../datboi-xf-ecm" }
+# The ignored `chd_dedup` harness hashes hunks to count repeats.
+blake3.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
