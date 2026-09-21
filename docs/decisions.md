@@ -4079,3 +4079,90 @@ and an activity row — but a new `JobKind` is a wire-enum and web change,
 and the CLI is what the corpus needs today; ledger-stamped like
 `Recover`/`Snapshot`/view eval, i.e. not yet, and for the same recorded
 reason).
+
+*Amendment (same day): blessing removes an error; keeping the bytes
+removes the cost. `--materialize`, opt-in, size-gated.* Measured after
+the pass was written, and it changes what the pass is worth.
+`deflate-decompress@1` carries `seek_class = Opaque`, and `produce_range`
+excludes Opaque from the random-access lane — so an opaque route serves
+EVERY range read by spilling a fresh full materialization of the output
+to a temp file, windowing it, and throwing it away. Reading a 264 MB
+member in 128 KB NFS chunks is ~2,100 windows × 264 MB of inflate:
+quadratic in member size. On the live host one such member (`acheart`)
+held a client in uninterruptible sleep for 30+ minutes. A blessed opaque
+member is readable and still quadratic: the sidecar buys the D49 check
+and the absence of `MissingOutboard`, nothing about the per-read cost.
+
+The pass already inflates every one of those members in full. The bytes
+it discards are exactly the bytes that, kept, make the member a resident
+literal — and a resident literal takes `serve_range`'s first branch:
+a plain verified file read, no route, no spill, O(range). So
+`--materialize` swaps `obao::compute`-and-drop for
+`Store::put_with_obao`, which tees the same single stream to the store
+while building the same tree. One inflate per member, forever, instead
+of one per window.
+
+**It is opt-in, and it is not free.** Materializing the 141,986 absent
+members costs ~133 GB, and — this is the part that must not be
+assumed — **none of it is reclaimed by evicting the containers**. A zip
+is evictable only through a rebuild route, and the only thing that mints
+one is `preflate-split` (its `#recreate` + affine-assemble pair). The
+absent members are by construction the ones in containers preflate has
+NOT split; the 10,028 already-resident ones are the ones it has. So the
+trade is a straight +133 GB high-water, not a swap, until the preflate
+backlog catches up — and at the measured ~2 members per 3 minutes
+against 141,986 remaining, that is months, which is why "wait for
+refine" is not an answer either. `--min-size` is the dial that makes
+this proportionate: the 724 absent members over 16 MB are where the
+quadratic is catastrophic, and `--materialize --min-size 16M` buys the
+cure for a few tens of GB instead of 133.
+
+**It stays reversible, and that is a requirement, not a nicety.** A
+materialized member records `Residency::Resident`, `verified_at`, and —
+when the route claims exactly one output, which `deflate-decompress@1`
+always does — advances that recipe to `ReplayedLocal`. That last one is
+D25's licensing event, and it is what makes `Db::is_evictable` true for
+the member afterwards: the route grounds in the container, which is
+still resident, so `datboi evict` and the D72 watermarks can take the
+bytes back. Without the licensing step the pass would be a one-way
+spend, and a residency decision nobody can undo is not one a CLI flag
+should be able to make. Several-output routes stay unlicensed —
+producing one output does not prove the others — and `Executor::replay`
+remains the way to license those.
+
+**This is a ruling on half of an open question, and only half.**
+`docs/open-questions.md` leaves open "materialize view-pinned absent
+members whose containers refused a preflate split (the serving case)".
+What is ruled here is the OPERATOR-INVOKED case: an explicit flag, an
+explicit size floor, reversible, with the bill stated. What stays open
+is the automatic half — whether the daemon should do this on its own,
+driven by view pinning or dat-awareness, and under what watermark. That
+needs the residency policy this repo has not written yet, not a flag.
+
+**The `Db` lane comes back.** The blessing-only pass mutates no index
+row, which is why the entry above calls D120's writer half vacuous. With
+`--materialize` it is not: residency, `verified_at` and the licensing
+advance are index writes, and they happen on the coordinator, in D120's
+exact shape — workers publish content-addressed bytes (idempotent, safe
+from N threads), the coordinator alone says what they mean. A D56
+headroom check runs per job rather than once, because N workers spend
+the same free space concurrently; the first `InsufficientHeadroom` stops
+staging and drains, so a full disk is one reported failure instead of
+141,985 identical ones, and everything already published stands.
+
+*Rejected (amendment):* materializing by default (a 133 GB residency
+decision is the operator's, and the flag is where they make it);
+assuming the containers become evictable in exchange (they do not —
+checked: no rebuild route exists without preflate, and the members that
+have one are already resident); skipping the licensing advance (it would
+make the spend one-way, which is the difference between a cache and a
+commitment); reclassifying `deflate-decompress@1` as
+manifest-seekable so `produce_range` could window it (DEFLATE has no
+manifest — a window into a deflate stream needs the decoder state at
+that point, which is what preflate corrections ARE; that is a real
+design, not a seek-class edit); caching the spill per blob instead
+(cheaper in storage and genuinely attractive — it is `docs/views.md`
+seekability rule 3's "cache tier", which does not exist in the code —
+but a cache tier is its own ruling with its own eviction policy, and
+inventing one inside a CLI flag is exactly the quiet settling this
+repo's rules forbid).

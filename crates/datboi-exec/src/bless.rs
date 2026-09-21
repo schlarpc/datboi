@@ -87,6 +87,15 @@ pub struct BlessOptions {
     /// promotion D63's own sentence describes, opt-in because D63
     /// rejected paying for it by default (D121).
     pub include_affine: bool,
+    /// KEEP the bytes the pass inflates, instead of discarding them
+    /// (D121's residency ruling). Off by default: this is a residency
+    /// decision with a storage bill, and an operator asks for it.
+    pub materialize: bool,
+    /// Candidate floor in bytes; 0 means one bao group, the point below
+    /// which an outboard is empty by construction and there is nothing
+    /// to bless. Raising it is how `--materialize` is aimed at the
+    /// members where an O(n) spill per window actually hurts.
+    pub min_size: u64,
     /// Decide and count, materialize nothing.
     pub dry_run: bool,
     /// Stop after selecting this many blessings; 0 = no limit.
@@ -101,6 +110,13 @@ impl BlessOptions {
             return self.parallelism;
         }
         std::thread::available_parallelism().map_or(1, NonZeroUsize::get)
+    }
+
+    /// The candidate floor actually applied: never below one bao group,
+    /// since a blob under one has no tree to build.
+    #[must_use]
+    pub fn floor(&self) -> u64 {
+        self.min_size.max(obao::GROUP_BYTES)
     }
 }
 
@@ -128,8 +144,15 @@ pub struct BlessReport {
     pub selected_bytes: u64,
     /// Blessings completed this run.
     pub blessed: u64,
-    /// Content bytes materialized this run.
+    /// Content bytes read through this run.
     pub bytes: u64,
+    /// Blobs whose bytes were KEPT (resident), not just hashed —
+    /// [`BlessOptions::materialize`]. A subset of [`Self::blessed`].
+    pub materialized: u64,
+    /// Set when the D56 headroom guard stopped the run: the store
+    /// filesystem ran out of room for more resident bytes. Everything
+    /// already published stands; re-run after making room.
+    pub out_of_room: bool,
     /// (hex hash, error) for candidates that could not be blessed, in
     /// candidate order. A blessing failure is a real failure — D49's
     /// never-bad-bytes rule leaves no soft fallback — but one bad route
@@ -178,6 +201,9 @@ struct Job {
     hash: Blake3,
     len: u64,
     plan: Plan,
+    /// The recipe to license on a successful materialization (D25), or
+    /// `None` when there is nothing this pass may honestly license.
+    license: Option<i64>,
     /// Tree bytes charged to the in-flight budget.
     weight: u64,
 }
@@ -187,6 +213,7 @@ struct Done {
     seq: u64,
     hash: Blake3,
     len: u64,
+    license: Option<i64>,
     weight: u64,
     result: Result<bool, ExecError>,
 }
@@ -220,6 +247,7 @@ impl Executor<'_> {
         let job_rx = Mutex::new(job_rx);
         let (done_tx, done_rx) = mpsc::channel::<Done>();
 
+        let materialize = opts.materialize;
         let result = std::thread::scope(|scope| {
             for _ in 0..workers {
                 let done_tx = done_tx.clone();
@@ -237,7 +265,14 @@ impl Executor<'_> {
                         // hash, never a coordinator blocked forever on
                         // a result nobody will send.
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            self.bless_plan(&job.hash, &job.plan)
+                            // The only difference the whole flag makes:
+                            // the bytes are kept or they are not. Same
+                            // route, same pass, same tree.
+                            if materialize {
+                                self.materialize_plan(&job.hash, &job.plan)
+                            } else {
+                                self.bless_plan(&job.hash, &job.plan)
+                            }
                         }))
                         .unwrap_or_else(|_| {
                             Err(ExecError::Malformed(format!(
@@ -249,6 +284,7 @@ impl Executor<'_> {
                             seq: job.seq,
                             hash: job.hash,
                             len: job.len,
+                            license: job.license,
                             weight: job.weight,
                             result,
                         };
@@ -318,7 +354,7 @@ impl Executor<'_> {
             while held.is_none() && walking && outstanding < QUEUE_CAP {
                 if page.is_empty() {
                     page = db
-                        .bless_candidates_after(cursor, obao::GROUP_BYTES, PAGE)?
+                        .bless_candidates_after(cursor, opts.floor(), PAGE)?
                         .into();
                     let Some((last, _, _)) = page.back() else {
                         walking = false;
@@ -353,11 +389,13 @@ impl Executor<'_> {
                     state.tick();
                     continue;
                 }
+                let license = opts.materialize.then(|| licensable(&plan)).flatten();
                 let job = Job {
                     seq,
                     hash,
                     len,
                     plan,
+                    license,
                     weight: obao::outboard_size(len),
                 };
                 if admits(inflight, cap, job.weight) {
@@ -390,17 +428,73 @@ impl Executor<'_> {
                 Ok(true) => {
                     state.report.blessed += 1;
                     state.report.bytes += d.len;
+                    if opts.materialize {
+                        // THE `Db` LANE (D120's writer half, which the
+                        // blessing-only pass does not have): the worker
+                        // published content-addressed bytes, and what
+                        // they MEAN — resident, verified, and a licensed
+                        // route back — is index state, written here and
+                        // nowhere else.
+                        self.record_materialized(db, &d.hash, d.len, d.license)?;
+                        state.report.materialized += 1;
+                    }
                 }
-                // Someone else blessed it between triage and the
+                // Someone else got there between triage and the
                 // worker's re-check: the goal state, reached cheaper.
                 Ok(false) => {
                     state.report.blessed += 1;
                     state.report.already_blessed += 1;
                 }
+                // The store filesystem is full. Every remaining job
+                // would fail the same way, so stop staging rather than
+                // turn one ENOSPC into 141,985 identical failures.
+                // What is already published stands.
+                Err(e @ ExecError::InsufficientHeadroom { .. }) => {
+                    if !state.report.out_of_room {
+                        state.report.out_of_room = true;
+                        state.fail(d.seq, &d.hash.to_string(), &e.to_string());
+                    }
+                    walking = false;
+                    page.clear();
+                    held = None;
+                }
                 Err(e) => state.fail(d.seq, &d.hash.to_string(), &e.to_string()),
             }
             state.tick();
         }
+    }
+
+    /// What a materialization MEANS, in the index (D121, coordinator
+    /// only). Three facts, and the third is the one that keeps this
+    /// reversible: the blob is resident, its bytes were verified on the
+    /// way in, and — when the route has exactly one output — the recipe
+    /// that produced it has now replayed on this host, which is D25's
+    /// licensing event and therefore the thing that lets `datboi evict`
+    /// take the bytes back later. Without it the pass would be a
+    /// one-way spend of ~143 GB, which is not a residency decision
+    /// anyone should be able to make by accident.
+    fn record_materialized(
+        &self,
+        db: &Db,
+        hash: &Blake3,
+        len: u64,
+        license: Option<i64>,
+    ) -> Result<(), ExecError> {
+        let blob_id = db.upsert_blob(
+            hash,
+            Some(len),
+            datboi_index::Namespace::Data,
+            datboi_index::Residency::Resident,
+        )?;
+        let now = crate::now_unix();
+        db.set_verified(blob_id, now)?;
+        if let Some(recipe_id) = license {
+            let row = db.recipe_by_id(recipe_id)?;
+            if row.verify == datboi_index::VerifyState::Verified {
+                db.set_verify_state(recipe_id, datboi_index::VerifyAdvance::ReplayedLocal, now)?;
+            }
+        }
+        Ok(())
     }
 
     /// Everything the coordinator decides about one candidate before a
@@ -448,6 +542,20 @@ impl Executor<'_> {
             return Ok(None);
         }
         Ok(Some(plan))
+    }
+}
+
+/// The recipe a successful materialization may license (D25), if any.
+///
+/// Licensing says "this recipe replayed on this host and every output
+/// it claims was materialized and hash-checked". A materializing bless
+/// proves exactly that — for a SINGLE-output route. A recipe claiming
+/// several outputs is not proven by producing one of them, so it stays
+/// unlicensed and `Executor::replay` remains the way to license it.
+fn licensable(plan: &Plan) -> Option<i64> {
+    match plan {
+        Plan::Op(op) if op.outputs.len() == 1 => op.recipe_id,
+        _ => None,
     }
 }
 

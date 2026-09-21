@@ -16,7 +16,7 @@ use std::path::Path;
 use datboi_core::hash::Blake3;
 use datboi_exec::bless::{BlessOptions, BlessReport};
 use datboi_exec::{ExecConfig, Executor};
-use datboi_index::Db;
+use datboi_index::{Db, Residency, VerifyState};
 use datboi_ingest::Ingester;
 use datboi_store_fs::{Namespace as StoreNs, Store, obao};
 use flate2::Compression;
@@ -467,4 +467,138 @@ fn progress_is_reported_per_candidate() {
         .expect("pass");
     assert_eq!(ticks, report.examined, "one tick per candidate retired");
     assert_eq!(last, report.blessed);
+}
+
+/// D121's residency ruling: `--materialize` keeps what the pass already
+/// inflated. The bytes land resident, the index says so, and the route
+/// that produced them is licensed — which is what makes the decision
+/// reversible instead of a one-way 143 GB spend.
+#[test]
+fn materialize_keeps_the_bytes_and_the_index_agrees() {
+    let w = corpus();
+    let report = w.bless(&BlessOptions {
+        materialize: true,
+        parallelism: 4,
+        ..BlessOptions::default()
+    });
+    assert_eq!(report.failed, Vec::<(String, String)>::new());
+    assert_eq!(report.materialized as usize, ZIPS * MEMBERS);
+    assert_eq!(report.blessed, report.materialized);
+    assert!(!report.out_of_room);
+
+    for bytes in &w.deflated {
+        let hash = Blake3::compute(bytes);
+        // The bytes are here, and they are the right bytes.
+        assert!(w.store.has(StoreNs::Data, &hash), "kept, not discarded");
+        let mut got = Vec::new();
+        std::io::Read::read_to_end(
+            &mut w
+                .store
+                .get(StoreNs::Data, &hash)
+                .expect("get")
+                .expect("resident"),
+            &mut got,
+        )
+        .expect("read");
+        assert_eq!(&got, bytes);
+        // The tree rode along in the same pass — `put_with_obao`, not a
+        // second read.
+        let (_, want) = obao::compute(&bytes[..], bytes.len() as u64).expect("compute");
+        assert_eq!(
+            w.store.get_obao(StoreNs::Data, &hash).expect("q"),
+            Some(want)
+        );
+
+        // And the index says what the store now holds.
+        let row = w.db.blob_by_hash(&hash).expect("q").expect("claimed");
+        assert_eq!(row.residency, Residency::Resident);
+        assert!(
+            w.db.blob_verified_at(row.blob_id).expect("q").is_some(),
+            "bytes were hash-checked on the way in"
+        );
+        // The producing route replayed on this host (D25's licensing
+        // event), so the bytes can be given back.
+        let recipes = w.db.recipes_for_output(row.blob_id).expect("q");
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].verify, VerifyState::ReplayedLocal);
+        assert!(
+            w.db.is_evictable(row.blob_id).expect("q"),
+            "materializing must stay reversible through the evict planner"
+        );
+    }
+
+    // Reads now take the resident path — no route, no spill.
+    let exec = w.exec();
+    for bytes in &w.deflated {
+        let hash = Blake3::compute(bytes);
+        let got = exec
+            .serve_range(&w.db, &hash, 50_000, 4_096)
+            .expect("range");
+        assert_eq!(got, &bytes[50_000..54_096]);
+    }
+
+    // Idempotent in this mode too.
+    let again = w.bless(&BlessOptions {
+        materialize: true,
+        ..BlessOptions::default()
+    });
+    assert_eq!(again.selected, 0);
+    assert_eq!(again.materialized, 0);
+}
+
+/// The default does NOT keep bytes — the storage bill is opt-in.
+#[test]
+fn blessing_without_the_flag_leaves_the_bytes_absent() {
+    let w = corpus();
+    let report = w.bless(&BlessOptions::default());
+    assert_eq!(report.materialized, 0);
+    for bytes in &w.deflated {
+        let hash = Blake3::compute(bytes);
+        assert!(!w.store.has(StoreNs::Data, &hash));
+        assert_eq!(
+            w.db.blob_by_hash(&hash)
+                .expect("q")
+                .expect("claimed")
+                .residency,
+            Residency::Absent,
+        );
+    }
+}
+
+/// `--min-size` is how `--materialize` gets aimed: the members where an
+/// O(n) spill per window actually hurts are the big ones, and the floor
+/// is what leaves the rest alone.
+#[test]
+fn min_size_aims_the_pass() {
+    let w = corpus();
+    let above = w.bless(&BlessOptions {
+        min_size: 10 << 20,
+        dry_run: true,
+        ..BlessOptions::default()
+    });
+    assert_eq!(above.examined, 0, "no member is 10 MiB");
+    assert_eq!(above.selected, 0);
+
+    let below = w.bless(&BlessOptions {
+        min_size: BIG_LEN as u64 + 1,
+        dry_run: true,
+        ..BlessOptions::default()
+    });
+    assert_eq!(
+        below.selected as usize,
+        ZIPS * (MEMBERS - 1),
+        "the floor excludes exactly the smallest member of each zip"
+    );
+
+    // A floor under one bao group cannot resurrect blobs that have no
+    // tree to build: the group size is the hard minimum.
+    assert_eq!(BlessOptions::default().floor(), obao::GROUP_BYTES);
+    assert_eq!(
+        BlessOptions {
+            min_size: 1,
+            ..BlessOptions::default()
+        }
+        .floor(),
+        obao::GROUP_BYTES
+    );
 }

@@ -1312,6 +1312,49 @@ impl<'s> Executor<'s> {
         Ok(true)
     }
 
+    /// Materialize an already-planned route INTO the store, tree and
+    /// all — [`Self::bless_plan`]'s keeping twin (D121's `--materialize`).
+    ///
+    /// Same single pass over the same bytes: `put_with_obao` tees the
+    /// stream to a temp file while it builds the tree, verifies the root
+    /// against the claim, and publishes both or neither. The difference
+    /// from blessing is only what survives it — a resident literal
+    /// instead of a sidecar over absent bytes — and that difference is
+    /// what turns an Opaque route's reads from O(output) each (every
+    /// window spills a fresh full materialization, `produce_range`) into
+    /// a plain file read.
+    ///
+    /// Residency bookkeeping is NOT done here: it is a `Db` write, and
+    /// the D120 shape keeps workers off the `Db`. The caller records it.
+    ///
+    /// # Errors
+    /// [`ExecError::InsufficientHeadroom`] when the store filesystem
+    /// lacks room (D56, checked per job because N workers spend it
+    /// concurrently); [`StoreError::HashMismatch`] — a claim failure —
+    /// when the route's bytes are not what was claimed.
+    pub(crate) fn materialize_plan(&self, hash: &Blake3, plan: &Plan) -> Result<bool, ExecError> {
+        if self.store.has(StoreNs::Data, hash) {
+            return Ok(false);
+        }
+        let len = plan.len();
+        if let Some(have) = self.store.available_bytes()? {
+            let need = len
+                .saturating_add(len / 256)
+                .saturating_add(MATERIALIZE_SLACK);
+            if have < need {
+                return Err(ExecError::InsufficientHeadroom {
+                    hash: *hash,
+                    need,
+                    have,
+                });
+            }
+        }
+        let reader = self.open_sequential(plan)?;
+        self.store
+            .put_with_obao(StoreNs::Data, *hash, len, reader)?;
+        Ok(true)
+    }
+
     /// [`Self::bless_output`] under a per-hash gate — the serve path's
     /// entry point (D63 amendment).
     ///
