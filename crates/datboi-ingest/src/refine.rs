@@ -17,7 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use datboi_core::hash::Blake3;
 use datboi_exec::Executor;
-use datboi_index::{AnalysisOutcome, Db, Residency, SweepItem};
+use datboi_index::{AnalysisOutcome, Candidacy, Db, Residency, SweepItem};
 use datboi_store_fs::{Namespace as StoreNs, Store};
 
 /// Identity hash for a native (non-wasm) analyzer: a domain-separated
@@ -214,6 +214,21 @@ pub trait Analyzer {
     /// Identity hash — what provenance rows pin (D48).
     fn id(&self) -> Blake3;
 
+    /// D125 Level 2: the necessary conditions a blob must meet to be
+    /// this analyzer's candidate. Dat-blind by construction (the type
+    /// can only express facts about the blob), and NECESSARY, never
+    /// merely likely — a blob excluded here is one this analyzer would
+    /// have concluded `Negative` about without reading a byte, so the
+    /// D24/D48 record loses nothing and the cheap verdict becomes free
+    /// instead of costing a claim, a lease and two writes.
+    ///
+    /// The default is "every document" — D125's Level 1 global clause
+    /// (named, not generated) applies to every analyzer regardless and
+    /// is not expressible here.
+    fn candidacy(&self) -> Candidacy {
+        Candidacy::default()
+    }
+
     /// Analyze one blob's bytes — read via `bytes` (the logical CAS,
     /// D92), minted results written via `store`. Long byte-crunching
     /// loops should `pulse` as they progress (wrap the reader in
@@ -277,6 +292,9 @@ impl Analyzer for NoopAnalyzer {
 #[derive(Debug, Default)]
 pub struct SweepReport {
     pub enqueued: usize,
+    /// Queue rows dropped because their blob is no longer a candidate
+    /// (D125) — how a database built under a wider rule converges.
+    pub pruned: usize,
     pub analyzed: usize,
     pub positive: usize,
     pub negative: usize,
@@ -442,8 +460,8 @@ impl SweepObserver for NoObserver {}
 pub fn enqueue_candidates(
     db: &Db,
     analyzer: &dyn Analyzer,
-) -> Result<usize, datboi_index::IndexError> {
-    db.enqueue_unanalyzed(&analyzer.id(), now_unix())
+) -> Result<datboi_index::EnqueueReport, datboi_index::IndexError> {
+    db.enqueue_unanalyzed(&analyzer.id(), analyzer.candidacy(), now_unix())
 }
 
 /// The analyzer-INDEPENDENT half of a queue refresh: dat-aware priority
@@ -472,10 +490,10 @@ pub fn refresh_admission(db: &Db) -> Result<(), datboi_index::IndexError> {
 pub fn refresh_queue(
     db: &mut Db,
     analyzer: &dyn Analyzer,
-) -> Result<usize, datboi_index::IndexError> {
-    let enqueued = enqueue_candidates(db, analyzer)?;
+) -> Result<datboi_index::EnqueueReport, datboi_index::IndexError> {
+    let report = enqueue_candidates(db, analyzer)?;
     refresh_admission(db)?;
-    Ok(enqueued)
+    Ok(report)
 }
 
 /// Process up to `limit` already-queued items, one claim at a time:
@@ -588,9 +606,10 @@ pub fn run_sweep(
             ..SweepReport::default()
         });
     }
-    let enqueued = refresh_queue(db, analyzer)?;
+    let refreshed = refresh_queue(db, analyzer)?;
     let mut report = process_round(db, store, bytes, analyzer, limit, &mut NoObserver)?;
-    report.enqueued = enqueued;
+    report.enqueued = refreshed.enqueued;
+    report.pruned = refreshed.pruned;
     Ok(report)
 }
 

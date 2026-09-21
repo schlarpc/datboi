@@ -5,8 +5,8 @@ use datboi_core::alias::AliasHasher;
 use datboi_core::hash::Blake3;
 use datboi_index::recipes::NewRecipe;
 use datboi_index::{
-    AliasAlgo, ClaimKind, ClaimStatus, Db, IndexError, Namespace, OpKind, RecipeSource, Residency,
-    SeekClass, VerifyAdvance, VerifyState,
+    AliasAlgo, Candidacy, ClaimKind, ClaimStatus, Db, IndexError, Namespace, OpKind, RecipeSource,
+    Residency, SeekClass, VerifyAdvance, VerifyState,
 };
 
 fn open_db() -> (tempfile::TempDir, Db) {
@@ -1004,10 +1004,16 @@ fn sweep_leases_and_priority_tiers() {
     db.record_analysis(settled, &analyzer, AnalysisOutcome::Negative, None, 1)
         .unwrap();
 
-    assert_eq!(db.enqueue_unanalyzed(&analyzer, 10).unwrap(), 3);
+    assert_eq!(
+        db.enqueue_unanalyzed(&analyzer, Candidacy::default(), 10)
+            .unwrap()
+            .enqueued,
+        3
+    );
     // Fresh tier: promotes the queued row, skips the settled blob.
     assert_eq!(
-        db.enqueue_fresh(&analyzer, &[fresh, settled], 11).unwrap(),
+        db.enqueue_fresh(&analyzer, Candidacy::default(), &[fresh, settled], 11)
+            .unwrap(),
         1
     );
 
@@ -1057,7 +1063,8 @@ fn sweep_leases_and_priority_tiers() {
 
     // The dat bump never demotes: re-promote ambient to fresh, bump,
     // and the fresh tier survives.
-    db.enqueue_fresh(&analyzer, &[ambient], 201).unwrap();
+    db.enqueue_fresh(&analyzer, Candidacy::default(), &[ambient], 201)
+        .unwrap();
     db.bump_dat_matched_priorities().unwrap();
     db.clear_sweep_leases().unwrap();
     let after = db.claim_sweep_items(&analyzer, &[], 1, 300, 60).unwrap();
@@ -1082,8 +1089,10 @@ fn sweep_claim_class_gate() {
 
     // The fresh path enqueues blocker families first (roster order,
     // D108): only `gated` is on the structural queue.
-    db.enqueue_fresh(&structural, &[gated], 10).unwrap();
-    db.enqueue_fresh(&fallback, &[gated, free], 10).unwrap();
+    db.enqueue_fresh(&structural, Candidacy::default(), &[gated], 10)
+        .unwrap();
+    db.enqueue_fresh(&fallback, Candidacy::default(), &[gated, free], 10)
+        .unwrap();
 
     let claimed = db
         .claim_sweep_items(&fallback, &[structural], 10, 100, 60)
@@ -1125,7 +1134,8 @@ fn sweep_lease_renewal_extends_visibility() {
     let (_dir, mut db) = open_db();
     let analyzer = Blake3::compute(b"analyzer-y");
     let target = blob(&db, b"long-runner", Residency::Resident);
-    db.enqueue_unanalyzed(&analyzer, 10).unwrap();
+    db.enqueue_unanalyzed(&analyzer, Candidacy::default(), 10)
+        .unwrap();
     let claimed = db.claim_sweep_items(&analyzer, &[], 1, 100, 60).unwrap();
     assert_eq!(claimed[0].blob_id, target);
 
@@ -1201,7 +1211,8 @@ fn orphan_marks_clear_on_rooting_and_delete_reverifies() {
     let junk = blob(&db, b"junk upload", Residency::Resident);
     let wanted = blob(&db, b"becomes wanted", Residency::Resident);
     let _queued = blob(&db, b"awaiting analysis", Residency::Resident);
-    db.enqueue_unanalyzed(&Blake3::compute(b"an"), 5).unwrap();
+    db.enqueue_unanalyzed(&Blake3::compute(b"an"), Candidacy::default(), 5)
+        .unwrap();
     // Only `queued` stays in a sweep queue (complete the others).
     for b in [junk, wanted] {
         db.complete_sweep_item(
@@ -1292,7 +1303,8 @@ fn absent_eligibility_gates_the_claim_query() {
         &[evicted],
         VerifyState::ReplayedLocal,
     );
-    db.enqueue_unanalyzed(&analyzer, 1).unwrap();
+    db.enqueue_unanalyzed(&analyzer, Candidacy::default(), 1)
+        .unwrap();
 
     let claim_ids = |db: &mut Db, at: i64| -> Vec<i64> {
         let ids = db
@@ -1607,7 +1619,12 @@ fn deferred_sweep_items_wait_for_a_named_blob() {
     let disc = blob(&db, b"disc", Residency::Resident);
     let key_hash = Blake3::compute(b"the-common-key");
 
-    assert_eq!(db.enqueue_unanalyzed(&analyzer, 1).unwrap(), 1);
+    assert_eq!(
+        db.enqueue_unanalyzed(&analyzer, Candidacy::default(), 1)
+            .unwrap()
+            .enqueued,
+        1
+    );
     let claimed = db.claim_sweep_items(&analyzer, &[], 10, 10, 60).unwrap();
     assert_eq!(claimed.len(), 1);
     db.defer_sweep_item(disc, &analyzer, &key_hash).unwrap();
@@ -1626,23 +1643,39 @@ fn deferred_sweep_items_wait_for_a_named_blob() {
             .unwrap()
     };
     // Absent key: the refresh does not resurrect the item...
-    assert_eq!(db.enqueue_unanalyzed(&analyzer, 2).unwrap(), 0);
+    assert_eq!(
+        db.enqueue_unanalyzed(&analyzer, Candidacy::default(), 2)
+            .unwrap()
+            .enqueued,
+        0
+    );
     // ...nor does an absent CLAIM of the key (a peer's advertisement —
     // the claim itself is a fresh unanalyzed blob, the disc stays out)...
     db.upsert_blob(&key_hash, Some(16), Namespace::Data, Residency::Absent)
         .unwrap();
-    db.enqueue_unanalyzed(&analyzer, 3).unwrap();
+    db.enqueue_unanalyzed(&analyzer, Candidacy::default(), 3)
+        .unwrap();
     assert_eq!(disc_queued(&db), 0, "still waiting");
     // ...but the key's arrival does.
     db.upsert_blob(&key_hash, Some(16), Namespace::Data, Residency::Resident)
         .unwrap();
-    assert_eq!(db.enqueue_unanalyzed(&analyzer, 4).unwrap(), 1);
+    assert_eq!(
+        db.enqueue_unanalyzed(&analyzer, Candidacy::default(), 4)
+            .unwrap()
+            .enqueued,
+        1
+    );
     assert_eq!(disc_queued(&db), 1, "re-enqueued");
     // A conclusion clears the wait; a later refresh sees a settled blob.
     db.complete_sweep_item(disc, &analyzer, AnalysisOutcome::Positive, None, 5)
         .unwrap();
     assert!(db.deferred_sweep_items(&analyzer).unwrap().is_empty());
-    assert_eq!(db.enqueue_unanalyzed(&analyzer, 6).unwrap(), 0);
+    assert_eq!(
+        db.enqueue_unanalyzed(&analyzer, Candidacy::default(), 6)
+            .unwrap()
+            .enqueued,
+        0
+    );
 }
 
 /// D121 blessing candidates: the coarse SQL filter in front of the

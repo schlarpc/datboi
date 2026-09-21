@@ -10,6 +10,8 @@ use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe, World};
 use datboi_index::{AnalysisOutcome, Db, Namespace as IndexNs, Residency, SeekClass, SweepItem};
 use datboi_store_fs::{Namespace as StoreNs, Store};
 
+use datboi_index::Candidacy;
+
 use crate::refine::{
     AnalysisResult, Analyzer, AnalyzerClass, Logical, Pulse, TickReader, analyzer_tag,
 };
@@ -704,6 +706,20 @@ impl Analyzer for ChunkAnalyzer {
         analyzer_tag(Self::VERSIONED_NAME)
     }
 
+    /// D125: both of this family's cheap refusals are NECESSARY
+    /// conditions, so they belong in the predicate rather than in a
+    /// recorded verdict. The size floor is also what stops the chunker
+    /// feeding itself — every chunk is at most [`CHUNK_MAX`], a
+    /// quarter of the threshold — and moving the residency test here
+    /// FIXES a real bug: as a `Negative` it was permanent, so a blob
+    /// that became resident later was never chunked.
+    fn candidacy(&self) -> Candidacy {
+        Candidacy {
+            min_size: CHUNK_THRESHOLD,
+            resident_only: true,
+        }
+    }
+
     fn analyze(
         &mut self,
         item: &SweepItem,
@@ -718,6 +734,11 @@ impl Analyzer for ChunkAnalyzer {
         else {
             return Err("blob size unknown".into());
         };
+        // The threshold and the resident-literal rule are [`Self::candidacy`]'s
+        // (D125); they are re-checked here only because a direct
+        // invocation (the CLI's single-blob path, a test) does not go
+        // through the queue, and because residency can flip between
+        // enqueue and claim.
         if size < CHUNK_THRESHOLD {
             return Ok(AnalysisResult {
                 waiting_on: None,
@@ -725,10 +746,6 @@ impl Analyzer for ChunkAnalyzer {
                 detail: Some(format!("below {CHUNK_THRESHOLD}-byte chunking threshold")),
             });
         }
-        // Chunking mints RESIDENT chunks, so it only makes sense over a
-        // resident literal — chunking an absent (grounded) blob would
-        // MATERIALIZE it, the opposite of the dedup goal. Checked before
-        // bytes open, so an absent item never pays a spill.
         let residency = db
             .blob_by_hash(&item.hash)
             .map_err(|e| e.to_string())?

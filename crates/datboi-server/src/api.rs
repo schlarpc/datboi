@@ -1976,8 +1976,9 @@ fn run_sweep_job(app: &App, job: i64, analyzer_name: &str, limit: usize) {
     app.jobs.push_note(
         job,
         format!(
-            "{} enqueued, {} analyzed ({} positive, {} negative), {} error(s), {} still queued",
+            "{} enqueued, {} pruned, {} analyzed ({} positive, {} negative), {} error(s), {} still queued",
             report.enqueued,
+            report.pruned,
             report.analyzed,
             report.positive,
             report.negative,

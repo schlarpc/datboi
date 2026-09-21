@@ -613,7 +613,8 @@ impl Db {
     /// and MIN over all routes would have handed the swap the view and
     /// refused a container whose pieces are already resident.
     pub fn swap_candidates(&self) -> Result<Vec<SwapCandidate>, IndexError> {
-        let mut stmt = self.cache().prepare_cached(
+        let generated = generated_predicate("bi.blob_id");
+        let mut stmt = self.cache().prepare_cached(&format!(
             "SELECT MIN(r.recipe_id), b.blob_id, b.hash, b.size
              FROM recipe r
              JOIN recipe_output ro ON ro.recipe_id = r.recipe_id
@@ -625,15 +626,10 @@ impl Db {
                                JOIN blob bi ON bi.blob_id = ri.blob_id
                                WHERE ri.recipe_id = r.recipe_id
                                  AND bi.size >= ro.size
-                                 AND NOT EXISTS (
-                                   SELECT 1 FROM recipe_output go
-                                   JOIN recipe g ON g.recipe_id = go.recipe_id
-                                   WHERE go.blob_id = bi.blob_id AND g.verify != 2
-                                     AND NOT EXISTS (SELECT 1 FROM recipe_input gi
-                                                     WHERE gi.recipe_id = g.recipe_id)))
+                                 AND NOT {generated})
              GROUP BY b.blob_id
-             ORDER BY b.size DESC, b.blob_id",
-        )?;
+             ORDER BY b.size DESC, b.blob_id"
+        ))?;
         let rows = stmt
             .query_map([], |row| {
                 Ok((
@@ -1042,6 +1038,26 @@ impl Db {
     pub fn is_covered_by_others(&self, blob_id: i64) -> Result<bool, IndexError> {
         Ok(grounded(self.cache(), GroundingMode::AuditClaimed, Some(blob_id))?.contains(&blob_id))
     }
+}
+
+/// SQL predicate: is the blob named by `blob_col` **generated** — the
+/// output of a non-failed ZERO-INPUT recipe (D111/D112)?
+///
+/// A generated stream costs nothing to hold, ever: the XGD1 filler and
+/// the GameCube junk regenerate from four bytes. D112 uses this to keep
+/// such an input out of the swap's packed-bytes arithmetic; D125 uses
+/// it to keep one out of the analysis queue, where its NAME would
+/// otherwise make it look like a document and analysing it would
+/// materialise a disc-sized PRNG expansion. One definition, so the two
+/// callers cannot drift.
+pub(crate) fn generated_predicate(blob_col: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM recipe_output go
+                 JOIN recipe g ON g.recipe_id = go.recipe_id
+                 WHERE go.blob_id = {blob_col} AND g.verify != 2
+                   AND NOT EXISTS (SELECT 1 FROM recipe_input gi
+                                   WHERE gi.recipe_id = g.recipe_id))"
+    )
 }
 
 /// Which recipes may carry grounding (D21) for a given question.

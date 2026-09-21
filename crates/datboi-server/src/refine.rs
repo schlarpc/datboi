@@ -383,7 +383,7 @@ fn enqueue(
             continue;
         }
         if !fresh.is_empty() {
-            db.enqueue_fresh(&analyzer.id(), fresh, now_unix())?;
+            db.enqueue_fresh(&analyzer.id(), analyzer.candidacy(), fresh, now_unix())?;
         }
         if ambient_due {
             enqueue_candidates(db, analyzer.as_ref())?;
@@ -529,6 +529,7 @@ fn drain_family(
     analyzer: &mut dyn Analyzer,
 ) {
     let id = analyzer.id();
+    let candidacy = analyzer.candidacy();
     let queued = match (
         analyzer_enabled(db, analyzer.family()),
         db.sweep_queue_len(&id),
@@ -555,7 +556,7 @@ fn drain_family(
         // tier now, and the per-item claim picks them up next.
         let fresh = std::mem::take(&mut lock(&shared.inbox).fresh);
         if !fresh.is_empty()
-            && let Err(e) = db.enqueue_fresh(&id, &fresh, now_unix())
+            && let Err(e) = db.enqueue_fresh(&id, candidacy, &fresh, now_unix())
         {
             // Re-stage for the outer loop rather than losing them.
             lock(&shared.inbox).fresh.extend(fresh);

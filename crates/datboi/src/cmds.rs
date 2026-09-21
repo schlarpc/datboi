@@ -1412,6 +1412,7 @@ pub fn sweep(
                 "analyzer": analyzer.name(),
                 "analyzer_id": analyzer.id().to_hex(),
                 "enqueued": report.enqueued,
+                "pruned": report.pruned,
                 "analyzed": report.analyzed,
                 "positive": report.positive,
                 "negative": report.negative,
@@ -1422,9 +1423,10 @@ pub fn sweep(
         );
     } else {
         println!(
-            "sweep {}: {} enqueued, {} analyzed ({} positive, {} negative), {} deferred, {} error(s), {} queued",
+            "sweep {}: {} enqueued, {} pruned, {} analyzed ({} positive, {} negative), {} deferred, {} error(s), {} queued",
             analyzer.name(),
             report.enqueued,
+            report.pruned,
             report.analyzed,
             report.positive,
             report.negative,

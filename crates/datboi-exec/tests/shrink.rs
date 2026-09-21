@@ -68,13 +68,14 @@ fn chunk_sweep_dedupes_and_eviction_shrinks_the_store() {
     assert_eq!(sweep.errors.len(), 0, "{:?}", sweep.errors);
     assert_eq!(sweep.positive, 2, "both images chunked");
 
-    // A second sweep only sees the new chunk blobs — all below the
-    // threshold, all negative, nothing re-analyzed (the fixpoint).
+    // A second sweep sees NOTHING: the chunks it just minted are
+    // extents (D125) and under the family's own size floor besides, so
+    // they were never candidates — the fixpoint is reached without
+    // paying a claim, a lease and a provenance row per chunk.
     let sweep2 = sweep_all(&mut db, &store, &mut ChunkAnalyzer, 10_000);
     assert_eq!(sweep2.positive, 0);
-    assert!(sweep2.analyzed > 0, "chunks got their negative rows");
-    let sweep3 = sweep_all(&mut db, &store, &mut ChunkAnalyzer, 10_000);
-    assert_eq!(sweep3.analyzed, 0, "at rest");
+    assert_eq!(sweep2.analyzed, 0, "the chunker does not feed itself");
+    assert_eq!(sweep2.enqueued, 0, "no chunk was ever a candidate");
 
     let resident_bytes = |db: &Db| -> u64 {
         let n: i64 = db

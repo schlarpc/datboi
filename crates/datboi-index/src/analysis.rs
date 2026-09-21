@@ -3,9 +3,10 @@
 //! Provenance rows are pure functions of bytes × analyzer identity —
 //! cache-grade (D37), batched into signed snapshots so bare-NAS recovery
 //! doesn't re-pay expensive negatives. The sweep queue is scheduling
-//! state only: candidate selection is dat-blind (every data blob is a
-//! candidate for every analyzer — D47's hard rule), while *ordering* may
-//! consult the catalog (`bump_dat_matched_priorities`).
+//! state only: candidate selection is dat-blind (D47's hard rule — no
+//! catalog join reaches it) and narrowed by [`Candidacy`], a predicate
+//! over the blob's OWN index facts (D125), while *ordering* may consult
+//! the catalog (`bump_dat_matched_priorities`).
 
 use datboi_core::hash::Blake3;
 use datboi_core::snapshot::AnalysisRow;
@@ -78,6 +79,99 @@ pub enum AbsentMode {
     DatNamed,
     /// Every grounded absent.
     All,
+}
+
+/// The dat-blind necessary conditions a blob must meet to be one
+/// analyzer's candidate (D125). Every clause is a fact about the blob
+/// itself — its size, its residency, the recipe edges around it — so
+/// two instances holding the same bytes and the same graph enqueue the
+/// same work, which is exactly what D47 requires and all that it
+/// requires. A clause must be NECESSARY, never merely likely: a blob it
+/// excludes is one the analyzer would have concluded `Negative` about
+/// without reading a byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Candidacy {
+    /// Smallest blob this analyzer could possibly say something
+    /// positive about. An unknown size (`NULL`) is never excluded —
+    /// a bound we cannot check must fail toward doing the work.
+    pub min_size: u64,
+    /// Resident literals only. For `chunk` this is doctrine, not
+    /// optimization: it mints RESIDENT chunks, so chunking an absent
+    /// blob would materialize it — the opposite of the dedup goal
+    /// (D59's resident-only guard, moved from a verdict to a
+    /// predicate so a later residency flip re-admits the blob).
+    pub resident_only: bool,
+}
+
+impl Candidacy {
+    /// The predicate, as SQL over a `blob b` row.
+    ///
+    /// The first clause is D125's global one and is not optional: an
+    /// **extent** is a blob that something CUT OUT and nobody named — a
+    /// byte range whose boundaries came from a mechanism indifferent to
+    /// the content's structure, the FastCDC chunk being the pure case.
+    /// Nothing true of an extent is better said of it than of its
+    /// parent, so extents are nobody's candidate.
+    ///
+    /// `extent := generated OR (is-a-part AND unnamed)`, and each term
+    /// is a fact the graph already carries:
+    ///
+    /// * **is-a-part** — some recipe consumes this blob to build an
+    ///   output STRICTLY LARGER than it. That is D112's view/
+    ///   decomposition comparison read the other way round: an input at
+    ///   least as large as the output is the WHOLE (a container, whose
+    ///   members are slices of it), and only a smaller input is a piece
+    ///   being assembled into a whole. It needs positive evidence, so a
+    ///   blob with no edges at all — a peer-fetched rom, a bare claim —
+    ///   is never an extent, and neither is a container that arrived
+    ///   without a `source_file` row. Unknown has to fail toward doing
+    ///   the work.
+    /// * **unnamed** — no `source_file` row and no NAMED
+    ///   `recipe_output`. Every structural splitter in the tree names
+    ///   its outputs, and ingest's own `zip_member_recipe` names every
+    ///   zip member, so a `preflate-split` member plaintext — a rom
+    ///   someone shipped, possibly a container itself — stays a
+    ///   candidate while the raw deflate stream beside it does not.
+    /// * **generated** — a zero-input recipe's output (D111/D112).
+    ///   These ARE named (`"gc-junk"`, `"xgd1-filler"`) and they span
+    ///   their disc's whole address space, so neither other term would
+    ///   catch them; analysing one is as pointless as analysing a chunk
+    ///   and would materialize a disc-sized PRNG expansion to do it.
+    fn sql(self) -> String {
+        let generated = crate::recipes::generated_predicate("b.blob_id");
+        let mut parts = vec![format!(
+            "NOT ({generated}
+                  OR (EXISTS (SELECT 1 FROM recipe_input ri
+                              JOIN recipe_output ro ON ro.recipe_id = ri.recipe_id
+                              WHERE ri.blob_id = b.blob_id AND ro.size > b.size)
+                      AND NOT EXISTS (SELECT 1 FROM source_file sf
+                                      WHERE sf.blob_id = b.blob_id)
+                      AND NOT EXISTS (SELECT 1 FROM recipe_output rn
+                                      WHERE rn.blob_id = b.blob_id
+                                        AND rn.name IS NOT NULL)))"
+        )];
+        // Interpolated, not bound: these come from analyzer constants,
+        // never from input, and a distinct bound makes a distinct
+        // cached statement, which is what we want (the roster is small
+        // and fixed).
+        if self.min_size > 0 {
+            parts.push(format!("(b.size IS NULL OR b.size >= {})", self.min_size));
+        }
+        if self.resident_only {
+            parts.push("b.residency = 0".to_owned());
+        }
+        parts.join("\n               AND ")
+    }
+}
+
+/// What one queue refresh did for one analyzer (D125: an enqueue also
+/// prunes, so a live database converges without an operator).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EnqueueReport {
+    /// Rows inserted.
+    pub enqueued: usize,
+    /// Rows deleted because their blob is no longer a candidate.
+    pub pruned: usize,
 }
 
 impl Db {
@@ -186,32 +280,65 @@ impl Db {
         Ok(true)
     }
 
-    /// Enqueue every data blob that `analyzer` has not yet analyzed and
-    /// that isn't already queued. Candidate selection is DAT-BLIND (D47):
-    /// what gets analyzed is a function of the bytes we hold, never of
-    /// which dats are loaded. Returns how many rows were enqueued.
+    /// Bring `analyzer`'s queue into line with `candidacy`: PRUNE the
+    /// rows whose blob is no longer a candidate, then enqueue every
+    /// candidate it has not yet analyzed and that isn't already queued.
+    ///
+    /// Candidate selection is DAT-BLIND (D47): what gets analyzed is a
+    /// function of the bytes we hold and the graph around them, never
+    /// of which dats are loaded. It is not the CROSS PRODUCT, though
+    /// (D125) — `candidacy` names what this analyzer could possibly say
+    /// something about, and an extent (a chunker's rolling-hash cut) is
+    /// nobody's candidate.
+    ///
+    /// Pruning rides the same call ON PURPOSE: a database that grew its
+    /// queue under an older, wider rule converges on its next ambient
+    /// refine wake, with no migration and nothing for an operator to
+    /// type. LEASED rows are left alone — a worker is mid-analysis on
+    /// one, and `complete_sweep_item` will clear it.
     ///
     /// A DEFERRED item (D116, [`Db::defer_sweep_item`]) has no analysis
     /// row but is skipped while the blob it waits on is not a resident
     /// data blob; once it is, the item re-enqueues like any other and
     /// the analyzer re-runs.
-    pub fn enqueue_unanalyzed(&self, analyzer: &Blake3, at_unix: i64) -> Result<usize, IndexError> {
-        let n = self.cache().execute(
-            "INSERT OR IGNORE INTO sweep_queue (blob_id, analyzer, priority, enqueued_at)
-             SELECT b.blob_id, ?1, 0, ?2 FROM blob b
-             WHERE b.namespace = 0
-               AND NOT EXISTS (
-                 SELECT 1 FROM analysis a
-                 WHERE a.blob_id = b.blob_id AND a.analyzer = ?1)
-               AND NOT EXISTS (
-                 SELECT 1 FROM sweep_deferred d
-                 WHERE d.blob_id = b.blob_id AND d.analyzer = ?1
+    pub fn enqueue_unanalyzed(
+        &self,
+        analyzer: &Blake3,
+        candidacy: Candidacy,
+        at_unix: i64,
+    ) -> Result<EnqueueReport, IndexError> {
+        let cand = candidacy.sql();
+        let pruned = self.cache().execute(
+            &format!(
+                "DELETE FROM sweep_queue
+                 WHERE analyzer = ?1 AND leased_until <= ?2
                    AND NOT EXISTS (
-                     SELECT 1 FROM blob w
-                     WHERE w.hash = d.waiting_on AND w.namespace = 0 AND w.residency = 0))",
+                     SELECT 1 FROM blob b
+                     WHERE b.blob_id = sweep_queue.blob_id
+                       AND b.namespace = 0
+                       AND {cand})"
+            ),
             params![analyzer.0.as_slice(), at_unix],
         )?;
-        Ok(n)
+        let enqueued = self.cache().execute(
+            &format!(
+                "INSERT OR IGNORE INTO sweep_queue (blob_id, analyzer, priority, enqueued_at)
+                 SELECT b.blob_id, ?1, 0, ?2 FROM blob b
+                 WHERE b.namespace = 0
+                   AND {cand}
+                   AND NOT EXISTS (
+                     SELECT 1 FROM analysis a
+                     WHERE a.blob_id = b.blob_id AND a.analyzer = ?1)
+                   AND NOT EXISTS (
+                     SELECT 1 FROM sweep_deferred d
+                     WHERE d.blob_id = b.blob_id AND d.analyzer = ?1
+                       AND NOT EXISTS (
+                         SELECT 1 FROM blob w
+                         WHERE w.hash = d.waiting_on AND w.namespace = 0 AND w.residency = 0))"
+            ),
+            params![analyzer.0.as_slice(), at_unix],
+        )?;
+        Ok(EnqueueReport { enqueued, pruned })
     }
 
     /// D116: the analysis of `blob_id` by `analyzer` cannot conclude
@@ -267,20 +394,29 @@ impl Db {
     pub fn enqueue_fresh(
         &mut self,
         analyzer: &Blake3,
+        candidacy: Candidacy,
         blob_ids: &[i64],
         at_unix: i64,
     ) -> Result<usize, IndexError> {
+        let cand = candidacy.sql();
         let tx = self.cache.transaction()?;
         let mut touched = 0;
         {
-            let mut insert = tx.prepare_cached(
+            // The D125 predicate gates the fresh tier too: a priority
+            // bump is still membership, and a freshly ingested rom that
+            // no analyzer could speak to must not jump a queue it
+            // doesn't belong in.
+            let mut insert = tx.prepare_cached(&format!(
                 "INSERT OR IGNORE INTO sweep_queue
                    (blob_id, analyzer, priority, enqueued_at)
                  SELECT ?1, ?2, ?3, ?4
                  WHERE NOT EXISTS (
                    SELECT 1 FROM analysis a
-                   WHERE a.blob_id = ?1 AND a.analyzer = ?2)",
-            )?;
+                   WHERE a.blob_id = ?1 AND a.analyzer = ?2)
+                   AND EXISTS (
+                     SELECT 1 FROM blob b
+                     WHERE b.blob_id = ?1 AND b.namespace = 0 AND {cand})"
+            ))?;
             let mut promote = tx.prepare_cached(
                 "UPDATE sweep_queue SET priority = ?3
                  WHERE blob_id = ?1 AND analyzer = ?2 AND priority < ?3",

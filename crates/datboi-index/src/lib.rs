@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 pub use analysis::{
-    AbsentMode, AnalysisOutcome, PRIORITY_AMBIENT, PRIORITY_DAT_MATCHED, PRIORITY_FRESH, SweepItem,
-    SweepLeaseKeeper,
+    AbsentMode, AnalysisOutcome, Candidacy, EnqueueReport, PRIORITY_AMBIENT, PRIORITY_DAT_MATCHED,
+    PRIORITY_FRESH, SweepItem, SweepLeaseKeeper,
 };
 pub use auth::{InviteOutcome, InviteRow, SessionRow, UserRow};
 pub use blobs::BlobRow;

@@ -4,7 +4,7 @@
 use std::io::Write as _;
 
 use datboi_core::hash::Blake3;
-use datboi_index::{AnalysisOutcome, Db, Namespace as IndexNs, Residency};
+use datboi_index::{AnalysisOutcome, Candidacy, Db, Namespace as IndexNs, Residency};
 use datboi_ingest::analyzers::PreflateZipAnalyzer;
 use datboi_ingest::refine::{Analyzer, Logical, SweepReport, run_sweep};
 use datboi_store_fs::{Namespace as StoreNs, Store};
@@ -198,13 +198,20 @@ fn split_enqueue_and_admission_are_independent_and_idempotent() {
         put(&store, &db, format!("split blob {i}").as_bytes());
     }
     // Per-family enqueue, dat-blind over resident blobs.
-    assert_eq!(enqueue_candidates(&db, &NoopAnalyzer).expect("enqueue"), 5);
+    assert_eq!(
+        enqueue_candidates(&db, &NoopAnalyzer)
+            .expect("enqueue")
+            .enqueued,
+        5
+    );
     // The once-per-wake admission pass, separable from enqueue.
     refresh_admission(&db).expect("admission");
     // Re-running both is a no-op / safe: INSERT OR IGNORE means no
     // double-enqueue, and admission is a rebuild of derivable state.
     assert_eq!(
-        enqueue_candidates(&db, &NoopAnalyzer).expect("re-enqueue"),
+        enqueue_candidates(&db, &NoopAnalyzer)
+            .expect("re-enqueue")
+            .enqueued,
         0
     );
     refresh_admission(&db).expect("admission again");
@@ -225,7 +232,7 @@ fn concurrent_drains_share_the_queue_without_duplication() {
         put(&store, &db, format!("d93 blob {i}").as_bytes());
     }
     let enqueued = refresh_queue(&mut db, &NoopAnalyzer).expect("refresh");
-    assert_eq!(enqueued, BLOBS);
+    assert_eq!(enqueued.enqueued, BLOBS);
 
     let exec =
         datboi_exec::Executor::new(&store, datboi_exec::ExecConfig::default()).expect("executor");
@@ -289,8 +296,12 @@ fn class_gate_holds_fallback_until_structural_settles() {
     let (_dir, store, mut db) = world();
     let (_hash, id) = put(&store, &db, b"gated bytes");
     let ecm_id = EcmAnalyzer::new().id();
-    db.enqueue_fresh(&ecm_id, &[id], 10).expect("enqueue ecm");
-    db.enqueue_fresh(&ChunkAnalyzer.id(), &[id], 10)
+    // `Candidacy::default()` on purpose: this test is about the D108
+    // class gate, and the D125 predicate would (correctly) refuse an
+    // 11-byte blob for the chunk family before the gate got a say.
+    db.enqueue_fresh(&ecm_id, Candidacy::default(), &[id], 10)
+        .expect("enqueue ecm");
+    db.enqueue_fresh(&ChunkAnalyzer.id(), Candidacy::default(), &[id], 10)
         .expect("enqueue chunk");
 
     let exec =
@@ -322,4 +333,196 @@ fn class_gate_holds_fallback_until_structural_settles() {
     )
     .expect("round");
     assert_eq!(opened.analyzed, 1, "settled structural row frees the blob");
+}
+
+fn pattern(len: usize, seed: u64) -> Vec<u8> {
+    let mut state = seed | 1;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 24) as u8
+        })
+        .collect()
+}
+
+/// Enqueue every roster family over the whole corpus and total the
+/// queue. `wide` re-runs it under the PRE-D125 rule (every data blob is
+/// a candidate for every analyzer) so the two can be compared on one
+/// corpus; the queue is cleared first either way, since this measures
+/// what a rule SELECTS, not what a sweep has drained.
+fn roster_queue_rows(db: &Db, wide: bool) -> usize {
+    use datboi_ingest::analyzers::sweep_roster;
+    use datboi_ingest::refine::enqueue_candidates;
+
+    db.cache()
+        .execute("DELETE FROM sweep_queue", [])
+        .expect("clear");
+    for analyzer in sweep_roster() {
+        if wide {
+            // The pre-D125 statement, verbatim: every data blob is a
+            // candidate for every analyzer. Spelled out here rather
+            // than reachable from the library, so the old rule stays
+            // measurable without staying available.
+            let id = format!("X'{}'", analyzer.id().to_hex());
+            db.cache()
+                .execute(
+                    &format!(
+                        "INSERT OR IGNORE INTO sweep_queue
+                           (blob_id, analyzer, priority, enqueued_at)
+                         SELECT b.blob_id, {id}, 0, 1 FROM blob b
+                         WHERE b.namespace = 0
+                           AND NOT EXISTS (
+                             SELECT 1 FROM analysis a
+                             WHERE a.blob_id = b.blob_id AND a.analyzer = {id})"
+                    ),
+                    [],
+                )
+                .expect("wide enqueue");
+        } else {
+            enqueue_candidates(db, analyzer.as_ref()).expect("enqueue");
+        }
+    }
+    db.cache()
+        .query_row("SELECT COUNT(*) FROM sweep_queue", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .expect("count") as usize
+}
+
+/// D125's measurement, on a synthetic corpus. `ChunkAnalyzer` MINTS
+/// data blobs, and under the old rule each became a candidate for every
+/// analyzer in the roster — the cross product that grew the live queue
+/// to 12,227,830 rows, 11,360,339 of them (93%) questions about a
+/// chunk. Counted both ways over one corpus: what the roster selects
+/// now, and what it would have selected before.
+#[test]
+fn chunking_a_corpus_does_not_enqueue_its_own_chunks() {
+    use datboi_ingest::analyzers::ChunkAnalyzer;
+
+    let (_dir, store, mut db) = world();
+    // Two 6 MiB near-twins — the shape CDC exists for.
+    let alpha = pattern(6 << 20, 0xA1A1_B2B2_C3C3_D4D4);
+    let mut beta = alpha.clone();
+    beta[3_000_000..3_100_000].copy_from_slice(&pattern(100_000, 0x1234_5678_9ABC_DEF0));
+    put(&store, &db, &alpha);
+    put(&store, &db, &beta);
+
+    let before_chunking = roster_queue_rows(&db, false);
+    // The measurement must not gate the sweep: D108 holds a fallback
+    // claim while any structural family still has the blob queued.
+    db.cache()
+        .execute("DELETE FROM sweep_queue", [])
+        .expect("clear");
+    let report = sweep_all(&mut db, &store, &mut ChunkAnalyzer, 10_000);
+    assert_eq!(report.errors.len(), 0, "{:?}", report.errors);
+    assert_eq!(report.positive, 2, "both images chunked");
+
+    let chunks = db
+        .cache()
+        .query_row(
+            "SELECT COUNT(DISTINCT blob_id) FROM recipe_input",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .expect("count") as usize;
+    assert!(chunks > 20, "the corpus really minted chunks: {chunks}");
+
+    let now = roster_queue_rows(&db, false);
+    // The headline, asked of the queue D125 actually builds: not one
+    // chunk is anybody's candidate.
+    let chunk_rows = db
+        .cache()
+        .query_row(
+            "SELECT COUNT(*) FROM sweep_queue
+             WHERE blob_id IN (SELECT blob_id FROM recipe_input)",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .expect("count");
+    assert_eq!(chunk_rows, 0, "chunks are extents — nobody's candidate");
+
+    let wide = roster_queue_rows(&db, true);
+    println!(
+        "D125 synthetic corpus: {chunks} chunks minted from 2 blobs; \
+         roster queue {wide} rows under the cross product, {now} under candidacy \
+         ({:.1}% reduction)",
+        100.0 - (now as f64 / wide as f64) * 100.0
+    );
+
+    // And chunking did not grow the queue AT ALL: the two originals are
+    // now settled for `chunk` (an analysis row each), so the queue is
+    // strictly smaller than it was before the pass.
+    assert!(
+        now < before_chunking,
+        "queue grew: {before_chunking} -> {now}"
+    );
+    // Under the old rule every chunk would have joined every family.
+    assert!(
+        wide > now + chunks,
+        "the cross product must be at least one row per chunk per family: \
+         {wide} vs {now} + {chunks}"
+    );
+}
+
+/// The other half of D125: what is NOT an extent must still be
+/// analyzed. A `preflate-split` member is analyzer-produced and is
+/// exactly a thing to look at — it is a rom someone shipped, it may
+/// match a dat, and it may itself be a container.
+#[test]
+fn a_preflate_member_is_still_a_candidate() {
+    use datboi_ingest::Ingester;
+    use datboi_ingest::analyzers::NdsAnalyzer;
+
+    let (dir, store, mut db) = world();
+    let payload: Vec<u8> = (0..100_000u32)
+        .map(|i| (i % 251) as u8 ^ (i / 997) as u8)
+        .collect();
+    let compressed = {
+        let mut enc = DeflateEncoder::new(Vec::new(), Compression::new(6));
+        enc.write_all(&payload).expect("deflate");
+        enc.finish().expect("finish")
+    };
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).expect("mkdir");
+    std::fs::write(src.join("pack.zip"), zip_with_member(&payload, &compressed)).expect("write");
+    let report = Ingester::new(&store, &mut db, &[]).ingest(&[&src]);
+    assert_eq!(report.errors.len(), 0, "{:?}", report.errors);
+
+    let split = sweep_all(&mut db, &store, &mut PreflateZipAnalyzer::new(), 100);
+    assert_eq!(split.positive, 1, "the container split");
+
+    let plaintext = db
+        .blob_by_hash(&Blake3::compute(&payload))
+        .expect("q")
+        .expect("member plaintext indexed");
+
+    // It is a NAMED output (ingest's `zip_member_recipe` carries the
+    // member's filename), so it is a document, not an extent.
+    let mut nds = NdsAnalyzer;
+    let nds_id = nds.id();
+    let sweep = sweep_all(&mut db, &store, &mut nds, 100);
+    assert_eq!(sweep.errors.len(), 0, "{:?}", sweep.errors);
+    assert_eq!(
+        db.analysis_outcome(plaintext.blob_id, &nds_id).expect("q"),
+        Some(AnalysisOutcome::Negative),
+        "the member was analyzed, and concluded about — not skipped"
+    );
+
+    // The corrections blob beside it is an extent: a part of a larger
+    // output, named by nobody. It was never queued and never concluded
+    // about — not "analyzed and negative", simply not a question.
+    let corrections = db
+        .cache()
+        .query_row(
+            "SELECT COUNT(*) FROM recipe_input ri
+             WHERE ri.role = 'skeleton'
+               AND (EXISTS (SELECT 1 FROM sweep_queue q WHERE q.blob_id = ri.blob_id)
+                    OR EXISTS (SELECT 1 FROM analysis a WHERE a.blob_id = ri.blob_id))",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .expect("count");
+    assert_eq!(corrections, 0, "a corrections blob is nobody's candidate");
 }
