@@ -19,6 +19,7 @@
 //! all handles across daemon restarts, which is ordinary NFS behavior.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -75,9 +76,37 @@ impl IdTable {
     }
 }
 
+/// Cached child entries, summed across every cached directory, before
+/// the listing cache is dropped wholesale. A view root of ~37k entries
+/// is a few MB, so this is tens of MB at the ceiling; entries are
+/// derived from immutable snapshots, so a drop only ever costs a
+/// rebuild (see [`Listing`]).
+const LISTING_CACHE_ENTRIES: usize = 250_000;
+
+/// One directory's children, already sorted, with their fileids.
+///
+/// Built once per `(snapshot, path)` and kept: a snapshot is immutable
+/// (docs/views.md), so a listing over one can never go stale and needs
+/// no invalidation. The cache is a performance device ONLY —
+/// [`IdTable`] mints ids deterministically, so a rebuild after a drop
+/// yields the identical entries under the identical cookies. Dropping
+/// it can slow a walk; it can never break one.
+struct Listing {
+    entries: Vec<(fileid3, Child)>,
+    /// cookie -> position. Resuming a walk was a linear scan of this
+    /// vector, which is what made a full enumeration quadratic in the
+    /// directory (D127).
+    by_id: HashMap<fileid3, usize>,
+}
+
 pub(crate) struct NfsFs {
     app: Arc<App>,
     ids: Mutex<IdTable>,
+    /// Child listings by `(snapshot, path)` — see [`Listing`].
+    listings: Mutex<HashMap<(Blake3, String), Arc<Listing>>>,
+    /// Listings actually built from an index. A full enumeration costs
+    /// one; it used to cost one per READDIR call.
+    builds: AtomicU64,
 }
 
 impl NfsFs {
@@ -85,6 +114,8 @@ impl NfsFs {
         Self {
             app,
             ids: Mutex::new(IdTable::new()),
+            listings: Mutex::new(HashMap::new()),
+            builds: AtomicU64::new(0),
         }
     }
 
@@ -112,6 +143,68 @@ impl NfsFs {
         tokio::task::spawn_blocking(move || f(app))
             .await
             .map_err(|_| nfsstat3::NFS3ERR_SERVERFAULT)?
+    }
+
+    /// Mint every child's fileid under one lock hold and index them by
+    /// cookie.
+    fn materialize(&self, children: Vec<Child>) -> Listing {
+        let entries: Vec<(fileid3, Child)> = {
+            let mut ids = self
+                .ids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            children
+                .into_iter()
+                .map(|child| (ids.id_for(&child.node), child))
+                .collect()
+        };
+        let by_id = entries
+            .iter()
+            .enumerate()
+            .map(|(pos, (id, _))| (*id, pos))
+            .collect();
+        Listing { entries, by_id }
+    }
+
+    /// The children of `path` within `snapshot`, from cache or built.
+    async fn listing(&self, snapshot: Blake3, path: String) -> Result<Arc<Listing>, nfsstat3> {
+        let key = (snapshot, path);
+        if let Some(hit) = self
+            .listings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+        {
+            return Ok(Arc::clone(hit));
+        }
+        let (snapshot, path) = (key.0, key.1.clone());
+        let children = self
+            .blocking(move |app| {
+                let idx = vfs::snapshot_index(&app, snapshot).map_err(|e| map_lookup(&e))?;
+                if !idx.is_dir(&path) {
+                    return Err(nfsstat3::NFS3ERR_NOTDIR);
+                }
+                Ok(listing_nodes(&idx, &path))
+            })
+            .await?;
+        self.builds.fetch_add(1, Ordering::Relaxed);
+        let built = Arc::new(self.materialize(children));
+        let mut cache = self
+            .listings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cached: usize = cache.values().map(|l| l.entries.len()).sum();
+        if cached >= LISTING_CACHE_ENTRIES {
+            cache.clear(); // immutable entries: dropping only costs a rebuild
+        }
+        cache.insert(key, Arc::clone(&built));
+        Ok(built)
+    }
+
+    /// Listings built from an index since this filesystem opened.
+    #[cfg(test)]
+    fn listing_builds(&self) -> u64 {
+        self.builds.load(Ordering::Relaxed)
     }
 }
 
@@ -178,38 +271,27 @@ struct Child {
     mtime: u64,
 }
 
-/// A directory's children in deterministic (name-sorted) order.
-fn children_of(app: &App, node: &Node) -> Result<Vec<Child>, nfsstat3> {
-    match node {
-        Node::Root => {
-            let mut views = vfs::view_tags(app).map_err(|e| map_lookup(&e))?;
-            views.sort();
-            views
-                .into_iter()
-                .map(|(name, snapshot)| {
-                    let idx = vfs::snapshot_index(app, snapshot).map_err(|e| map_lookup(&e))?;
-                    Ok(Child {
-                        node: Node::View(name.clone()),
-                        name,
-                        is_dir: true,
-                        size: 4096,
-                        mtime: idx.created_at,
-                    })
-                })
-                .collect()
-        }
-        Node::View(name) => {
-            let idx = vfs::view_index(app, name).map_err(|e| map_lookup(&e))?;
-            Ok(listing_nodes(&idx, ""))
-        }
-        Node::Path(snapshot, path) => {
-            let idx = vfs::snapshot_index(app, *snapshot).map_err(|e| map_lookup(&e))?;
-            if !idx.is_dir(path) {
-                return Err(nfsstat3::NFS3ERR_NOTDIR);
-            }
-            Ok(listing_nodes(&idx, path))
-        }
-    }
+/// The export root's children: one directory per `view/` tag, in
+/// deterministic (name-sorted) order.
+///
+/// Never cached — tags are the one mutable thing under this mount, and
+/// the listing is O(#views).
+fn root_children(app: &App) -> Result<Vec<Child>, nfsstat3> {
+    let mut views = vfs::view_tags(app).map_err(|e| map_lookup(&e))?;
+    views.sort();
+    views
+        .into_iter()
+        .map(|(name, snapshot)| {
+            let idx = vfs::snapshot_index(app, snapshot).map_err(|e| map_lookup(&e))?;
+            Ok(Child {
+                node: Node::View(name.clone()),
+                name,
+                is_dir: true,
+                size: 4096,
+                mtime: idx.created_at,
+            })
+        })
+        .collect()
 }
 
 fn listing_nodes(idx: &ViewIndex, prefix: &str) -> Vec<Child> {
@@ -367,22 +449,33 @@ impl NFSFileSystem for NfsFs {
         start_after: fileid3,
         max_entries: usize,
     ) -> Result<ReadDirResult, nfsstat3> {
-        let dir = self.node(dirid)?;
-        let children = self.blocking(move |app| children_of(&app, &dir)).await?;
-        // Materialize ids, then window after `start_after`.
-        let all: Vec<(fileid3, Child)> = children
-            .into_iter()
-            .map(|child| (self.id_for(&child.node), child))
-            .collect();
+        let listing = match self.node(dirid)? {
+            Node::Root => {
+                let children = self.blocking(|app| root_children(&app)).await?;
+                self.builds.fetch_add(1, Ordering::Relaxed);
+                Arc::new(self.materialize(children))
+            }
+            Node::Path(snapshot, path) => self.listing(snapshot, path).await?,
+            Node::View(name) => {
+                let snapshot = self
+                    .blocking(move |app| {
+                        vfs::view_index(&app, &name)
+                            .map(|idx| idx.snapshot)
+                            .map_err(|e| map_lookup(&e))
+                    })
+                    .await?;
+                self.listing(snapshot, String::new()).await?
+            }
+        };
         let skip = if start_after == 0 {
             0
         } else {
-            match all.iter().position(|(id, _)| *id == start_after) {
+            match listing.by_id.get(&start_after) {
                 Some(pos) => pos + 1,
                 None => return Err(nfsstat3::NFS3ERR_BAD_COOKIE),
             }
         };
-        let window = &all[skip.min(all.len())..];
+        let window = &listing.entries[skip.min(listing.entries.len())..];
         let end = window.len() <= max_entries;
         let entries = window
             .iter()
@@ -530,23 +623,19 @@ mod tests {
         }
     }
 
-    /// Walk root → view → dir → file, read with offsets, paginate
-    /// readdir, refuse writes, and hold old-snapshot ids across a flip.
-    #[test]
-    fn trait_surface_over_a_real_snapshot() {
+    /// A daemon over a fresh tempdir, with `view/test` tagged at a
+    /// snapshot of whatever `build` puts in the store.
+    fn app_over(
+        build: impl FnOnce(&Store, &Db) -> Vec<ViewRow>,
+    ) -> (tempfile::TempDir, Arc<App>, Blake3) {
         let root = tempfile::tempdir().expect("tempdir");
         let store_root = root.path().join("store");
         let db_dir = root.path().join("db");
         std::fs::create_dir_all(&db_dir).expect("db dir");
-        let content = b"nfs served bytes!".as_slice();
-        let snap1 = {
+        let snapshot = {
             let store = Store::open(&store_root).expect("store");
             let db = Db::open(&db_dir).expect("db");
-            let rows = vec![
-                row(&store, &db, "Dir/a.bin", content),
-                row(&store, &db, "Dir/b.bin", b"bee"),
-                row(&store, &db, "top.bin", b"top"),
-            ];
+            let rows = build(&store, &db);
             mint_snapshot(&store, &db, rows, 1_780_000_000)
         };
         let app = App::open(&crate::Config {
@@ -559,12 +648,53 @@ mod tests {
             p2p: false,
         })
         .expect("app");
-        let fs = NfsFs::new(Arc::clone(&app));
-        let rt = tokio::runtime::Builder::new_current_thread()
+        (root, app, snapshot)
+    }
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("rt");
-        rt.block_on(async {
+            .expect("rt")
+    }
+
+    /// Every name a client sees walking `dir` in pages of `page`, plus
+    /// the number of READDIR calls it took.
+    async fn walk(fs: &NfsFs, dir: fileid3, page: usize) -> Result<(Vec<String>, u64), nfsstat3> {
+        let mut names = Vec::new();
+        let mut calls = 0;
+        let mut cookie = 0;
+        loop {
+            let result = fs.readdir(dir, cookie, page).await?;
+            calls += 1;
+            for entry in &result.entries {
+                names.push(String::from_utf8(entry.name.0.clone()).expect("utf8"));
+            }
+            if result.end {
+                return Ok((names, calls));
+            }
+            cookie = result
+                .entries
+                .last()
+                .expect("a non-final page is non-empty")
+                .fileid;
+        }
+    }
+
+    /// Walk root → view → dir → file, read with offsets, paginate
+    /// readdir, refuse writes, and hold old-snapshot ids across a flip.
+    #[test]
+    fn trait_surface_over_a_real_snapshot() {
+        let content = b"nfs served bytes!".as_slice();
+        let (_root, app, snap1) = app_over(|store, db| {
+            vec![
+                row(store, db, "Dir/a.bin", content),
+                row(store, db, "Dir/b.bin", b"bee"),
+                row(store, db, "top.bin", b"top"),
+            ]
+        });
+        let fs = NfsFs::new(Arc::clone(&app));
+        rt().block_on(async {
             // walk down
             let view_id = fs
                 .lookup(ROOT_ID, &"test".as_bytes().into())
@@ -646,6 +776,47 @@ mod tests {
             assert_eq!(listing.entries[0].name.0, b"c.bin");
             let (bytes, eof) = fs.read(file_id, 0, 4096).await.expect("old id reads");
             assert_eq!((bytes.as_slice(), eof), (content, true));
+        });
+    }
+
+    /// D127: a full enumeration costs ONE child-list build, not one per
+    /// call. `listing_builds` is counted rather than timed so the bound
+    /// is exact — before D127 this was 256 builds of a 4,096-entry
+    /// directory, i.e. quadratic in the directory.
+    #[test]
+    fn a_full_view_root_walk_builds_one_listing() {
+        const SETS: usize = 4_096;
+        const PAGE: usize = 16;
+        let (_root, app, _snap) = app_over(|_store, _db| {
+            // Rows need no blobs behind them: readdir reads the
+            // manifest and never touches a byte of content.
+            (0..SETS)
+                .map(|i| {
+                    let path = format!("set{i:06}/rom.bin");
+                    ViewRow {
+                        hash: Blake3::compute(path.as_bytes()),
+                        path,
+                        size: 1024,
+                        seek: 0,
+                    }
+                })
+                .collect()
+        });
+        let fs = NfsFs::new(Arc::clone(&app));
+        rt().block_on(async {
+            let view_id = fs
+                .lookup(ROOT_ID, &"test".as_bytes().into())
+                .await
+                .expect("view");
+            let (names, calls) = walk(&fs, view_id, PAGE).await.expect("walk");
+            assert_eq!(names.len(), SETS, "every set, exactly once");
+            assert!(names.windows(2).all(|w| w[0] < w[1]), "sorted, no repeats");
+            assert_eq!(calls, (SETS / PAGE) as u64, "pages of PAGE");
+            assert_eq!(
+                fs.listing_builds(),
+                1,
+                "{calls} calls must not cost {calls} builds"
+            );
         });
     }
 }
