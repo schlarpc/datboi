@@ -39,6 +39,7 @@ pub mod iso9660;
 pub mod narc;
 pub mod nds;
 pub mod refine;
+pub mod unpack;
 pub mod wii;
 pub mod xdvdfs;
 pub mod zip;
@@ -125,6 +126,13 @@ pub struct IngestConfig {
     /// blob identifiable — leaves it confidently wrong. Without this the
     /// only way out was deleting `source_file` rows by hand.
     pub rescan: bool,
+    /// Treat containers as TRANSPORT (D123): every zip/7z/rar member
+    /// becomes a resident literal and the archive's own bytes are
+    /// dropped once they are all durable. Off by default — retention
+    /// is the default and the flag is where an operator makes a
+    /// byte-destroying residency decision, exactly as D121 ruled for
+    /// `bless --materialize`.
+    pub unpack: bool,
     /// How many files hash at once (D120). `0` derives it from the
     /// machine. The wall clock of an ingest is the `AliasHasher` chain
     /// — crc32 + md5 + sha1 + sha256 + blake3 over every byte, and md5
@@ -138,6 +146,7 @@ impl Default for IngestConfig {
         Self {
             skipper_cap: 256 * 1024 * 1024,
             rescan: false,
+            unpack: false,
             parallelism: 0,
         }
     }
@@ -179,6 +188,11 @@ pub struct IngestReport {
     pub members_claimed: usize,
     /// 7z/rar members extracted into the CAS as resident blobs.
     pub members_extracted: usize,
+    /// Transport containers dropped after their members landed
+    /// (D123, `--unpack`).
+    pub containers_unpacked: usize,
+    /// Archive bytes those drops reclaimed.
+    pub container_bytes_dropped: u64,
     pub detector_hits: usize,
     /// Files over `skipper_cap` that were not detector-evaluated.
     pub skipper_skipped_large: usize,
@@ -399,13 +413,13 @@ impl ExtractorRt {
 }
 
 /// One member a container gave up, already durable in the store.
-pub(crate) struct Extracted {
+pub struct Extracted {
     /// Position in the container's ordered member list — the stable
     /// identity a `container->member` recipe pins.
-    pub(crate) ix: u32,
-    pub(crate) name: String,
-    pub(crate) hash: Blake3,
-    pub(crate) aliases: AliasTuple,
+    pub ix: u32,
+    pub name: String,
+    pub hash: Blake3,
+    pub aliases: AliasTuple,
 }
 
 /// The `container->member` derive recipe an extracted member carries
@@ -916,6 +930,7 @@ impl<'a> Ingester<'a> {
         }
         let blob_id = self.record_resident_blob(&work.hash, &work.aliases)?;
         report.notes.extend(work.notes);
+        let had_no_skips = work.member_skips.is_empty();
         for (member, reason) in work.member_skips {
             report.member_skips.push((path.to_owned(), member, reason));
         }
@@ -925,24 +940,47 @@ impl<'a> Ingester<'a> {
         for err in work.errors {
             report.errors.push((path.to_owned(), err));
         }
+        // Whether this file was a transport container whose members all
+        // came out — the only thing `--unpack` may destroy (D123).
+        let mut is_container = false;
         match work.inside {
             Inside::Opaque => {}
             Inside::ChdV5(sha1) => {
                 self.db.insert_declared_chd_sha1(blob_id, &sha1)?;
                 report.chd_v5 += 1;
             }
-            Inside::Zip(members) => self.claim_zip_members(members, report)?,
+            Inside::Zip(members) => {
+                is_container = true;
+                self.claim_zip_members(members, report)?;
+            }
             Inside::Component(fmt) => {
                 let extracted = match fmt {
                     ExFormat::SevenZ => self.process_7z(&work.hash, report),
                     ExFormat::Rar => self.process_rar(&work.hash, report),
                 };
-                if let Err(e) = extracted {
-                    report.errors.push((path.to_owned(), e));
+                match extracted {
+                    Ok(()) => is_container = true,
+                    Err(e) => report.errors.push((path.to_owned(), e)),
                 }
             }
             Inside::Detector(claim) => self.claim_detector(*claim, report)?,
             Inside::SkipperTooLarge => report.skipper_skipped_large += 1,
+        }
+
+        // D123: the archive's bytes go only once every member it holds
+        // is durable. A container that skipped ANY member — encrypted,
+        // an unsupported method, a lying central directory — is kept
+        // whole: those bytes exist nowhere else, and a member nobody
+        // claimed is a member the drop gate cannot see. `drop_container`
+        // re-asks the gate against the index, which is the authority on
+        // what is still expected out of this container.
+        if self.config.unpack
+            && is_container
+            && had_no_skips
+            && let Some(bytes) = unpack::drop_container(self.store, self.db, blob_id, &work.hash)?
+        {
+            report.containers_unpacked += 1;
+            report.container_bytes_dropped += bytes;
         }
 
         // Last, so a crash before this point re-processes the file.
@@ -963,7 +1001,11 @@ impl<'a> Ingester<'a> {
         report: &mut IngestReport,
     ) -> Result<(), IngestError> {
         for member in members {
-            self.record_absent_blob(&member.tuple)?;
+            if member.resident {
+                self.record_resident_blob(&member.tuple.blake3, &member.tuple)?;
+            } else {
+                self.record_absent_blob(&member.tuple)?;
+            }
             match member.recipe {
                 // The empty member: the worker stored the empty literal
                 // so the identity is grounded, and assemble@1 rejects
@@ -1189,6 +1231,9 @@ enum Inside {
 struct MemberClaim {
     tuple: AliasTuple,
     recipe: Option<(Recipe, SeekClass)>,
+    /// The worker already published these bytes (D123 `--unpack`), so
+    /// the writer records a resident literal rather than a claim.
+    resident: bool,
 }
 
 /// A detector hit's dual identity (D9).
@@ -1234,7 +1279,13 @@ fn hash_file(
     if let Some(chd) = datboi_formats::chd::parse_header(&head[..head_len]) {
         work.inside = read_chd(&job.path, &chd, &mut work.notes);
     } else if zip::looks_like_zip(&head[..head_len]) {
-        match hash_zip_members(store, &hash, &mut blob, &mut work.member_skips) {
+        match hash_zip_members(
+            store,
+            &hash,
+            &mut blob,
+            &mut work.member_skips,
+            config.unpack,
+        ) {
             Ok(members) => work.inside = Inside::Zip(members),
             Err(e) => work.errors.push(e.to_string()),
         }
@@ -1289,6 +1340,7 @@ fn hash_zip_members(
     zip_hash: &Blake3,
     blob: &mut datboi_store_fs::Blob,
     skips: &mut Vec<(String, String)>,
+    unpack: bool,
 ) -> Result<Vec<MemberClaim>, IngestError> {
     let parsed = zip::parse_members(blob)?;
     for skip in parsed.skipped {
@@ -1296,6 +1348,25 @@ fn hash_zip_members(
     }
     let mut claims = Vec::with_capacity(parsed.members.len());
     for member in parsed.members {
+        // D123 `--unpack`: the member's bytes are PUBLISHED rather than
+        // merely hashed. Same single inflate, same alias tuple — the
+        // difference is only what survives it, and what survives is what
+        // makes the container droppable. The recipe below is minted
+        // either way: after the drop it is the provenance edge, and both
+        // of D123's doors have to converge on one graph.
+        if unpack {
+            match unpack::store_zip_member(store, blob, &member) {
+                Ok(tuple) => {
+                    claims.push(MemberClaim {
+                        recipe: zip_member_recipe(zip_hash, &member, &tuple)?,
+                        tuple,
+                        resident: true,
+                    });
+                }
+                Err(reason) => skips.push((member.name, reason)),
+            }
+            continue;
+        }
         let (tuple, sidecar) = match hash_member(blob, &member) {
             Ok(t) => t,
             Err(reason) => {
@@ -1321,35 +1392,57 @@ fn hash_zip_members(
             claims.push(MemberClaim {
                 tuple,
                 recipe: None,
+                resident: true,
             });
             continue;
         }
+        claims.push(MemberClaim {
+            recipe: zip_member_recipe(zip_hash, &member, &tuple)?,
+            tuple,
+            resident: false,
+        });
+    }
+    Ok(claims)
+}
 
-        let (op, seek, params) = match member.method {
-            Method::Stored => (
-                builtin("assemble@1"),
-                SeekClass::Affine,
-                AssembleParams {
-                    segments: vec![Segment::BlobRange {
-                        input_ix: 0,
-                        offset: member.data_start,
-                        len: member.comp_size,
-                    }],
-                }
-                .encode()
-                .map_err(|e| IngestError::Recipe(e.to_string()))?,
-            ),
-            Method::Deflate => (
-                builtin("deflate-decompress@1"),
-                SeekClass::Opaque,
-                DeflateWindow {
+/// The `container->member` recipe a zip member carries: an affine
+/// `assemble@1` slice for STORED, a windowed `deflate-decompress@1` for
+/// DEFLATE. `None` for the empty member — `assemble@1` rejects empty
+/// segment lists by design and there is nothing to rebuild.
+fn zip_member_recipe(
+    zip_hash: &Blake3,
+    member: &zip::Member,
+    tuple: &AliasTuple,
+) -> Result<Option<(Recipe, SeekClass)>, IngestError> {
+    if member.uncomp_size == 0 {
+        return Ok(None);
+    }
+    let (op, seek, params) = match member.method {
+        Method::Stored => (
+            builtin("assemble@1"),
+            SeekClass::Affine,
+            AssembleParams {
+                segments: vec![Segment::BlobRange {
+                    input_ix: 0,
                     offset: member.data_start,
                     len: member.comp_size,
-                }
-                .encode(),
-            ),
-        };
-        let recipe = Recipe {
+                }],
+            }
+            .encode()
+            .map_err(|e| IngestError::Recipe(e.to_string()))?,
+        ),
+        Method::Deflate => (
+            builtin("deflate-decompress@1"),
+            SeekClass::Opaque,
+            DeflateWindow {
+                offset: member.data_start,
+                len: member.comp_size,
+            }
+            .encode(),
+        ),
+    };
+    Ok(Some((
+        Recipe {
             op,
             inputs: vec![InputRef {
                 hash: *zip_hash,
@@ -1361,13 +1454,9 @@ fn hash_zip_members(
                 name: Some(member.name.clone()),
             }],
             params,
-        };
-        claims.push(MemberClaim {
-            tuple,
-            recipe: Some((recipe, seek)),
-        });
-    }
-    Ok(claims)
+        },
+        seek,
+    )))
 }
 
 /// Evaluate detectors against a whole buffered file; first match wins.

@@ -47,6 +47,7 @@ pub fn ingest(
     paths: &[PathBuf],
     mv: bool,
     rescan: bool,
+    unpack: bool,
     jobs: Option<usize>,
     json: bool,
 ) -> anyhow::Result<ExitCode> {
@@ -67,6 +68,9 @@ pub fn ingest(
     let report = Ingester::new(&env.store, &mut env.db, &detectors)
         .with_config(datboi_ingest::IngestConfig {
             rescan,
+            // D123: containers are transport, and this is where the
+            // operator says so.
+            unpack,
             // 0 = derive from the machine (D120).
             parallelism: jobs.unwrap_or(0),
             ..datboi_ingest::IngestConfig::default()
@@ -97,6 +101,9 @@ fn ingest_json(r: &IngestReport) -> serde_json::Value {
         "files_stored": r.files_stored,
         "files_already_present": r.files_already_present,
         "members_claimed": r.members_claimed,
+        "members_extracted": r.members_extracted,
+        "containers_unpacked": r.containers_unpacked,
+        "container_bytes_dropped": r.container_bytes_dropped,
         "detector_hits": r.detector_hits,
         "skipper_skipped_large": r.skipper_skipped_large,
         "errors": r.errors.iter()
@@ -116,6 +123,14 @@ fn print_ingest(r: &IngestReport) {
     println!("already present    {:>8}", r.files_already_present);
     println!("members claimed    {:>8}", r.members_claimed);
     println!("members extracted  {:>8}", r.members_extracted);
+    if r.containers_unpacked > 0 {
+        // D123: say what was destroyed, in the same breath as the count.
+        println!(
+            "containers dropped {:>8}   {} of transport reclaimed; members are the content now",
+            r.containers_unpacked,
+            human_bytes(r.container_bytes_dropped),
+        );
+    }
     println!("detector hits      {:>8}", r.detector_hits);
     if r.skipper_skipped_large > 0 {
         println!(

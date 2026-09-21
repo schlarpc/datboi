@@ -68,6 +68,18 @@ enum Command {
         /// previously unidentifiable blob identifiable.
         #[arg(long)]
         rescan: bool,
+        /// Treat every zip/7z/rar as TRANSPORT (D123): its members become
+        /// resident literals and the archive's own bytes are dropped
+        /// once they are all durable. No dat names an archive, so this
+        /// destroys packaging, not content — but it destroys it for
+        /// good: an archive is not reconstructible, which is the whole
+        /// reason its members had to be extracted. A container that
+        /// would not give up every member is kept whole, and one any
+        /// dat names is never touched. Costs the plaintext (on a MAME
+        /// set, members are ~2x the zips); buys O(range) reads instead
+        /// of a full re-inflate per read.
+        #[arg(long)]
+        unpack: bool,
         /// How many files to hash at once (D120). The wall clock of an
         /// ingest is the hash chain, not the disk: one core of it left
         /// seven idle adopting a 549 GB set over a mount ten times
@@ -710,9 +722,10 @@ fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
             paths,
             mv,
             rescan,
+            unpack,
             jobs,
             json,
-        } => cmds::ingest(cli.global.open()?, &paths, mv, rescan, jobs, json),
+        } => cmds::ingest(cli.global.open()?, &paths, mv, rescan, unpack, jobs, json),
         Command::Fetch { peer, wants, json } => {
             cmds::fetch_peer(cli.global.open()?, &peer, &wants, json)
         }
