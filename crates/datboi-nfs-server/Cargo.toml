@@ -21,3 +21,9 @@ num-traits = "0.2"
 # does not perturb anyone else's tokio.
 tokio = { workspace = true, features = ["io-util", "fs"] }
 tracing.workspace = true
+
+# Held to the same bar as the rest of the workspace: the fork contains
+# no `unsafe` (see the generation-number note in src/vfs.rs) and no
+# clippy findings, so it needs no exemption.
+[lints]
+workspace = true
