@@ -235,6 +235,269 @@ impl ExtractorRt {
         }
         .expect("ensure_extractor first")
     }
+
+    /// Decode every member of a stored container into the CAS, in
+    /// BATCHES (D89): one guest pass serves the whole batch, so each
+    /// solid block decodes once. Each member streams into the store
+    /// through its own bounded pipe with hashing on the consumer
+    /// threads, so decode overlaps hash+store; neither the container
+    /// nor any member is ever whole in memory.
+    ///
+    /// STORE ONLY — no `Db`. That is what lets the same routine serve
+    /// both doors D123 opens: ingest's writer records claims and mints
+    /// recipes afterwards, the unpack pass records residency afterwards,
+    /// and neither of them is in here.
+    pub(crate) fn members_into_store(
+        &self,
+        store: &Store,
+        fmt: ExFormat,
+        container_hash: &Blake3,
+    ) -> Result<Vec<Extracted>, String> {
+        let container_len = store
+            .len(StoreNs::Data, container_hash)
+            .map_err(|e| e.to_string())?
+            .unwrap_or(0);
+        let members = self.enumerate(store, fmt, container_hash, container_len)?;
+
+        // Fuel scales with the WHOLE archive per batch (container +
+        // every member), not the batch's slice: a solid folder decodes
+        // predecessors regardless of the request set, so the guest's
+        // instruction count follows total unpacked size. Same
+        // calibration as the exec replay path (fuel exists to kill
+        // runaways; generosity costs nothing — datboi_exec doc).
+        let total_unpacked = members
+            .iter()
+            .map(|m| m.size)
+            .fold(0u64, u64::saturating_add);
+        let fuel = datboi_exec::fuel_for_bytes(container_len.saturating_add(total_unpacked));
+
+        // The batch cap bounds consumer threads; solid decode restarts
+        // once per batch, which is the accepted cost of the cap.
+        const EXTRACT_BATCH: usize = 128;
+        let mut out = Vec::with_capacity(members.len());
+        for chunk in members.chunks(EXTRACT_BATCH) {
+            let stored = self.extract_batch_into_store(store, fmt, container_hash, chunk, fuel)?;
+            for (member, (hash, aliases)) in chunk.iter().zip(stored) {
+                if aliases.size != member.size {
+                    // The mismatched bytes already landed in the CAS
+                    // (streaming means we learn the size last); they are
+                    // content-addressed and unreferenced — GC fodder, not
+                    // corruption. Refuse the archive before minting any
+                    // claim to them.
+                    return Err(format!(
+                        "member {:?}: extractor produced {} bytes, header claims {}",
+                        member.name, aliases.size, member.size
+                    ));
+                }
+                out.push(Extracted {
+                    ix: member.ix,
+                    name: member.name.clone(),
+                    hash,
+                    aliases,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// The stored container as a seekable resource for the component —
+    /// a fresh handle per call (the extractor owns the cursor).
+    fn container_random(store: &Store, hash: &Blake3) -> Result<Box<dyn RangeRead>, String> {
+        let file = store
+            .get(StoreNs::Data, hash)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "container vanished from the store".to_owned())?;
+        Ok(Box::new(FileRandom::new(file).map_err(|e| e.to_string())?))
+    }
+
+    fn enumerate(
+        &self,
+        store: &Store,
+        fmt: ExFormat,
+        container: &Blake3,
+        container_len: u64,
+    ) -> Result<Vec<datboi_runtime::extractor::Member>, String> {
+        self.host
+            .enumerate_fueled(
+                &self.slot(fmt).component,
+                vec![Self::container_random(store, container)?],
+                &[],
+                // The header walk's work is bounded by the container
+                // itself (compressed headers decode whole).
+                Some(datboi_exec::fuel_for_bytes(container_len)),
+            )
+            .map_err(|e| e.to_string())
+    }
+
+    /// Decode a batch of members into the CAS in ONE guest pass (D89):
+    /// the extractor pushes each member into its own bounded pipe while
+    /// a consumer thread per pipe hashes and stores the pull side
+    /// (`put_new`). Members arrive in archive order, so at any moment
+    /// one pipe is filling and the rest of the consumers are blocked —
+    /// threads are cheap, the pipes bound memory. An extractor failure
+    /// surfaces to every reader as an error (never a clean EOF), so
+    /// `put_new` deletes its temps and publishes nothing.
+    fn extract_batch_into_store(
+        &self,
+        store: &Store,
+        fmt: ExFormat,
+        container: &Blake3,
+        members: &[datboi_runtime::extractor::Member],
+        fuel: u64,
+    ) -> Result<Vec<(Blake3, AliasTuple)>, String> {
+        let archive = Self::container_random(store, container)?;
+        let mut requests: Vec<(u32, Box<dyn std::io::Write + Send>)> = Vec::new();
+        let mut consumers_in = Vec::new();
+        for member in members {
+            let (w, r, h) = pipe::pipe();
+            requests.push((member.ix, Box::new(w)));
+            consumers_in.push((member, r, h));
+        }
+        std::thread::scope(|s| {
+            let guest = s.spawn(move || {
+                self.host.extract_fueled(
+                    &self.slot(fmt).component,
+                    vec![archive],
+                    &[],
+                    requests,
+                    Some(fuel),
+                )
+            });
+            let consumers: Vec<_> = consumers_in
+                .into_iter()
+                .map(|(member, r, h)| {
+                    let handle = s.spawn(move || {
+                        let (hash, aliases, _) = store
+                            .put_new(StoreNs::Data, r)
+                            .map_err(|e| format!("storing member {:?}: {e}", member.name))?;
+                        Ok::<_, String>((hash, aliases))
+                    });
+                    (handle, h)
+                })
+                .collect();
+            let guest_result = guest.join().expect("guest thread never panics");
+            // Verdict first, then finish: consumers blocked at
+            // channel-disconnect wait for it (the exec pipe-race fix).
+            for (_, h) in &consumers {
+                if let Err(e) = &guest_result {
+                    h.fail(format!("extractor failed: {e}"));
+                }
+                h.finish();
+            }
+            let mut stored = Vec::with_capacity(consumers.len());
+            for (handle, _) in consumers {
+                stored.push(handle.join().expect("consumer thread never panics"));
+            }
+            // The guest's own error explains a consumer failure better
+            // than the downstream pipe error does.
+            if let Err(e) = guest_result {
+                return Err(e.to_string());
+            }
+            stored.into_iter().collect()
+        })
+    }
+}
+
+/// One member a container gave up, already durable in the store.
+pub(crate) struct Extracted {
+    /// Position in the container's ordered member list — the stable
+    /// identity a `container->member` recipe pins.
+    pub(crate) ix: u32,
+    pub(crate) name: String,
+    pub(crate) hash: Blake3,
+    pub(crate) aliases: AliasTuple,
+}
+
+/// The `container->member` derive recipe an extracted member carries
+/// (D58/D110): re-run the format's pinned component over the container
+/// and ask for this member index. Opaque by construction — there is no
+/// windowed route into an LZMA solid block.
+///
+/// Minted whether or not the container is about to be dropped (D123):
+/// after a drop the route cannot fire, but it is the only record tying
+/// this rom to the archive it arrived in, the D21 fixpoint refuses to
+/// ground it (the container is `Absent`, so it never seeds
+/// `temp.grounded`), and `Executor::plan` returns the member's literal
+/// before it ever reads a recipe row.
+pub(crate) fn container_member_recipe(
+    fmt: ExFormat,
+    container_hash: &Blake3,
+    member: &Extracted,
+) -> Recipe {
+    Recipe {
+        op: Op::Wasm {
+            component: Blake3::compute(fmt.wasm()),
+            world: World::Extractor1,
+            export: World::Extractor1
+                .required_export()
+                .expect("extractor world fixes its export")
+                .into(),
+        },
+        inputs: vec![InputRef {
+            hash: *container_hash,
+            role: None,
+        }],
+        outputs: vec![OutputRef {
+            hash: member.hash,
+            size: member.aliases.size,
+            name: Some(member.name.clone()),
+        }],
+        params: ExtractorParams {
+            member_ix: member.ix,
+        }
+        .encode(),
+    }
+}
+
+/// Build the extractor host and compile + publish the format's pinned
+/// component (D58/D110), lazily. Returns the component blob the CALLER
+/// must index the first time it is published: the store write is
+/// content-addressed and safe from anywhere, the index row is not ours
+/// to write (D120 keeps every `Db` mutation on one thread).
+pub(crate) fn ensure_extractor_rt(
+    rt: &mut Option<ExtractorRt>,
+    store: &Store,
+    fmt: ExFormat,
+) -> Result<Option<(Blake3, u64)>, String> {
+    if rt.is_none() {
+        let host =
+            ExtractorHost::new(datboi_runtime::Limits::default()).map_err(|e| e.to_string())?;
+        *rt = Some(ExtractorRt {
+            host,
+            rar: None,
+            sevenz: None,
+        });
+    }
+    let rt = rt.as_mut().expect("just set");
+    let missing = match fmt {
+        ExFormat::Rar => rt.rar.is_none(),
+        ExFormat::SevenZ => rt.sevenz.is_none(),
+    };
+    if missing {
+        let component = rt.host.load(fmt.wasm()).map_err(|e| e.to_string())?;
+        let slot = ExtractorSlot {
+            component,
+            published: false,
+        };
+        match fmt {
+            ExFormat::Rar => rt.rar = Some(slot),
+            ExFormat::SevenZ => rt.sevenz = Some(slot),
+        }
+    }
+    let slot = match fmt {
+        ExFormat::Rar => rt.rar.as_mut().expect("just set"),
+        ExFormat::SevenZ => rt.sevenz.as_mut().expect("just set"),
+    };
+    if slot.published {
+        return Ok(None);
+    }
+    let wasm = fmt.wasm();
+    let hash = Blake3::compute(wasm);
+    store
+        .put(StoreNs::Data, hash, wasm)
+        .map_err(|e| e.to_string())?;
+    slot.published = true;
+    Ok(Some((hash, wasm.len() as u64)))
 }
 
 /// One file the walk decided is worth reading, handed to a worker.
@@ -772,14 +1035,16 @@ impl<'a> Ingester<'a> {
         self.extract_via_component(ExFormat::Rar, container_hash, report)
     }
 
-    /// The shared component-extraction path (D58 rar, D110 7z): decode
-    /// members in BATCHES (D89) — one guest pass serves the whole batch,
-    /// so each solid block decodes once (the single-member ABI made this
-    /// sweep O(n²) in solid archives). Each member streams into the CAS
-    /// through its own bounded pipe with hashing on the consumer threads,
-    /// so decode overlaps hash+store; neither the container nor any
-    /// member is ever whole in memory. Each non-empty member gains a
-    /// container→member derive recipe pinning the format's component.
+    /// The shared component-extraction path (D58 rar, D110 7z): the
+    /// members land resident in the store ([`ExtractorRt::members_into_store`]),
+    /// and the writer records what they MEAN — an alias-indexed resident
+    /// blob each, plus a container->member derive recipe pinning the
+    /// format's component.
+    ///
+    /// Under [`IngestConfig::unpack`] the recipes are still minted and
+    /// the container's bytes are then dropped by the caller (D123): the
+    /// recipe is the provenance edge from rom to archive, and both of
+    /// D123's doors have to converge on the same graph.
     fn extract_via_component(
         &mut self,
         fmt: ExFormat,
@@ -787,238 +1052,37 @@ impl<'a> Ingester<'a> {
         report: &mut IngestReport,
     ) -> Result<(), String> {
         self.ensure_extractor(fmt)?;
-        let container_len = self
-            .store
-            .len(StoreNs::Data, container_hash)
-            .map_err(|e| e.to_string())?
-            .unwrap_or(0);
-        let members = self.extractor_enumerate(fmt, container_hash, container_len)?;
+        let rt = self.extractor.as_ref().expect("ensure_extractor first");
+        let extracted = rt.members_into_store(self.store, fmt, container_hash)?;
+        for member in extracted {
+            self.record_resident_blob(&member.hash, &member.aliases)
+                .map_err(|e| e.to_string())?;
 
-        // Fuel scales with the WHOLE archive per batch (container +
-        // every member), not the batch's slice: a solid folder decodes
-        // predecessors regardless of the request set, so the guest's
-        // instruction count follows total unpacked size. Same
-        // calibration as the exec replay path (fuel exists to kill
-        // runaways; generosity costs nothing — datboi_exec doc).
-        let total_unpacked = members
-            .iter()
-            .map(|m| m.size)
-            .fold(0u64, u64::saturating_add);
-        let fuel = datboi_exec::fuel_for_bytes(container_len.saturating_add(total_unpacked));
-
-        // The batch cap bounds consumer threads; solid decode restarts
-        // once per batch, which is the accepted cost of the cap.
-        const EXTRACT_BATCH: usize = 128;
-        for chunk in members.chunks(EXTRACT_BATCH) {
-            let stored =
-                self.extractor_extract_batch_into_store(fmt, container_hash, chunk, fuel)?;
-            for (member, (member_hash, aliases)) in chunk.iter().zip(stored) {
-                if aliases.size != member.size {
-                    // The mismatched bytes already landed in the CAS
-                    // (streaming means we learn the size last); they are
-                    // content-addressed and unreferenced — GC fodder, not
-                    // corruption. Refuse the archive before minting any
-                    // claim to them.
-                    return Err(format!(
-                        "member {:?}: extractor produced {} bytes, header claims {}",
-                        member.name, aliases.size, member.size
-                    ));
-                }
-                self.record_resident_blob(&member_hash, &aliases)
+            // Mint the container->member derive recipe (makes the
+            // member evictable). Empty members need no recipe
+            // (nothing to rebuild).
+            if member.aliases.size > 0 {
+                let recipe = container_member_recipe(fmt, container_hash, &member);
+                mint_recipe(self.store, self.db, &recipe, SeekClass::Opaque)
                     .map_err(|e| e.to_string())?;
-
-                // Mint the container→member derive recipe (makes the
-                // member evictable). Empty members need no recipe
-                // (nothing to rebuild).
-                if member.size > 0 {
-                    let params = ExtractorParams {
-                        member_ix: member.ix,
-                    }
-                    .encode();
-                    let recipe = Recipe {
-                        op: Op::Wasm {
-                            component: Blake3::compute(fmt.wasm()),
-                            world: World::Extractor1,
-                            export: World::Extractor1
-                                .required_export()
-                                .expect("extractor world fixes its export")
-                                .into(),
-                        },
-                        inputs: vec![InputRef {
-                            hash: *container_hash,
-                            role: None,
-                        }],
-                        outputs: vec![OutputRef {
-                            hash: member_hash,
-                            size: member.size,
-                            name: Some(member.name.clone()),
-                        }],
-                        params,
-                    };
-                    mint_recipe(self.store, self.db, &recipe, SeekClass::Opaque)
-                        .map_err(|e| e.to_string())?;
-                }
-                report.members_extracted += 1;
             }
+            report.members_extracted += 1;
         }
         Ok(())
     }
 
     /// Lazily build the extractor host + compile the format's pinned
-    /// component, and publish the component into the store+index once per
-    /// sweep (recipes pin it by hash, so a later replay can load it).
+    /// component, and index its blob once per sweep (recipes pin it by
+    /// hash, so a later replay can load it). The store half is
+    /// [`ensure_extractor_rt`]; the index row is the writer's.
     fn ensure_extractor(&mut self, fmt: ExFormat) -> Result<(), String> {
-        if self.extractor.is_none() {
-            let host =
-                ExtractorHost::new(datboi_runtime::Limits::default()).map_err(|e| e.to_string())?;
-            self.extractor = Some(ExtractorRt {
-                host,
-                rar: None,
-                sevenz: None,
-            });
-        }
-        let rt = self.extractor.as_mut().expect("just set");
-        let missing = match fmt {
-            ExFormat::Rar => rt.rar.is_none(),
-            ExFormat::SevenZ => rt.sevenz.is_none(),
-        };
-        if missing {
-            let component = rt.host.load(fmt.wasm()).map_err(|e| e.to_string())?;
-            let slot = ExtractorSlot {
-                component,
-                published: false,
-            };
-            match fmt {
-                ExFormat::Rar => rt.rar = Some(slot),
-                ExFormat::SevenZ => rt.sevenz = Some(slot),
-            }
-        }
-        let published = match fmt {
-            ExFormat::Rar => rt.rar.as_ref().expect("just set").published,
-            ExFormat::SevenZ => rt.sevenz.as_ref().expect("just set").published,
-        };
-        if !published {
-            let wasm = fmt.wasm();
-            let hash = Blake3::compute(wasm);
-            self.store
-                .put(StoreNs::Data, hash, wasm)
-                .map_err(|e| e.to_string())?;
+        let published = ensure_extractor_rt(&mut self.extractor, self.store, fmt)?;
+        if let Some((hash, len)) = published {
             self.db
-                .upsert_blob(
-                    &hash,
-                    Some(wasm.len() as u64),
-                    IndexNs::Data,
-                    Residency::Resident,
-                )
+                .upsert_blob(&hash, Some(len), IndexNs::Data, Residency::Resident)
                 .map_err(|e| e.to_string())?;
-            let rt = self.extractor.as_mut().expect("just set");
-            match fmt {
-                ExFormat::Rar => rt.rar.as_mut().expect("just set").published = true,
-                ExFormat::SevenZ => rt.sevenz.as_mut().expect("just set").published = true,
-            }
         }
         Ok(())
-    }
-
-    /// The stored container as a seekable resource for the component —
-    /// a fresh handle per call (the extractor owns the cursor).
-    fn container_random(&self, hash: &Blake3) -> Result<Box<dyn RangeRead>, String> {
-        let file = self
-            .store
-            .get(StoreNs::Data, hash)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "rar container vanished from the store".to_owned())?;
-        Ok(Box::new(FileRandom::new(file).map_err(|e| e.to_string())?))
-    }
-
-    fn extractor_enumerate(
-        &self,
-        fmt: ExFormat,
-        container: &Blake3,
-        container_len: u64,
-    ) -> Result<Vec<datboi_runtime::extractor::Member>, String> {
-        let rt = self.extractor.as_ref().expect("ensure_extractor first");
-        rt.host
-            .enumerate_fueled(
-                &rt.slot(fmt).component,
-                vec![self.container_random(container)?],
-                &[],
-                // The header walk's work is bounded by the container
-                // itself (compressed headers decode whole).
-                Some(datboi_exec::fuel_for_bytes(container_len)),
-            )
-            .map_err(|e| e.to_string())
-    }
-
-    /// Decode a batch of members into the CAS in ONE guest pass (D89):
-    /// the extractor pushes each member into its own bounded pipe while
-    /// a consumer thread per pipe hashes and stores the pull side
-    /// (`put_new`). Members arrive in archive order, so at any moment
-    /// one pipe is filling and the rest of the consumers are blocked —
-    /// threads are cheap, the pipes bound memory. An extractor failure
-    /// surfaces to every reader as an error (never a clean EOF), so
-    /// `put_new` deletes its temps and publishes nothing.
-    fn extractor_extract_batch_into_store(
-        &self,
-        fmt: ExFormat,
-        container: &Blake3,
-        members: &[datboi_runtime::extractor::Member],
-        fuel: u64,
-    ) -> Result<Vec<(Blake3, AliasTuple)>, String> {
-        let rt = self.extractor.as_ref().expect("ensure_extractor first");
-        // Only the store crosses into the consumer threads — the rest of
-        // self (the sqlite handle) is not Sync.
-        let store = self.store;
-        let archive = self.container_random(container)?;
-        let mut requests: Vec<(u32, Box<dyn std::io::Write + Send>)> = Vec::new();
-        let mut consumers_in = Vec::new();
-        for member in members {
-            let (w, r, h) = pipe::pipe();
-            requests.push((member.ix, Box::new(w)));
-            consumers_in.push((member, r, h));
-        }
-        std::thread::scope(|s| {
-            let guest = s.spawn(move || {
-                rt.host.extract_fueled(
-                    &rt.slot(fmt).component,
-                    vec![archive],
-                    &[],
-                    requests,
-                    Some(fuel),
-                )
-            });
-            let consumers: Vec<_> = consumers_in
-                .into_iter()
-                .map(|(member, r, h)| {
-                    let handle = s.spawn(move || {
-                        let (hash, aliases, _) = store
-                            .put_new(StoreNs::Data, r)
-                            .map_err(|e| format!("storing member {:?}: {e}", member.name))?;
-                        Ok::<_, String>((hash, aliases))
-                    });
-                    (handle, h)
-                })
-                .collect();
-            let guest_result = guest.join().expect("guest thread never panics");
-            // Verdict first, then finish: consumers blocked at
-            // channel-disconnect wait for it (the exec pipe-race fix).
-            for (_, h) in &consumers {
-                if let Err(e) = &guest_result {
-                    h.fail(format!("extractor failed: {e}"));
-                }
-                h.finish();
-            }
-            let mut stored = Vec::with_capacity(consumers.len());
-            for (handle, _) in consumers {
-                stored.push(handle.join().expect("consumer thread never panics"));
-            }
-            // The guest's own error explains a consumer failure better
-            // than the downstream pipe error does.
-            if let Err(e) = guest_result {
-                return Err(e.to_string());
-            }
-            stored.into_iter().collect()
-        })
     }
 
     fn record_resident_blob(
