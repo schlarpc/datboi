@@ -13,6 +13,27 @@ web-ui.md (the nav ruling). History lives in git.
 
 Each of these wants its D entry before (or as) the code lands.
 
+- **Ingest is single threaded, and the wall clock is one core's hash
+  chain.** `Ingester::ingest` is a serial walk calling `process_file`
+  one file at a time against a single `&mut Db`; there is no
+  parallelism knob. Measured adopting a 549 GB MAME set (35,494 zips,
+  ~767 CHDs) on an 8-core EPYC 9124 over NFS: **142 MB/s, 8 files/s,
+  71% of ONE core**, ~1.2 h. The network is not the constraint — the
+  same mount does 1,519 MB/s on a cold sequential read, 10x what the
+  ingest consumes. The constraint is `AliasHasher`: every byte goes
+  through crc32 + md5 + sha1 + sha256 + blake3 serially (D2's full
+  tuple, because dats identify by the legacy digests and the store
+  addresses by blake3), and every zip member is then inflated and run
+  through the same five again. With SHA-NI and AVX-512 present, sha1,
+  sha256 and blake3 are each multi-GB/s; **md5 has no hardware path
+  and is roughly half the chain's cost on its own**. The obvious shape
+  is a worker pool hashing files in parallel feeding one DB-writing
+  thread — SQLite has a single writer under WAL anyway, so only the
+  hashing needs to fan out, and the sorted-order determinism the
+  report promises can be restored by ordering the commit queue rather
+  than the work. Worth ruling before the "10M small files" case in D36
+  stops being hypothetical: at this rate that corpus is days.
+
 - **`import_dat` is not atomic past the blob.** Its own comment
   promises a failed import "leaves no trace", and that holds for a
   malformed file (validation precedes storage) but not for one that
