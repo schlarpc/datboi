@@ -1747,6 +1747,12 @@ fn bless_pass_end_to_end() {
     assert_eq!(dry["selected"], 3);
     assert_eq!(dry["blessed"], 0);
     assert!(dry["dry_run"].as_bool().unwrap());
+    // The population is a straight index count, and the walk covered
+    // it: "nothing outstanding" is only ever claimed over a full walk.
+    assert_eq!(dry["population"], 3);
+    assert_eq!(dry["examined"], 3);
+    assert!(dry["walked_it_all"].as_bool().unwrap());
+    assert!(!dry["complete"].as_bool().unwrap());
     assert!(
         walk_ext(&u.store(), "obao4").is_empty(),
         "a dry run stores nothing"
@@ -1763,6 +1769,11 @@ fn bless_pass_end_to_end() {
     assert_eq!(run["jobs"], 2);
     assert_eq!(run["outstanding"], 0);
     assert_eq!(run["materialized"], 0, "bytes are not kept by default");
+    assert!(run["complete"].as_bool().unwrap());
+    assert_eq!(
+        run["population_after"], 3,
+        "blessing changes no residency, so the candidate count is untouched"
+    );
     assert_eq!(
         run["bytes"].as_u64().unwrap(),
         bodies.iter().map(|b| b.len() as u64).sum::<u64>()
@@ -1790,4 +1801,36 @@ fn bless_pass_end_to_end() {
         .success();
     let floored: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
     assert_eq!(floored["examined"], 0);
+    assert_eq!(floored["population"], 0);
+
+    // --materialize is NOT satisfied by the trees the run above left
+    // behind: its goal state is bytes. This is the shape that skipped
+    // 251 already-blessed-but-absent members on the live corpus.
+    let out = u
+        .cmd()
+        .args(["bless", "--materialize", "--json"])
+        .assert()
+        .success();
+    let mat: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(
+        mat["already_blessed"], 0,
+        "a sidecar is not a materialization"
+    );
+    assert_eq!(mat["materialized"], 3);
+    assert_eq!(mat["population"], 3);
+    assert_eq!(mat["population_after"], 0, "resident rows leave the set");
+    assert!(mat["complete"].as_bool().unwrap());
+
+    // The size suffix is powers of two: 16M means 16 MiB, and the floor
+    // is inclusive, so a blob of exactly that size is a candidate.
+    let out = u
+        .cmd()
+        .args(["bless", "--min-size", "195312", "--dry-run", "--json"])
+        .assert()
+        .success();
+    let exact: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(
+        exact["population"], 0,
+        "members are 200_000 bytes and already resident"
+    );
 }

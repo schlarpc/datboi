@@ -212,6 +212,10 @@ pub fn bless(env: &Env, args: &BlessArgs<'_>, json: bool) -> anyhow::Result<Exit
         println!(
             "{}",
             json!({
+                "population": report.population,
+                "population_after": report.population_after,
+                "walked_it_all": report.walked_it_all(),
+                "complete": report.complete(),
                 "examined": report.examined,
                 "already_blessed": report.already_blessed,
                 "resident": report.resident,
@@ -237,8 +241,9 @@ pub fn bless(env: &Env, args: &BlessArgs<'_>, json: bool) -> anyhow::Result<Exit
     }
     // Outstanding work is the "incomplete" exit code the audit lane
     // already uses: a --dry-run with work to do, a --limit that stopped
-    // short, or anything that refused to bless.
-    Ok(if report.is_clean() && report.outstanding() == 0 {
+    // short, anything that refused to bless — or a walk that did not
+    // cover the population it was handed.
+    Ok(if report.complete() {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
@@ -250,8 +255,25 @@ fn print_bless(
     opts: &datboi_exec::bless::BlessOptions,
     elapsed: Duration,
 ) {
+    println!(
+        "candidates         {:>8}   by a straight index count",
+        report.population
+    );
     println!("examined           {:>8}", report.examined);
-    println!("already blessed    {:>8}", report.already_blessed);
+    if !report.walked_it_all() {
+        // The one thing this command must never do is report success
+        // over a population it did not finish walking. A live daemon
+        // moving the corpus mid-run is legitimate; silence about it is
+        // not.
+        println!(
+            "INCOMPLETE WALK: examined {} of {} candidates — the population moved while the \
+             pass ran (a daemon ingesting, refining or serving). Re-run.",
+            report.examined, report.population
+        );
+    }
+    if report.already_blessed > 0 {
+        println!("already blessed    {:>8}", report.already_blessed);
+    }
     if report.resident > 0 {
         println!("resident (skipped) {:>8}", report.resident);
     }
@@ -270,6 +292,9 @@ fn print_bless(
             report.selected,
             human_bytes(report.selected_bytes)
         );
+        if report.complete() {
+            println!("nothing outstanding");
+        }
         return;
     }
     let secs = elapsed.as_secs_f64().max(0.001);
@@ -297,10 +322,19 @@ fn print_bless(
             report.outstanding()
         );
     }
+    // Candidates that remain after a run are not a failure: a route the
+    // D63 carve-out declines stays absent forever by design. Print the
+    // number so nobody has to infer it.
+    if report.population_after > 0 {
+        println!(
+            "still candidates   {:>8}   (carve-out routes stay absent by design)",
+            report.population_after
+        );
+    }
     for (hash, err) in &report.failed {
         println!("FAILED: {hash}: {err}");
     }
-    if report.is_clean() && report.outstanding() == 0 {
+    if report.complete() {
         println!("nothing outstanding");
     }
 }
