@@ -4058,6 +4058,28 @@ requests simultaneously holding one across a materialization in whatever
 case we have not found yet. Re-open it on a measurement of concurrent
 readers, not on this one.
 
+**Measured.** A synthetic corpus of 150 zips × 8 DEFLATE members ×
+4 MiB (1,200 members, 4.69 GiB of content, 2.3 GB of zips — a ~2:1
+ratio, the shape the MAME set shows), ingested, then stripped of the
+trees ingest built so every member is in the pre-amendment state. On an
+AMD Ryzen 7 5800X (8 cores / 16 threads), store on ZFS:
+
+| jobs | best wall | throughput | members/s |
+|------|-----------|------------|-----------|
+| 1    | 16.35 s   | 294 MiB/s  | 73        |
+| 16   | 1.83 s    | 2,620 MiB/s| 655       |
+
+**8.9x**, and the ratio is the stable part: across seven trials each the
+medians are 21.6 s and 2.46 s — 8.8x — while the absolutes move ±40%
+because the machine was shared with other work throughout (load average
+9–12). Per-thread throughput falls from 294 to 164 MiB/s at 16 threads,
+which is what SMT on a hash-and-inflate chain should look like. The
+intermediate points (2, 4, 8) were too contended on this box to report
+honestly. Scaled at the corpus this exists for, one core's 73
+members/s is ~24 minutes for 107,090 members and sixteen threads' 655
+is ~2.7 — against the ~8 hours the same blessings cost when a serial
+client pays for them one at a time inside its own reads.
+
 *Rejected:* blessing everything with a route by default (that is D63's
 rejected mandatory blessing, re-proposed with a CLI in front of it — a
 full pass over every TB-scale affine image for no served-byte
