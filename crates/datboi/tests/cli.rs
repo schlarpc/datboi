@@ -1957,4 +1957,16 @@ fn unpack_pass_end_to_end() {
         .args(["scrub", "--sample", "100"])
         .assert()
         .success();
+
+    // The literal-only tax tells the truth about what was bought: the
+    // members are now resident bytes nothing can rebuild, and their
+    // `container->member` recipes — kept as the provenance edge to an
+    // archive that is gone — must not be counted as coverage.
+    let out = u.cmd().args(["status", "--json"]).assert().success();
+    let status: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(
+        status["literal_only_bytes"].as_u64().unwrap(),
+        member_bytes + 4096,
+        "every unpacked member plus the loose rom, and not one archive byte"
+    );
 }

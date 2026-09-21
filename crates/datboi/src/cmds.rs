@@ -1990,16 +1990,31 @@ pub fn status(env: &Env, json: bool) -> anyhow::Result<ExitCode> {
     for t in tables {
         counts.push((t, table_count(t)?));
     }
-    // Literal-only bytes: resident data with no non-failed rebuild route.
-    // The number that sizes the "can't shrink this yet" tax (7z/rar
-    // containers, unanalyzed blobs) — watch it fall as analyzers land.
+    // Literal-only bytes: resident data with no non-failed rebuild route
+    // that could actually FIRE. The number that sizes the "can't shrink
+    // this yet" tax (7z/rar containers, unanalyzed blobs) — watch it
+    // fall as analyzers land.
+    //
+    // "Could fire" is one level of the D21 fixpoint, not zero: a recipe
+    // row whose input is Absent is a claim about content, not a route
+    // to bytes. D123 makes that distinction load-bearing — an unpacked
+    // member keeps its `container->member` recipe as the provenance
+    // edge to an archive that no longer exists, and counting that as
+    // coverage would under-report the very tax this number names. One
+    // level, not the whole fixpoint, because this is a status line and
+    // the fixpoint is a corpus-wide pass; EvictedCovered inputs count
+    // (they have a route of their own, by definition).
     let literal_only: i64 = conn.query_row(
         "SELECT COALESCE(SUM(b.size), 0) FROM blob b
          WHERE b.namespace = 0 AND b.residency = 0
            AND NOT EXISTS (
              SELECT 1 FROM recipe_output ro
              JOIN recipe r ON r.recipe_id = ro.recipe_id
-             WHERE ro.blob_id = b.blob_id AND r.verify != 2)",
+             WHERE ro.blob_id = b.blob_id AND r.verify != 2
+               AND NOT EXISTS (
+                 SELECT 1 FROM recipe_input ri
+                 JOIN blob ib ON ib.blob_id = ri.blob_id
+                 WHERE ri.recipe_id = r.recipe_id AND ib.residency = 2))",
         [],
         |r| r.get(0),
     )?;
