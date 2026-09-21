@@ -20,6 +20,43 @@ fn blob(db: &Db, seed: &[u8], residency: Residency) -> i64 {
         .expect("upsert")
 }
 
+/// Like [`recipe`], but each output carries the size the recipe CLAIMS —
+/// which is the only size a blob whose bytes are absent may have.
+fn sized_recipe(db: &mut Db, seed: &[u8], inputs: &[i64], outputs: &[(i64, u64)]) -> i64 {
+    let recipe_blob = db
+        .upsert_blob(
+            &Blake3::compute(seed),
+            Some(128),
+            Namespace::Meta,
+            Residency::Resident,
+        )
+        .expect("recipe blob");
+    let ins: Vec<(u32, i64, Option<&str>)> = inputs
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| (u32::try_from(i).unwrap(), b, None))
+        .collect();
+    let outs: Vec<(u32, i64, u64, Option<&str>)> = outputs
+        .iter()
+        .enumerate()
+        .map(|(i, &(b, size))| (u32::try_from(i).unwrap(), b, size, None))
+        .collect();
+    let recipe_id = db
+        .insert_recipe(&NewRecipe {
+            blob_id: recipe_blob,
+            op_kind: OpKind::Builtin,
+            op_name: "assemble@1",
+            seek_class: SeekClass::Affine,
+            source: RecipeSource::LocalIngest,
+            inputs: &ins,
+            outputs: &outs,
+        })
+        .expect("insert recipe");
+    db.set_verify_state(recipe_id, VerifyAdvance::Verified, 1)
+        .expect("to verified");
+    recipe_id
+}
+
 /// A minimal recipe row: `inputs -> outputs`, already at the given verify
 /// state (walking the legal transition chain to get there).
 fn recipe(db: &mut Db, seed: &[u8], inputs: &[i64], outputs: &[i64], state: VerifyState) -> i64 {
@@ -1639,8 +1676,9 @@ fn bless_candidates_are_absent_derived_blobs_over_the_threshold() {
         GROUP * 20,
         Residency::EvictedCovered,
     );
-    // At or under one group: empty outboard by construction. The `>`
-    // matters — a blob of exactly GROUP bytes needs no tree.
+    // At or under one group: empty outboard by construction. The pass
+    // expresses that by passing GROUP + 1 as its INCLUSIVE floor — the
+    // query's own floor has no off-by-one to rely on.
     let exactly_one_group = sized(&db, b"one-group", GROUP, Residency::Absent);
     // Resident: its bytes are here, so nothing has to be materialized.
     let resident = sized(&db, b"resident-member", GROUP * 20, Residency::Resident);
@@ -1676,7 +1714,7 @@ fn bless_candidates_are_absent_derived_blobs_over_the_threshold() {
     sized(&db, b"no-route", GROUP * 20, Residency::Absent);
 
     let page = db
-        .bless_candidates_after(0, GROUP, 100)
+        .bless_candidates_after(0, GROUP + 1, 100)
         .expect("candidates");
     let mut got: Vec<(Blake3, u64)> = page.iter().map(|(_, h, size)| (*h, *size)).collect();
     let mut want = vec![
@@ -1689,10 +1727,10 @@ fn bless_candidates_are_absent_derived_blobs_over_the_threshold() {
 
     // Keyset paging: a page of one, then resume past its cursor, is the
     // same set in the same order — the pass never pins a snapshot.
-    let first = db.bless_candidates_after(0, GROUP, 1).expect("page 1");
+    let first = db.bless_candidates_after(0, GROUP + 1, 1).expect("page 1");
     assert_eq!(first.len(), 1);
     let rest = db
-        .bless_candidates_after(first[0].0, GROUP, 100)
+        .bless_candidates_after(first[0].0, GROUP + 1, 100)
         .expect("page 2");
     let paged: Vec<Blake3> = first.iter().chain(&rest).map(|(_, h, _)| *h).collect();
     assert_eq!(
@@ -1701,8 +1739,177 @@ fn bless_candidates_are_absent_derived_blobs_over_the_threshold() {
         "paging reproduces the single-page order exactly"
     );
     assert!(
-        db.bless_candidates_after(page.last().expect("rows").0, GROUP, 100)
+        db.bless_candidates_after(page.last().expect("rows").0, GROUP + 1, 100)
             .expect("past the end")
             .is_empty()
     );
+
+    // The count twin sees the same population, by construction (one SQL
+    // predicate, two readers) — which is what makes "the pass examined
+    // fewer rows than a straight count" an answerable question.
+    assert_eq!(
+        db.bless_candidate_count(GROUP + 1).expect("count"),
+        page.len() as u64
+    );
+}
+
+/// The inclusive-floor bug, pinned: `--min-size 16M` must INCLUDE a
+/// blob of exactly 16 MiB. An exclusive floor dropped every blob of
+/// exactly the requested size, and rom sizes are powers of two — so on
+/// a real corpus that is a systematic hole, not an edge case.
+#[test]
+fn the_bless_floor_is_inclusive() {
+    let (_dir, mut db) = open_db();
+    const MIB16: u64 = 16 * 1024 * 1024;
+
+    let input = db
+        .upsert_blob(
+            &Blake3::compute(b"container"),
+            Some(MIB16 * 4),
+            Namespace::Data,
+            Residency::Resident,
+        )
+        .expect("upsert");
+    for (seed, size) in [
+        (b"under".as_slice(), MIB16 - 1),
+        (b"exactly".as_slice(), MIB16),
+        (b"over".as_slice(), MIB16 + 1),
+    ] {
+        let out = db
+            .upsert_blob(
+                &Blake3::compute(seed),
+                Some(size),
+                Namespace::Data,
+                Residency::Absent,
+            )
+            .expect("upsert");
+        recipe(
+            &mut db,
+            format!("route-{out}").as_bytes(),
+            &[input],
+            &[out],
+            VerifyState::Verified,
+        );
+    }
+
+    let mut got: Vec<Blake3> = db
+        .bless_candidates_after(0, MIB16, 100)
+        .expect("candidates")
+        .into_iter()
+        .map(|(_, h, _)| h)
+        .collect();
+    let mut want = vec![Blake3::compute(b"exactly"), Blake3::compute(b"over")];
+    got.sort_unstable_by_key(|h| h.0);
+    want.sort_unstable_by_key(|h| h.0);
+    assert_eq!(got, want, "exactly-at-the-floor must be included");
+    assert_eq!(db.bless_candidate_count(MIB16).expect("count"), 2);
+}
+
+/// `blob.size` records STORE knowledge, and a candidate's bytes are by
+/// definition not local — `ensure_blob` inserts referenced-but-
+/// unindexed blobs with no size at all. The size the RECIPE claims is
+/// what keeps such a row visible to the pass.
+#[test]
+fn a_candidate_whose_size_only_the_recipe_knows_is_still_a_candidate() {
+    let (_dir, mut db) = open_db();
+    const BIG: u64 = 1 << 20;
+
+    let input = db
+        .upsert_blob(
+            &Blake3::compute(b"src"),
+            Some(BIG * 4),
+            Namespace::Data,
+            Residency::Resident,
+        )
+        .expect("upsert");
+    // No size, and Absent — exactly `ensure_blob`'s shape.
+    let out = db
+        .upsert_blob(
+            &Blake3::compute(b"sizeless"),
+            None,
+            Namespace::Data,
+            Residency::Absent,
+        )
+        .expect("upsert");
+    sized_recipe(&mut db, b"claiming-route", &[input], &[(out, BIG)]);
+
+    assert!(
+        db.blob_by_hash(&Blake3::compute(b"sizeless"))
+            .expect("q")
+            .expect("row")
+            .size
+            .is_none(),
+        "precondition: the blob row really has no size"
+    );
+    let got = db.bless_candidates_after(0, BIG, 100).expect("candidates");
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].1, Blake3::compute(b"sizeless"));
+    assert_eq!(got[0].2, BIG, "the claimed size is what the pass budgets");
+    assert_eq!(db.bless_candidate_count(BIG).expect("count"), 1);
+}
+
+/// Paging is exhaustive across page boundaries, and identical SIZES do
+/// not make a boundary lose a row: `blob_id` is the cursor and it is
+/// unique, so there are no ties for a boundary to straddle. 300 rows
+/// walked one, seven, and exactly-a-page at a time must each reproduce
+/// the single-page answer.
+#[test]
+fn keyset_paging_loses_nothing_across_boundaries_or_ties() {
+    let (_dir, mut db) = open_db();
+    const N: usize = 300;
+    const SIZE: u64 = 1 << 20;
+
+    let input = db
+        .upsert_blob(
+            &Blake3::compute(b"one-container"),
+            Some(SIZE * 8),
+            Namespace::Data,
+            Residency::Resident,
+        )
+        .expect("upsert");
+    for i in 0..N {
+        // EVERY candidate is the same size: if the cursor ever keyed on
+        // anything but blob_id, a page boundary here would drop rows.
+        let out = db
+            .upsert_blob(
+                &Blake3::compute(format!("member-{i:04}").as_bytes()),
+                Some(SIZE),
+                Namespace::Data,
+                Residency::Absent,
+            )
+            .expect("upsert");
+        recipe(
+            &mut db,
+            format!("route-{i:04}").as_bytes(),
+            &[input],
+            &[out],
+            VerifyState::Verified,
+        );
+    }
+
+    let whole = db
+        .bless_candidates_after(0, SIZE, 10_000)
+        .expect("one page");
+    assert_eq!(whole.len(), N);
+    assert_eq!(db.bless_candidate_count(SIZE).expect("count"), N as u64);
+
+    for page_size in [1, 7, 299, 300, 301] {
+        let mut paged = Vec::new();
+        let mut cursor = 0i64;
+        loop {
+            let page = db
+                .bless_candidates_after(cursor, SIZE, page_size)
+                .expect("page");
+            let Some((last, _, _)) = page.last() else {
+                break;
+            };
+            cursor = *last;
+            assert!(page.len() <= page_size, "LIMIT is respected");
+            paged.extend(page);
+        }
+        assert_eq!(
+            paged, whole,
+            "paging at {page_size} reproduced the whole set"
+        );
+    }
 }

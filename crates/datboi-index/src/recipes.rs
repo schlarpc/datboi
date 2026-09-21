@@ -113,6 +113,31 @@ pub struct RecipeRow {
     pub source: RecipeSource,
 }
 
+/// The D121 blessing-candidate predicate, as a subquery yielding
+/// `(blob_id, hash, size)`. Shared verbatim by the paging read and the
+/// count twin so the two can never disagree about the population —
+/// "the pass examined fewer rows than a straight count" is a question
+/// the operator must be able to answer, and one SQL string is how.
+///
+/// `size` is COALESCEd over the claim: `blob.size` records STORE
+/// knowledge (see `ensure_blob`, which inserts referenced-but-unindexed
+/// blobs with no size at all), and the whole point of a candidate here
+/// is that its bytes are NOT local. A row whose size only the recipe
+/// knows is still a blob a read would have to materialize.
+const BLESS_CANDIDATE_SQL: &str = "SELECT blob_id, hash, size FROM (
+       SELECT b.blob_id AS blob_id, b.hash AS hash,
+              COALESCE(b.size, (
+                SELECT MAX(ro.size) FROM recipe_output ro
+                JOIN recipe r ON r.recipe_id = ro.recipe_id
+                WHERE ro.blob_id = b.blob_id AND r.verify != 2)) AS size
+       FROM blob b
+       WHERE b.namespace = 0 AND b.residency != 0
+         AND EXISTS (
+           SELECT 1 FROM recipe_output ro
+           JOIN recipe r ON r.recipe_id = ro.recipe_id
+           WHERE ro.blob_id = b.blob_id AND r.verify != 2))
+     WHERE size >= :min_size";
+
 impl Db {
     pub fn insert_recipe(&mut self, new: &NewRecipe<'_>) -> Result<i64, IndexError> {
         let tx = self.cache.transaction()?;
@@ -705,10 +730,18 @@ impl Db {
     }
 
     /// D121 blessing candidates: Data-namespace blobs whose bytes are
-    /// NOT local, that are bigger than `min_size`, and that at least one
+    /// NOT local, at least `min_size` bytes, and that at least one
     /// non-Failed recipe claims to produce — every blob whose first read
     /// would have to materialize a route. Up to `limit` rows with
     /// `blob_id` past `after`, in `blob_id` order.
+    ///
+    /// `min_size` is INCLUSIVE. It was exclusive once, and that quietly
+    /// dropped every blob of exactly the requested size — which on a rom
+    /// corpus is not a rounding error but a whole class: rom sizes are
+    /// powers of two, so `--min-size 16M` excluded every 16 MiB rom
+    /// there is. The caller supplies the chunk-group rule by passing
+    /// `GROUP_BYTES + 1` as its floor, not by relying on an off-by-one
+    /// here.
     ///
     /// Paged by keyset rather than streamed through a callback ON
     /// PURPOSE: the pass interleaves its candidate walk with minutes of
@@ -718,7 +751,9 @@ impl Db {
     /// and a bounded buffer (`limit` rows), and nothing about the pass
     /// needs a consistent snapshot: a blob someone else blesses between
     /// pages is caught by the store check, and one claimed after the
-    /// cursor passes it is simply the next run's work.
+    /// cursor passes it is simply the next run's work. `blob_id` is
+    /// unique, so the cursor has no ties to straddle — sizes and hashes
+    /// may repeat freely without a page boundary losing a row.
     ///
     /// This is deliberately a COARSE filter. It cannot tell whether a
     /// sidecar already exists (D109 dropped `blob.obao`; the store owns
@@ -727,11 +762,6 @@ impl Db {
     /// decides that on the PLANNED route, which is the same predicate
     /// `serve_range` consults. A second definition here would drift from
     /// the one that decides what actually gets served.
-    ///
-    /// `min_size` is the caller's chunk-group threshold: blobs at or
-    /// under one bao group have an empty outboard by construction and
-    /// need no blessing (which is exactly the fact that hid the D63
-    /// amendment's bug for months).
     ///
     /// # Errors
     /// Query failures.
@@ -743,26 +773,40 @@ impl Db {
     ) -> Result<Vec<(i64, Blake3, u64)>, IndexError> {
         let min = i64::try_from(min_size).unwrap_or(i64::MAX);
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let mut stmt = self.cache().prepare_cached(
-            "SELECT b.blob_id, b.hash, b.size FROM blob b
-             WHERE b.blob_id > ?1 AND b.namespace = 0 AND b.residency != 0 AND b.size > ?2
-               AND EXISTS (
-                 SELECT 1 FROM recipe_output ro
-                 JOIN recipe r ON r.recipe_id = ro.recipe_id
-                 WHERE ro.blob_id = b.blob_id AND r.verify != 2)
-             ORDER BY b.blob_id
-             LIMIT ?3",
-        )?;
+        let mut stmt = self.cache().prepare_cached(&format!(
+            "{BLESS_CANDIDATE_SQL} AND blob_id > :after ORDER BY blob_id LIMIT :limit"
+        ))?;
         let rows = stmt
-            .query_map([after, min, limit], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    Blake3(row.get::<_, [u8; 32]>(1)?),
-                    u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
-                ))
-            })?
+            .query_map(
+                rusqlite::named_params! {":min_size": min, ":after": after, ":limit": limit},
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        Blake3(row.get::<_, [u8; 32]>(1)?),
+                        u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                    ))
+                },
+            )?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// Count twin of [`Self::bless_candidates_after`] — the same
+    /// predicate, so "the pass walked all of it" is checkable rather
+    /// than asserted. The pass reads this before it starts and again
+    /// when it finishes; a gap between the two is drift on a live
+    /// daemon, and the report says so instead of claiming completion.
+    ///
+    /// # Errors
+    /// Query failures.
+    pub fn bless_candidate_count(&self, min_size: u64) -> Result<u64, IndexError> {
+        let min = i64::try_from(min_size).unwrap_or(i64::MAX);
+        let count: i64 = self.cache().query_row(
+            &format!("SELECT COUNT(*) FROM ({BLESS_CANDIDATE_SQL})"),
+            rusqlite::named_params! {":min_size": min},
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(count).unwrap_or(0))
     }
 
     /// A rebuild route's inputs in position (coverage) order, each with

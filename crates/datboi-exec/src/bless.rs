@@ -112,11 +112,15 @@ impl BlessOptions {
         std::thread::available_parallelism().map_or(1, NonZeroUsize::get)
     }
 
-    /// The candidate floor actually applied: never below one bao group,
-    /// since a blob under one has no tree to build.
+    /// The INCLUSIVE candidate floor actually applied. One bao group is
+    /// the hard minimum — a blob at or under one has an empty outboard
+    /// by construction — so the floor is `GROUP_BYTES + 1`, expressed
+    /// HERE rather than as an off-by-one in the query. `--min-size 16M`
+    /// must mean "16 MiB and up", and it once meant "strictly more than
+    /// 16 MiB", which silently excluded every 16 MiB rom there is.
     #[must_use]
     pub fn floor(&self) -> u64 {
-        self.min_size.max(obao::GROUP_BYTES)
+        self.min_size.max(obao::GROUP_BYTES + 1)
     }
 }
 
