@@ -160,18 +160,13 @@ fn xdvdfs_sweep_swaps_evicts_and_serves_ranges_through_the_filler() {
         "honest component stays trusted"
     );
 
-    // The filler blob itself streams through its zero-input route. A
-    // direct RANGE of it is refused (D49: recipe-served ranges verify
-    // against the output's outboard, and the filler was never
-    // materialized to earn one) — the disc's ranges above are the real
-    // consumer, verified against the disc's own tree.
-    assert!(
-        matches!(
-            exec.serve_range(&db, &filler_hash, 4135 * SECTOR - 8, 16),
-            Err(datboi_exec::ExecError::MissingOutboard(_))
-        ),
-        "an unmaterialized generated blob has no outboard to verify ranges against"
-    );
+    // The filler blob itself streams through its zero-input route. It
+    // was never materialized, so it has no outboard and its generated
+    // route is not affine — before the D63 amendment a direct RANGE of
+    // it was refused outright. Now the read blesses it first and
+    // verifies against the fresh tree (D49 proper); the disc's ranges
+    // above remain the real consumer, verified against the disc's own
+    // tree either way.
     let mut all = Vec::new();
     exec.open_stream(&db, &filler_hash)
         .expect("route")
@@ -179,6 +174,24 @@ fn xdvdfs_sweep_swaps_evicts_and_serves_ranges_through_the_filler() {
         .expect("read");
     assert_eq!(all.len() as u64, filler_len);
     assert_eq!(Blake3::compute(&all), filler_hash);
+    assert_eq!(
+        store.get_obao(StoreNs::Data, &filler_hash).expect("q"),
+        None,
+        "sequential streaming mints nothing"
+    );
+    let at = 4135 * SECTOR - 8;
+    let window = exec
+        .serve_range(&db, &filler_hash, at, 16)
+        .expect("blessed on demand, then verified");
+    let lo = usize::try_from(at).expect("fits");
+    assert_eq!(window, &all[lo..lo + 16]);
+    assert!(
+        store
+            .get_obao(StoreNs::Data, &filler_hash)
+            .expect("q")
+            .is_some(),
+        "the range read left the tree behind"
+    );
 
     // A second pass finds nothing to do.
     let again = exec.swap_covered(&mut db).expect("swap phase");

@@ -290,6 +290,85 @@ fn ingest_leaves_a_tree_for_the_non_affine_member_only() {
     assert!(!w.sidecar_path(&tiny).exists());
 }
 
+/// The serve half (D63 amendment B), which is what the 107,090 members
+/// already in the field need: sidecar absent → the read still succeeds
+/// → the sidecar is there afterwards, paid for once.
+#[test]
+fn a_member_with_no_tree_blesses_itself_on_demand() {
+    let w = ingest_fixture();
+    let hash = World::hash(&w.deflate);
+
+    // Reproduce a pre-fix ingest exactly: the claim and its recipe
+    // exist, the bytes do not, and no tree was ever built.
+    fs::remove_file(w.sidecar_path(&hash)).expect("un-bless");
+    assert_eq!(
+        w.store.get_obao(StoreNs::Data, &hash).expect("q"),
+        None,
+        "precondition: this is the state that returned MissingOutboard"
+    );
+
+    let exec = w.exec();
+    let got = exec
+        .serve_range(&w.db, &hash, 100_000, 5_000)
+        .expect("on-demand blessing serves the range");
+    assert_eq!(got, &w.deflate[100_000..105_000]);
+
+    let sidecar = w
+        .store
+        .get_obao(StoreNs::Data, &hash)
+        .expect("q")
+        .expect("the read left a tree behind");
+    let (_, expected) = obao::compute(&w.deflate[..], BIG_LEN as u64).expect("compute");
+    assert_eq!(sidecar, expected);
+
+    // And it stays paid for: every other range now reads off the tree.
+    assert_serves(&exec, &w.db, &hash, &w.deflate, "blessed deflate member");
+}
+
+/// The herd: several readers hit the same cold member at once, which
+/// is what an NFS client's readahead looks like. `put_obao` is
+/// temp+fsync+rename so a torn sidecar is impossible either way, and
+/// the per-hash gate keeps the redundant materializations from
+/// monopolizing the read path — both readers must come back with the
+/// right bytes and leave one valid tree.
+#[test]
+fn concurrent_cold_reads_of_one_member_agree() {
+    let w = ingest_fixture();
+    let hash = World::hash(&w.deflate);
+    fs::remove_file(w.sidecar_path(&hash)).expect("un-bless");
+
+    let exec = w.exec();
+    let db_dir = w.dir.path().to_owned();
+    let want = &w.deflate;
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..4u64)
+            .map(|i| {
+                let exec = &exec;
+                let db_dir = db_dir.clone();
+                s.spawn(move || {
+                    // One connection each: `Db` is per-thread by
+                    // construction (D93's read pool is four of these).
+                    let db = Db::open_read_only(&db_dir).expect("reader");
+                    let at = i * 40_000;
+                    (at, exec.serve_range(&db, &hash, at, 9_000).expect("range"))
+                })
+            })
+            .collect();
+        for h in handles {
+            let (at, got) = h.join().expect("thread");
+            let lo = usize::try_from(at).expect("fits");
+            assert_eq!(got, &want[lo..lo + 9_000], "racing read at {at}");
+        }
+    });
+
+    let (_, expected) = obao::compute(&w.deflate[..], BIG_LEN as u64).expect("compute");
+    assert_eq!(
+        w.store.get_obao(StoreNs::Data, &hash).expect("q"),
+        Some(expected),
+        "exactly one intact tree survives the race"
+    );
+}
+
 /// The carve-out is untouched: a STORED member has no tree and needs
 /// none — D63's affine path still serves it.
 #[test]

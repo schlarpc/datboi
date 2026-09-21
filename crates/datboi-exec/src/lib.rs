@@ -234,6 +234,17 @@ pub struct Executor<'s> {
     components: Mutex<HashMap<Blake3, Arc<StreamTransform>>>,
     /// Compiled extractor components by hash (same load/run split).
     extractor_components: Mutex<HashMap<Blake3, Arc<ExtractorComponent>>>,
+    /// Single-flight gates for on-demand blessing, keyed by output hash
+    /// (D63 amendment). `put_obao` is temp+fsync+rename and idempotent,
+    /// so concurrent blessings are already CORRECT — this is about not
+    /// wedging the daemon. An NFS client's readahead lands several
+    /// parallel `read` RPCs on one cold member, and the read path has
+    /// exactly four connections to spend on them (D93's `ReadPool`);
+    /// ungated, all four sit in redundant materializations of the SAME
+    /// blob while every other read on the mount queues behind them.
+    /// Entries drop once the last holder is done, so the map does not
+    /// grow with the corpus.
+    bless_flight: Mutex<HashMap<Blake3, Arc<Mutex<()>>>>,
 }
 
 impl<'s> Executor<'s> {
@@ -251,6 +262,7 @@ impl<'s> Executor<'s> {
             config,
             components: Mutex::new(HashMap::new()),
             extractor_components: Mutex::new(HashMap::new()),
+            bless_flight: Mutex::new(HashMap::new()),
         })
     }
 
@@ -492,9 +504,14 @@ impl<'s> Executor<'s> {
     /// bao tree) or executor-generated fill. When a sidecar exists it is
     /// always preferred — the carve-out is a floor, not a ceiling.
     ///
+    /// Routes without a sidecar that do NOT qualify have no floor at
+    /// all, so they are **blessed on demand** (D63 amendment,
+    /// [`Self::bless_output`]) and then served off the fresh tree —
+    /// one materialization per blob, ever.
+    ///
     /// # Errors
-    /// [`ExecError::MissingOutboard`] when no sidecar exists and the
-    /// carve-out does not apply,
+    /// [`ExecError::MissingOutboard`] when no sidecar exists, the
+    /// carve-out does not apply, and blessing cannot produce one;
     /// [`ExecError::RangeVerifyFailed`] (the EIO class) on mismatch.
     pub fn serve_range(
         &self,
@@ -543,20 +560,38 @@ impl<'s> Executor<'s> {
         } else {
             self.store.get_obao(StoreNs::Data, hash)?
         };
-        let Some(sidecar) = sidecar else {
-            if self.affine_carveout(db, &plan)? {
-                let mut src = self.open_random_verified(&plan)?;
-                let mut buf = vec![0u8; usize::try_from(end - start).expect("range fits memory")];
-                random::read_at_exact(src.as_mut(), start, &mut buf).map_err(|e| {
-                    ExecError::RangeVerifyFailed {
-                        hash: *hash,
-                        // D63: affine carve-out serving.
-                        detail: format!("affine carve-out: {e}"),
-                    }
-                })?;
-                return Ok(buf);
+        let sidecar = match sidecar {
+            Some(sidecar) => sidecar,
+            None => {
+                if self.affine_carveout(db, &plan)? {
+                    let mut src = self.open_random_verified(&plan)?;
+                    let mut buf =
+                        vec![0u8; usize::try_from(end - start).expect("range fits memory")];
+                    random::read_at_exact(src.as_mut(), start, &mut buf).map_err(|e| {
+                        ExecError::RangeVerifyFailed {
+                            hash: *hash,
+                            // D63: affine carve-out serving.
+                            detail: format!("affine carve-out: {e}"),
+                        }
+                    })?;
+                    return Ok(buf);
+                }
+                // D63 amendment: the carve-out is a floor only where a
+                // floor exists. This route is NOT affine, so there is no
+                // arithmetic guarantee to fall back on and the output
+                // tree is the only way to serve these bytes at all —
+                // `MissingOutboard` here is not a policy refusal, it is
+                // the blob being unreadable. Bless it now: one
+                // materialization, cached forever, the same "cheap and
+                // one-time" shape as the lazy `ensure_obao` on literals.
+                // Ingest builds this tree for free now (it rides the
+                // inflate that hashes the member), so this path is for
+                // claims minted before that landed.
+                self.bless_once(db, hash)?;
+                self.store
+                    .get_obao(StoreNs::Data, hash)?
+                    .ok_or(ExecError::MissingOutboard(*hash))?
             }
-            return Err(ExecError::MissingOutboard(*hash));
         };
         // Group-aligned window: bao validates whole 16 KiB groups.
         let astart = start - start % obao::GROUP_BYTES;
@@ -1249,6 +1284,49 @@ impl<'s> Executor<'s> {
         }
         self.store.put_obao(StoreNs::Data, hash, &sidecar)?;
         Ok(true)
+    }
+
+    /// [`Self::bless_output`] under a per-hash gate — the serve path's
+    /// entry point (D63 amendment).
+    ///
+    /// Correctness never needed this: `put_obao` publishes temp → fsync
+    /// → rename and treats an existing sidecar as a win, so N racing
+    /// blessings of one blob converge on the same bytes, and a reader
+    /// sees the sidecar whole or not at all. Throughput did. The loser
+    /// of the race re-checks `get_obao` inside `bless_output` and
+    /// returns immediately, so it pays the wait and nothing else —
+    /// versus paying a second full materialization AND holding one of
+    /// the four read connections for its duration.
+    ///
+    /// No lock is ever held across another gate (blessing plans and
+    /// streams, it never re-enters `serve_range`), so there is no
+    /// ordering to get wrong.
+    fn bless_once(&self, db: &Db, hash: &Blake3) -> Result<(), ExecError> {
+        let gate = {
+            let mut flight = self
+                .bless_flight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Arc::clone(flight.entry(*hash).or_default())
+        };
+        let outcome = {
+            let _held = gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.bless_output(db, hash)
+        };
+        {
+            let mut flight = self
+                .bless_flight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Two strong refs — the map's and ours — means nobody else
+            // holds one, and nobody can take one without this lock.
+            if Arc::strong_count(&gate) == 2 {
+                flight.remove(hash);
+            }
+        }
+        outcome.map(|_| ())
     }
 
     /// An anonymous temp file in the configured spill location —

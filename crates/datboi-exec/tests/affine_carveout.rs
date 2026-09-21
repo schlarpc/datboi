@@ -2,13 +2,25 @@
 //! synthesized FAT32 image recipe (random + boundary-straddling ranges
 //! ≡ slices of the full sequential materialization), the predicate's
 //! refusal matrix, and blessing promotion to full D49.
+//!
+//! What a refusal MEANS changed with the D63 amendment. The predicate
+//! is unchanged and still says no to everything below, but a no is no
+//! longer the end of the read: `serve_range` falls through to D49
+//! proper — bless the output, verify every served group against the
+//! fresh tree. So the refusal matrix is now observed through the
+//! SIDECAR, which is the honest tell either way. The carve-out serves
+//! pure arithmetic and mints nothing; blessing always leaves a tree
+//! behind. (Before the amendment these four cases returned
+//! `MissingOutboard`, which read as "the predicate refused" but meant
+//! "these bytes are unreadable" — the bug that left 107,090 zip
+//! members unservable.)
 
 use std::io::Read as _;
 
 use datboi_catalog::{ImageParams, ImageReport, mint_image};
 use datboi_core::hash::Blake3;
 use datboi_core::viewsnap::{ViewRow, ViewSnapshot};
-use datboi_exec::{ExecConfig, ExecError, Executor};
+use datboi_exec::{ExecConfig, Executor};
 use datboi_index::{Db, Namespace as IndexNs, Residency};
 use datboi_store_fs::{Namespace as StoreNs, Store};
 
@@ -122,6 +134,29 @@ fn full_materialization(exec: &Executor, db: &Db, report: &ImageReport) -> Vec<u
     full
 }
 
+/// The predicate said no — assert that, then assert the read still
+/// lands (D63 amendment). A carved-out serve never writes a sidecar,
+/// so one appearing across the call is proof the D49 path ran instead.
+fn declined_then_blessed(w: &World, hash: &Blake3, offset: u64, want: &[u8]) {
+    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+    assert_eq!(
+        w.store.get_obao(StoreNs::Data, hash).expect("get_obao"),
+        None,
+        "precondition: no tree, so only the carve-out could serve this"
+    );
+    let got = exec
+        .serve_range(&w.db, hash, offset, want.len() as u64)
+        .expect("declined by the predicate, served by D49");
+    assert_eq!(got, want);
+    assert!(
+        w.store
+            .get_obao(StoreNs::Data, hash)
+            .expect("get_obao")
+            .is_some(),
+        "the carve-out mints no tree — this read went through blessing"
+    );
+}
+
 /// The D63 seek-equivalence property: carve-out range reads must
 /// byte-match slices of the full materialization, with ranges at ±1 of
 /// every interesting boundary plus deterministic pseudo-random ones.
@@ -213,10 +248,10 @@ fn carveout_seek_equivalence() {
     assert!(checked > 80, "the gate actually ran ({checked} ranges)");
 }
 
-/// A computed node in the route (deflate) disqualifies: no sidecar ⇒
-/// MissingOutboard, exactly the pre-D63 floor.
+/// A computed node in the route (deflate) disqualifies: nothing
+/// computed qualifies for the carve-out, so the read takes D49 proper.
 #[test]
-fn computed_route_still_requires_outboard() {
+fn computed_route_takes_d49_not_the_carve_out() {
     use datboi_core::cbor::{self, Value};
     use datboi_core::recipe::{InputRef, Op, OutputRef, Recipe};
     use datboi_index::recipes::NewRecipe;
@@ -297,11 +332,7 @@ fn computed_route_still_requires_outboard() {
     w.db.set_verify_state(recipe_id, VerifyAdvance::Verified, 1)
         .expect("verify");
 
-    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
-    let err = exec
-        .serve_range(&w.db, &plain_hash, 100, 64)
-        .expect_err("must refuse");
-    assert!(matches!(err, ExecError::MissingOutboard(_)), "got {err}");
+    declined_then_blessed(&w, &plain_hash, 100, &plain[100..164]);
 }
 
 #[test]
@@ -321,11 +352,11 @@ fn peer_sourced_recipe_declined() {
             [recipe_id],
         )
         .expect("update");
-    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
-    let err = exec
-        .serve_range(&w.db, &report.image, 0, 64)
-        .expect_err("must refuse");
-    assert!(matches!(err, ExecError::MissingOutboard(_)), "got {err}");
+    let full = {
+        let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+        full_materialization(&exec, &w.db, &report)
+    };
+    declined_then_blessed(&w, &report.image, 0, &full[0..64]);
 }
 
 #[test]
@@ -345,11 +376,11 @@ fn unverified_leaf_declined() {
             [leaf],
         )
         .expect("update");
-    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
-    let err = exec
-        .serve_range(&w.db, &report.image, 0, 64)
-        .expect_err("must refuse");
-    assert!(matches!(err, ExecError::MissingOutboard(_)), "got {err}");
+    let full = {
+        let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+        full_materialization(&exec, &w.db, &report)
+    };
+    declined_then_blessed(&w, &report.image, 0, &full[0..64]);
 }
 
 #[test]
@@ -360,11 +391,11 @@ fn non_resident_leaf_declined() {
     let hash = Blake3::compute(&big);
     w.db.upsert_blob(&hash, Some(files[1].1), IndexNs::Data, Residency::Absent)
         .expect("upsert");
-    let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
-    let err = exec
-        .serve_range(&w.db, &report.image, 0, 64)
-        .expect_err("must refuse");
-    assert!(matches!(err, ExecError::MissingOutboard(_)), "got {err}");
+    let full = {
+        let exec = Executor::new(&w.store, ExecConfig::default()).expect("executor");
+        full_materialization(&exec, &w.db, &report)
+    };
+    declined_then_blessed(&w, &report.image, 0, &full[0..64]);
 }
 
 /// Blessing promotion: bless_output computes and caches the output

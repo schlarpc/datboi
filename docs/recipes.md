@@ -117,6 +117,19 @@ Correctness first; planner treats spills as cost. Verification is a tee on
 every materialization (D4); bao outboards for derived outputs computed on
 first full materialization, cached, recomputable (D15).
 
+**Every non-affine derived output gets a tree, one way or another**
+(D63 amendment). A route that cannot take the D63 affine carve-out has
+no other way to serve a range — `MissingOutboard` there means "these
+bytes are unreadable", not "policy declined" — so the tree is built at
+the first opportunity and cached forever. Three opportunities, in
+order of preference: a full materialization (`put_with_obao`); INGEST,
+for zip members, where the outboard rides the same inflate that
+computes the alias tuple and costs nothing beyond it (~len/256 of
+sidecar, ~0.4%); and, failing both, the first range read itself, which
+blesses under a per-hash single-flight before serving. STORED zip
+members are the exception and stay tree-less: their route is affine
+over the container, so the carve-out already guarantees every byte.
+
 ## Safety & edges
 
 - **Drop safety (D25)**: literals dropped only after successful local
