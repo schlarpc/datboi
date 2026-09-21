@@ -4335,3 +4335,199 @@ or licensing the route on repair (above — claiming evidence nobody
 gathered); making `blob.residency` authoritative and the store derived
 (inverts D15: the store is the durable artifact, the databases are
 rebuildable from it, and that is the whole shape of recovery).
+
+## D123 — A transport container is a choice, not a format property; drop is operator-invoked and dat-gated (2026-09-21)
+
+Amends D35. D35 chose "containers-stay-literal with members-as-claims
+(≈1.0× storage)" on 2026-07-03 and priced it in storage alone, which
+was all it could price: serving did not exist yet (its own milestone
+order is M2 shrink → M3 views/serving). Three costs fall outside that
+measurement, and adopting a MAME set paid all three.
+
+**The read tax.** A zip's DEFLATE member is `deflate-decompress@1`,
+seek class **Opaque**, and `produce_range` excludes Opaque from the
+random-access lane — every range read re-materializes the member from
+byte 0. ~278 GB of work to read a 264 MB rom; one member held a serial
+reader in uninterruptible sleep for over an hour. D121's
+`--materialize` is the cure and it is a +133 GB one, because the
+container stays.
+
+**Unreclaimable containers, and a reclaim pointing the wrong way.** For
+rar/7z the only recipe minted is `container→member` — the code says so:
+*"makes the MEMBER evictable"*. The container has no reverse route (it
+is not reconstructible, which is precisely why its members were
+extracted), so the D21 fixpoint can never ground it. That is 2× storage
+forever, and the only eviction on offer is *drop the roms, keep the
+archive* — regenerating roms on demand through a wasm extractor at
+`SeekClass::Opaque`, i.e. re-creating cost one.
+
+**CDC is structurally blinded.** `ChunkAnalyzer` refuses non-resident
+blobs ("chunking would materialize it"), and a zip's members are absent
+by construction, so the dedup primitive has never seen a rom's
+plaintext at all.
+
+**What is actually wrong is the asymmetry, and that is what this fixes
+unconditionally.** No dat names an archive. rar, 7z and zip are
+*equally* absent from every dat, yet the manager treats them as three
+different kinds of thing: zip members are claims over a retained
+container, 7z/rar members are resident blobs beside a retained
+container, and whether a container can ever be reclaimed depends only on
+whether preflate (D53) happens to work on it. From a dat's point of view
+all three are the same object: packaging someone shipped the roms in.
+So retention stops being a property of the FORMAT and becomes one
+choice, spelled the same way for all three — `datboi ingest --unpack`
+at the door, `datboi unpack` for a corpus already inside.
+
+**The default does NOT flip, and that is a ruling against the proposal
+in open-questions.md.** Three arguments, in the order they weigh:
+
+1. **Asymmetric regret.** Waiting costs nothing: a retained container
+   can be unpacked at any later moment, by a command that exists now.
+   Dropping is final — the archive is not reconstructible, that is the
+   defining property of the thing being dropped. A default whose wrong
+   answer is unrecoverable and whose right answer is merely deferred is
+   not a close call.
+2. **Dropping forecloses the strictly better outcome.** preflate gives
+   members-resident AND a container reconstructible at ~0.002%
+   corrections — both wins, no storage trade. You cannot preflate a zip
+   you deleted. The backlog is slow (~2 members per 3 minutes against
+   141,986), but that is a throughput problem with a throughput fix,
+   whereas deletion makes the good outcome permanently unreachable for
+   those zips. Extract-and-drop is the right answer for what preflate
+   *refuses* (D53's coverage gap) and for rar/7z, which have no rebuild
+   route at all and never will. That is a targeting question, not a
+   default.
+3. **D121, one day old, ruled the same shape.** "Materializing by
+   default (a 133 GB residency decision is the operator's, and the flag
+   is where they make it)." Unpacking the measured corpus is a **+66 GB
+   logical / +44 GB on-disk** decision in the same direction — 35,494
+   zips are 69.1 GB, their 134,307 distinct members are 135.2 GB,
+   cross-zip sharing is only 1.13× because a split set gives clone zips
+   their own roms, and the dataset compresses 1.28× while the zips do
+   not. A default that makes the canonical corpus 95% larger has to be
+   asked for out loud.
+
+What is NOT claimed for retention: that it is cheap. The current middle
+state — containers *and* D121-materialized members — is the worst of the
+three, and an operator who has decided their corpus is a serving corpus
+should run `unpack` and stop paying for both. The wins are real and they
+are not storage: O(1) reads instead of quadratic, `deflate-decompress@1`
+ceasing to be a *route* anyone serves through, and plaintext dedup
+becoming measurable for the first time.
+
+**Already-stored containers are converted by an explicit run, never
+retroactively.** `datboi unpack` is D120/D121's shape — bounded worker
+pool, one `Db` owner, keyset-paged, resumable, `--dry-run`, `--jobs`,
+`--limit`, progress, and D121's honest-completion reporting (a count
+twin of the paging predicate, `walked_it_all`, and no "nothing
+outstanding" over a population it did not finish). Nothing in the daemon
+does this on its own. The automatic half — unpack what refine has
+*proven* unpreflatable, under a residency policy — is deliberately left
+open, exactly as D121 left its own automatic half open.
+
+**Dropping an uncoverable container is acceptable, and here is the
+consent it needs.** This is the second byte-destroying code path in the
+store (eviction, D25/D27, was the first) and it is a different act:
+eviction drops a **covered** blob, where a replayed-local route grounded
+in retained literals can bring the bytes back, and the D49 sidecar is
+kept precisely so it still serves. Unpack drops an **uncoverable** one —
+nothing brings it back, and its bit-exact reproduction is gone forever.
+So it is fenced five ways, all enforced at the last moment before the
+unlink:
+
+- **Operator-invoked only.** A flag or a command. Never a watermark,
+  never the daemon, never a side effect of anything else.
+- **Never a blob a dat names.** A container any `rom_claim` reaches
+  through `identity_blob` is content, not transport, and is refused
+  outright. The measured claim is that no dat names an archive; this is
+  the gate that makes the ruling safe if that is ever false for one dat.
+  Pinned blobs (`pinned_reason`) are refused on the same footing.
+- **Never before every member is durably resident.** The gate is
+  index-driven, not extraction-driven: *every* blob claimed as an output
+  of a non-Failed recipe whose sole input is this container must satisfy
+  `Store::has` before the unlink. A member the re-parse failed to
+  produce therefore blocks the drop rather than being silently lost.
+- **Never something the sniff does not call transport.** Containerhood
+  is decided by re-reading the head and asking `looks_like_zip` /
+  `looks_like_7z` / `looks_like_rar` — the *same* predicate ingest used
+  to decide it was a container. A second definition would drift, and the
+  drift would be catastrophic: single-input recipes also describe D9
+  detector variants and every D111/D114/D115/D116 disc decomposition,
+  and those inputs are dat-named discs.
+- **`--dry-run` states the bill first**, in both directions: container
+  bytes reclaimed and member bytes added.
+
+**Provenance survives, and the dangling recipes are how.** `source_file`
+records "these bytes arrived as roms/pac.zip" — byte-provenance, not a
+cache — so the container keeps its blob row, its alias tuple and its
+`source_file` link. Residency goes to **`Absent`**, not
+`EvictedCovered`: there is no covering route and the enum must not say
+there is. The container is then out of the GC orphan predicate (which
+requires `residency = 0`), so the record of where the roms came from
+cannot be swept.
+
+**The `container→member` recipes are KEPT, unchanged.** This is the
+ruling the question asked for, and the reasons are three:
+
+1. **They are the provenance edge.** After the drop, the recipe row is
+   the only thing tying rom `pac.6e` to `roms/pac.zip`. Delete it and
+   "where did these roms come from" becomes unanswerable for every
+   unpacked member — which contradicts the requirement that dropping the
+   container must not erase where the roms came from. The typed
+   acquisition-event table that would carry this instead is an owed
+   piece of work (open-questions.md), not something to invent inside
+   this command.
+2. **They already cannot be mistaken for a live route, mechanically.**
+   `Executor::plan` returns `Plan::Literal` for a resident member before
+   it ever reads `recipes_for_output`, and a plan that *does* reach the
+   recipe recurses into the container, finds no bytes and no producing
+   recipe, and fails `NoRoute`. Every grounding mode seeds
+   `temp.grounded` from `residency = 0`, so an `Absent` container is
+   never grounded, the recipe never fires, and `is_evictable` is false
+   for the member — which is correct: an unpacked member is the only
+   copy of those bytes and must not be evictable. The blessing predicate
+   never sees either end (members are resident; containers have no
+   producing recipe). Tests pin all of this rather than leaving it to be
+   re-derived.
+3. **Deleting them would not even be durable.** `datboi recover`
+   rebuilds the recipe index by walking `meta/` and re-indexing every
+   recipe object it finds (D15). Deleting the index rows means deleting
+   the recipe *objects*, which is a second byte-destroying act, on the
+   one namespace the whole index is derived from, to remove rows that
+   are both true and inert.
+
+**What is destroyed is bytes, not the record.** After an unpack the
+index still says: this blob existed, here is its alias tuple, it arrived
+at this path, and these members came out of it. Only the archive's bytes
+are gone.
+
+*Rejected:* flipping the default to extract-and-drop (argued above —
+asymmetric regret, forecloses preflate, and a +66 GB decision on the
+canonical corpus belongs at a flag; the proposal's own constituency for
+retention, TorrentZip-verified distribution, is exactly the population
+preflate covers at 0.002%, which is a reason to keep the container long
+enough for refine to reach it, not a reason to delete it); retroactively
+unpacking existing containers on upgrade (a byte-destroying migration
+nobody typed); marking the dangling recipes `Failed` (`Failed` is
+terminal poison meaning *these bytes came out wrong* — D48/D81
+vocabulary — and `fail_error` would have to hold a sentence that is not
+true; it would also make `rehabilitate` a permanent re-failure loop);
+deleting them (above); `Residency::EvictedCovered` for the dropped
+container (it asserts a covering route that by construction does not
+exist, and it would make `datboi status` report reclaimable-and-
+rebuildable bytes that are neither); letting the daemon or a watermark
+unpack (D27's planner destroys covered bytes; this destroys uncoverable
+ones, and no automatic policy has been written that could license that);
+skipping the store write for the container at ingest under `--unpack`
+(the container is written and then dropped, which costs one transient
+copy per file — bounded per file, never per corpus — and buys ONE code
+path shared by both doors, with identical ordering and identical crash
+behaviour; two pipelines, one of them untested by the deployment that
+matters, is D120's rejection and it applies here); minting no
+`container→member` recipe under `--unpack` at ingest (it would make the
+two doors converge on *different* graphs, and it would throw away the
+provenance edge at exactly the moment it is created); a `--min-size`
+floor on containers (the read tax is per-member and the storage trade is
+per-container; there is no one number, and a zip's members are not
+independently droppable anyway — the gate is all-or-nothing by
+construction).
