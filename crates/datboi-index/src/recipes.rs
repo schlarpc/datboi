@@ -138,6 +138,57 @@ const BLESS_CANDIDATE_SQL: &str = "SELECT blob_id, hash, size FROM (
            WHERE ro.blob_id = b.blob_id AND r.verify != 2))
      WHERE size >= :min_size";
 
+/// The D123 unpack-candidate predicate, as a subquery yielding
+/// `(blob_id, hash, size)`. Shared verbatim by the paging read and the
+/// count twin for the same reason D121's is — "the pass examined fewer
+/// rows than a straight count" has to be a question an operator can
+/// answer in `sqlite3`, and one SQL string is how.
+///
+/// A candidate is a RESIDENT Data blob that is the **sole input** of at
+/// least one non-Failed recipe that claims outputs — the structural
+/// signature of "members were derived from this". Three exclusions ride
+/// the query because each of them is a refusal the pass must never have
+/// to make twice:
+///
+/// * **Already reconstructible.** A blob with its own non-Failed
+///   producing recipe has a rebuild route — for a zip that is D53's
+///   `preflate-split` pair, which makes the container ordinary
+///   evictable bytes through `datboi evict`. Unpacking it would destroy
+///   the better outcome (members resident AND a ~1.0002× container) to
+///   buy the worse one. D123: do not double-handle those.
+/// * **Dat-named.** A blob any `rom_claim` reaches through
+///   `identity_blob` is content, not transport, and this pass destroys
+///   bytes. The measured claim is that no dat names an archive; this is
+///   the gate that keeps D123 safe if that is ever false for one dat.
+/// * **Pinned.** `pinned_reason` is the same hold GC honours.
+///
+/// It is deliberately a COARSE filter, and it is NOT sufficient on its
+/// own: single-input recipes also describe D9 detector variants and
+/// every D111/D114/D115/D116 disc decomposition, whose inputs are
+/// dat-named discs. Containerhood is settled by the coordinator
+/// re-sniffing the head with the same `looks_like_*` predicates ingest
+/// used — see `datboi_ingest::unpack`.
+const UNPACK_CANDIDATE_SQL: &str = "SELECT b.blob_id, b.hash, b.size
+     FROM blob b
+     WHERE b.namespace = 0 AND b.residency = 0
+       AND b.pinned_reason IS NULL
+       AND EXISTS (
+         SELECT 1 FROM recipe_input ri
+         JOIN recipe r ON r.recipe_id = ri.recipe_id
+         WHERE ri.blob_id = b.blob_id AND r.verify != 2
+           AND (SELECT COUNT(*) FROM recipe_input ri2
+                WHERE ri2.recipe_id = r.recipe_id) = 1
+           AND EXISTS (SELECT 1 FROM recipe_output ro
+                       WHERE ro.recipe_id = r.recipe_id))
+       AND NOT EXISTS (
+         SELECT 1 FROM recipe_output ro2
+         JOIN recipe r2 ON r2.recipe_id = ro2.recipe_id
+         WHERE ro2.blob_id = b.blob_id AND r2.verify != 2)
+       AND NOT EXISTS (
+         SELECT 1 FROM identity_blob ib
+         JOIN rom_claim rc ON rc.identity_id = ib.identity_id
+         WHERE ib.blob_id = b.blob_id)";
+
 impl Db {
     pub fn insert_recipe(&mut self, new: &NewRecipe<'_>) -> Result<i64, IndexError> {
         let tx = self.cache.transaction()?;
@@ -807,6 +858,96 @@ impl Db {
             |row| row.get(0),
         )?;
         Ok(u64::try_from(count).unwrap_or(0))
+    }
+
+    /// D123 unpack candidates: resident containers, `blob_id` past
+    /// `after`, up to `limit` rows, in `blob_id` order.
+    ///
+    /// Paged by keyset for D121's reason — the pass interleaves its walk
+    /// with minutes of extraction, and one open `SELECT` across all of
+    /// that pins a read snapshot the whole run. `blob_id` is unique, so
+    /// a page boundary has no ties to straddle.
+    ///
+    /// # Errors
+    /// Query failures.
+    pub fn unpack_candidates_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> Result<Vec<(i64, Blake3, u64)>, IndexError> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let mut stmt = self.cache().prepare_cached(&format!(
+            "{UNPACK_CANDIDATE_SQL} AND b.blob_id > :after ORDER BY b.blob_id LIMIT :limit"
+        ))?;
+        let rows = stmt
+            .query_map(
+                rusqlite::named_params! {":after": after, ":limit": limit},
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        Blake3(row.get::<_, [u8; 32]>(1)?),
+                        u64::try_from(row.get::<_, Option<i64>>(2)?.unwrap_or(0)).unwrap_or(0),
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Count twin of [`Self::unpack_candidates_after`] — the same
+    /// predicate, in the same SQL string, so "the pass walked all of it"
+    /// is checkable rather than asserted (D121's lesson).
+    ///
+    /// # Errors
+    /// Query failures.
+    pub fn unpack_candidate_count(&self) -> Result<u64, IndexError> {
+        let count: i64 = self.cache().query_row(
+            &format!("SELECT COUNT(*) FROM ({UNPACK_CANDIDATE_SQL})"),
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(count).unwrap_or(0))
+    }
+
+    /// Every blob claimed as an output of a non-Failed recipe whose SOLE
+    /// input is `container_blob_id` — the members this container is on
+    /// record as having produced, with the size the recipe claims.
+    ///
+    /// This is D123's drop gate, and it is index-driven ON PURPOSE. The
+    /// unpack pass re-parses the container to produce bytes, but what
+    /// licenses destroying the container is not "extraction reported
+    /// success" — it is that every member anything in the index still
+    /// expects to come out of this container is durably in the store. A
+    /// member the re-parse silently failed to produce therefore blocks
+    /// the drop instead of being lost with it.
+    ///
+    /// # Errors
+    /// Query failures.
+    pub fn container_member_claims(
+        &self,
+        container_blob_id: i64,
+    ) -> Result<Vec<(i64, Blake3, u64)>, IndexError> {
+        let mut stmt = self.cache().prepare_cached(
+            "SELECT DISTINCT ro.blob_id, b.hash, ro.size
+             FROM recipe_input ri
+             JOIN recipe r ON r.recipe_id = ri.recipe_id
+             JOIN recipe_output ro ON ro.recipe_id = r.recipe_id
+             JOIN blob b ON b.blob_id = ro.blob_id
+             WHERE ri.blob_id = ?1 AND r.verify != 2
+               AND (SELECT COUNT(*) FROM recipe_input ri2
+                    WHERE ri2.recipe_id = r.recipe_id) = 1
+             ORDER BY ro.blob_id",
+        )?;
+        let rows = stmt
+            .query_map([container_blob_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    Blake3(row.get::<_, [u8; 32]>(1)?),
+                    u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// A rebuild route's inputs in position (coverage) order, each with

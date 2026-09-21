@@ -1913,3 +1913,150 @@ fn keyset_paging_loses_nothing_across_boundaries_or_ties() {
         );
     }
 }
+
+/// D123 unpack candidates: the coarse SQL filter in front of the
+/// container pass. A resident blob that is the SOLE input of a live
+/// recipe claiming outputs — plus the three refusals the pass must
+/// never have to make twice.
+#[test]
+fn unpack_candidates_are_resident_sole_input_containers() {
+    let (_dir, mut db) = open_db();
+    let blob = |db: &Db, seed: &[u8], residency: Residency| -> i64 {
+        db.upsert_blob(
+            &Blake3::compute(seed),
+            Some(1024),
+            Namespace::Data,
+            residency,
+        )
+        .expect("upsert")
+    };
+
+    // The shape the pass exists for: a zip, two members derived from it.
+    let container = blob(&db, b"container", Residency::Resident);
+    let m1 = blob(&db, b"m1", Residency::Absent);
+    let m2 = blob(&db, b"m2", Residency::Absent);
+    recipe(&mut db, b"c-m1", &[container], &[m1], VerifyState::Verified);
+    recipe(&mut db, b"c-m2", &[container], &[m2], VerifyState::Verified);
+
+    // Already dropped: bytes gone, row Absent. Nothing left to unpack.
+    let dropped = blob(&db, b"dropped", Residency::Absent);
+    let dm = blob(&db, b"dropped-member", Residency::Resident);
+    recipe(&mut db, b"d-dm", &[dropped], &[dm], VerifyState::Verified);
+
+    // Reconstructible (D53 preflate's `#recreate` + assemble pair): it
+    // has a producing recipe of its own, so `datboi evict` already owns
+    // it and unpack must not double-handle it.
+    let split = blob(&db, b"preflate-split", Residency::Resident);
+    let sm = blob(&db, b"split-member", Residency::Resident);
+    let corrections = blob(&db, b"corrections", Residency::Resident);
+    recipe(&mut db, b"s-sm", &[split], &[sm], VerifyState::Verified);
+    recipe(
+        &mut db,
+        b"rebuild-split",
+        &[sm, corrections],
+        &[split],
+        VerifyState::Verified,
+    );
+
+    // Two inputs, not one: an assemble over several literals is not a
+    // container, it is a rebuild.
+    let pair_out = blob(&db, b"pair-out", Residency::Absent);
+    recipe(
+        &mut db,
+        b"pair",
+        &[container, corrections],
+        &[pair_out],
+        VerifyState::Verified,
+    );
+
+    // Poisoned route only: no live claim on anything, so not a container.
+    let poison_in = blob(&db, b"poison-in", Residency::Resident);
+    let poison_out = blob(&db, b"poison-out", Residency::Absent);
+    let poisoned = recipe(
+        &mut db,
+        b"poisoned",
+        &[poison_in],
+        &[poison_out],
+        VerifyState::Pending,
+    );
+    db.set_verify_state(
+        poisoned,
+        VerifyAdvance::Failed {
+            error: "lied",
+            peer: None,
+        },
+        3,
+    )
+    .expect("poison");
+
+    let got: Vec<Blake3> = db
+        .unpack_candidates_after(0, 100)
+        .expect("candidates")
+        .into_iter()
+        .map(|(_, h, _)| h)
+        .collect();
+    assert_eq!(got, vec![Blake3::compute(b"container")]);
+    assert_eq!(db.unpack_candidate_count().expect("count"), 1);
+
+    // The gate: what the index still expects out of this container.
+    let mut claims: Vec<Blake3> = db
+        .container_member_claims(container)
+        .expect("claims")
+        .into_iter()
+        .map(|(_, h, _)| h)
+        .collect();
+    claims.sort_unstable_by_key(|h| h.0);
+    let mut want = vec![Blake3::compute(b"m1"), Blake3::compute(b"m2")];
+    want.sort_unstable_by_key(|h| h.0);
+    assert_eq!(claims, want, "two-input recipes are not member claims");
+
+    // Keyset paging reproduces the single-page order, and the count
+    // twin agrees with the walk (D121's completion lesson).
+    let m3 = blob(&db, b"m3", Residency::Absent);
+    let second = blob(&db, b"container-2", Residency::Resident);
+    recipe(&mut db, b"c2-m3", &[second], &[m3], VerifyState::Verified);
+    let whole = db.unpack_candidates_after(0, 100).expect("whole");
+    let first = db.unpack_candidates_after(0, 1).expect("page 1");
+    let rest = db.unpack_candidates_after(first[0].0, 100).expect("page 2");
+    assert_eq!(
+        first
+            .iter()
+            .chain(&rest)
+            .map(|(_, h, _)| *h)
+            .collect::<Vec<_>>(),
+        whole.iter().map(|(_, h, _)| *h).collect::<Vec<_>>()
+    );
+    assert_eq!(db.unpack_candidate_count().expect("count"), 2);
+
+    // D123's hard refusal: a container a dat NAMES is content, not
+    // transport, and this pass destroys bytes. The measured claim is
+    // that no dat names an archive; this gate is what keeps the ruling
+    // safe if that is ever false for one dat.
+    let conn = db.cache();
+    conn.execute_batch(
+        "INSERT INTO dat_source (source_id, provider, system)
+             VALUES (1, 'test', 'test');
+         INSERT INTO dat_revision (revision_id, source_id, blob_id, format, imported_at)
+             VALUES (1, 1, 1, 0, 0);
+         INSERT INTO entry (entry_id, revision_id, name) VALUES (1, 1, 'named');
+         INSERT INTO content_identity (identity_id, strength) VALUES (1, 0);
+         INSERT INTO rom_claim (claim_id, entry_id, kind, name, identity_id)
+             VALUES (1, 1, 0, 'named.zip', 1);",
+    )
+    .expect("catalog rows");
+    conn.execute(
+        "INSERT INTO identity_blob (identity_id, blob_id, basis) VALUES (1, ?1, 0)",
+        [second],
+    )
+    .expect("name the container");
+    assert_eq!(
+        db.unpack_candidates_after(0, 100)
+            .expect("candidates")
+            .into_iter()
+            .map(|(_, h, _)| h)
+            .collect::<Vec<_>>(),
+        vec![Blake3::compute(b"container")],
+        "a dat-named container is refused outright"
+    );
+    assert_eq!(db.unpack_candidate_count().expect("count"), 1);
+}
