@@ -181,6 +181,13 @@ pub struct BlessReport {
     /// never-bad-bytes rule leaves no soft fallback — but one bad route
     /// must not abandon the other 107,089.
     pub failed: Vec<(String, String)>,
+    /// Routes this run POISONED because they disproved themselves
+    /// (D126): a guest trap, a guest error, bytes that did not match
+    /// the claim. A subset of [`Self::failed`] — they are failures too
+    /// — counted apart because they are the ones the NEXT run will not
+    /// repeat. Before D126 these were the 77 routes a
+    /// `--materialize --min-size 1M` run re-attempted every time.
+    pub poisoned: u64,
 }
 
 impl BlessReport {
@@ -243,6 +250,12 @@ struct Job {
     /// The recipe to license on a successful materialization (D25), or
     /// `None` when there is nothing this pass may honestly license.
     license: Option<i64>,
+    /// The TOP recipe of the route, whatever the outcome — what D126
+    /// poisons if the route turns out to disprove itself. Unlike
+    /// `license` this is set even for a non-materializing run, and for
+    /// a multi-output recipe: one output coming out wrong is enough to
+    /// disprove the route, though not enough to license it.
+    route: Option<i64>,
     /// Tree bytes charged to the in-flight budget.
     weight: u64,
 }
@@ -253,6 +266,7 @@ struct Done {
     hash: Blake3,
     len: u64,
     license: Option<i64>,
+    route: Option<i64>,
     weight: u64,
     result: Result<bool, ExecError>,
 }
@@ -325,6 +339,7 @@ impl Executor<'_> {
                             hash: job.hash,
                             len: job.len,
                             license: job.license,
+                            route: job.route,
                             weight: job.weight,
                             result,
                         };
@@ -431,12 +446,14 @@ impl Executor<'_> {
                     continue;
                 }
                 let license = opts.materialize.then(|| licensable(&plan)).flatten();
+                let route = route_of(&plan);
                 let job = Job {
                     seq,
                     hash,
                     len,
                     plan,
                     license,
+                    route,
                     weight: obao::outboard_size(len),
                 };
                 if admits(inflight, cap, job.weight) {
@@ -516,7 +533,26 @@ impl Executor<'_> {
                     page.clear();
                     held = None;
                 }
-                Err(e) => state.fail(d.seq, &d.hash.to_string(), &e.to_string()),
+                Err(e) => {
+                    // D126: a route that disproved itself is recorded
+                    // as D25's `Failed`, right here on the coordinator
+                    // (the only thread with a `Db`). Without this the
+                    // pass re-attempts the same trapping guest on every
+                    // run, forever, and nothing in the graph ever says
+                    // the route is broken. A poison failure is not
+                    // allowed to abandon the walk — the blessing
+                    // failure is already reported either way.
+                    if let Some(recipe_id) = d.route.filter(|_| e.is_claim_failure()) {
+                        match self.poison_route(db, recipe_id, &e.to_string()) {
+                            Ok(()) => state.report.poisoned += 1,
+                            Err(pe) => tracing::warn!(
+                                "bless: {} disproved its route, and poisoning failed: {pe}",
+                                d.hash
+                            ),
+                        }
+                    }
+                    state.fail(d.seq, &d.hash.to_string(), &e.to_string());
+                }
             }
             state.tick();
         }
@@ -634,6 +670,18 @@ impl Executor<'_> {
 /// proves exactly that — for a SINGLE-output route. A recipe claiming
 /// several outputs is not proven by producing one of them, so it stays
 /// unlicensed and `Executor::replay` remains the way to license it.
+/// The top recipe of a plan — the route D126 blames when its bytes
+/// come out wrong or its guest traps. Unlike [`licensable`] this does
+/// not care how many outputs the recipe claims: producing one of them
+/// wrongly disproves the route even though producing one correctly
+/// does not license it.
+fn route_of(plan: &Plan) -> Option<i64> {
+    match plan {
+        Plan::Op(op) => op.recipe_id,
+        Plan::Literal { .. } => None,
+    }
+}
+
 fn licensable(plan: &Plan) -> Option<i64> {
     match plan {
         Plan::Op(op) if op.outputs.len() == 1 => op.recipe_id,

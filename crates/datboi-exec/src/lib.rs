@@ -121,6 +121,11 @@ impl ExecError {
             // indicts the CHILD claim that fed it, never the recipe
             // under replay.
             Self::Runtime(RuntimeError::InputLengthMismatch { .. }) => false,
+            // D126: a nested node's trap reaches us as I/O — `spill`
+            // copies a child stream and the pipe's verdict rides its
+            // `io::Error`. Unwrapping it here means one predicate
+            // decides, however deep in the tree the disproof happened.
+            Self::Io(e) => datboi_runtime::pipe::deterministic_cause(e).is_some(),
             _ => false,
         }
     }
@@ -478,8 +483,67 @@ impl<'s> Executor<'s> {
     /// # Errors
     /// [`ExecError::NoRoute`] when nothing resolves.
     pub fn open_stream(&self, db: &Db, hash: &Blake3) -> Result<Box<dyn Read + Send>, ExecError> {
+        Ok(self.open_stream_route(db, hash)?.0)
+    }
+
+    /// [`Self::open_stream`], plus the TOP recipe of the route it took
+    /// (`None` for a resident literal, which has no route to blame).
+    ///
+    /// The reader can only fail once bytes start moving — a streaming
+    /// guest traps on its own thread, long after the open returned — so
+    /// a consumer that wants to record a D126 disproof has to be handed
+    /// the route up front. Poisoning the top recipe rather than the node
+    /// that actually trapped matches [`Self::replay`], which does the
+    /// same for a claim failure anywhere in its tree: the route claims
+    /// it produces these bytes, and it does not.
+    ///
+    /// # Errors
+    /// [`ExecError::NoRoute`] when nothing resolves.
+    pub fn open_stream_route(
+        &self,
+        db: &Db,
+        hash: &Blake3,
+    ) -> Result<(Box<dyn Read + Send>, Option<i64>), ExecError> {
         let plan = self.plan(db, hash, 0, &mut Vec::new())?;
-        self.open_sequential(&plan)
+        let route = match &plan {
+            Plan::Op(op_plan) => op_plan.recipe_id,
+            Plan::Literal { .. } => None,
+        };
+        match self.open_sequential(&plan) {
+            Ok(reader) => Ok((reader, route)),
+            Err(e) => {
+                // A nested node can trap before this call even returns:
+                // `open_random` materializes a non-seekable child
+                // eagerly, so its guest runs here. Record the disproof
+                // the same way the mid-stream case will (D126).
+                if let Some(recipe_id) = route.filter(|_| e.is_claim_failure()) {
+                    self.poison_route(db, recipe_id, &e.to_string())?;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Record that a route disproved itself: D25's `Failed`, written for
+    /// a claim-level failure observed on the READ path (D126) rather
+    /// than inside `replay`/`license`. A poisoned route stops grounding
+    /// its output, so every consumer — the sweep's claim gate, the
+    /// bless candidate walk, eviction — stops offering it. Already
+    /// poisoned is success: `Failed` is terminal, and
+    /// `scrub --rehabilitate` is the one sanctioned way back out.
+    ///
+    /// # Errors
+    /// Index I/O.
+    pub fn poison_route(&self, db: &Db, recipe_id: i64, error: &str) -> Result<(), ExecError> {
+        if db.recipe_by_id(recipe_id)?.verify == VerifyState::Failed {
+            return Ok(());
+        }
+        db.set_verify_state(
+            recipe_id,
+            VerifyAdvance::Failed { error, peer: None },
+            now_unix(),
+        )?;
+        Ok(())
     }
 
     /// Serve `offset..offset+len` (clamped) of `hash` — the D49 range
@@ -1009,7 +1073,16 @@ impl<'s> Executor<'s> {
                             vec![(member_ix, Box::new(w))],
                             Some(fuel),
                         ) {
-                            h.fail(format!("extractor failed: {e}"));
+                            // D126: a guest trap here disproves the
+                            // route; the verdict has to cross the
+                            // thread boundary or the consumer sees a
+                            // bare string and retries forever.
+                            let message = format!("extractor failed: {e}");
+                            if ExecError::Runtime(e).is_claim_failure() {
+                                h.fail_deterministic(message);
+                            } else {
+                                h.fail(message);
+                            }
                         }
                     });
                     Ok(Box::new(r))
@@ -1053,7 +1126,16 @@ impl<'s> Executor<'s> {
                         if let Err(e) =
                             host.run_fueled(&transform, &op, &params, inputs, sinks, Some(fuel))
                         {
-                            handle.fail(format!("streaming transform failed: {e}"));
+                            // D126: the panic-in-guest case. A non-fuel
+                            // trap is a disproof of this recipe's claim
+                            // (D25), and saying so HERE is what lets the
+                            // sweep and the bless pass stop retrying it.
+                            let message = format!("streaming transform failed: {e}");
+                            if ExecError::Runtime(e).is_claim_failure() {
+                                handle.fail_deterministic(message);
+                            } else {
+                                handle.fail(message);
+                            }
                         }
                     });
                     Ok(Box::new(reader))
