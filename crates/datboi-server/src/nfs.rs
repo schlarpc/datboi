@@ -15,6 +15,14 @@
 //!   Old-snapshot ids keep serving as long as the bytes resolve (CAS
 //!   makes "the old tree" free).
 //!
+//! A READDIR of a view directory is the one place those two classes
+//! meet: the directory is named by view, the cookies it hands out are
+//! snapshot-keyed. D127 resolves it in the cookie's favour — a cookie
+//! IS a fileid, so the snapshot an in-progress walk is reading is
+//! recoverable from the walk itself, and a flip mid-enumeration serves
+//! the old tree to completion instead of invalidating every
+//! outstanding cookie.
+//!
 //! Ids are allocated per process; nfsserve's generation number stales
 //! all handles across daemon restarts, which is ordinary NFS behavior.
 
@@ -199,6 +207,29 @@ impl NfsFs {
         }
         cache.insert(key, Arc::clone(&built));
         Ok(built)
+    }
+
+    /// The snapshot an in-progress enumeration of a view root is
+    /// already walking, recovered from its own cookie (D127).
+    ///
+    /// Every child of a view root is `Node::Path(snapshot, name)` with
+    /// a single-component name, so the cookie names the tree the client
+    /// is mid-way through. Re-resolving the view by name instead would
+    /// follow a `view eval` to a new snapshot and strand every
+    /// outstanding cookie as `NFS3ERR_BAD_COOKIE`, which a Linux client
+    /// can only answer by restarting the walk from zero.
+    ///
+    /// `None` for the first page (nothing to pin to) and for any cookie
+    /// that is not shaped like a view root's child — those fall back to
+    /// resolving the view, exactly as before.
+    fn pinned_snapshot(&self, start_after: fileid3) -> Option<Blake3> {
+        if start_after == 0 {
+            return None;
+        }
+        match self.node(start_after).ok()? {
+            Node::Path(snapshot, path) if !path.contains('/') => Some(snapshot),
+            _ => None,
+        }
     }
 
     /// Listings built from an index since this filesystem opened.
@@ -456,14 +487,21 @@ impl NFSFileSystem for NfsFs {
                 Arc::new(self.materialize(children))
             }
             Node::Path(snapshot, path) => self.listing(snapshot, path).await?,
+            // D127: a walk already under way stays on the tree it
+            // started on, named by its own cookie. Only a fresh walk
+            // (or a cookie that cannot name one) resolves the view.
             Node::View(name) => {
-                let snapshot = self
-                    .blocking(move |app| {
-                        vfs::view_index(&app, &name)
-                            .map(|idx| idx.snapshot)
-                            .map_err(|e| map_lookup(&e))
-                    })
-                    .await?;
+                let snapshot = match self.pinned_snapshot(start_after) {
+                    Some(snapshot) => snapshot,
+                    None => {
+                        self.blocking(move |app| {
+                            vfs::view_index(&app, &name)
+                                .map(|idx| idx.snapshot)
+                                .map_err(|e| map_lookup(&e))
+                        })
+                        .await?
+                    }
+                };
                 self.listing(snapshot, String::new()).await?
             }
         };
@@ -776,6 +814,75 @@ mod tests {
             assert_eq!(listing.entries[0].name.0, b"c.bin");
             let (bytes, eof) = fs.read(file_id, 0, 4096).await.expect("old id reads");
             assert_eq!((bytes.as_slice(), eof), (content, true));
+        });
+    }
+
+    /// D127: a `view eval` mid-walk does not strand the walk.
+    ///
+    /// The view ROOT is the directory anyone actually lists, and it is
+    /// the one named by view rather than by snapshot — so before D127
+    /// the second page after a flip resolved a different tree, found no
+    /// cookie in it, and answered `NFS3ERR_BAD_COOKIE`, whose only
+    /// legal client response is to restart from zero.
+    #[test]
+    fn a_view_root_walk_is_pinned_to_the_snapshot_it_started_on() {
+        let content = b"delta bytes".as_slice();
+        let (_root, app, snap1) = app_over(|store, db| {
+            vec![
+                row(store, db, "alpha/rom.bin", b"a"),
+                row(store, db, "bravo/rom.bin", b"b"),
+                row(store, db, "charlie/rom.bin", b"c"),
+                row(store, db, "delta.bin", content),
+            ]
+        });
+        let fs = NfsFs::new(Arc::clone(&app));
+        rt().block_on(async {
+            let view_id = fs
+                .lookup(ROOT_ID, &"test".as_bytes().into())
+                .await
+                .expect("view");
+            let delta_id = fs
+                .lookup(view_id, &"delta.bin".as_bytes().into())
+                .await
+                .expect("delta");
+
+            // half a walk
+            let page1 = fs.readdir(view_id, 0, 2).await.expect("page 1");
+            assert_eq!((page1.entries.len(), page1.end), (2, false));
+            assert_eq!(page1.entries[0].name.0, b"alpha");
+            assert_eq!(page1.entries[1].name.0, b"bravo");
+            let cookie = page1.entries[1].fileid;
+
+            // ...and the view flips underneath it, to a disjoint tree.
+            let snap2 = {
+                let db = app.db.lock().unwrap();
+                let store = app.store;
+                let rows = vec![row(store, &db, "zulu/rom.bin", b"z")];
+                mint_snapshot(store, &db, rows, 1_780_000_100)
+            };
+            assert_ne!(snap1, snap2);
+
+            // the rest of the walk completes, on the tree it started on
+            let page2 = fs.readdir(view_id, cookie, 10).await.expect("page 2");
+            assert!(page2.end);
+            let rest: Vec<&[u8]> = page2.entries.iter().map(|e| e.name.0.as_slice()).collect();
+            assert_eq!(rest, vec![b"charlie".as_slice(), b"delta.bin".as_slice()]);
+
+            // D33 is not weakened: the id walked through the old tree
+            // still reads the old bytes.
+            let (bytes, eof) = fs.read(delta_id, 0, 4096).await.expect("old id reads");
+            assert_eq!((bytes.as_slice(), eof), (content, true));
+
+            // and a FRESH walk sees the new tree — pinning binds an
+            // enumeration, not the view.
+            let (names, _) = walk(&fs, view_id, 10).await.expect("fresh walk");
+            assert_eq!(names, vec!["zulu"]);
+
+            // a cookie that names nothing is still a bad cookie.
+            assert!(matches!(
+                fs.readdir(view_id, 424_242, 10).await,
+                Err(nfsstat3::NFS3ERR_BAD_COOKIE)
+            ));
         });
     }
 
