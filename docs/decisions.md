@@ -779,7 +779,25 @@ encoder at every level; one real firmware zip failed on 3 of 7 members.
 The failure is a clean error, so the analyzer records a D48 negative
 and the container stays literal (the D24 tax persists exactly there).
 Tracked in open-questions.md; TorrentZip — the curated standard — is
-zlib and fully covered. *Rejected:* zlib-exact compressor components
+zlib and fully covered.
+
+*Amendment (2026-09-21, D126 — the gap is wider than "a clean error"):*
+the sentence above is accurate for the SPLIT half and was wrong about
+the whole. preflate-rs errors cleanly at split time, `SplitReader::fail`
+catches it, the negative is recorded — all as written. But a different
+input class reaches `recreate` and PANICS inside the guest
+(`preflate-rs-0.7.6/src/tree_predictor.rs:169`, observed on the live
+corpus), which wasmtime turns into a TRAP, not an error. Two things
+follow. The coverage gap is not only "some containers stay literal": it
+also produces recipes that were minted (the split's own
+`verify_compression` pass having recompressed and compared every window)
+and that nonetheless cannot be rebuilt — a split-verify / rebuild
+divergence inside preflate-rs 0.7.6, which is the real defect and is
+upstream's. And the SECOND failure had no record at all until D126:
+until then the trap was treated as environmental, so the route was
+retried forever rather than poisoned. D126 rules what the trap means and
+where it is written down; this entry's "optimization issue" framing
+still holds for the split-time gap only. *Rejected:* zlib-exact compressor components
 (zlib-rs has had output-determinism bugs; zlib-ng guarantees
 reproducibility only within one identical build), miniz trial
 recompression as the primary path (near-zero hit rate on scene zips;
@@ -4700,32 +4718,48 @@ analyzer", and only the first is ruled.
 
 **Level 1, structural and global: documents versus extents.**
 A **document** is a blob some producer NAMED — a thing in the source's
-own vocabulary. An **extent** is a blob whose boundaries came from a
-mechanism indifferent to the content's structure; the FastCDC chunk is
-the pure case, a rolling-hash cut point that exists only to make
-another blob cheaper to store. The discriminator is already in the
-data and needs no new vocabulary: **a blob is a document when it has a
-`source_file` row, or is a NAMED output of some recipe** — and every
-structural splitter in the tree names its outputs (`Some(piece.name)`,
-`Some(view.name)`, `Some("{prefix}/body.bin")`, and ingest's own
-`zip_member_recipe` names every zip member, which is why a
-`preflate-split` member plaintext — a rom someone shipped, possibly a
-container itself — stays a candidate). `ChunkAnalyzer` alone names
-nothing: its chunks appear only as `InputRef { role: None }` and its
-one `OutputRef` is the reassembled original, unnamed. Extents are not
-analysis candidates, for anyone: nothing true of an arbitrary byte
-range is better said of it than of its parent, and D108 already
-guarantees every structural family concluded on the parent WHOLE before
-the fallback chunker cut it.
+own vocabulary. An **extent** is a blob that something CUT OUT and
+nobody named: boundaries from a mechanism indifferent to the content's
+structure, the FastCDC chunk being the pure case — a rolling-hash cut
+point that exists only to make another blob cheaper to store. Extents
+are nobody's candidate: nothing true of an arbitrary byte range is
+better said of it than of its parent, and D108 already guarantees every
+structural family concluded on the parent WHOLE before the fallback
+chunker cut it.
 
-**One correction to "named", in existing vocabulary.** D111/D112's
-`generated` streams — the XGD1 filler, the GameCube junk — are named
-(`Some("gc-junk")`) but synthesised: a zero-input recipe's output,
-regenerated from four bytes. Analysing one is as pointless as analysing
-a chunk and would materialise a disc-sized PRNG expansion through the
-executor to do it. So the test is *named and not generated*, reusing
-D112's own zero-input-route predicate rather than inventing a third
-category.
+The discriminator is already in the data and needs no new vocabulary:
+`extent := generated OR (is-a-part AND unnamed)`.
+
+1. **is-a-part** — some recipe consumes this blob to build an output
+   STRICTLY LARGER than it. That is D112's view/decomposition
+   comparison read the other way round: an input at least as large as
+   the output is the WHOLE (a container, whose members are slices of
+   it), and only a smaller input is a piece being assembled into a
+   whole. Being cut out needs positive evidence, so a blob with no
+   edges at all — a peer-fetched rom, a bare claim — is NOT an extent,
+   and neither is a container that arrived without a `source_file` row.
+   Unknown has to fail toward doing the work, and this term is what
+   makes that true.
+2. **unnamed** — no `source_file` row, and no NAMED `recipe_output`.
+   Every structural splitter in the tree names its outputs
+   (`Some(piece.name)`, `Some(view.name)`,
+   `Some("{prefix}/body.bin")`), and ingest's own `zip_member_recipe`
+   names every zip member — which is why a `preflate-split` member
+   plaintext, a rom someone shipped and possibly a container itself,
+   stays a candidate while the raw deflate stream beside it does not.
+   (The plaintext is usually LARGER than the stream it feeds, so term 1
+   already spares it; the name is the second, independent guard for the
+   incompressible member where it is not.) `ChunkAnalyzer` alone names
+   nothing: its chunks appear only as `InputRef { role: None }` and its
+   one `OutputRef` is the reassembled original, unnamed.
+3. **generated** — a zero-input recipe's output. D111/D112's junk and
+   filler streams ARE named (`Some("gc-junk")`) AND they span their
+   disc's whole address space, so neither other term catches them;
+   analysing one is as pointless as analysing a chunk and would
+   materialise a disc-sized PRNG expansion through the executor to do
+   it. This term reuses D112's own zero-input-route predicate, now
+   factored out so the swap and the queue cannot drift apart on what
+   `generated` means.
 
 **Level 2, semantic and per-analyzer:** `Analyzer::candidacy()` returns
 the necessary conditions this analyzer's candidates must meet, ANDed
@@ -4748,6 +4782,13 @@ layer and NOT built here: a sniff needs bytes, and enqueue is one SQL
 pass over ~1.9M rows, so it belongs at CLAIM time over the head the
 executor can already produce. Recorded in open-questions.
 
+**Measured on a synthetic corpus** (two 6 MiB near-twins, chunked, then
+the whole roster asked to enqueue both ways): 24 chunks minted, roster
+queue **258 rows under the cross product, 18 under candidacy — a 93.0%
+reduction**, the same fraction the live host's 11,360,339-of-12,227,830
+is. Chunking now SHRINKS the queue (the two originals settle for
+`chunk` and nothing takes their place) where before it multiplied it.
+
 **Enqueue also prunes.** `enqueue_unanalyzed` deletes unleased queue
 rows whose blob no longer satisfies candidacy, in the same call that
 inserts. A live database therefore converges on its next ambient refine
@@ -4769,9 +4810,99 @@ reads the same fact off the recipes that already exist); a
 recipe-SHAPE test for the chunker's assemble (an affine `assemble@1`
 over role-less inputs with an unnamed output — it works, but it admits
 the preflate skeleton, the corrections blob and the raw member streams
-that the named-output test correctly excludes, and it needs three
-clauses where one does); a cheap sniff gate before enqueue (a read per
+that the named-output test correctly excludes, and it reads the
+chunker's implementation where the name test reads the producer's
+intent); the name test ALONE, without term 1 (simpler, and
+wrong at the edges that matter — a peer-fetched rom and a container
+that never had a `source_file` row would both be called extents on the
+strength of a name nobody had any reason to give them); a cheap sniff gate before enqueue (a read per
 blob per wake, ~1.9M reads, to answer what the index answers for free);
 leaving it to scheduling (D47 permits dat-aware ORDER and
 `bump_dat_matched_priorities` already runs — ordering cannot fix a
 queue that grows tenfold with every chunking pass).
+
+## D126 — A trapping route disproves the route, not the bytes; the read path records it (2026-09-21)
+
+Observed on the live host, repeatedly: `preflate-rs-0.7.6/src/
+tree_predictor.rs:169` PANICS inside `xf-preflate`'s `recreate`,
+wasmtime traps it, and the executor's streaming path flattens it into a
+bare `io::Error` carrying a string. Every consumer then loses the one
+fact that matters — that the same bytes, through the same pinned
+component, at the same fuel budget, will fail identically forever. A
+sweep item whose bytes exist only behind that route therefore errors
+*environmentally* (D81) and is retried on every ambient wake; the
+`analysis` table holds no trap row at all, only successes. The same
+failures stopped 77 routes in a `bless --materialize --min-size 1M`
+run, and would stop the same 77 on the next run, and the next.
+
+**D53's "the failure is a clean error" is half right, and the half it
+gets wrong is the half that is failing.** `preflate-rs` DOES cleanly
+error at SPLIT time when its complevel estimator finds no candidates —
+`SplitReader::fail` catches it, the analyzer records a D48 negative, the
+container stays literal, and that sentence stands. The panic is a
+different input class reached at REBUILD time, inside the guest. A trap
+is not an error, and D53 is amended to say so.
+
+**Ruled, in three parts.**
+
+1. **A claim-level failure keeps its identity across the pipe.**
+   `PipeHandle::fail_deterministic` marks the producer's verdict and
+   `pipe::deterministic_cause` reads it back out of the `io::Error`
+   chain, so the distinction survives the thread boundary that D51's
+   composition puts between a guest and its consumer.
+   `ExecError::is_claim_failure` — D25's existing predicate, which
+   already calls a non-fuel trap a disproof — gains the
+   wrapped-in-I/O case, because a spill turns a nested node's trap
+   into `ExecError::Io`. Fuel exhaustion stays retryable, exactly as
+   D25 already rules.
+
+2. **The record is a poisoned recipe, not an analysis row.** The route
+   claims it produces those bytes; it does not. That is D25's `Failed`,
+   the same verdict `replay` and `license` already write for the same
+   trap — now written on the streaming READ path too (the sweep's
+   logical open, and the bless coordinator) instead of being discarded
+   because the reader happened to be a `Read` rather than a replay. One
+   poison settles the blob for ALL TEN families at once: a poisoned
+   route stops grounding it, so `refresh_absent_eligibility` stops
+   admitting it and `bless_candidates` stops selecting it.
+   `datboi scrub --rehabilitate` stays the escape hatch for a wrong
+   poisoning, unchanged.
+
+3. **The item waits; it does not conclude.** The analyzer never read
+   the bytes, so `Negative` would be a false statement in a signed,
+   restorable artifact — `AnalysisRow` is defined as "what `analyzer`
+   concluded about `blob`'s bytes" (D48), and the row is snapshotted,
+   so an instance that later holds the literal would import our row and
+   permanently decline to look. The right vocabulary already exists:
+   D116's deferral. The item leaves the queue with NO analysis row,
+   waiting on its own hash, and `enqueue_unanalyzed` re-admits it the
+   moment those bytes are resident. Settled for scheduling, open for
+   truth.
+
+**The line stays where D81 drew it**: would the same input produce the
+same verdict. Out of disk, a missing component, an I/O error on the
+byte source, instantiation and world-wiring failures, and fuel
+exhaustion are all still `Err`, still queued, still retried.
+
+**On "more fuel might succeed".** The obvious objection is answered,
+but not by analyzer versioning — `analyzer_tag(VERSIONED_NAME)` governs
+the ANALYZER's identity, and the thing that traps here is a RECIPE's
+pinned component, which analyzer versioning does not reach. It is
+answered by `is_fuel_exhaustion`, which D25 already wrote for exactly
+this reason: a budget outcome is a policy outcome and never poisons, so
+a retune can still rescue the recipe, while a panic — which no budget
+changes — does.
+
+*Rejected:* recording the trap as a D48 `Negative` on the swept blob
+(it asserts a conclusion about bytes nothing read; it rides the
+snapshots; and it has to be paid once per family — ten trap executions
+per blob — where one poison settles all ten); treating a guest panic as
+fuel-retryable (`is_fuel_exhaustion` already separates the two, and
+conflating them would make every real disproof retry forever, which is
+the bug); a retry counter or backoff on the queue row (it converts a
+permanent, knowable verdict into a slower permanent verdict, and adds
+authoritative state to a queue the schema calls derivable); poisoning
+the exact node that trapped rather than the top route (the streaming
+composition does not know which thread failed by the time the reader
+sees it, and `replay` already poisons the top route for a claim failure
+anywhere in its tree — matching it is consistency, not a compromise).
