@@ -201,6 +201,9 @@ impl<R: Read + Seek> ChdReader<R> {
             HunkKind::Invalid => Err(ChdError::Malformed(format!(
                 "CHD hunk {index} has no valid map entry"
             ))),
+            // The two kinds whose bytes come off disk. Both then face
+            // the map's own checksum below; an uncompressed hunk is no
+            // less capable of being corrupt than a compressed one.
             HunkKind::Uncompressed => {
                 let got = read_at(&mut self.src, entry.offset, dest)?;
                 if got != dest.len() {
@@ -209,7 +212,7 @@ impl<R: Read + Seek> ChdReader<R> {
                         dest.len() - got
                     )));
                 }
-                Ok(())
+                self.check_hunk(index, &entry, dest)
             }
             HunkKind::Codec(c) => {
                 self.compressed.clear();
@@ -222,25 +225,33 @@ impl<R: Read + Seek> ChdReader<R> {
                     )));
                 }
                 self.decoder.decode(c, &self.compressed, dest)?;
-                if let Some(want) = entry.crc32 {
-                    let got = crc32(dest);
-                    if got != want {
-                        return Err(ChdError::Malformed(format!(
-                            "CHD hunk {index} decodes to crc32 {got:#010x}, map says {want:#010x}"
-                        )));
-                    }
-                }
-                if let Some(want) = entry.crc16 {
-                    let got = huffman::crc16(dest);
-                    if got != want {
-                        return Err(ChdError::Malformed(format!(
-                            "CHD hunk {index} decodes to crc16 {got:#06x}, map says {want:#06x}"
-                        )));
-                    }
-                }
-                Ok(())
+                self.check_hunk(index, &entry, dest)
             }
         }
+    }
+
+    /// The map's per-hunk checksum. Written by the same tool as the
+    /// file's declared sha1, so it is NOT evidence of identity (D44's
+    /// whole point) — but it localises corruption to one hunk instead
+    /// of leaving a whole-file digest mismatch with nothing to say.
+    fn check_hunk(&self, index: u32, entry: &HunkEntry, dest: &[u8]) -> Result<(), ChdError> {
+        if let Some(want) = entry.crc32 {
+            let got = crc32(dest);
+            if got != want {
+                return Err(ChdError::Malformed(format!(
+                    "CHD hunk {index} is crc32 {got:#010x}, the map says {want:#010x}"
+                )));
+            }
+        }
+        if let Some(want) = entry.crc16 {
+            let got = huffman::crc16(dest);
+            if got != want {
+                return Err(ChdError::Malformed(format!(
+                    "CHD hunk {index} is crc16 {got:#06x}, the map says {want:#06x}"
+                )));
+            }
+        }
+        Ok(())
     }
 }
 

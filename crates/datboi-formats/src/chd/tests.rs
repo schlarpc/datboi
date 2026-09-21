@@ -249,15 +249,53 @@ fn a_lying_declaration_is_a_verdict_not_an_error() {
 }
 
 /// Flipping a payload byte must be caught even before the sha1: the
-/// map's own per-hunk checksum covers it.
+/// map's own per-hunk checksum covers it. Both kinds of stored hunk —
+/// an uncompressed one is no less capable of being corrupt, and it is
+/// the one whose checksum is easiest to forget to check.
 #[test]
 fn a_corrupt_hunk_is_caught_by_the_maps_checksum() {
-    let bytes = build(&SynthSpec::new(4, CODEC_ZLIB), &wave(4096 * 2));
-    let mut corrupt = bytes.clone();
-    let at = corrupt.len() - 40;
-    corrupt[at] ^= 0x01;
-    let err = verify(Cursor::new(&corrupt), &mut |_| {}).expect_err("must not verify");
-    assert!(matches!(err, ChdError::Malformed(_)), "{err:?}");
+    for (label, bytes) in [
+        (
+            "v4, compressed hunks (crc32)",
+            build(&SynthSpec::new(4, CODEC_ZLIB), &wave(4096 * 2)),
+        ),
+        (
+            // Incompressible data: every hunk stores raw, so the map's
+            // entries are COMPRESSION_NONE carrying a crc16.
+            "v5, uncompressed hunks (crc16)",
+            build(&SynthSpec::new(5, CODEC_ZLIB), &incompressible(4096 * 2)),
+        ),
+    ] {
+        // Corrupt a byte of the LAST hunk's stored payload, found
+        // through the map rather than guessed at from the file's
+        // length — the metadata chain lives at the end, and an offset
+        // that lands there tests the metadata reader instead.
+        let reader = ChdReader::open(Cursor::new(&bytes)).expect("opens");
+        let last = *reader.map().last().expect("hunks");
+        let at = usize::try_from(last.offset).expect("offset") + last.length as usize / 2;
+        let mut corrupt = bytes.clone();
+        corrupt[at] ^= 0x01;
+        let err = verify(Cursor::new(&corrupt), &mut |_| {}).expect_err("must not verify");
+        assert!(matches!(err, ChdError::Malformed(_)), "{label}: {err:?}");
+        assert!(err.to_string().contains("the map says"), "{label}: {err}");
+        // The intact original still verifies, so the test is about the
+        // corruption and not about the fixture.
+        verify(Cursor::new(&bytes), &mut |_| {}).expect(label);
+    }
+}
+
+/// Bytes no codec beats, so the writer stores them raw.
+fn incompressible(len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(len);
+    let mut x = 0x2545_F491_4F6C_DD1Du64;
+    while out.len() < len {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+    out.truncate(len);
+    out
 }
 
 /// Codecs we refuse are named, not skipped — and the refusal happens
