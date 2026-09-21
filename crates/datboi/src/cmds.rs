@@ -304,16 +304,20 @@ fn print_bless(
         }
         return;
     }
-    let secs = elapsed.as_secs_f64().max(0.001);
-    println!(
-        "blessed            {:>8}   {} in {:.1}s ({}/s, {} jobs)",
-        report.blessed,
-        human_bytes(report.bytes),
-        secs,
-        human_bytes((report.bytes as f64 / secs) as u64),
-        opts.workers(),
-    );
-    if opts.materialize {
+    // Only when there was work: a run that did nothing but repair rows
+    // should not print a throughput of zero bytes per second.
+    if report.blessed > 0 {
+        let secs = elapsed.as_secs_f64().max(0.001);
+        println!(
+            "blessed            {:>8}   {} in {:.1}s ({}/s, {} jobs)",
+            report.blessed,
+            human_bytes(report.bytes),
+            secs,
+            human_bytes((report.bytes as f64 / secs) as u64),
+            opts.workers(),
+        );
+    }
+    if report.materialized > 0 {
         println!(
             "materialized       {:>8}   bytes kept resident, {} on disk",
             report.materialized,

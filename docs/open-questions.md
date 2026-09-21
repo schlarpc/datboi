@@ -537,3 +537,13 @@ Residuals and watch items:
 5. **`READ_POOL_SIZE` stays at 4** and now carries the argument for why
    the measurement that looked like a pool problem was not one. Re-open
    on concurrent readers queueing, not on one slow read.
+6. **D122 names an invariant every writer has to honour, and only two
+   of them are audited.** `scrub` and now `bless` repair a stale
+   `blob.residency` from the store; `ingest`, `replay` and the D89
+   extract path have the same publish-then-record window and no
+   repairing reader of their own. Nothing is known to be wrong there —
+   the D121 pass had the deep queue, which is why it surfaced first —
+   but "which writers can strand a row, and what notices" is the audit
+   nobody has done. A cheap first move would be a `datboi status` line
+   counting rows whose residency disagrees with the store, so the drift
+   is visible without running a pass over it.
