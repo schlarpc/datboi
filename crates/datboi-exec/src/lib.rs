@@ -88,6 +88,15 @@ pub enum ExecError {
     InsufficientHeadroom { hash: Blake3, need: u64, have: u64 },
     #[error("range verification failed for {hash}: {detail}")]
     RangeVerifyFailed { hash: Blake3, detail: String },
+    /// Outboard computation over a route failed. Carries the
+    /// `ObaoError` as a SOURCE rather than a string (D126): the
+    /// blessing pass reads a whole route through `obao::compute`, so
+    /// a guest trap arrives here, and flattening it to text threw away
+    /// the one bit that says whether asking again could help. This used
+    /// to be `Malformed`, which poisoned unconditionally — wrong in the
+    /// other direction, since a bad disk would poison a good recipe.
+    #[error("outboard computation failed: {0}")]
+    Obao(#[source] datboi_store_fs::obao::ObaoError),
     // D116: a verify-only license found the op's output disagreeing
     // with its claim — a claim failure, exactly as a store put's
     // HashMismatch is.
@@ -121,14 +130,47 @@ impl ExecError {
             // indicts the CHILD claim that fed it, never the recipe
             // under replay.
             Self::Runtime(RuntimeError::InputLengthMismatch { .. }) => false,
-            // D126: a nested node's trap reaches us as I/O — `spill`
-            // copies a child stream and the pipe's verdict rides its
-            // `io::Error`. Unwrapping it here means one predicate
-            // decides, however deep in the tree the disproof happened.
-            Self::Io(e) => datboi_runtime::pipe::deterministic_cause(e).is_some(),
-            _ => false,
+            // D126: everything else asks the CHAIN. A route failure
+            // reaches this type wrapped differently depending on which
+            // reader was holding it — `spill` yields `Io`, a
+            // materializing bless yields `Store(Obao(Io(..)))`, and a
+            // future consumer will invent a third — so the predicate
+            // walks for the verdict instead of naming the wrappers one
+            // at a time. Arms above still win: fuel, instantiation and
+            // input-length failures are decided before we look, and
+            // none of them ever carries a deterministic marker anyway
+            // (the producer only sets one when this predicate already
+            // said yes).
+            other => deterministic_in_chain(other),
         }
     }
+}
+
+/// Is a D126 deterministic verdict anywhere in `err`'s source chain?
+///
+/// Walks `Error::source()`, and at every `io::Error` on the way asks
+/// [`pipe::deterministic_cause`] as well: `io::Error::source()` returns
+/// its payload's source rather than the payload, so the standard walk
+/// alone steps straight over the marker. The hop cap costs nothing and
+/// means a malformed chain can never spin here.
+fn deterministic_in_chain(err: &(dyn std::error::Error + 'static)) -> bool {
+    const MAX_HOPS: usize = 32;
+    let mut cursor = Some(err);
+    for _ in 0..MAX_HOPS {
+        let Some(e) = cursor else { return false };
+        if e.downcast_ref::<datboi_runtime::pipe::Deterministic>()
+            .is_some()
+        {
+            return true;
+        }
+        if let Some(io) = e.downcast_ref::<io::Error>()
+            && datboi_runtime::pipe::deterministic_cause(io).is_some()
+        {
+            return true;
+        }
+        cursor = e.source();
+    }
+    false
 }
 
 #[derive(Debug, Clone)]
@@ -1346,8 +1388,8 @@ impl<'s> Executor<'s> {
     /// `false` when the sidecar already existed.
     ///
     /// # Errors
-    /// [`ExecError::RangeVerifyFailed`] if the route's bytes do not hash
-    /// to the claim (nothing is stored); route/planning errors as usual.
+    /// [`ExecError::ClaimMismatch`] if the route's bytes do not hash to
+    /// the claim (nothing is stored); route/planning errors as usual.
     pub fn bless_output(&self, db: &Db, hash: &Blake3) -> Result<bool, ExecError> {
         if self.store.has_obao(StoreNs::Data, hash)? {
             return Ok(false);
@@ -1375,19 +1417,31 @@ impl<'s> Executor<'s> {
     /// materialization of a member the daemon already paid for.
     ///
     /// # Errors
-    /// [`ExecError::RangeVerifyFailed`] if the route's bytes do not hash
-    /// to the claim (nothing is stored); route/store errors as usual.
+    /// [`ExecError::ClaimMismatch`] if the route's bytes do not hash to
+    /// the claim (nothing is stored, and the route is a disproof, D126);
+    /// route/store errors as usual.
     pub(crate) fn bless_plan(&self, hash: &Blake3, plan: &Plan) -> Result<bool, ExecError> {
         if self.store.has_obao(StoreNs::Data, hash)? {
             return Ok(false);
         }
         let reader = self.open_sequential(plan)?;
-        let (root, sidecar) = datboi_store_fs::obao::compute(reader, plan.len())
-            .map_err(|e| ExecError::Malformed(format!("blessing pass: {e}")))?;
+        let (root, sidecar) =
+            datboi_store_fs::obao::compute(reader, plan.len()).map_err(ExecError::Obao)?;
         if root != *hash {
-            return Err(ExecError::RangeVerifyFailed {
-                hash: *hash,
-                detail: format!("blessing pass produced {root}, not the claimed output"),
+            // D126: a whole route re-hashed to something other than its
+            // claim is a DISPROOF, and `ClaimMismatch` is the variant
+            // that says so — the same verdict `put_with_obao` reaches
+            // on the materializing twin via `HashMismatch`. It used to
+            // be `RangeVerifyFailed`, which `is_claim_failure` refuses
+            // on purpose because `serve_range` uses it for a seekable
+            // component's lying window (quarantine the seek claim, not
+            // the recipe). Two different failures, one variant, and the
+            // blessing one was getting the serving one's answer: it
+            // reported and repeated forever.
+            return Err(ExecError::ClaimMismatch {
+                expected: *hash,
+                actual: root,
+                len: plan.len(),
             });
         }
         self.store.put_obao(StoreNs::Data, hash, &sidecar)?;
