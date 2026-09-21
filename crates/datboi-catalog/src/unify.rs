@@ -16,16 +16,11 @@ use datboi_index::{AliasAlgo, Db};
 use crate::CatalogError;
 
 /// Evidence strength / identity_blob basis codes (schema.md §2):
-/// 3=sha256, 2=sha1, 1=md5, 0=crc32+size (probable).
-pub const BASIS_SHA256: i64 = 3;
-pub const BASIS_SHA1: i64 = 2;
-pub const BASIS_MD5: i64 = 1;
-pub const BASIS_CRC_SIZE: i64 = 0;
-/// A container header's self-declaration (CHD internal sha1, D44):
-/// evidence about content we never hashed ourselves. Grades as `probable`
-/// in rollups, exactly like crc+size — the declaration is checkable only
-/// by decompressing (M3, post-D50).
-pub const BASIS_DECLARED: i64 = -1;
+/// 3=sha256, 2=sha1, 1=md5, 0=crc32+size (probable), -1=declared. They
+/// are defined beside the column's DDL in `datboi-index` because the
+/// `chd-verify` analyzer writes the column too (D44 amendment) and
+/// cannot reach this crate.
+pub use datboi_index::{BASIS_CRC_SIZE, BASIS_DECLARED, BASIS_MD5, BASIS_SHA1, BASIS_SHA256};
 
 /// The partial hash tuple of a claim or identity row.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -314,30 +309,48 @@ pub fn link_identities_to_blobs(db: &Db, identity_ids: &[i64]) -> Result<(), Cat
 
         for blob_id in candidates {
             if blob_matches(&tx, blob_id, &tuple)? {
-                tx.execute(
-                    "INSERT OR IGNORE INTO identity_blob (identity_id, blob_id, basis)
-                     VALUES (?1, ?2, ?3)",
-                    params![identity_id, blob_id, strength],
-                )?;
+                link(&tx, identity_id, blob_id, strength)?;
             }
         }
 
-        // CHD declared-sha1 pass (D44): a sizeless sha1-bearing identity is
-        // the shape of a disk claim; link any stored CHD whose header
-        // declares that sha1, at declared (probable) grade. `blob_matches`
-        // is deliberately skipped — the declaration describes decompressed
-        // content, so the blob's real alias tuple can never corroborate it.
+        // CHD internal-sha1 pass (D44 and its 2026-09-21 amendment): a
+        // sizeless sha1-bearing identity is the shape of a disk claim, so
+        // link any stored CHD whose internal sha1 is that one.
+        //
+        // `blob_matches` is deliberately skipped for both namespaces —
+        // the digest describes decompressed content, so the blob's real
+        // alias tuple can never corroborate it. What DOES separate the
+        // two links is where the number came from: a header's
+        // declaration is an attestation, graded `probable`; a digest the
+        // `chd-verify` analyzer computed over bytes it decompressed
+        // itself is evidence, graded like any other sha1 match.
         if let (Some(sha1), None) = (&tuple.sha1, &tuple.size) {
             for blob_id in db.alias_lookup(AliasAlgo::ChdSha1, sha1)? {
-                tx.execute(
-                    "INSERT OR IGNORE INTO identity_blob (identity_id, blob_id, basis)
-                     VALUES (?1, ?2, ?3)",
-                    params![identity_id, blob_id, BASIS_DECLARED],
-                )?;
+                link(&tx, identity_id, blob_id, BASIS_DECLARED)?;
+            }
+            for blob_id in db.alias_lookup(AliasAlgo::ChdSha1Verified, sha1)? {
+                link(&tx, identity_id, blob_id, BASIS_SHA1)?;
             }
         }
     }
     tx.commit()?;
+    Ok(())
+}
+
+/// Record (or raise) an identity→blob link. The basis is the MAXIMUM of
+/// what is already there and what this pass found: the same pair can be
+/// reached by more than one route — a CHD by its header's declaration
+/// and again by a verify's computed digest — and a re-link must never
+/// demote evidence that was already stronger. An `INSERT OR IGNORE`
+/// here would freeze whichever grade arrived first, which for a swept
+/// corpus is always the weaker one.
+fn link(conn: &Connection, identity_id: i64, blob_id: i64, basis: i64) -> Result<(), CatalogError> {
+    conn.execute(
+        "INSERT INTO identity_blob (identity_id, blob_id, basis) VALUES (?1, ?2, ?3)
+         ON CONFLICT (identity_id, blob_id)
+         DO UPDATE SET basis = MAX(basis, excluded.basis)",
+        params![identity_id, blob_id, basis],
+    )?;
     Ok(())
 }
 

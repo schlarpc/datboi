@@ -4,6 +4,25 @@
 
 use crate::IndexError;
 
+/// Evidence strength codes for `identity_blob.basis` (schema.md §2):
+/// how good the reason is for believing this blob IS this identity.
+/// Anything at or above [`BASIS_MD5`] is strong enough to audit as
+/// have; at or below [`BASIS_CRC_SIZE`] the match is only `probable`.
+///
+/// These live here, with the column's DDL, rather than in the catalog
+/// that usually writes them: the `chd-verify` analyzer also writes the
+/// column (D44 amendment), and an analyzer cannot reach the catalog
+/// (the catalog depends on ingest, not the other way round). One
+/// definition, cited from both.
+pub const BASIS_SHA256: i64 = 3;
+pub const BASIS_SHA1: i64 = 2;
+pub const BASIS_MD5: i64 = 1;
+pub const BASIS_CRC_SIZE: i64 = 0;
+/// A container header's self-declaration (a CHD's internal sha1, D44):
+/// evidence about content nobody hashed. Grades as `probable`, exactly
+/// like crc+size.
+pub const BASIS_DECLARED: i64 = -1;
+
 macro_rules! db_enum {
     ($(#[$meta:meta])* $name:ident { $($(#[$vmeta:meta])* $variant:ident = $code:literal),+ $(,)? }) => {
         $(#[$meta])*
@@ -89,17 +108,29 @@ db_enum! {
 
 db_enum! {
     /// Alias hash algorithm (D22). blake3 is never an alias — it is the key.
-    /// `ChdSha1` is a separate namespace on purpose: it records what a CHD
-    /// v5 *header declares* its internal sha1 to be — an attestation about
-    /// decompressed content, not a hash of the blob's bytes — so it must
-    /// never answer a real sha1 lookup (D44: declared evidence caps at
-    /// `probable`).
+    ///
+    /// The two CHD namespaces are separate from real sha1, and from each
+    /// other, on purpose (D44 and its 2026-09-21 amendment). Both record
+    /// a digest of a CHD's *decompressed* content rather than of the
+    /// blob's bytes, so neither may ever answer a real sha1 lookup. What
+    /// separates them is who produced the number:
+    ///
+    /// - `ChdSha1` is what the file's own header *declares* — an
+    ///   attestation by whatever wrote it, worth `probable` and no more.
+    /// - `ChdSha1Verified` is what the `chd-verify` analyzer *computed*
+    ///   after decompressing every hunk. That is evidence we gathered,
+    ///   so it links at sha1 strength.
+    ///
+    /// One flagged column would collapse the two, and then "who said
+    /// this" becomes a matter of reading a flag correctly. Two
+    /// namespaces make it unrepresentable.
     AliasAlgo {
         Crc32 = 1,
         Md5 = 2,
         Sha1 = 3,
         Sha256 = 4,
         ChdSha1 = 5,
+        ChdSha1Verified = 6,
     }
 }
 

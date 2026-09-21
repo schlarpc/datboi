@@ -2248,8 +2248,9 @@ fn blob_detail_body(app: &App, hash: &Blake3) -> Result<BlobDetail, Response> {
             return Err(err(ErrorCode::NotFound, "no such blob"));
         };
 
-        // Alias digests (D22). ChdSha1 attests decompressed content,
-        // not these bytes (D44) — excluded. First row per algo wins
+        // Alias digests (D22). Both CHD namespaces describe the file's
+        // DECOMPRESSED content, not these bytes (D44 and its amendment)
+        // — excluded, whoever computed them. First row per algo wins
         // (deterministic by the ORDER BY; multi-digest rows would mean
         // a same-blob hash collision).
         let mut aliases = RomHashes::default();
@@ -2267,7 +2268,7 @@ fn blob_detail_body(app: &App, hash: &Blake3) -> Result<BlobDetail, Response> {
                 AliasAlgo::Md5 => &mut aliases.md5,
                 AliasAlgo::Sha1 => &mut aliases.sha1,
                 AliasAlgo::Sha256 => &mut aliases.sha256,
-                AliasAlgo::ChdSha1 => continue,
+                AliasAlgo::ChdSha1 | AliasAlgo::ChdSha1Verified => continue,
             };
             slot.get_or_insert_with(|| hex(&digest));
         }
