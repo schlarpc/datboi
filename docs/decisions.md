@@ -4791,9 +4791,15 @@ is. Chunking now SHRINKS the queue (the two originals settle for
 
 **Enqueue also prunes.** `enqueue_unanalyzed` deletes unleased queue
 rows whose blob no longer satisfies candidacy, in the same call that
-inserts. A live database therefore converges on its next ambient refine
-wake with no operator action; nothing about the 12.2M rows needs a
-migration, a flag, or a hand-written DELETE.
+inserts — and it is the only writer the queue has, beside `enqueue_fresh`
+under the same predicate. A live database therefore converges on its
+next ambient refine wake with no operator action; nothing about the
+12.2M rows needs a migration, a flag, or a hand-written DELETE. The
+one-time bill is one predicate evaluation per queued row per family,
+inside the refine worker's wake — tens of seconds at 12.2M rows, on the
+niced thread, holding the cache.db write lock in bursts. `datboi sweep
+<family>` reports it as `N pruned` for an operator who wants to watch
+it happen family by family instead.
 
 *Rejected:* "don't analyze analyzer-produced blobs" (too broad, and
 wrong in the one direction that matters — a `preflate-split` member is
