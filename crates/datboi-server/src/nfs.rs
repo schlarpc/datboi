@@ -23,7 +23,7 @@
 //! the old tree to completion instead of invalidating every
 //! outstanding cookie.
 //!
-//! Ids are allocated per process; nfsserve's generation number stales
+//! Ids are allocated per process; the NFS generation number stales
 //! all handles across daemon restarts, which is ordinary NFS behavior.
 
 use std::collections::HashMap;
@@ -32,8 +32,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use datboi_core::hash::Blake3;
-use nfsserve::nfs::{fattr3, fileid3, filename3, ftype3, nfspath3, nfsstat3, nfstime3, sattr3};
-use nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
+use datboi_nfs_server::nfs::{
+    fattr3, fileid3, filename3, ftype3, nfspath3, nfsstat3, nfstime3, sattr3,
+};
+use datboi_nfs_server::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
 
 use crate::App;
 use crate::vfs::{self, LookupError, ViewIndex};
@@ -717,6 +719,62 @@ mod tests {
                 .expect("a non-final page is non-empty")
                 .fileid;
         }
+    }
+
+    /// A plain NFSv3 READDIR walk must terminate and visit each entry
+    /// exactly once.
+    ///
+    /// The READDIRPLUS path (`readdir`) was always covered above; this
+    /// one dispatches through `readdir_simple`, which is what the Linux
+    /// client actually uses once it stops asking for attributes. Upstream
+    /// nfsserve 0.11.0 discarded the cookie there and restarted at entry
+    /// 0 on every call, so this walk never ended — against a real view
+    /// root of ~36,000 entries, `ls` spun at 100% CPU forever without
+    /// issuing another RPC. See crates/datboi-nfs-server/FORK.md.
+    #[test]
+    fn a_plain_readdir_walk_terminates() {
+        let (_root, app, _snap) = app_over(|store, db| {
+            vec![
+                row(store, db, "a.bin", b"a"),
+                row(store, db, "b.bin", b"b"),
+                row(store, db, "c.bin", b"c"),
+                row(store, db, "d.bin", b"d"),
+                row(store, db, "e.bin", b"e"),
+            ]
+        });
+        let fs = NfsFs::new(Arc::clone(&app));
+        rt().block_on(async {
+            let view_id = fs
+                .lookup(ROOT_ID, &"test".as_bytes().into())
+                .await
+                .expect("view");
+
+            let mut seen: Vec<String> = Vec::new();
+            let mut cookie: fileid3 = 0;
+            // Two at a time, so resumption is exercised rather than
+            // sidestepped by a single page that happens to hold everything.
+            for _ in 0..16 {
+                let page = fs
+                    .readdir_simple(view_id, cookie, 2)
+                    .await
+                    .expect("readdir_simple");
+                for e in &page.entries {
+                    seen.push(String::from_utf8(e.name.0.clone()).expect("utf8"));
+                }
+                if page.end {
+                    break;
+                }
+                let last = page.entries.last().expect("a non-final page has entries");
+                assert_ne!(last.fileid, cookie, "walk failed to advance");
+                cookie = last.fileid;
+            }
+
+            assert_eq!(
+                seen,
+                vec!["a.bin", "b.bin", "c.bin", "d.bin", "e.bin"],
+                "every entry exactly once, in order, and the walk ended"
+            );
+        });
     }
 
     /// Walk root → view → dir → file, read with offsets, paginate

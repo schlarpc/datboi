@@ -1393,6 +1393,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "datboi-nfs-server"
+version = "0.11.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "byteorder",
+ "filetime",
+ "num-derive",
+ "num-traits",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "datboi-p2p"
 version = "0.1.0"
 dependencies = [
@@ -1449,6 +1463,7 @@ dependencies = [
  "datboi-formats",
  "datboi-index",
  "datboi-ingest",
+ "datboi-nfs-server",
  "datboi-p2p",
  "datboi-store-fs",
  "dav-server",
@@ -1457,7 +1472,6 @@ dependencies = [
  "getrandom 0.2.17",
  "include_dir",
  "magic",
- "nfsserve",
  "rusqlite",
  "rustix",
  "serde",
@@ -3621,22 +3635,6 @@ dependencies = [
  "windows",
  "windows-result",
  "wmi",
-]
-
-[[package]]
-name = "nfsserve"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef1424b6d88c60a091931392970999ea3ceab132d968e6a5545c770fad5b97d7"
-dependencies = [
- "anyhow",
- "async-trait",
- "byteorder",
- "filetime",
- "num-derive",
- "num-traits",
- "tokio",
- "tracing",
 ]
 
 [[package]]

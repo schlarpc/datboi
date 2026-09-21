@@ -342,11 +342,12 @@ impl Server {
             .context("building tokio runtime")?;
         runtime.block_on(async move {
             if let Some(addr) = self.nfs_listen {
-                use nfsserve::tcp::NFSTcp as _;
+                use datboi_nfs_server::tcp::NFSTcp as _;
                 let fs = nfs::NfsFs::new(Arc::clone(&self.app));
-                let nfs_listener = nfsserve::tcp::NFSTcpListener::bind(&addr.to_string(), fs)
-                    .await
-                    .with_context(|| format!("binding NFS on {addr}"))?;
+                let nfs_listener =
+                    datboi_nfs_server::tcp::NFSTcpListener::bind(&addr.to_string(), fs)
+                        .await
+                        .with_context(|| format!("binding NFS on {addr}"))?;
                 println!(
                     "datboi-server NFSv3 on {addr} \
                      (mount -o nolock,vers=3,tcp,port={port},mountport={port} <host>:/ <dir>)",

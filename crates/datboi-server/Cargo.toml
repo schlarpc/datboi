@@ -36,7 +36,7 @@ include_dir.workspace = true
 # The blob sniff (D79): libmagic over the embedded nixpkgs magic.mgc
 # (build.rs re-exports DATBOI_MAGIC_DB for include_bytes!).
 magic.workspace = true
-nfsserve.workspace = true
+datboi-nfs-server.workspace = true
 # The /v1 read models query cache.db directly (same SQL family as
 # `datboi status`/`datboi audit` — see api.rs).
 rusqlite.workspace = true

@@ -123,7 +123,14 @@ rustix = { version = "1", features = ["fs", "process"] }
 # In-process userspace NFSv3 (docs/views.md: the primary mount,
 # nfsserve lineage). Serves mount+portmap+nfs on one TCP port; no
 # kernel export, no root.
-nfsserve = "0.11"
+#
+# Vendored at crates/datboi-nfs-server from nfsserve 0.11.0
+# (huggingface/nfsserve, BSD-3-Clause). Forked because plain NFSv3
+# READDIR ignored the client's cookie and could not be corrected from
+# outside the crate: the trait method it dispatches to takes no cookie
+# parameter, so no downstream impl can supply one. See that crate's
+# FORK.md.
+datboi-nfs-server = { path = "crates/datboi-nfs-server" }
 # The recon wire envelope (D103): request enum + response header are
 # postcard messages around the raw coded-symbol stream. Already in-tree
 # via iroh, which frames its own protocol envelopes the same way.
