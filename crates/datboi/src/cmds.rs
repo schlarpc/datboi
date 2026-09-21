@@ -1190,6 +1190,12 @@ pub fn sweep(
         }
         return Ok(ExitCode::from(1));
     }
+    // A sweep can change what the shelf says: `chd-verify` upgrades a
+    // CHD's disk claims from probable to have-verified in place (D44
+    // amendment), and the rollups are the only place audit reads that
+    // from. Cheap bulk SQL, and only the ROLLUP — the identity links
+    // are already written, so the corpus-wide relink is not owed here.
+    datboi_catalog::refresh_rollups(&mut env.db, now_unix())?;
     let remaining = env.db.sweep_queue_len(&analyzer.id())?;
     if json {
         println!(

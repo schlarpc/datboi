@@ -1765,7 +1765,7 @@ impl<R: Read> Read for Window<'_, R> {
     }
 }
 
-fn read_head(file: &mut impl Read, head: &mut [u8]) -> std::io::Result<usize> {
+pub(crate) fn read_head(file: &mut impl Read, head: &mut [u8]) -> std::io::Result<usize> {
     let mut filled = 0;
     while filled < head.len() {
         match file.read(&mut head[filled..]) {

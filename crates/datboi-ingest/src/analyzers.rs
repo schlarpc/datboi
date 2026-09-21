@@ -59,7 +59,17 @@ const SKELETON_LIMIT: u64 = 64 * 1024 * 1024;
 /// its own sweep analyzer but shares the `nds` config family, so the two
 /// vocabularies are deliberately distinct.
 pub const SWEEP_ANALYZERS: &[&str] = &[
-    "noop", "chunk", "preflate", "ecm", "nds", "narc", "xdvdfs", "iso9660", "gcm", "wii",
+    "noop",
+    "chunk",
+    "preflate",
+    "ecm",
+    "nds",
+    "narc",
+    "xdvdfs",
+    "iso9660",
+    "gcm",
+    "wii",
+    "chd-verify",
 ];
 
 /// Construct a sweep analyzer by name — the shared factory both the CLI
@@ -89,6 +99,7 @@ pub fn sweep_roster() -> Vec<Box<dyn Analyzer>> {
         Box::new(Iso9660Analyzer),
         Box::new(GcmAnalyzer::new()),
         Box::new(WiiAnalyzer::new()),
+        Box::new(ChdVerifyAnalyzer),
         Box::new(ChunkAnalyzer),
     ];
     roster.sort_by_key(|a| a.class());
@@ -108,6 +119,7 @@ pub fn analyzer_for(name: &str) -> Option<Box<dyn Analyzer>> {
         "iso9660" | "iso9660-split" | "iso" => Box::new(Iso9660Analyzer),
         "gcm" | "gcm-split" | "gamecube" | "gcn" => Box::new(GcmAnalyzer::new()),
         "wii" | "wii-split" | "rvl" => Box::new(WiiAnalyzer::new()),
+        "chd-verify" | "chd" => Box::new(ChdVerifyAnalyzer),
         _ => return None,
     })
 }
@@ -2503,6 +2515,144 @@ fn mint_decomposition<R: std::io::Read + std::io::Seek>(
     };
     crate::mint_recipe(store, db, &rebuild, SeekClass::Affine).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// The decompressing CHD verify D44 deferred, as a sweep family.
+///
+/// Ingest records what a CHD's header *declares* its internal sha1 to
+/// be, and D44 graded that `probable` because the number is written by
+/// whatever produced the file. This analyzer decompresses every hunk,
+/// hashes the logical data, and — when the result is what the file
+/// claimed — records the digest in the verified alias namespace and
+/// links the disk claims it answers at sha1 strength. That is the
+/// upgrade from `probable` to have-verified, and it is the only thing
+/// in the codebase that writes `AliasAlgo::ChdSha1Verified`.
+///
+/// Three verdicts, all of them settled (D81):
+///
+/// - **Positive** — every hunk decoded and the declaration held. The
+///   detail names the digest and how many claims lit up.
+/// - **Negative with a reason** — a codec this build refuses, a delta
+///   CHD whose data is in a file we do not have, a short or corrupt
+///   file, or a header whose declaration its own data contradicts.
+///   None of those become true by retrying; a new codec means a new
+///   analyzer version, which re-sweeps the corpus by construction
+///   (D45).
+/// - **Negative, "not a CHD"** — the common case, since the fixpoint
+///   offers every blob to every family. Costs one 124-byte read.
+///
+/// `Err` is reserved for the byte source failing.
+///
+/// A CHD whose data does NOT hash to its declaration keeps the
+/// `probable` link ingest gave it and gains nothing: the mismatch is
+/// reported, but a file that disagrees with itself is damage, and
+/// laundering it into a have on the strength of our own digest is the
+/// opposite of what D44 ruled.
+pub struct ChdVerifyAnalyzer;
+
+impl ChdVerifyAnalyzer {
+    /// The codec roster is part of what "verified" means here, so
+    /// widening it bumps this version and the fixpoint re-covers every
+    /// CHD it previously refused. Today: none, zlib, lzma, huff, flac,
+    /// cdzl, cdlz, cdfl.
+    const VERSIONED_NAME: &'static str = "chd-verify/1";
+}
+
+impl Analyzer for ChdVerifyAnalyzer {
+    fn name(&self) -> &'static str {
+        Self::VERSIONED_NAME
+    }
+
+    fn class(&self) -> AnalyzerClass {
+        // Format-aware, and it settles what a blob IS. It mints claims
+        // rather than rebuild routes, so nothing downstream is blocked
+        // on it either way — but a family that reads a header to decide
+        // belongs on the structural side of the D108 gate.
+        AnalyzerClass::Structural
+    }
+
+    fn family(&self) -> &'static str {
+        "chd-verify"
+    }
+
+    fn id(&self) -> Blake3 {
+        analyzer_tag(Self::VERSIONED_NAME)
+    }
+
+    fn analyze(
+        &mut self,
+        item: &SweepItem,
+        bytes: &Logical<'_, '_>,
+        _store: &Store,
+        db: &mut Db,
+        pulse: &mut dyn Pulse,
+    ) -> Result<AnalysisResult, String> {
+        use datboi_formats::chd;
+
+        let settled = |detail: String| {
+            Ok(AnalysisResult {
+                waiting_on: None,
+                outcome: AnalysisOutcome::Negative,
+                detail: Some(detail),
+            })
+        };
+
+        let mut file = bytes.open(item, db, pulse)?;
+        // Cheapest possible rejection: the fixpoint offers every blob
+        // to every family, and almost none of them are CHDs.
+        let mut head = [0u8; chd::CHD_V5_HEADER_LEN];
+        let head_len = crate::read_head(&mut file, &mut head).map_err(|e| e.to_string())?;
+        if !head[..head_len].starts_with(chd::CHD_MAGIC.as_slice()) {
+            return settled("not a CHD".into());
+        }
+
+        // Progress arrives as a running total; the lease wants deltas.
+        let mut reported = 0u64;
+        let mut progress = |total: u64| {
+            pulse.tick(total.saturating_sub(reported));
+            reported = total;
+        };
+        let verified = match chd::verify(&mut file, &mut progress) {
+            Ok(v) => v,
+            Err(e) if e.is_conclusion() => return settled(e.to_string()),
+            Err(e) => return Err(format!("reading CHD: {e}")),
+        };
+
+        let version = verified.header.version;
+        if let Some(mismatch) = verified.mismatch {
+            return settled(format!("CHD v{version} contradicts itself: {mismatch}"));
+        }
+        let Some(sha1) = verified.header.declared_disk_sha1() else {
+            // v1/v2 verified fine against their md5 — the format simply
+            // has no sha1 for a modern disk claim to name.
+            return settled(format!(
+                "CHD v{version} decompresses to its declared md5, but the format declares no \
+                 sha1, so no disk claim can name it"
+            ));
+        };
+
+        let linked = db
+            .link_verified_chd_sha1(item.blob_id, &sha1)
+            .map_err(|e| e.to_string())?;
+        Ok(AnalysisResult {
+            waiting_on: None,
+            outcome: AnalysisOutcome::Positive,
+            detail: Some(format!(
+                "CHD v{version}: {} logical bytes decompressed, sha1 {} verified, {linked} \
+                 disk claim(s) upgraded from probable",
+                verified.header.logical_bytes,
+                hex20(&sha1),
+            )),
+        })
+    }
+}
+
+fn hex20(bytes: &[u8; 20]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
 }
 
 /// `Read + Seek` over the stored blob that pulses per read — piece

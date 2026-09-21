@@ -119,11 +119,14 @@ fn verifying_a_chd_upgrades_its_disk_claim_from_probable() {
     // The computed digest lands in its own namespace, never in the real
     // sha1 one — it describes decompressed content, not these bytes.
     assert_eq!(
-        db.alias_lookup(AliasAlgo::ChdSha1Verified, &sha1).expect("q"),
+        db.alias_lookup(AliasAlgo::ChdSha1Verified, &sha1)
+            .expect("q"),
         vec![blob_id]
     );
     assert!(
-        db.alias_lookup(AliasAlgo::Sha1, &sha1).expect("q").is_empty(),
+        db.alias_lookup(AliasAlgo::Sha1, &sha1)
+            .expect("q")
+            .is_empty(),
         "a CHD's internal sha1 must never answer a real sha1 lookup (D44)"
     );
     assert!(details(&db)[0].contains("disk claim(s) upgraded from probable"));

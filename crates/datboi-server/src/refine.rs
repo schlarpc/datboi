@@ -607,6 +607,16 @@ fn drain_family(
             neg1.saturating_sub(neg0)
         ),
     );
+    // A drained family can have changed what the shelf says:
+    // `chd-verify` upgrades a CHD's disk claims from probable to
+    // have-verified in place (D44 amendment), and the rollups are where
+    // audit reads that. Only the ROLLUP — the links are already
+    // written, so the corpus-wide relink is not owed here — and a
+    // failure degrades to a warning, because the analysis itself is
+    // durable and the next ingest or eval refreshes anyway.
+    if let Err(e) = datboi_catalog::refresh_rollups(db, now_unix()) {
+        warn!("refine job {job}: rollup refresh after sweep: {e}");
+    }
     let remaining = db.sweep_queue_len(&id).unwrap_or(0);
     let total = queued.max(done + remaining);
     jobs.refine_progress(job, total.saturating_sub(remaining), total);
