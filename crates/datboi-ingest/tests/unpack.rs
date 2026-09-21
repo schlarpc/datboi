@@ -600,6 +600,167 @@ fn graph(w: &World) -> Vec<(String, i64)> {
     rows
 }
 
+impl World {
+    fn workers(&self) -> usize {
+        UnpackOptions::default().workers()
+    }
+}
+
 fn run_pass(w: &World, opts: &UnpackOptions) -> UnpackReport {
     unpack_corpus(&w.store, &w.db, opts, &mut |_| {}).expect("pass")
+}
+
+// ---- D123's measurement ----
+
+/// The before/after D123 was ruled on, reproducible on any machine.
+///
+/// Two numbers, and they point in opposite directions: unpacking a rom
+/// corpus COSTS storage (members are plaintext, the archive was not)
+/// and BUYS reads (an Opaque route re-materializes the whole member for
+/// every window `produce_range` asks for, which is quadratic in member
+/// size; a resident literal is a plain file read).
+///
+/// Ignored by default — it writes a few hundred MB and the read half is
+/// meaningless in a debug build. Run it as:
+/// `cargo test --release -p datboi-ingest --test unpack -- --ignored --nocapture`
+#[test]
+#[ignore = "storage + read-latency measurement; use --release --nocapture"]
+fn measure_the_unpack_trade() {
+    use std::time::Instant;
+
+    const ZIPS: usize = 40;
+    const PER_ZIP: usize = 4;
+    const MEMBER_BYTES: usize = 2 << 20;
+    /// The window an NFS read arrives in.
+    const WINDOW: u64 = 128 << 10;
+    const BIG_MEMBER: usize = 16 << 20;
+
+    let mut w = world();
+    let src = w.dir.path().join("src");
+    fs::create_dir_all(&src).expect("src");
+
+    // Roms are neither random nor text: ~2:1 through DEFLATE, which is
+    // the ratio the MAME set shows.
+    let romish = |seed: u64, len: usize| -> Vec<u8> {
+        let noise = pattern(len / 2, seed);
+        let mut out = Vec::with_capacity(len);
+        for byte in noise {
+            out.push(byte);
+            out.push(0);
+        }
+        out.resize(len, 0);
+        out
+    };
+
+    for z in 0..ZIPS {
+        let mut zb = ZipBuilder::new();
+        for m in 0..PER_ZIP {
+            let body = romish(
+                0x5EED_0000_0000_0000 + (z * PER_ZIP + m) as u64,
+                MEMBER_BYTES,
+            );
+            zb.add(&format!("rom{m}.bin"), &body, true);
+        }
+        fs::write(src.join(format!("set{z}.zip")), zb.finish()).expect("zip");
+    }
+    // One big member on its own, for the read half.
+    let big = romish(0xB16B_00B5_0000_0001, BIG_MEMBER);
+    let mut zb = ZipBuilder::new();
+    zb.add("big.bin", &big, true);
+    fs::write(src.join("big.zip"), zb.finish()).expect("big zip");
+    let big_hash = Blake3::compute(&big);
+
+    let t0 = Instant::now();
+    let report = Ingester::new(&w.store, &mut w.db, &[]).ingest(&[&src]);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let ingest_secs = t0.elapsed().as_secs_f64();
+    let before = store_bytes(w.dir.path().join("store"));
+
+    // The read tax, measured the way a client pays it: whole member,
+    // one NFS window at a time, through the Opaque route.
+    let exec =
+        datboi_exec::Executor::new(&w.store, datboi_exec::ExecConfig::default()).expect("executor");
+    let windowed = |exec: &datboi_exec::Executor<'_>, db: &Db| -> f64 {
+        let t = Instant::now();
+        let mut offset = 0u64;
+        while offset < BIG_MEMBER as u64 {
+            exec.serve_range(db, &big_hash, offset, WINDOW)
+                .expect("serve");
+            offset += WINDOW;
+        }
+        t.elapsed().as_secs_f64()
+    };
+    let serial_read = windowed(&exec, &w.db);
+
+    let t1 = Instant::now();
+    let pass = run_pass(&w, &UnpackOptions::default());
+    let pass_secs = t1.elapsed().as_secs_f64();
+    assert!(pass.complete(), "{pass:?}");
+    let after = store_bytes(w.dir.path().join("store"));
+    let unpacked_read = windowed(&exec, &w.db);
+
+    let windows = BIG_MEMBER as u64 / WINDOW;
+    println!("\n=== D123: the unpack trade, {} threads ===", w.workers());
+    println!(
+        "corpus            {ZIPS} zips x {PER_ZIP} members x {} + one {} member",
+        human(MEMBER_BYTES as u64),
+        human(BIG_MEMBER as u64),
+    );
+    println!("ingest            {ingest_secs:.2}s");
+    println!(
+        "unpack            {pass_secs:.2}s, {} containers",
+        pass.unpacked
+    );
+    println!("store before      {} ({} bytes)", human(before), before);
+    println!("store after       {} ({} bytes)", human(after), after);
+    println!(
+        "storage delta     {:+.1}%  (-{} of archives, +{} of members)",
+        (after as f64 - before as f64) / before as f64 * 100.0,
+        human(pass.dropped_bytes),
+        human(pass.member_bytes),
+    );
+    println!(
+        "read {} in {windows} x {} windows:",
+        human(BIG_MEMBER as u64),
+        human(WINDOW)
+    );
+    println!("  container route {serial_read:.2}s   (Opaque: one full inflate per window)");
+    println!("  unpacked        {unpacked_read:.3}s   (resident literal: a plain file read)");
+    println!(
+        "  speedup         {:.0}x",
+        serial_read / unpacked_read.max(1e-9)
+    );
+
+    assert!(
+        unpacked_read < serial_read,
+        "unpacking must not make reads slower"
+    );
+}
+
+fn store_bytes(root: std::path::PathBuf) -> u64 {
+    let mut total = 0;
+    let mut dirs = vec![root];
+    while let Some(dir) = dirs.pop() {
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if let Ok(meta) = entry.metadata() {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
+fn human(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
 }
