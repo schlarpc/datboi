@@ -591,14 +591,198 @@ fn min_size_aims_the_pass() {
     );
 
     // A floor under one bao group cannot resurrect blobs that have no
-    // tree to build: the group size is the hard minimum.
-    assert_eq!(BlessOptions::default().floor(), obao::GROUP_BYTES);
+    // tree to build: one group is the hard minimum, and the floor is
+    // INCLUSIVE, so it is GROUP_BYTES + 1.
+    assert_eq!(BlessOptions::default().floor(), obao::GROUP_BYTES + 1);
     assert_eq!(
         BlessOptions {
             min_size: 1,
             ..BlessOptions::default()
         }
         .floor(),
-        obao::GROUP_BYTES
+        obao::GROUP_BYTES + 1
     );
+}
+
+/// The bug that made `--materialize` skip the members that hurt most.
+///
+/// A member blessed ON DEMAND by the serve path (D63 amendment) has a
+/// sidecar and no bytes. The pass treated "has a sidecar" as "nothing
+/// to do" in both modes, so every member a reader had already paid a
+/// full materialization for — which is exactly the set a client has
+/// proved is painful — was skipped by the one flag that would have
+/// fixed it. In materialize mode the goal state is BYTES.
+#[test]
+fn materialize_does_not_skip_an_already_blessed_but_absent_member() {
+    let w = corpus();
+    // Bless first: every member now has a tree and no bytes — the state
+    // a `mame -verifyroms` leaves behind.
+    let blessed = w.bless(&BlessOptions::default());
+    assert_eq!(blessed.blessed as usize, ZIPS * MEMBERS);
+    for bytes in &w.deflated {
+        let hash = Blake3::compute(bytes);
+        assert!(w.store.has_obao(StoreNs::Data, &hash).expect("q"));
+        assert!(!w.store.has(StoreNs::Data, &hash), "tree, but no bytes");
+    }
+
+    // Now materialize. Every one of them is still outstanding work.
+    let report = w.bless(&BlessOptions {
+        materialize: true,
+        parallelism: 4,
+        ..BlessOptions::default()
+    });
+    assert_eq!(report.failed, Vec::<(String, String)>::new());
+    assert_eq!(
+        report.already_blessed, 0,
+        "a sidecar is not a materialization"
+    );
+    assert_eq!(report.selected as usize, ZIPS * MEMBERS);
+    assert_eq!(report.materialized as usize, ZIPS * MEMBERS);
+    assert!(report.complete());
+    for bytes in &w.deflated {
+        let hash = Blake3::compute(bytes);
+        assert!(w.store.has(StoreNs::Data, &hash), "bytes are here now");
+        assert_eq!(
+            w.db.blob_by_hash(&hash).expect("q").expect("row").residency,
+            Residency::Resident,
+        );
+    }
+
+    // And NOW it is a no-op, because the bytes are what it checks.
+    let again = w.bless(&BlessOptions {
+        materialize: true,
+        ..BlessOptions::default()
+    });
+    assert_eq!(again.selected, 0);
+    assert_eq!(again.materialized, 0);
+    // What remains in the population is the STORED member of each zip:
+    // still Absent, and skipped for the carve-out, not for a sidecar.
+    // The population is a candidate count, never a progress bar.
+    assert_eq!(again.population as usize, ZIPS);
+    assert_eq!(again.carved_out as usize, ZIPS);
+    assert!(again.complete());
+}
+
+/// "Nothing outstanding" has to be a CHECKED claim, not an inference
+/// from the pass's own counters: the pass reports the population a
+/// straight SQL count gave it, and whether the walk covered all of it.
+#[test]
+fn the_pass_reports_the_population_it_was_given() {
+    let w = corpus();
+    let expected =
+        w.db.bless_candidate_count(obao::GROUP_BYTES + 1)
+            .expect("count");
+    assert_eq!(
+        expected as usize,
+        ZIPS * (MEMBERS + 1),
+        "deflate members plus the STORED one from each zip"
+    );
+
+    // A dry run and a real run must agree on the population, and both
+    // must agree with the count.
+    let dry = w.bless(&BlessOptions {
+        dry_run: true,
+        ..BlessOptions::default()
+    });
+    assert_eq!(dry.population, expected);
+    assert_eq!(dry.examined, expected);
+    assert!(dry.walked_it_all());
+    assert!(!dry.complete(), "a dry run with work to do is not complete");
+
+    let wet = w.bless(&BlessOptions::default());
+    assert_eq!(wet.population, dry.population);
+    assert_eq!(wet.examined, dry.examined);
+    assert_eq!(wet.selected, dry.selected);
+    assert!(wet.complete());
+    // Blessing changes no residency, so the population is untouched —
+    // the sidecar is the record, and SQL cannot see it. Saying so is
+    // the point: the count is not a progress bar.
+    assert_eq!(wet.population_after, expected);
+
+    // Materializing DOES shrink the population, and the after-count is
+    // how that is shown rather than claimed.
+    let mat = w.bless(&BlessOptions {
+        materialize: true,
+        ..BlessOptions::default()
+    });
+    assert_eq!(mat.population, expected);
+    // NOT zero: the STORED member of each zip is a candidate the
+    // carve-out declines, so it stays Absent forever. `complete()` is
+    // therefore defined on the WALK (examined == population) and the
+    // work (`outstanding`), never on the population emptying — a corpus
+    // where it emptied would be one where the carve-out did not exist.
+    assert_eq!(mat.population_after as usize, ZIPS);
+    assert!(mat.complete());
+}
+
+/// The paging half of the same bug report: a population several times
+/// the page size must be walked in full. Built out of index rows alone
+/// (every route is ungroundable, so every candidate lands in
+/// `no_route`) — what is under test is the walk, not the inflate.
+#[test]
+fn the_walk_covers_a_population_many_pages_deep() {
+    use datboi_index::{Namespace as IndexNs, recipes::NewRecipe};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(dir.path().join("store")).expect("store");
+    let mut db = Db::open(dir.path()).expect("db");
+
+    // Comfortably past the pass's 4096-row page, and every candidate
+    // the same size so a boundary has ties on both sides of it.
+    const N: usize = 9_001;
+    const SIZE: u64 = 64 * 1024;
+    let missing = Blake3::compute(b"an input nothing has");
+    let input = db
+        .upsert_blob(&missing, Some(SIZE), IndexNs::Data, Residency::Absent)
+        .expect("upsert");
+    for i in 0..N {
+        let out = db
+            .upsert_blob(
+                &Blake3::compute(format!("member-{i:05}").as_bytes()),
+                Some(SIZE),
+                IndexNs::Data,
+                Residency::Absent,
+            )
+            .expect("upsert");
+        let meta = db
+            .upsert_blob(
+                &Blake3::compute(format!("recipe-{i:05}").as_bytes()),
+                Some(128),
+                IndexNs::Meta,
+                Residency::Resident,
+            )
+            .expect("upsert");
+        db.insert_recipe(&NewRecipe {
+            blob_id: meta,
+            op_kind: datboi_index::OpKind::Builtin,
+            op_name: "assemble@1",
+            seek_class: datboi_index::SeekClass::Affine,
+            source: datboi_index::RecipeSource::LocalIngest,
+            inputs: &[(0, input, None)],
+            outputs: &[(0, out, SIZE, None)],
+        })
+        .expect("insert recipe");
+    }
+    // The ungroundable input is itself a candidate-shaped row; the
+    // count twin is the authority on the population either way.
+    let expected = db
+        .bless_candidate_count(obao::GROUP_BYTES + 1)
+        .expect("count");
+    assert_eq!(
+        expected as usize, N,
+        "N members, the input has no route row"
+    );
+
+    let exec = Executor::new(&store, ExecConfig::default()).expect("executor");
+    let report = exec
+        .bless_corpus(&db, &BlessOptions::default(), &mut |_| {})
+        .expect("pass");
+    assert_eq!(report.population, expected);
+    assert_eq!(
+        report.examined, expected,
+        "every candidate past the page boundary was visited"
+    );
+    assert_eq!(report.no_route, expected);
+    assert!(report.walked_it_all());
+    assert_eq!(report.failed, Vec::<(String, String)>::new());
 }

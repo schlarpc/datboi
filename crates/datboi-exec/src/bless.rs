@@ -128,6 +128,18 @@ impl BlessOptions {
 /// borrows, so the CLI prints it and a caller may keep it.
 #[derive(Debug, Default, Clone)]
 pub struct BlessReport {
+    /// What a straight `SELECT COUNT(*)` over the same predicate said
+    /// the population was when the pass STARTED
+    /// ([`Db::bless_candidate_count`]). The number an operator can
+    /// reproduce in `sqlite3`, and the number [`Self::examined`] has to
+    /// match for a run to claim it saw everything.
+    pub population: u64,
+    /// The same count when the pass FINISHED. On a quiet store it
+    /// equals `population` for a blessing run (blessing changes no
+    /// residency) and drops to what is left for a materializing one; a
+    /// difference beyond that is a live daemon moving the corpus
+    /// underneath, which is drift to report rather than hide.
+    pub population_after: u64,
     /// Candidates triaged: rows the index offered, before any verdict.
     pub examined: u64,
     /// Already had a tree (a previous run, ingest, or the daemon).
@@ -169,6 +181,22 @@ impl BlessReport {
     #[must_use]
     pub fn is_clean(&self) -> bool {
         self.failed.is_empty()
+    }
+
+    /// Did the walk visit every candidate the count twin promised?
+    /// `false` means the population moved while the pass ran — which
+    /// happens legitimately beside a live daemon, and must never be
+    /// reported as completion.
+    #[must_use]
+    pub fn walked_it_all(&self) -> bool {
+        self.examined == self.population
+    }
+
+    /// The one claim worth making at the end: everything the pass was
+    /// given, it either did or accounted for.
+    #[must_use]
+    pub fn complete(&self) -> bool {
+        self.is_clean() && self.outstanding() == 0 && self.walked_it_all()
     }
 
     /// Blessings still owed after this run — non-zero when a `--limit`
@@ -251,6 +279,7 @@ impl Executor<'_> {
         let job_rx = Mutex::new(job_rx);
         let (done_tx, done_rx) = mpsc::channel::<Done>();
 
+        state.report.population = db.bless_candidate_count(opts.floor())?;
         let materialize = opts.materialize;
         let result = std::thread::scope(|scope| {
             for _ in 0..workers {
@@ -313,6 +342,7 @@ impl Executor<'_> {
             mut failures,
             ..
         } = state;
+        report.population_after = db.bless_candidate_count(opts.floor())?;
         failures.sort_unstable_by_key(|(seq, _, _)| *seq);
         report.failed = failures
             .into_iter()
@@ -511,10 +541,6 @@ impl Executor<'_> {
         state: &mut State<'_>,
         seq: u64,
     ) -> Result<Option<Plan>, ExecError> {
-        if self.store.has_obao(StoreNs::Data, hash)? {
-            state.report.already_blessed += 1;
-            return Ok(None);
-        }
         // The index said non-resident; the store is the authority (a
         // recovery window, or a materialize since the page was read).
         // Local bytes serve under D4's cheap default, so nothing here
@@ -523,6 +549,19 @@ impl Executor<'_> {
         // `datboi scrub` is where a whole-corpus read belongs.
         if self.store.has(StoreNs::Data, hash) {
             state.report.resident += 1;
+            return Ok(None);
+        }
+        // THE GOAL STATE DIFFERS BY MODE, and conflating them skipped
+        // exactly the blobs that hurt most. Blessing is done when a
+        // tree exists. Materializing is done when the BYTES exist — and
+        // a sidecar over absent bytes is not progress toward that, it
+        // is the signature of a member some reader already paid a full
+        // materialization for inside its own read (the D63 amendment's
+        // on-demand blessing). Those are, by construction, the members
+        // a client has already proved are painful; treating their
+        // sidecar as "nothing to do" skipped the whole class.
+        if !opts.materialize && self.store.has_obao(StoreNs::Data, hash)? {
+            state.report.already_blessed += 1;
             return Ok(None);
         }
         let plan = match self.plan(db, hash, 0, &mut Vec::new()) {
