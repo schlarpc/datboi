@@ -496,3 +496,44 @@ measurement that would justify a host per worker.
 ## Resolved
 
 See [decisions.md](decisions.md) (D1–D115).
+
+**Position as of 2026-09-21 — D121 BUILT**: `datboi bless` is the
+blessing pass D63 named on 2026-07-10 and nobody built. It pages
+candidates out of the index by keyset, triages them on the coordinator
+(sidecar present? bytes local? route? D63 carve-out?), and fans the
+materialize-and-hash out over a D120-shaped pool that never touches the
+`Db`. Default selection is the inversion D121 argues for: bless what the
+carve-out CANNOT serve; `--include-affine` is D63's literal promotion,
+opt-in. Resumable on nothing but the sidecar itself. `--materialize`
+(D121 amendment) keeps the bytes instead of discarding them, which is
+the part that actually fixes read COST rather than read failure.
+
+Residuals and watch items:
+
+1. **Blessing alone does not make an opaque read fast.**
+   `deflate-decompress@1` is `SeekClass::Opaque` and `produce_range`
+   excludes Opaque from the random-access lane, so every range read
+   spills a full materialization of the output and windows it —
+   quadratic in member size over a sequential client. Blessing buys the
+   D49 check and the end of `MissingOutboard`; `--materialize` buys the
+   O(range) read. Anyone quoting a speedup should say which one they
+   mean.
+2. **The automatic half of dat-aware residency is still open.** D121
+   rules only the operator-invoked case. Whether the daemon should
+   materialize view-pinned absent members on its own, under what
+   watermark, and whether dat-naming should steer it, is unruled — and
+   the bullet above ("Dat-aware residency, the unruled half") still
+   stands as written.
+3. **`docs/views.md` seekability rule 3 names a cache tier that does not
+   exist.** A per-blob spill cache would fix the quadratic read for a
+   transient temp-space cost instead of permanent residency, and is the
+   cheaper answer if someone wants to write its eviction policy. D121
+   explicitly declined to invent one inside a CLI flag.
+4. **`bless` is not in the D74 ledger.** It is real byte-level work and
+   wants its own `JobKind` plus an activity row — the same waiting room
+   as `recover`, `snapshot` and view eval. The daemon job + `/v1`
+   surface (D96) is the follow-up; the CLI is what the corpus needs
+   today.
+5. **`READ_POOL_SIZE` stays at 4** and now carries the argument for why
+   the measurement that looked like a pool problem was not one. Re-open
+   on concurrent readers queueing, not on one slow read.

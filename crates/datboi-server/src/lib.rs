@@ -72,7 +72,23 @@ pub struct Config {
 
 /// Read-only connection count. Reads are short and WAL readers never
 /// block each other or the writer; four absorbs one slow read without
-/// serializing the rest. Molten later if a surface measures a need.
+/// serializing the rest.
+///
+/// A surface DID measure a need, and four is still the answer (D121).
+/// The NFS read handler holds one of these across the whole of
+/// `serve_range`, so a cold member with no output tree pinned a quarter
+/// of the pool for a multi-second materialization — with 107,090 such
+/// members on one deployment, that was the pool looking like the
+/// bottleneck. It was not: the defect was a multi-second read. The D63
+/// amendment's single-flight gate stopped four connections racing to
+/// materialize the SAME blob, and `datboi bless` moves the
+/// materialization ahead of the reader entirely, which restores the
+/// premise this number rests on. Raising it would buy concurrency for a
+/// path that no longer blocks, and it is not free — every connection is
+/// a `Db` handle, and a wider pool means more requests simultaneously
+/// holding one across whatever long read we have not found yet. The
+/// measurement that would move it is CONCURRENT READERS queueing on
+/// `get`, not one slow read.
 const READ_POOL_SIZE: usize = 4;
 
 /// D93: the request path's READ-ONLY connections. `get` try-locks
