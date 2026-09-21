@@ -3977,3 +3977,105 @@ matter are untouched: 1.9 GiB of loose files and zips with no detector
 set ingests in 6.46 s at `--jobs 1` and 0.55 s at `--jobs 16` (11.7x
 on 16 cores, 14.7 cores busy, 304 MB/s → 3.5 GB/s) with peak RSS
 moving 12 MiB → 14 MiB.
+
+## D121 — The blessing pass, built: bulk, parallel, and aimed at the routes with no floor (2026-09-21)
+
+D63 named an "optional background **blessing pass** (materialize-to-null,
+tee, cache the obao4)" on 2026-07-10 and nothing ever built it. Its
+2026-09-20 amendment then made the pass load-bearing for a corpus it was
+never aimed at: 152,014 `deflate-decompress@1` members on the live
+deployment, 107,090 of them over one bao group, each needing a full
+inflate before its first byte can be served. The amendment's on-demand
+blessing makes those bytes readable, but it charges the whole bill to
+the first reader, and the first reader is `mame -verifyroms` — ONE
+serial process. Measured over the NFS mount: 6,090 sets/hr, ~8 hours
+projected, the daemon at ~257% of 800% CPU. The cost is not the reads;
+it is 107,090 materializations serialised behind a client that issues
+them one at a time. `datboi bless` unserialises them: the same work, off
+the read path, fanned out across the cores the daemon already has, so
+the wall clock is bounded by reading the zips instead of by the client.
+
+**Default selection inverts D63's aim, which is why this is a ruling and
+not just an implementation.** D63's sentence promotes *carved-out*
+routes — affine ones that already serve — and its own `*Rejected:*` list
+refuses mandatory blessing for exactly those. The routes that actually
+need a pass today are the ones the amendment found: non-affine, no
+carve-out, no floor to be a ceiling over, where the tree is the only way
+to serve the bytes at all. So the default blesses what the carve-out
+CANNOT serve, and the promotion D63 literally described — affine routes,
+a floor traded up to a ceiling — is opt-in behind `--include-affine`.
+Both halves of D63 survive: the cost objection still governs the affine
+case (nobody pays a full pass over a TB-scale image by default), and the
+optional promotion is still available to anyone who wants it.
+
+**The predicate is not re-implemented.** Candidate selection is a cheap
+SQL filter (Data namespace, non-resident, size over one chunk group, at
+least one non-Failed producing recipe); the actual skip/bless verdict is
+`Executor::affine_carveout` on the planned route — the same predicate
+`serve_range` consults, called from the same place. A second definition
+of "is this affine" in SQL would drift from the one that decides what
+gets served, and drift here means blessing routes that need nothing or
+skipping routes that are unreadable.
+
+**The shape is D120's, with one lane it does not need.** A bounded pool
+of workers does the materialize-and-hash (`open_sequential` →
+`obao::compute` → `put_obao`) and touches no `Db`; the coordinator owns
+the only `Db` handle and does every read — the candidate walk, the
+planning, the carve-out check — before dispatch, exactly where D120 puts
+its rescan-cache lookup and for the same reason. D120's writer half is
+vacuous here: blessing mutates no `Db` row at all, so there is nothing to
+retire in order. Determinism therefore comes from sorting the one ordered
+output (the failure list) by its candidate sequence number rather than
+from a reorder buffer — D120 rejected sort-at-the-end because `notes`,
+`errors` and `fresh_blobs` have no sort key that reproduces walk order;
+this report has exactly one such key and one such list, so the rejection
+does not reach it. In-flight work is bounded by what a job BUFFERS, per
+D120's amendment: the buffer here is the outboard `obao::compute` builds
+in memory (~len/256), so a job is charged `outboard_size(len)` against a
+per-worker tree budget, and a job heavier than the whole budget runs
+alone. Parallelism defaults to `available_parallelism`, `--jobs N`
+overrides, `-j1` is the same pipeline with a pool of one.
+
+**Resumability is the store's, not a checkpoint's.** The pass holds no
+state: a sidecar on disk IS the record that a blob is blessed, `put_obao`
+is temp → fsync → rename and idempotent, and nothing else is written. So
+an interrupted run loses at most the in-flight materializations, a re-run
+skips everything already blessed, and running it beside a live daemon
+that is blessing on demand is safe by the same argument the D63 amendment
+already made for its own herd.
+
+**`READ_POOL_SIZE` stays at 4.** The comment invited raising it once "a
+surface measures a need", and this surface measured one — the NFS read
+handler holds a read connection across the whole of `serve_range`, so a
+cold member pins one of four connections for a multi-second
+materialization. But the number was never the defect: the defect was a
+multi-second read. With blessing moved ahead of the reader, reads are
+short again and the original premise ("four absorbs one slow read
+without serializing the rest") holds on its own terms. Raising it would
+be buying concurrency for a path that no longer blocks, and it is not
+free — each connection is a `Db` handle, and a bigger pool means more
+requests simultaneously holding one across a materialization in whatever
+case we have not found yet. Re-open it on a measurement of concurrent
+readers, not on this one.
+
+*Rejected:* blessing everything with a route by default (that is D63's
+rejected mandatory blessing, re-proposed with a CLI in front of it — a
+full pass over every TB-scale affine image for no served-byte
+guarantee); a SQL-side affine predicate (a second definition of the
+carve-out that drifts from the one `serve_range` uses); advancing recipe
+verify state to `ReplayedLocal` on a successful blessing (it is a full
+materialization with a claim check, so it LOOKS like D25's licensing
+event — but licensing permits literal drops, and a pass whose stated job
+is "add a sidecar" must not acquire the authority to delete bytes as a
+side effect; a recipe with several outputs is not proven by hashing one
+of them either); a `--size-cap` on what gets blessed (the same
+permanent-unreadability failure the amendment already rejected for
+on-demand blessing); recording progress in the `Db` for resume (the
+sidecar already is the record, and a checkpoint table would be a second
+truth to keep honest); raising `READ_POOL_SIZE` (above); a daemon job +
+web surface for the pass (the right eventual home under D96 — bless is
+byte-level work that belongs in the D74 ledger with its own `JobKind`
+and an activity row — but a new `JobKind` is a wire-enum and web change,
+and the CLI is what the corpus needs today; ledger-stamped like
+`Recover`/`Snapshot`/view eval, i.e. not yet, and for the same recorded
+reason).
