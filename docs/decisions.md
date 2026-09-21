@@ -4676,3 +4676,102 @@ decomposition" (obvious for a format with content-defined or
 uncompressed pieces — CHD is neither); treating per-file hunk repetition
 as the win (the format already collapses it).
 
+
+## D125 — Analysis candidacy: only a named blob is a document; extents are nobody's candidate (2026-09-21)
+
+`Db::enqueue_unanalyzed` selected EVERY data blob for EVERY analyzer,
+and `ChunkAnalyzer` *mints* data blobs. Measured on the live host after
+one chunking pass over 767 CHDs: 1,055,274 chunks minted, data blobs
+1,171,000 → 1,871,511, `sweep_queue` 1,700,000 → 12,227,830 — of which
+11,360,339 rows (93%) ask a question about a chunker output. The
+refiner's overwhelming majority occupation became asking whether a
+256 KiB rolling-hash cut is a Wii disc, a GameCube disc, a NARC, an
+ISO9660 volume — a million times each, to record foregone conclusions
+— and every future chunking pass multiplies it again.
+
+**D47 does not require the cross product.** Its hard rule is that
+*catalog contents* never influence what gets claimed, so that instances
+holding the same bytes converge on the same claim set. A predicate over
+a blob's OWN index facts — its size, its residency, the recipe edges
+around it — is identical on every instance holding the same bytes and
+the same graph. "Analysis must not depend on which dats are loaded" is
+a much narrower claim than "analysis must consider every blob for every
+analyzer", and only the first is ruled.
+
+**Level 1, structural and global: documents versus extents.**
+A **document** is a blob some producer NAMED — a thing in the source's
+own vocabulary. An **extent** is a blob whose boundaries came from a
+mechanism indifferent to the content's structure; the FastCDC chunk is
+the pure case, a rolling-hash cut point that exists only to make
+another blob cheaper to store. The discriminator is already in the
+data and needs no new vocabulary: **a blob is a document when it has a
+`source_file` row, or is a NAMED output of some recipe** — and every
+structural splitter in the tree names its outputs (`Some(piece.name)`,
+`Some(view.name)`, `Some("{prefix}/body.bin")`, and ingest's own
+`zip_member_recipe` names every zip member, which is why a
+`preflate-split` member plaintext — a rom someone shipped, possibly a
+container itself — stays a candidate). `ChunkAnalyzer` alone names
+nothing: its chunks appear only as `InputRef { role: None }` and its
+one `OutputRef` is the reassembled original, unnamed. Extents are not
+analysis candidates, for anyone: nothing true of an arbitrary byte
+range is better said of it than of its parent, and D108 already
+guarantees every structural family concluded on the parent WHOLE before
+the fallback chunker cut it.
+
+**One correction to "named", in existing vocabulary.** D111/D112's
+`generated` streams — the XGD1 filler, the GameCube junk — are named
+(`Some("gc-junk")`) but synthesised: a zero-input recipe's output,
+regenerated from four bytes. Analysing one is as pointless as analysing
+a chunk and would materialise a disc-sized PRNG expansion through the
+executor to do it. So the test is *named and not generated*, reusing
+D112's own zero-input-route predicate rather than inventing a third
+category.
+
+**Level 2, semantic and per-analyzer:** `Analyzer::candidacy()` returns
+the necessary conditions this analyzer's candidates must meet, ANDed
+into the enqueue. Shipped here are the index-only ones — `min_size`
+(the smallest blob this format can be) and `resident_only` (`chunk`
+mints resident chunks, so chunking an absent blob would materialise it,
+the opposite of the dedup goal). A condition must be NECESSARY, never
+merely likely: a blob it excludes is one the analyzer would have
+concluded Negative about without reading a byte, so the D24/D48 record
+loses nothing — a negative that was never in doubt was never worth a
+row. Unlike a recorded negative, a predicate is re-evaluated free on
+every wake, which FIXES a real bug: `chunk`'s "not a resident literal"
+negative was permanent, so a blob that became resident later was never
+chunked.
+
+The cheap-sniff half of Level 2 — where a lepton-on-JPEGs analyzer
+declares "JPEG-shaped" and the Wii splitter "magic at 0x18", so that
+format-specialised analyzers scale as they arrive — is ruled as the
+layer and NOT built here: a sniff needs bytes, and enqueue is one SQL
+pass over ~1.9M rows, so it belongs at CLAIM time over the head the
+executor can already produce. Recorded in open-questions.
+
+**Enqueue also prunes.** `enqueue_unanalyzed` deletes unleased queue
+rows whose blob no longer satisfies candidacy, in the same call that
+inserts. A live database therefore converges on its next ambient refine
+wake with no operator action; nothing about the 12.2M rows needs a
+migration, a flag, or a hand-written DELETE.
+
+*Rejected:* "don't analyze analyzer-produced blobs" (too broad, and
+wrong in the one direction that matters — a `preflate-split` member is
+analyzer-produced and is exactly a rom that may match a dat and may
+itself be a container); a `blob.piece` column or a cache table
+recording the fact at mint (D18/D79 rule blob meaning out of the row
+and into the edges, and a cache table that cannot be rebuilt from CAS
+bytes breaks D15 — the queue would re-explode after every `recover`);
+marking the chunker's inputs with a new `recipe_input.role` (right in
+principle, `"skeleton"` is the precedent, but the mark changes the
+recipe's bytes, so it costs a `fastcdc/2` identity and a full re-read
+of every chunked container to converge — and the named-output test
+reads the same fact off the recipes that already exist); a
+recipe-SHAPE test for the chunker's assemble (an affine `assemble@1`
+over role-less inputs with an unnamed output — it works, but it admits
+the preflate skeleton, the corrections blob and the raw member streams
+that the named-output test correctly excludes, and it needs three
+clauses where one does); a cheap sniff gate before enqueue (a read per
+blob per wake, ~1.9M reads, to answer what the index answers for free);
+leaving it to scheduling (D47 permits dat-aware ORDER and
+`bump_dat_matched_priorities` already runs — ordering cannot fix a
+queue that grows tenfold with every chunking pass).

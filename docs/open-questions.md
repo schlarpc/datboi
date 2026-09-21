@@ -1,7 +1,7 @@
 # Open questions & active research
 
 [decisions.md](decisions.md) is the authoritative record (through
-D123); the subsystem docs (see [README.md](README.md)) are the design
+D126); the subsystem docs (see [README.md](README.md)) are the design
 record. This file holds only what is genuinely open: flags awaiting a
 ruling, deferred design work, watch items, and the pick-up-here
 position note. Condensed 2026-07-17 — resolved entries were deleted
@@ -105,6 +105,20 @@ Each of these wants its D entry before (or as) the code lands.
   discipline, opt-in/endpoint config in the D95 NixOS surface).
 
 ## Open (design work)
+
+- **D125 Level 2, the cheap sniff.** D125 ruled the layer and built
+  only its index-only half (`min_size`, `resident_only`). The other
+  half is what makes format-specialised analyzers scale as they
+  arrive: a lepton-on-JPEGs analyzer wants to declare "JPEG-shaped"
+  and the Wii splitter "magic at 0x18", so that each analyzer reads a
+  head only for the documents it could possibly speak to, instead of
+  every analyzer reading every document to say no. It does NOT belong
+  at enqueue (that is one SQL pass over ~1.9M rows and a sniff needs
+  bytes); it belongs at CLAIM time, over the bounded head the executor
+  can already produce, with the verdict settling as an ordinary D48
+  negative. Wants a ruling on one thing before code: whether a sniff
+  refusal is a conclusion worth a row at all, or — like a candidacy
+  predicate — a free re-evaluation each wake.
 
 - **Scrub-repair posture** (deferred from D105): a rotted obao
   section in a pack is recomputable byte-identically from the member
