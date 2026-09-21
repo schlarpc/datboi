@@ -134,7 +134,32 @@ impl Refiner {
             drone_wake: Condvar::new(),
         });
         let worker_shared = Arc::clone(&shared);
-        std::thread::spawn(move || worker(db_dir, store, &jobs, worker_shared));
+        std::thread::spawn(move || {
+            // The prime is the single most load-bearing detached thread
+            // in the daemon: its death stops ambient refinement AND
+            // every maintenance phase (licensing, orphan marking, the
+            // D91 piece swap, chunk packing, watermark eviction, D75
+            // auto snapshots), and leaves `notify_fresh` appending to an
+            // inbox with no reader — an unbounded leak and a silent
+            // ingest-to-refine break. Detached-thread panics reach
+            // stderr and nothing else, so without this the daemon just
+            // quietly stops doing half its job.
+            //
+            // Deliberately NOT a restart loop: `worker` owns the drone
+            // fleet's stop flags in a local, so a restarted prime would
+            // stack a second fleet on a first it can no longer retire.
+            // Making the death loud is the honest half; supervising it
+            // needs the flags to move into `Shared` first.
+            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                worker(db_dir, store, &jobs, worker_shared);
+            })) {
+                error!(
+                    "refinement: the PRIME worker panicked — ambient refinement and all \
+                     maintenance are OFF until restart: {}",
+                    panic_message(&payload)
+                );
+            }
+        });
         Self { shared }
     }
 
@@ -191,25 +216,104 @@ fn worker_count(db: &Db) -> usize {
     n.div_ceil(2).clamp(1, 6)
 }
 
+/// Holds the "this drone is inside a drain burst" count for exactly as
+/// long as the burst lives, including when the burst ends by unwinding.
+struct ActiveDrone<'a>(&'a Shared);
+
+impl<'a> ActiveDrone<'a> {
+    fn enter(shared: &'a Shared) -> Self {
+        shared
+            .active_drones
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(shared)
+    }
+}
+
+impl Drop for ActiveDrone<'_> {
+    fn drop(&mut self) {
+        self.0
+            .active_drones
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Grow or shrink the live drone fleet to `target` threads (D93 live
 /// reload). Called by the prime at boot and on every ambient tick with
 /// the current `refine:workers` value, so an operator's `datboi
 /// analyzer`-set count takes effect within one rescan beat, no restart.
 /// Drones are fungible; the prime owns the stop-flag vector and is the
 /// sole mutator, so no lock guards it.
+/// One live drone: the flag that retires it, and the handle that says
+/// whether it is still there to be retired.
+struct Drone {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+/// Drop drones whose threads have exited, so the fleet's length means
+/// "live threads" rather than "flags we once handed out".
+///
+/// Without this a drone that dies — a panic escaping its own scaffolding
+/// — leaves its stop flag standing in for it forever. `resize_drones`
+/// grows on `drones.len() < target`, so the prime reads a fleet of
+/// corpses as full and never replaces one. That is exactly how four
+/// preflate panics ended ambient refinement for the life of the process
+/// with nothing in the log to say so (D128).
+fn reap_drones(drones: &mut Vec<Drone>) {
+    let before = drones.len();
+    let (dead, alive): (Vec<Drone>, Vec<Drone>) =
+        drones.drain(..).partition(|d| d.handle.is_finished());
+    *drones = alive;
+    for d in dead {
+        // `is_finished` means this cannot block, and joining is the
+        // only way to see the payload of a panic that got past the
+        // per-item containment.
+        match d.handle.join() {
+            Ok(()) => error!("refinement: a drone exited on its own — replacing it"),
+            Err(payload) => error!(
+                "refinement: a drone PANICKED outside the per-item guard — replacing it: {}",
+                panic_message(&payload)
+            ),
+        }
+    }
+    if drones.len() < before {
+        error!(
+            "refinement: {} drone(s) died; fleet is {} until the next resize",
+            before - drones.len(),
+            drones.len()
+        );
+    }
+}
+
+/// What a panic payload said, if it said anything printable.
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    payload.downcast_ref::<&str>().map_or_else(
+        || {
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .unwrap_or_else(|| "unknown panic payload".to_string())
+        },
+        |s| (*s).to_string(),
+    )
+}
+
 fn resize_drones(
     target: usize,
-    drones: &mut Vec<Arc<std::sync::atomic::AtomicBool>>,
+    drones: &mut Vec<Drone>,
     next_id: &mut usize,
     db_dir: &std::path::Path,
     store: &'static Store,
     exec: &Arc<datboi_exec::Executor<'static>>,
     shared: &Arc<Shared>,
 ) {
+    // Sizing decisions below are all `drones.len()` against `target`,
+    // so liveness has to be settled before any of them are made.
+    reap_drones(drones);
     let mut shrank = false;
     while drones.len() > target {
-        if let Some(stop) = drones.pop() {
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(d) = drones.pop() {
+            d.stop.store(true, std::sync::atomic::Ordering::Relaxed);
             shrank = true;
         }
     }
@@ -226,8 +330,9 @@ fn resize_drones(
         let exec = Arc::clone(exec);
         let shared = Arc::clone(shared);
         let stop_thread = Arc::clone(&stop);
-        std::thread::spawn(move || drone(id, &db_dir, store, &exec, &shared, &stop_thread));
-        drones.push(stop);
+        let handle =
+            std::thread::spawn(move || drone(id, &db_dir, store, &exec, &shared, &stop_thread));
+        drones.push(Drone { stop, handle });
     }
 }
 
@@ -270,10 +375,11 @@ fn worker(db_dir: std::path::PathBuf, store: &'static Store, jobs: &Registry, sh
     // pre-amnesty would only duplicate a pure function — dedup grade —
     // but there is no reason to invite it). The prime owns the fleet's
     // stop flags and resizes it live on the ambient clock.
-    let mut drones: Vec<Arc<std::sync::atomic::AtomicBool>> = Vec::new();
+    let mut drones: Vec<Drone> = Vec::new();
     let mut next_drone_id = 1usize;
+    let mut fleet_target = worker_count(&db).saturating_sub(1);
     resize_drones(
-        worker_count(&db).saturating_sub(1),
+        fleet_target,
         &mut drones,
         &mut next_drone_id,
         &db_dir,
@@ -331,23 +437,27 @@ fn worker(db_dir: std::path::PathBuf, store: &'static Store, jobs: &Registry, sh
             // Live-reload the fleet size from `refine:workers` (D93):
             // adopt a re-tuned count without a daemon restart.
             let want = worker_count(&db).saturating_sub(1);
-            if want != drones.len() {
-                info!(
-                    "refinement: resizing drone fleet {} → {}",
-                    drones.len(),
-                    want
-                );
-                resize_drones(
-                    want,
-                    &mut drones,
-                    &mut next_drone_id,
-                    &db_dir,
-                    store,
-                    &exec,
-                    &shared,
-                );
+            if want != fleet_target {
+                info!("refinement: resizing drone fleet {fleet_target} → {want}");
+                fleet_target = want;
             }
         }
+        // Re-assert the fleet on EVERY wake, not just when the policy
+        // number moves. The old shape asked `want != drones.len()`,
+        // which is precisely the question a fleet of corpses answers
+        // wrongly — dead drones keep their flags in the vector, the
+        // length still matches the target, and the resize never runs.
+        // `resize_drones` reaps before it sizes, so this both notices a
+        // death within one wake and replaces it.
+        resize_drones(
+            fleet_target,
+            &mut drones,
+            &mut next_drone_id,
+            &db_dir,
+            store,
+            &exec,
+            &shared,
+        );
         // Wake the drones: the queues just gained (or regained) work.
         {
             *lock(&shared.drone_gen) += 1;
@@ -457,9 +567,14 @@ fn drone(
         // claim come back empty, so error backoff (items keep their
         // lease) can't hot-spin this loop. The activity bracket is
         // what lets the prime's job completion wait for us.
-        shared
-            .active_drones
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // The bracket must survive ANY escape from the loop below, not
+        // just the normal one: a leaked increment pins `fleet_busy`
+        // true for the life of the process, and the prime's job
+        // completion then waits on a drone that is never coming back —
+        // a permanent 250 ms busy-wait. A guard says that once; a
+        // matched pair of fetches says it only for the paths someone
+        // remembered.
+        let _active = ActiveDrone::enter(shared);
         let mut did_work = false;
         loop {
             let mut progressed = false;
@@ -489,9 +604,7 @@ fn drone(
                 break;
             }
         }
-        shared
-            .active_drones
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        drop(_active);
         // The routes this burst minted want a maintenance pass NOW
         // (licensing → watermark is the one-wake motion). Signal
         // UNDER the inbox lock: the prime's sleep decision holds the
@@ -650,6 +763,50 @@ mod tests {
         })
     }
 
+    /// A dead drone must not keep standing in for a live one (D128).
+    ///
+    /// This is the half that made the preflate panics permanent rather
+    /// than merely expensive: the fleet's length counted stop flags, so
+    /// three corpses read as three drones and the prime never replaced
+    /// them.
+    #[test]
+    fn a_dead_drone_is_reaped_so_the_fleet_can_regrow() {
+        let mut drones: Vec<Drone> = Vec::new();
+        // Two threads that exit immediately, one that parks until told.
+        let stop_live = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        for _ in 0..2 {
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let handle = std::thread::spawn(|| {});
+            drones.push(Drone { stop, handle });
+        }
+        let parked = Arc::clone(&stop_live);
+        drones.push(Drone {
+            stop: Arc::clone(&stop_live),
+            handle: std::thread::spawn(move || {
+                while !parked.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }),
+        });
+
+        // Wait for the two to actually finish before asserting on them.
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while drones.iter().filter(|d| d.handle.is_finished()).count() < 2 {
+            assert!(Instant::now() < deadline, "threads never exited");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        assert_eq!(drones.len(), 3, "three flags, but only one live thread");
+        reap_drones(&mut drones);
+        assert_eq!(drones.len(), 1, "the two corpses are gone");
+        assert!(
+            !drones[0].handle.is_finished(),
+            "the survivor is the one still running"
+        );
+
+        stop_live.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     #[test]
     fn drone_fleet_grows_and_shrinks_live() {
         use std::sync::atomic::Ordering::Relaxed;
@@ -680,7 +837,7 @@ mod tests {
 
         // A retired drone is flagged to stop (and will observe it — the
         // loop checks the flag before every burst and after every wake).
-        let retired = Arc::clone(drones.last().expect("nonempty"));
+        let retired = Arc::clone(&drones.last().expect("nonempty").stop);
         resize_drones(
             1,
             &mut drones,
