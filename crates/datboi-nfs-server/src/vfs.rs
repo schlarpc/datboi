@@ -191,13 +191,25 @@ pub trait NFSFileSystem: Sync {
 
     /// Simple version of readdir.
     /// Only need to return filename and id
+    ///
+    /// `start_after` carries the client's cookie, exactly as it does for
+    /// [`NFSFileSystem::readdir`]. Upstream nfsserve 0.11.0 hardcoded `0`
+    /// here and its READDIR handler never passed `args.cookie` on, so
+    /// every plain NFSv3 READDIR restarted at the first entry. A Linux
+    /// client walking a large directory then fills its page cache,
+    /// reaches the cookie it asked to resume after, finds nothing beyond
+    /// it, re-reads the same cached page and never issues another RPC —
+    /// the enumeration never terminates. READDIRPLUS was unaffected
+    /// because it routes through `readdir`, which did receive the cookie.
+    /// See FORK.md.
     async fn readdir_simple(
         &self,
         dirid: fileid3,
+        start_after: fileid3,
         count: usize,
     ) -> Result<ReadDirSimpleResult, nfsstat3> {
         Ok(ReadDirSimpleResult::from_readdir_result(
-            &self.readdir(dirid, 0, count).await?,
+            &self.readdir(dirid, start_after, count).await?,
         ))
     }
 
