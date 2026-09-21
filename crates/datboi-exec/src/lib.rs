@@ -21,6 +21,7 @@
 //! function of input bytes for every node kind, so scheduling cannot
 //! affect results — determinism needs no cooperative scheduler.
 
+pub mod bless;
 pub mod evict;
 pub mod policy;
 pub mod random;
@@ -1266,14 +1267,39 @@ impl<'s> Executor<'s> {
     /// [`ExecError::RangeVerifyFailed`] if the route's bytes do not hash
     /// to the claim (nothing is stored); route/planning errors as usual.
     pub fn bless_output(&self, db: &Db, hash: &Blake3) -> Result<bool, ExecError> {
-        if self.store.get_obao(StoreNs::Data, hash)?.is_some() {
+        if self.store.has_obao(StoreNs::Data, hash)? {
             return Ok(false);
         }
         if self.is_resident(db, hash)? {
             return Ok(self.store.ensure_obao(StoreNs::Data, hash)?);
         }
         let plan = self.plan(db, hash, 0, &mut Vec::new())?;
-        let reader = self.open_sequential(&plan)?;
+        self.bless_plan(hash, &plan)
+    }
+
+    /// The blessing itself, over an ALREADY-PLANNED route: materialize
+    /// to null, compute the obao in the same pass, publish the sidecar.
+    /// Returns `false` when a sidecar turned up before the pass started.
+    ///
+    /// Split out of [`Self::bless_output`] for the D121 bulk pass, whose
+    /// workers must not touch the `Db` (the D120 shape): planning is a
+    /// `Db` read and happens on the coordinator, and everything from
+    /// here down is pure CPU plus content-addressed store writes.
+    ///
+    /// The re-check at the top is not the [`Self::bless_once`] gate —
+    /// that one is per-process. This catches the OTHER process: a
+    /// daemon serving the same corpus blesses on demand (D63 amendment)
+    /// while the pass runs, and one `stat` is cheap next to a full
+    /// materialization of a member the daemon already paid for.
+    ///
+    /// # Errors
+    /// [`ExecError::RangeVerifyFailed`] if the route's bytes do not hash
+    /// to the claim (nothing is stored); route/store errors as usual.
+    pub(crate) fn bless_plan(&self, hash: &Blake3, plan: &Plan) -> Result<bool, ExecError> {
+        if self.store.has_obao(StoreNs::Data, hash)? {
+            return Ok(false);
+        }
+        let reader = self.open_sequential(plan)?;
         let (root, sidecar) = datboi_store_fs::obao::compute(reader, plan.len())
             .map_err(|e| ExecError::Malformed(format!("blessing pass: {e}")))?;
         if root != *hash {
