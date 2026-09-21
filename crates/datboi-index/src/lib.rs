@@ -345,7 +345,22 @@ fn open_file(
     // handle + the refine worker's, or a CLI alongside the daemon):
     // WAL serializes writers, and this makes a contended writer wait
     // instead of failing SQLITE_BUSY.
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    //
+    // 5 s was too short for this workload, and produced a specific
+    // pathology rather than mere slowness: SQLite's busy handler is
+    // poll-and-sleep with no queue and no fairness, so a thread in a
+    // tight mint loop re-takes the write lock essentially instantly
+    // while a blocked peer sleeping up to 100 ms at a time loses the
+    // race over and over. With four refine workers writing, losing for
+    // five consecutive seconds is the expected outcome, not a tail
+    // event — the whole fleet blew this timeout inside one six-second
+    // window, repeatedly. 30 s is a shock absorber, not a fix (the
+    // mint path issues thousands of separate write transactions per
+    // item); callers must still treat SQLITE_BUSY as retryable.
+    //
+    // The read-only pool keeps its short timeout: it never contends
+    // for the write lock, and request-path latency matters there.
+    conn.busy_timeout(std::time::Duration::from_secs(30))?;
     // D93, MECHANICAL: every transaction on a read-write connection
     // begins IMMEDIATE — `transaction()` and `unchecked_transaction()`
     // both honor this default, so the deferred read→write upgrade
@@ -362,6 +377,16 @@ fn open_file(
     conn.query_row("PRAGMA journal_mode=WAL", [], |row| row.get::<_, String>(0))?;
     conn.pragma_update(None, "synchronous", synchronous)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    // The default 2 MiB page cache against a 2.6 GB cache.db means a
+    // write transaction pays random reads from disk while holding the
+    // exclusive WAL writer lock. Shortening the incumbent's hold is the
+    // one change here that mechanically reduces starvation rather than
+    // just tolerating it. Negative means KiB, so -65536 is 64 MiB.
+    conn.pragma_update(None, "cache_size", -65536)?;
+    // Reads come off the page map instead of a pread each. Safe with
+    // WAL on local disk, which D15 already guarantees for these files —
+    // the store may live on NFS, the databases never do.
+    conn.pragma_update(None, "mmap_size", 1_073_741_824i64)?;
 
     let found_app: u32 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
     let found_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;

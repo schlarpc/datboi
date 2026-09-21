@@ -66,6 +66,16 @@ const AMBIENT_RESCAN: Duration = Duration::from_secs(30 * 60);
 
 /// After a database-level error the worker backs off instead of
 /// spinning (the environment failed, not one item).
+/// How many lost write-lock races a drain tolerates before it treats
+/// SQLITE_BUSY as a real failure. Bounded so a genuinely wedged
+/// database still fails loudly instead of retrying forever.
+const BUSY_RETRIES: u32 = 10;
+
+/// Backoff per lost race, multiplied by the attempt number. Short: the
+/// lock is held for milliseconds by a healthy writer, and the point is
+/// to yield the CPU, not to wait out a long operation.
+const BUSY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(200);
+
 const ERROR_BACKOFF: Duration = Duration::from_secs(60);
 
 /// Items claimed per round. One at a time on purpose: the claim
@@ -214,6 +224,21 @@ fn worker_count(db: &Db) -> usize {
     }
     let n = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     n.div_ceil(2).clamp(1, 6)
+}
+
+/// Is this SQLITE_BUSY — a lost race for the write lock — rather than a
+/// real failure?
+///
+/// WAL admits one writer at a time and SQLite's busy handler is not
+/// fair, so under a loaded fleet losing the race past the timeout is an
+/// expected outcome, not a broken database. It must cost a retry, never
+/// a drain.
+fn is_busy(e: &datboi_index::IndexError) -> bool {
+    matches!(
+        e,
+        datboi_index::IndexError::Sqlite(rusqlite::Error::SqliteFailure(f, _))
+            if f.code == rusqlite::ErrorCode::DatabaseBusy
+    )
 }
 
 /// Holds the "this drone is inside a drain burst" count for exactly as
@@ -596,6 +621,13 @@ fn drone(
                             error!("refine drone {ix}: {hash}: {why}");
                         }
                     }
+                    // Busy is a lost race, not a broken environment:
+                    // back off briefly and let the next burst try,
+                    // rather than parking this drone for a full minute.
+                    Err(e) if is_busy(&e) => {
+                        debug!("refine drone {ix}: write lock busy");
+                        std::thread::sleep(BUSY_BACKOFF);
+                    }
                     Err(e) => {
                         warn!("refine drone {ix}: {e}");
                         std::thread::sleep(ERROR_BACKOFF);
@@ -657,6 +689,7 @@ fn drain_family(
             return;
         }
     };
+    let mut busy_retries: u32 = 0;
     let job = jobs.create_refine(analyzer.family(), queued, now_unix());
     info!(
         "refine job {job}: {} — {queued} item(s) queued",
@@ -680,7 +713,22 @@ fn drain_family(
         }
         let mut observer = TrayObserver { jobs, job };
         let report = match process_round(db, store, bytes, analyzer, ROUND, &mut observer) {
-            Ok(report) => report,
+            Ok(report) => {
+                busy_retries = 0;
+                report
+            }
+            // A lost write-lock race must not destroy the drain. The old
+            // shape failed the job and returned, throwing away a
+            // 63,000-item family because one claim lost a race it was
+            // always going to lose sometimes: every enqueue pass on this
+            // host ended `FAILED — database is locked` within ~6 s, so
+            // no family ever drained at all.
+            Err(e) if is_busy(&e) && busy_retries < BUSY_RETRIES => {
+                busy_retries += 1;
+                debug!("refine job {job}: write lock busy, retry {busy_retries}");
+                std::thread::sleep(BUSY_BACKOFF * busy_retries);
+                continue;
+            }
             Err(e) => {
                 warn!("refine job {job}: FAILED — {e}");
                 jobs.fail(job, &e.to_string(), now_unix());
