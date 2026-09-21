@@ -575,6 +575,15 @@ Residuals and watch items:
   is what the `chunk` family already claims on the same blobs — a
   cross-file saving that merely matches FastCDC's is not a case for
   building anything.
+- **It is on by default, and it is the most expensive family shipped.**
+  Like every other analyzer it is opt-out (D60), so the first ambient
+  sweep after this lands starts decompressing the whole CHD corpus —
+  522.5 GB compressed, more than that inflated, hours of CPU. That is
+  the point of the work and the sweep is leased, priority-ordered and
+  resumable, so nothing is at risk; but it is a workload that appears
+  without anyone asking for it, and `datboi analyzer disable
+  chd-verify` is the brake if it ever needs one. Worth a look at
+  whether the first run wants to be paced.
 - **Codecs still refused**: `avhu` (AV-era CHDs, essentially extinct
   outside laserdisc sets) and any delta CHD, whose data lives in a
   parent file. Both are named in the verdict rather than skipped.
