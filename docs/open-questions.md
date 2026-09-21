@@ -279,6 +279,24 @@ Named so they aren't rediscovered as bugs; not slated for change.
   corrections codec. D71's ambient refinement accumulates the hit-rate
   telemetry by itself; after a real corpus soaks, it's a provenance
   query away.
+- **preflate-rs split/rebuild divergence, upstream** (found with D126,
+  NOT accepted — unlike the entry above this one is a defect): the
+  split runs with `verify_compression: true`, so every window was
+  recompressed and compared before the recipe was minted, and the
+  guest STILL panics rebuilding some of them
+  (`preflate-rs-0.7.6/src/tree_predictor.rs:169`, observed on the live
+  corpus). A verified split whose rebuild panics means the two halves
+  of preflate-rs disagree about the same stream. D126 makes the
+  consequence survivable — the route is poisoned once instead of
+  retried forever — but the recipes it poisons were minted in good
+  faith and their containers are now stuck literal with no route,
+  which is strictly worse than never having split them. Owed: capture
+  one reproducing (corrections, plaintext) pair off the live corpus —
+  the poisoned recipes name them, so the query is a join away — and
+  either report it upstream or bound it, e.g. by making the split
+  itself round-trip through the GUEST before minting rather than
+  trusting the native verify. Until then, `datboi bless --materialize`
+  counts the poisonings and an operator can see the size of it.
 - **Sequential assemble over opaque children spills**: the executor
   opens assemble children random-access, so a sequential read of
   concat-of-derived spills each derived child. D72's watermark

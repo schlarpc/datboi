@@ -143,6 +143,15 @@ over the container, so the carve-out already guarantees every byte.
 - **Peer recipe fails verification**: poison record
   `failed(error, at, peer)`; prevents re-verify loops; feeds future
   per-peer reputation (D8). Distinct from `pending` (missing inputs/wasm).
+- **A route disproves itself on the READ path (D126)**: a guest trap, a
+  guest-reported error, or bytes that do not match the claim, observed
+  while STREAMING rather than replaying, poisons the top recipe exactly
+  as `replay` would — `open_stream_route` and the bless coordinator are
+  the two places that record it. Fuel exhaustion is excluded (a budget
+  is policy, not evidence), and so are instantiation and wiring
+  failures. Without this, a route whose guest panics is retried by
+  every ambient sweep and every bless pass, forever, with nothing in
+  the graph ever saying it is broken.
 - **Late nondeterminism** (scrub finds a previously-verified recipe now
   failing): alarm-level; planner re-pins all literals depending on the
   implicated component hash until resolved.

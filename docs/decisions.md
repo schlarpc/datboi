@@ -4868,6 +4868,18 @@ is not an error, and D53 is amended to say so.
    `datboi scrub --rehabilitate` stays the escape hatch for a wrong
    poisoning, unchanged.
 
+   Two consequences worth naming rather than discovering. A spilled
+   route that RUNS to completion and produces bytes that are not the
+   item's is the same verdict — it is `StoreError::HashMismatch`'s
+   shape, which `is_claim_failure` has always called a disproof — so it
+   poisons too. That was once dangerous: a guest trap could race the
+   pipe into a clean-looking short stream and poison a good recipe
+   ("spill produced 0 bytes"). The pipe's finished-verdict wait fixed
+   that race, and this ruling leans on the fix. And `open_stream` is
+   `open_stream_route` now, so the p2p serve path and the swap's packer
+   record a disproof too — right in both places, for the same reason:
+   a route that traps on open is not a network hiccup.
+
 3. **The item waits; it does not conclude.** The analyzer never read
    the bytes, so `Negative` would be a false statement in a signed,
    restorable artifact — `AnalysisRow` is defined as "what `analyzer`
