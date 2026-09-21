@@ -4920,6 +4920,39 @@ this reason: a budget outcome is a policy outcome and never poisons, so
 a retune can still rescue the recipe, while a panic — which no budget
 changes — does.
 
+*Amendment (2026-09-21, the wrapper sweep — this ruling did not fire):*
+the first cut unwrapped the verdict out of `ExecError::Io`, which is the
+shape `spill` produces, and the pass that motivated the whole ruling
+does not spill. A live `bless --materialize --min-size 1M` reported
+`"poisoned":0` beside the same 77 failures. `obao::compute` reads a
+whole route, so a trap arrives as `Store(Obao(Io(Deterministic)))`
+materializing and `Obao(Io(Deterministic))` blessing — neither matched,
+and `is_claim_failure` fell through to `false`. Naming wrappers one at a
+time was the wrong repair: the predicate now WALKS the source chain
+(`deterministic_in_chain`, with the `io::Error` special case, since
+`io::Error::source()` returns its payload's source rather than the
+payload), so a consumer that boxes a route failure a fourth way is
+covered without a fourth arm.
+
+The sweep that found it found a second gap and one lossy site worth
+naming. (1) `bless_plan` STRINGIFIED its `ObaoError` into
+`Malformed(format!(..))`, destroying the chain and poisoning
+unconditionally — wrong in both directions at once, since a bad disk
+would poison a good recipe. It now carries the error as a source
+(`ExecError::Obao`), so the walk decides. (2) A blessing pass whose
+whole-route re-hash disagrees with the claim IS a disproof, and it
+reported `RangeVerifyFailed`, which this predicate refuses ON PURPOSE
+because `serve_range` uses that same variant for a seekable
+component's lying window — where the doctrine is to quarantine the
+seek claim, not poison the recipe (D49 rule 3). Two different failures
+sharing one variant, and the blessing one was getting the serving
+one's answer: reported, never recorded, repeated every run. It is now
+`ClaimMismatch`, matching what `put_with_obao` already reaches on the
+materializing twin. Left alone, and noted: `TransformRandom::read_at`
+flattens a `RuntimeError` into a string on the `serve_range` path —
+lossy, but that path's answer is the seek quarantine, not a poisoning,
+so nothing there wants the verdict.
+
 *Rejected:* recording the trap as a D48 `Negative` on the swept blob
 (it asserts a conclusion about bytes nothing read; it rides the
 snapshots; and it has to be paid once per family — ten trap executions
