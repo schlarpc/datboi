@@ -4260,3 +4260,78 @@ and preflate-split members are resident anyway); and inconsistent
 counting of a blob claimed by several recipes (the predicate is an
 `EXISTS` subquery, so a blob appears once however many parent and clone
 sets name it).
+
+## D122 — The store is the authority on bytes; `blob.residency` is a repairable cache of it (2026-09-21)
+
+Two subsystems answer "are these bytes here?": `Store::has`, which
+stats a content-addressed path, and `blob.residency`, a column. They
+are allowed to disagree, nothing said so out loud, and D121's
+`--materialize` turned that silence into 250 wrong rows on the live
+corpus — bytes durable on disk, the index calling them `Absent`.
+
+**The invariant, stated.** The store is the authority. `blob.residency`
+exists because the planner asks about millions of blobs at once and
+cannot stat them all; it is a CACHE of the store's answer, and a cache
+is allowed to be stale. Drift is permitted in exactly one direction and
+repaired wherever it is noticed:
+
+- **Index says absent, bytes are present** — safe, and repairable for
+  free by anything already holding the hash. Serving is unaffected
+  (`serve_range` keys off `store.has`), so the damage is confined to
+  planning: GC and `evict` read a blob that costs nothing to keep and
+  has nothing to reclaim, and D27's accounting is short by that many
+  blobs. Any pass that notices MUST repair it rather than skip it.
+- **Index says resident, bytes are gone** — unsafe, and not repairable
+  by inference: it is either an eviction whose bookkeeping did not land
+  or real loss. `scrub` already reports these as `missing` (D81: a
+  deterministic conclusion about bytes is a verdict, not an `Err`), and
+  that stays the only correct response.
+
+**Why the two can drift at all, permanently and by construction.** A
+blob becomes resident through two writes on two different media: a
+filesystem `rename` into the store, and a SQLite row. There is no
+transaction spanning those, and there cannot be. Every writer in this
+codebase therefore has a window where the bytes are durable and the row
+is not — D121's pass has a deep one (workers publish bytes, the
+coordinator alone may write the `Db`, and up to a queue's worth of
+finished jobs sit between them), but `ingest`, `replay` and the D89
+extract path all have the same shape at smaller scale. The answer is
+not to chase atomicity across media. It is to make the row DERIVED:
+`datboi recover` already rebuilds the whole index from the store (D15),
+and `scrub` already upserts `Residency::Resident` for every blob it
+reads and verifies. This entry only names the rule those two were
+already following and requires it of everything else.
+
+**What repair may and may not claim.** Finding bytes at their address
+proves residency and nothing else. A repair therefore writes residency
+alone: NOT `verified_at` (the bytes were not re-hashed — `scrub` sets
+that, and it pays a full read for the right), and NOT `ReplayedLocal`
+on any producing recipe (D25's licensing is a claim about a ROUTE
+replaying, which finding a file proves nothing about). The consequence
+is deliberate and safe: a repaired-but-unlicensed blob is kept rather
+than dropped, because `Db::is_evictable` still refuses it. Getting the
+licence back means replaying the route — `datboi materialize`, or the
+pass itself on a corpus where the bytes are genuinely absent.
+
+**A failed index write must not discard durable work.** D121's pass
+propagated an index error straight out of the run, which threw away
+every finished-but-unretired job in the queue — on a host where the
+refine worker holds the write lock long enough to exhaust SQLite's 5 s
+`busy_timeout`, that is the normal case and not an exotic one. An index
+write that fails now stops STAGING (the ENOSPC discipline) and keeps
+draining, so the damage is bounded to what was in flight, the report
+counts it as `unrecorded`, and the run does not call itself complete.
+
+*Rejected:* a transaction spanning the store write and the index write
+(there is no such thing across a filesystem and SQLite; pretending
+otherwise would mean a journal, which is a second index to keep honest);
+treating "bytes present, row says absent" as an error (it is the
+expected residue of any interrupted writer, and erroring would make a
+crash-recovery path noisy without repairing anything); repairing it
+only in `scrub` (scrub pays a full re-hash of every blob it touches and
+samples by hash prefix, so a corpus-sized drift costs a corpus-sized
+read to fix something a `stat` already proved); setting `verified_at`
+or licensing the route on repair (above — claiming evidence nobody
+gathered); making `blob.residency` authoritative and the store derived
+(inverts D15: the store is the durable artifact, the databases are
+rebuildable from it, and that is the whole shape of recovery).
