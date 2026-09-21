@@ -322,12 +322,15 @@ fn print_bless(
             report.outstanding()
         );
     }
-    // Candidates that remain after a run are not a failure: a route the
-    // D63 carve-out declines stays absent forever by design. Print the
-    // number so nobody has to infer it.
+    // Candidates that remain after a run are not a failure, and the
+    // reasons differ by mode: SQL cannot see a sidecar, so a blessing
+    // run leaves the count exactly where it found it, and a
+    // materializing one leaves whatever the carve-out declined. Print
+    // the number, say why it is not a shortfall, and let the operator
+    // reconcile it against their own count.
     if report.population_after > 0 {
         println!(
-            "still candidates   {:>8}   (carve-out routes stay absent by design)",
+            "still candidates   {:>8}   the index predicate sees neither sidecars nor carve-outs",
             report.population_after
         );
     }
