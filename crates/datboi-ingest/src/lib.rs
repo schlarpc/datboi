@@ -103,12 +103,20 @@ pub struct IngestConfig {
     /// Skipper evaluation buffers whole files; above this size detectors
     /// are skipped (reported), never partially applied.
     pub skipper_cap: u64,
+    /// Ignore the `source_file` scan cache and re-read every path, even
+    /// one whose (path, mtime, size) is unchanged. The cache is keyed on
+    /// the SOURCE, so anything that changes what a re-read would CONCLUDE
+    /// — a detector set arriving, a new dat making a previously unknown
+    /// blob identifiable — leaves it confidently wrong. Without this the
+    /// only way out was deleting `source_file` rows by hand.
+    pub rescan: bool,
 }
 
 impl Default for IngestConfig {
     fn default() -> Self {
         Self {
             skipper_cap: 256 * 1024 * 1024,
+            rescan: false,
         }
     }
 }
@@ -304,10 +312,11 @@ impl<'a> Ingester<'a> {
         let mtime_ns = mtime_ns(meta);
         let size = meta.len();
 
-        if self
-            .db
-            .lookup_unchanged_source(&key, mtime_ns, size)?
-            .is_some()
+        if !self.config.rescan
+            && self
+                .db
+                .lookup_unchanged_source(&key, mtime_ns, size)?
+                .is_some()
         {
             report.files_unchanged += 1;
             return Ok(());

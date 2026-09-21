@@ -61,6 +61,13 @@ enum Command {
         /// source layout — that's the point). Not implemented yet.
         #[arg(long = "move")]
         mv: bool,
+        /// Ignore the scan cache and re-read every path, even unchanged
+        /// ones. Needed whenever what a re-read would CONCLUDE has moved
+        /// while the bytes have not: a detector set arriving (headered
+        /// roms suddenly matching their dat), or a new dat making a
+        /// previously unidentifiable blob identifiable.
+        #[arg(long)]
+        rescan: bool,
         #[arg(long)]
         json: bool,
     },
@@ -651,7 +658,12 @@ fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
             })?;
             Ok(ExitCode::SUCCESS)
         }
-        Command::Ingest { paths, mv, json } => cmds::ingest(cli.global.open()?, &paths, mv, json),
+        Command::Ingest {
+            paths,
+            mv,
+            rescan,
+            json,
+        } => cmds::ingest(cli.global.open()?, &paths, mv, rescan, json),
         Command::Fetch { peer, wants, json } => {
             cmds::fetch_peer(cli.global.open()?, &peer, &wants, json)
         }

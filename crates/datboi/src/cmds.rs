@@ -42,7 +42,13 @@ fn warn_detector_errors(env: &Env) {
 
 // ---- ingest ----
 
-pub fn ingest(mut env: Env, paths: &[PathBuf], mv: bool, json: bool) -> anyhow::Result<ExitCode> {
+pub fn ingest(
+    mut env: Env,
+    paths: &[PathBuf],
+    mv: bool,
+    rescan: bool,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
     if mv {
         // D40 custody semantics (delete source only after index rows are
         // durable) need a per-file hook the Ingester doesn't expose yet;
@@ -57,7 +63,12 @@ pub fn ingest(mut env: Env, paths: &[PathBuf], mv: bool, json: bool) -> anyhow::
         eprintln!("note: removed {swept} stale temp file(s)");
     }
     let detectors = std::mem::take(&mut env.detectors);
-    let report = Ingester::new(&env.store, &mut env.db, &detectors).ingest(paths);
+    let report = Ingester::new(&env.store, &mut env.db, &detectors)
+        .with_config(datboi_ingest::IngestConfig {
+            rescan,
+            ..datboi_ingest::IngestConfig::default()
+        })
+        .ingest(paths);
     // The pipeline stores content; identity linking + the D39 rollup
     // refresh are what make audit/status see it. Ingest owns finishing
     // that thought (dat import and view eval already run the same pair)

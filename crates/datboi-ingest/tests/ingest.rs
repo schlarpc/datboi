@@ -12,6 +12,7 @@ use datboi_core::hash::Blake3;
 use datboi_core::recipe::{Op, Recipe};
 use datboi_formats::skipper::Detector;
 use datboi_index::{AliasAlgo, Db, VerifyState};
+use datboi_ingest::IngestConfig;
 use datboi_ingest::{IngestReport, Ingester};
 use datboi_store_fs::{Namespace, Store};
 use flate2::Compression;
@@ -338,6 +339,25 @@ fn rescan_cache_makes_second_run_a_noop() {
     assert_eq!(second.files_already_present, 0);
     assert_eq!(second.members_claimed, 0);
     assert_eq!(count_store_files(&root), before, "store untouched");
+
+    // --rescan is the way past the cache. The bytes have not moved, so
+    // nothing is stored again -- but every path is re-read, which is the
+    // point: what a re-read CONCLUDES changes when a detector set or a
+    // new dat arrives, and the cache is keyed only on the source.
+    let forced = {
+        let src = world.src.clone();
+        Ingester::new(&world.store, &mut world.db, &world.detectors)
+            .with_config(IngestConfig {
+                rescan: true,
+                ..IngestConfig::default()
+            })
+            .ingest(&[src])
+    };
+    assert_eq!(forced.files_unchanged, 0, "cache ignored: {forced:?}");
+    assert_eq!(forced.files_scanned, 3);
+    assert_eq!(forced.files_stored, 0, "same bytes, nothing new stored");
+    assert_eq!(forced.files_already_present, 3);
+    assert_eq!(count_store_files(&root), before, "store still untouched");
 }
 
 #[test]
