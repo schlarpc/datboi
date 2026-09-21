@@ -1675,9 +1675,10 @@ fn bless_candidates_are_absent_derived_blobs_over_the_threshold() {
     // Absent, big, and underived: a peer-advertised hash with no route.
     sized(&db, b"no-route", GROUP * 20, Residency::Absent);
 
-    let mut got = Vec::new();
-    db.for_each_bless_candidate(GROUP, &mut |h, size| got.push((h, size)))
+    let page = db
+        .bless_candidates_after(0, GROUP, 100)
         .expect("candidates");
+    let mut got: Vec<(Blake3, u64)> = page.iter().map(|(_, h, size)| (*h, *size)).collect();
     let mut want = vec![
         (Blake3::compute(b"big-member"), GROUP * 20),
         (Blake3::compute(b"evicted-member"), GROUP * 20),
@@ -1685,4 +1686,23 @@ fn bless_candidates_are_absent_derived_blobs_over_the_threshold() {
     got.sort_unstable_by_key(|(h, _)| h.0);
     want.sort_unstable_by_key(|(h, _)| h.0);
     assert_eq!(got, want);
+
+    // Keyset paging: a page of one, then resume past its cursor, is the
+    // same set in the same order — the pass never pins a snapshot.
+    let first = db.bless_candidates_after(0, GROUP, 1).expect("page 1");
+    assert_eq!(first.len(), 1);
+    let rest = db
+        .bless_candidates_after(first[0].0, GROUP, 100)
+        .expect("page 2");
+    let paged: Vec<Blake3> = first.iter().chain(&rest).map(|(_, h, _)| *h).collect();
+    assert_eq!(
+        paged,
+        page.iter().map(|(_, h, _)| *h).collect::<Vec<_>>(),
+        "paging reproduces the single-page order exactly"
+    );
+    assert!(
+        db.bless_candidates_after(page.last().expect("rows").0, GROUP, 100)
+            .expect("past the end")
+            .is_empty()
+    );
 }

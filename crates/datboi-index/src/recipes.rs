@@ -707,7 +707,18 @@ impl Db {
     /// D121 blessing candidates: Data-namespace blobs whose bytes are
     /// NOT local, that are bigger than `min_size`, and that at least one
     /// non-Failed recipe claims to produce — every blob whose first read
-    /// would have to materialize a route.
+    /// would have to materialize a route. Up to `limit` rows with
+    /// `blob_id` past `after`, in `blob_id` order.
+    ///
+    /// Paged by keyset rather than streamed through a callback ON
+    /// PURPOSE: the pass interleaves its candidate walk with minutes of
+    /// materialization, and one open `SELECT` across all of that pins a
+    /// read snapshot for the whole run — WAL that cannot check-point
+    /// under a daemon that is still ingesting. A page is a short read
+    /// and a bounded buffer (`limit` rows), and nothing about the pass
+    /// needs a consistent snapshot: a blob someone else blesses between
+    /// pages is caught by the store check, and one claimed after the
+    /// cursor passes it is simply the next run's work.
     ///
     /// This is deliberately a COARSE filter. It cannot tell whether a
     /// sidecar already exists (D109 dropped `blob.obao`; the store owns
@@ -720,36 +731,38 @@ impl Db {
     /// `min_size` is the caller's chunk-group threshold: blobs at or
     /// under one bao group have an empty outboard by construction and
     /// need no blessing (which is exactly the fact that hid the D63
-    /// amendment's bug for months). Streaming, in `blob_id` order, so
-    /// the pass is O(block) memory over a corpus of any size and the
-    /// candidate sequence is stable across runs.
+    /// amendment's bug for months).
     ///
     /// # Errors
-    /// Query failures; a row whose residency code does not decode.
-    pub fn for_each_bless_candidate(
+    /// Query failures.
+    pub fn bless_candidates_after(
         &self,
+        after: i64,
         min_size: u64,
-        f: &mut dyn FnMut(Blake3, u64),
-    ) -> Result<(), IndexError> {
+        limit: usize,
+    ) -> Result<Vec<(i64, Blake3, u64)>, IndexError> {
         let min = i64::try_from(min_size).unwrap_or(i64::MAX);
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let mut stmt = self.cache().prepare_cached(
-            "SELECT b.hash, b.size FROM blob b
-             WHERE b.namespace = 0 AND b.residency != 0 AND b.size > ?1
+            "SELECT b.blob_id, b.hash, b.size FROM blob b
+             WHERE b.blob_id > ?1 AND b.namespace = 0 AND b.residency != 0 AND b.size > ?2
                AND EXISTS (
                  SELECT 1 FROM recipe_output ro
                  JOIN recipe r ON r.recipe_id = ro.recipe_id
                  WHERE ro.blob_id = b.blob_id AND r.verify != 2)
-             ORDER BY b.blob_id",
+             ORDER BY b.blob_id
+             LIMIT ?3",
         )?;
-        let mut rows = stmt.query([min])?;
-        while let Some(row) = rows.next()? {
-            let size = row.get::<_, i64>(1)?;
-            f(
-                Blake3(row.get::<_, [u8; 32]>(0)?),
-                u64::try_from(size).unwrap_or(0),
-            );
-        }
-        Ok(())
+        let rows = stmt
+            .query_map([after, min, limit], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    Blake3(row.get::<_, [u8; 32]>(1)?),
+                    u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// A rebuild route's inputs in position (coverage) order, each with
