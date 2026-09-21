@@ -691,6 +691,33 @@ impl Store {
         }
     }
 
+    /// Does a blob already have its outboard, WITHOUT reading it?
+    ///
+    /// Same loose-wins-then-pack order and the same small-blob rule as
+    /// [`Self::get_obao`], but metadata only. The bulk blessing pass
+    /// (D121) asks this question once per candidate — 152,014 times on
+    /// the corpus it was written for — and `get_obao` answers it by
+    /// reading the whole sidecar off disk, which is ~560 MB of tree
+    /// nobody wants.
+    ///
+    /// `false` for an ABSENT small blob: the store cannot know the
+    /// length of bytes it does not have, so the caller decides
+    /// emptiness from the indexed size (exactly as `serve_range` does).
+    ///
+    /// # Errors
+    /// Store I/O while sizing a loose blob.
+    pub fn has_obao(&self, ns: Namespace, hash: &Blake3) -> Result<bool, StoreError> {
+        if self.obao_path(ns, hash).exists() {
+            return Ok(true);
+        }
+        // A packed member's tree rides its pack (D105) — present even
+        // when the window is zero-length, which IS the empty outboard.
+        if ns == Namespace::Data && self.packed_loc(hash).is_some() {
+            return Ok(true);
+        }
+        Ok(matches!(self.len(ns, hash)?, Some(len) if crate::obao::outboard_size(len) == 0))
+    }
+
     /// Compute-and-publish a blob's outboard from its stored bytes if it
     /// isn't already present (one streaming read). Returns whether a
     /// sidecar now exists (false only for absent blobs).

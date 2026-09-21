@@ -502,3 +502,62 @@ fn pack_files_are_content_addressed_and_deterministic() {
     let b = store_b.put_pack(&members, open(pieces)).expect("b");
     assert_eq!(a, b, "same members, same order ⇒ same pack identity");
 }
+
+/// `has_obao` is the metadata-only twin of `get_obao` (D121): the bulk
+/// blessing pass asks "is this blessed?" once per candidate, and
+/// reading a whole sidecar to answer it would move hundreds of MB of
+/// tree for nothing. The two must agree everywhere — loose, packed,
+/// small-and-resident, and absent.
+#[test]
+fn has_obao_agrees_with_get_obao_everywhere() {
+    let (_dir, store) = world();
+
+    // Loose: a big blob published with its tree, and a small one whose
+    // outboard is empty by construction.
+    let big = pattern(300_000, 7);
+    let small = pattern(4_096, 8);
+    for bytes in [&big, &small] {
+        let hash = Blake3::compute(bytes);
+        store
+            .put_with_obao(
+                Namespace::Data,
+                hash,
+                bytes.len() as u64,
+                std::io::Cursor::new(bytes.clone()),
+            )
+            .expect("put");
+        assert_eq!(
+            store.has_obao(Namespace::Data, &hash).expect("has_obao"),
+            store
+                .get_obao(Namespace::Data, &hash)
+                .expect("get_obao")
+                .is_some(),
+        );
+        assert!(store.has_obao(Namespace::Data, &hash).expect("has_obao"));
+    }
+
+    // Packed: the tree rides the pack, zero-length window included.
+    let pieces: Vec<Vec<u8>> = vec![pattern(70_000, 2), pattern(5, 3)];
+    let members = members_of(&pieces);
+    store
+        .put_pack(&members, |ix| {
+            Ok(Box::new(std::io::Cursor::new(pieces[ix].clone())))
+        })
+        .expect("pack");
+    for member in &members {
+        assert!(store.has_obao(Namespace::Data, &member.hash).expect("q"));
+    }
+
+    // Absent: no bytes, no sidecar, nothing to derive a length from —
+    // the store says no and the caller decides from the indexed size.
+    let absent = Blake3::compute(b"never stored");
+    assert!(!store.has_obao(Namespace::Data, &absent).expect("q"));
+    assert_eq!(store.get_obao(Namespace::Data, &absent).expect("q"), None);
+
+    // Evicted-but-blessed: the D49 rule-1 shape — the sidecar outlives
+    // the bytes, and `has_obao` must still see it.
+    let hash = Blake3::compute(&big);
+    assert!(store.evict_literal(Namespace::Data, &hash).expect("evict"));
+    assert!(!store.has(Namespace::Data, &hash));
+    assert!(store.has_obao(Namespace::Data, &hash).expect("q"));
+}
