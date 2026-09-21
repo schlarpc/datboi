@@ -13,6 +13,68 @@ web-ui.md (the nav ruling). History lives in git.
 
 Each of these wants its D entry before (or as) the code lands.
 
+- **A container no dat names is transport, not content — so why is
+  retaining it the default?** D35's MVP cutline chose
+  "containers-stay-literal with members-as-claims (≈1.0× storage)" on
+  2026-07-03, and priced it in storage alone. It could not price the
+  rest: **serving did not exist yet** (its own milestone order is "M2
+  shrink → M3 views/serving"). Two costs fall outside what that
+  decision measured, and both were paid in full adopting a MAME set
+  (hosts/datboi/FINDINGS.md in schlarpc-flake):
+
+  1. **The read tax.** A zip's DEFLATE member is
+     `deflate-decompress@1`, seek class **Opaque**, and `produce_range`
+     excludes Opaque from the random-access path — so every range read
+     re-materializes the member from byte 0. Measured: ~278 GB of work
+     to read a 264 MB rom; one member held a serial reader in
+     uninterruptible sleep for over an hour. The same rom, once its
+     bytes are resident, reads in 2.03 s. A drifted residency row is
+     enough to put it back on the slow path: 25.45 s vs 0.34 s for one
+     64 MiB member, bytes on disk either way.
+  2. **Unreclaimable containers, and a reclaim that points the wrong
+     way.** For rar/7z the extract path mints `container→member` only —
+     the code says so: *"Mint the container→member derive recipe (makes
+     the MEMBER evictable)"*. The container has no reverse route (it is
+     not reconstructible, which is why its members were extracted), so
+     `is_evictable` can never ground it without itself. It is **2×
+     storage forever**, and the only eviction on offer is *drop the
+     roms, keep the archive* — regenerating roms on demand through a
+     wasm extractor at `SeekClass::Opaque`, i.e. re-creating cost 1.
+     Zip is better only by accident: preflate (D53) mints a real
+     reverse route, which is why 9,679 zip containers on that host are
+     already evicted.
+
+  The asymmetry is the tell. rar, 7z and zip are all *equally* absent
+  from every dat — no dat names an archive — yet the manager treats
+  "container we happen to be able to rebuild" and "container we cannot"
+  as different kinds of thing. From the dat's point of view they are
+  identical: packaging someone shipped the roms in.
+
+  **Proposed ruling:** extract-and-drop is the default for any
+  container no dat names; retention becomes opt-in for the one
+  constituency that wants the archive back — **TorrentZip-verified
+  distribution**, where the archive's own hash is the thing being
+  checked — and for zip that opt-in is preflate, at ~0.002%.
+
+  **The honest cost, measured, not assumed.** On that corpus plaintext
+  is *larger*, not smaller: 35,494 zips = **69.1 GB**; their 134,307
+  distinct members = **135.2 GB**. Cross-zip rom sharing is only
+  **1.13×**, because a split-style set gives clone zips only their own
+  roms. So extract-and-drop costs ~+66 GB there. Against that: every
+  read becomes a plain file read, `deflate-decompress@1` stops existing
+  (152,014 recipes on that host), and the blessing / on-demand
+  materialization / `bless --materialize` machinery built in D121 and
+  D122 becomes scaffolding for a case that no longer arises. The
+  current middle state is the worst of the three — containers *and*
+  materialized members, ~116 GB and climbing, still quadratic below the
+  materialization floor.
+
+  *Also weigh:* CHDs and other already-uncompressed content are
+  unaffected; `--copy` custody (D40) is about the source tree, not the
+  store, so nothing here touches it; and a ruling should say what
+  happens to containers **already** stored under the old default —
+  retroactive drop, or leave them and change only the default.
+
 - **`import_dat` is not atomic past the blob.** Its own comment
   promises a failed import "leaves no trace", and that holds for a
   malformed file (validation precedes storage) but not for one that
