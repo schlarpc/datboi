@@ -24,6 +24,13 @@
 //! Crash discipline: the rescan-cache row is written *last*, so a crash
 //! re-processes the file; every write here is a content-addressed upsert,
 //! so re-processing is idempotent (at-least-once semantics).
+//!
+//! Shape (D120): a bounded pool of workers does the hashing — the whole
+//! of the above except the index — and ONE writer applies what they
+//! conclude, because SQLite takes a single writer under WAL. The writer
+//! retires verdicts in walk order, so the report is deterministic
+//! whatever the parallelism, and all of a file's rows are still written
+//! together with its `source_file` row last.
 
 pub mod analyzers;
 pub mod archive;
@@ -36,9 +43,12 @@ pub mod wii;
 pub mod xdvdfs;
 pub mod zip;
 
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::sync::{Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use datboi_core::alias::{AliasHasher, AliasTuple};
@@ -87,6 +97,11 @@ pub enum IngestError {
     Zip(#[from] ZipError),
     #[error("recipe construction: {0}")]
     Recipe(String),
+    /// A hashing worker died on this file (D120's pool). Per-path and
+    /// non-fatal like every other ingest failure — never a writer left
+    /// waiting on a result nobody will send.
+    #[error("hashing worker: {0}")]
+    Worker(String),
 }
 
 impl IngestError {
@@ -110,6 +125,12 @@ pub struct IngestConfig {
     /// blob identifiable — leaves it confidently wrong. Without this the
     /// only way out was deleting `source_file` rows by hand.
     pub rescan: bool,
+    /// How many files hash at once (D120). `0` derives it from the
+    /// machine. The wall clock of an ingest is the `AliasHasher` chain
+    /// — crc32 + md5 + sha1 + sha256 + blake3 over every byte, and md5
+    /// has no hardware path — so one core's worth of it left seven idle
+    /// on the adoption that prompted this.
+    pub parallelism: usize,
 }
 
 impl Default for IngestConfig {
@@ -117,7 +138,32 @@ impl Default for IngestConfig {
         Self {
             skipper_cap: 256 * 1024 * 1024,
             rescan: false,
+            parallelism: 0,
         }
+    }
+}
+
+impl IngestConfig {
+    /// The worker count this config asks for, never zero.
+    fn workers(&self) -> usize {
+        if self.parallelism > 0 {
+            return self.parallelism;
+        }
+        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+    }
+
+    /// The ceiling on dispatched-but-unretired BUFFERED bytes (D120).
+    /// A memory bound, not a throughput knob: the one lane that buffers
+    /// a whole file is skipper evaluation, bounded per file by
+    /// `skipper_cap`, and N workers would otherwise multiply that by N.
+    /// Streaming files are charged nothing, so this never throttles the
+    /// case the pool exists for. Never below `skipper_cap`: one
+    /// eligible file must always be admissible.
+    fn inflight_cap(&self) -> u64 {
+        const PER_WORKER: u64 = 64 * 1024 * 1024;
+        (self.workers() as u64)
+            .saturating_mul(PER_WORKER)
+            .max(self.skipper_cap)
     }
 }
 
@@ -191,13 +237,64 @@ impl ExtractorRt {
     }
 }
 
+/// One file the walk decided is worth reading, handed to a worker.
+struct Job {
+    /// Walk position — the commit queue's sort key (D120).
+    seq: u64,
+    /// The path as the walk found it (what the report names).
+    path: PathBuf,
+    canonical: PathBuf,
+    /// The `source_file` key: the canonical path, or the caller's
+    /// source name ([`Ingester::ingest_file`]).
+    key: String,
+    mtime_ns: i64,
+    size: u64,
+    /// What this file may BUFFER, charged to the in-flight budget —
+    /// zero for everything that only streams (D120 amendment).
+    weight: u64,
+}
+
+/// A worker's answer, back on the writer.
+struct Done {
+    seq: u64,
+    path: PathBuf,
+    /// The dispatched weight, released from the in-flight budget when
+    /// this position retires.
+    weight: u64,
+    work: Box<Result<FileWork, IngestError>>,
+}
+
+/// What the writer decided about a staged file before dispatching it.
+enum Staged {
+    /// Rescan-cache hit: path+mtime+size unchanged, nothing to read.
+    Unchanged,
+    Work(Job),
+}
+
+/// One walk position awaiting its turn in the commit queue. Walk order
+/// is report order (D120), so notes and failures queue up beside file
+/// verdicts rather than jumping ahead of them.
+enum Retire {
+    Note(String),
+    Failed(PathBuf, String),
+    Unchanged,
+    Work {
+        path: PathBuf,
+        weight: u64,
+        work: Box<Result<FileWork, IngestError>>,
+    },
+}
+
 pub struct Ingester<'a> {
     store: &'a Store,
     db: &'a mut Db,
     detectors: &'a [Detector],
     config: IngestConfig,
     /// Built on the first rar/7z container encountered (avoids the wasm
-    /// engine cost when a sweep has neither).
+    /// engine cost when a sweep has neither). Writer-side state: D120
+    /// keeps component extraction off the workers, since it mutates
+    /// this lazily-built host and mints a recipe per member — and it
+    /// already fans out internally (D89 batch pipes).
     extractor: Option<ExtractorRt>,
     /// Resident-blob ids accumulated across `record_resident_blob`
     /// calls; drained into `IngestReport::fresh_blobs` per run.
@@ -222,15 +319,76 @@ impl<'a> Ingester<'a> {
         self
     }
 
-    /// Ingest files and directory trees. Directories walk in sorted order
-    /// for deterministic reports; symlinks are skipped. Source identity is
-    /// each file's canonical path — the walk never sees a source name
+    /// Ingest files and directory trees. Directories walk in sorted
+    /// order and the report is written in that order — D120 fans the
+    /// hashing out over a worker pool and orders the COMMIT QUEUE, not
+    /// the work, so the same corpus produces the same report whatever
+    /// the parallelism. Symlinks are skipped. Source identity is each
+    /// file's canonical path — the walk never sees a source name
     /// ([`Ingester::ingest_file`] is the named-identity door).
     pub fn ingest(&mut self, paths: &[impl AsRef<Path>]) -> IngestReport {
         let mut report = IngestReport::default();
-        for path in paths {
-            self.walk(path.as_ref(), &mut report);
-        }
+        let roots: Vec<PathBuf> = paths.iter().map(|p| p.as_ref().to_owned()).collect();
+        // Copied out of `self` so the writer keeps its `&mut self`
+        // while the pool reads these: both are `&'a`, neither borrows
+        // the Ingester, and the store is `Sync` by construction (the
+        // D89 extract path has published from threads since rar).
+        let store = self.store;
+        let detectors = self.detectors;
+        let config = self.config.clone();
+        let workers = config.workers();
+
+        let (job_tx, job_rx) = mpsc::channel::<Job>();
+        let job_rx = Mutex::new(job_rx);
+        let (done_tx, done_rx) = mpsc::channel::<Done>();
+
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let done_tx = done_tx.clone();
+                let job_rx = &job_rx;
+                let config = &config;
+                scope.spawn(move || {
+                    loop {
+                        // Held only across the recv: one lock per file
+                        // is nothing beside a hash chain.
+                        let job = {
+                            let rx = job_rx.lock().unwrap_or_else(PoisonError::into_inner);
+                            rx.recv()
+                        };
+                        let Ok(job) = job else { return };
+                        // A panicking worker must become a per-path
+                        // error, never a writer blocked forever on a
+                        // result nobody will send.
+                        let work = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            hash_file(store, detectors, config, &job)
+                        }))
+                        .unwrap_or_else(|_| {
+                            Err(IngestError::Worker(format!(
+                                "hashing {} panicked",
+                                job.path.display()
+                            )))
+                        });
+                        let done = Done {
+                            seq: job.seq,
+                            path: job.path,
+                            weight: job.weight,
+                            work: Box::new(work),
+                        };
+                        if done_tx.send(done).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+            // Ours would otherwise keep the channel alive forever, and
+            // a dead pool has to read as a disconnect.
+            drop(done_tx);
+            self.write_loop(Walk::new(roots), &job_tx, &done_rx, &mut report);
+            // Closing the job channel is what retires the pool; the
+            // scope then joins it.
+            drop(job_tx);
+        });
+
         report.fresh_blobs = std::mem::take(&mut self.fresh);
         report
     }
@@ -243,14 +401,20 @@ impl<'a> Ingester<'a> {
     /// false rescan-cache hits. A distinct entry point BY CONSTRUCTION:
     /// a directory walk under one name would collide keys, so anything
     /// but a regular file is refused here and the walk path has no
-    /// source name to misuse.
+    /// source name to misuse. One file needs no pool — it runs the same
+    /// hash/apply pair the workers and the writer run.
     pub fn ingest_file(&mut self, path: &Path, source_name: &str) -> IngestReport {
         let mut report = IngestReport::default();
         match fs::symlink_metadata(path) {
             Ok(meta) if meta.is_file() => {
                 report.files_scanned += 1;
-                if let Err(e) = self.process_file(path, &meta, Some(source_name), &mut report) {
-                    report.errors.push((path.to_owned(), e.to_string()));
+                match self.stage(0, path, &meta, Some(source_name)) {
+                    Ok(Staged::Unchanged) => report.files_unchanged += 1,
+                    Ok(Staged::Work(job)) => {
+                        let work = hash_file(self.store, self.detectors, &self.config, &job);
+                        self.retire_work(job.path, work, &mut report);
+                    }
+                    Err(e) => report.errors.push((path.to_owned(), e.to_string())),
                 }
             }
             Ok(_) => report.errors.push((
@@ -263,49 +427,166 @@ impl<'a> Ingester<'a> {
         report
     }
 
-    fn walk(&mut self, path: &Path, report: &mut IngestReport) {
-        let meta = match fs::symlink_metadata(path) {
-            Ok(m) => m,
-            Err(e) => {
-                report.errors.push((path.to_owned(), e.to_string()));
-                return;
+    /// The single writer (D120): walk, cache-check, dispatch within the
+    /// in-flight budget, retire verdicts in walk order. EVERY `Db`
+    /// mutation an ingest makes happens on this thread, which is what
+    /// keeps the report deterministic and the crash discipline honest
+    /// (a crash truncates the run at a walk-order prefix).
+    fn write_loop(
+        &mut self,
+        mut walk: Walk,
+        jobs: &mpsc::Sender<Job>,
+        done: &mpsc::Receiver<Done>,
+        report: &mut IngestReport,
+    ) {
+        // Ceiling on unretired walk positions. The reorder buffer holds
+        // verdicts, not file bytes, so this is an entry count — it only
+        // bites when one slow file holds the head of the queue, and it
+        // is what bounds a queue of files the byte budget charges
+        // nothing for.
+        const REORDER_CAP: usize = 256;
+
+        let cap = self.config.inflight_cap();
+        let mut next_seq = 0u64;
+        let mut retire_seq = 0u64;
+        let mut pending: BTreeMap<u64, Retire> = BTreeMap::new();
+        let mut inflight_bytes = 0u64;
+        // Dispatched, result not yet received: the writer may block on
+        // the done channel exactly when this is non-zero.
+        let mut outstanding = 0usize;
+        let mut walking = true;
+        // A position the budget turned away: the walk stops behind it
+        // rather than dispatching past it, so order is never lost.
+        let mut held: Option<Job> = None;
+
+        loop {
+            // Weight is what a file may BUFFER (D120 amendment), so a
+            // streaming file is always admissible and only the skipper
+            // lane ever queues here. Dispatch is in walk order, so when
+            // the head of the queue is the one asking, nothing below it
+            // is unretired and the budget is empty — the head always
+            // runs and cannot deadlock against the reorder buffer that
+            // is waiting on it.
+            if let Some(job) = held.take() {
+                if admits(inflight_bytes, cap, job.weight) {
+                    dispatch(
+                        jobs,
+                        job,
+                        &mut inflight_bytes,
+                        &mut outstanding,
+                        &mut pending,
+                    );
+                } else {
+                    held = Some(job);
+                }
             }
-        };
-        if meta.file_type().is_symlink() {
-            report
-                .notes
-                .push(format!("skipped symlink: {}", path.display()));
-            return;
-        }
-        if meta.is_dir() {
-            let mut entries: Vec<PathBuf> = match fs::read_dir(path) {
-                Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
-                Err(e) => {
-                    report.errors.push((path.to_owned(), e.to_string()));
+
+            while held.is_none() && walking && pending.len() + outstanding < REORDER_CAP {
+                let Some(step) = walk.next() else {
+                    walking = false;
+                    break;
+                };
+                let seq = next_seq;
+                next_seq += 1;
+                let (path, meta) = match step {
+                    Step::Note(note) => {
+                        pending.insert(seq, Retire::Note(note));
+                        continue;
+                    }
+                    Step::Failed(path, err) => {
+                        pending.insert(seq, Retire::Failed(path, err));
+                        continue;
+                    }
+                    Step::File(path, meta) => (path, meta),
+                };
+                report.files_scanned += 1;
+                match self.stage(seq, &path, &meta, None) {
+                    Ok(Staged::Unchanged) => {
+                        pending.insert(seq, Retire::Unchanged);
+                    }
+                    Ok(Staged::Work(job)) => {
+                        if admits(inflight_bytes, cap, job.weight) {
+                            dispatch(
+                                jobs,
+                                job,
+                                &mut inflight_bytes,
+                                &mut outstanding,
+                                &mut pending,
+                            );
+                        } else {
+                            held = Some(job);
+                        }
+                    }
+                    Err(e) => {
+                        pending.insert(seq, Retire::Failed(path, e.to_string()));
+                    }
+                }
+            }
+
+            // Retire strictly in walk order — the report is written
+            // here and nowhere else.
+            while let Some(item) = pending.remove(&retire_seq) {
+                retire_seq += 1;
+                match item {
+                    Retire::Note(note) => report.notes.push(note),
+                    Retire::Failed(path, err) => report.errors.push((path, err)),
+                    Retire::Unchanged => report.files_unchanged += 1,
+                    Retire::Work { path, weight, work } => {
+                        inflight_bytes = inflight_bytes.saturating_sub(weight);
+                        self.retire_work(path, *work, report);
+                    }
+                }
+            }
+
+            if outstanding == 0 {
+                // Nothing is owed: either the walk is done (and the
+                // retire pass above drained everything, since every
+                // unretired position is resolved) or there is more to
+                // dispatch.
+                if !walking && pending.is_empty() && held.is_none() {
                     return;
                 }
-            };
-            entries.sort();
-            for entry in entries {
-                self.walk(&entry, report);
+                continue;
             }
-            return;
-        }
-        report.files_scanned += 1;
-        if let Err(e) = self.process_file(path, &meta, None, report) {
-            report.errors.push((path.to_owned(), e.to_string()));
+            match done.recv() {
+                Ok(d) => {
+                    outstanding -= 1;
+                    pending.insert(
+                        d.seq,
+                        Retire::Work {
+                            path: d.path,
+                            weight: d.weight,
+                            work: d.work,
+                        },
+                    );
+                }
+                Err(_) => {
+                    // Every worker is gone with results owed; there is
+                    // nothing left to wait for.
+                    report.errors.push((
+                        PathBuf::new(),
+                        format!("hashing pool died with {outstanding} file(s) in flight"),
+                    ));
+                    return;
+                }
+            }
         }
     }
 
-    /// `source_name` is [`Ingester::ingest_file`]'s named identity;
-    /// the walk always passes `None` (canonical-path identity).
-    fn process_file(
+    /// Canonicalize, key and cache-check one file — on the writer,
+    /// because `lookup_unchanged_source` is a `Db` read and because a
+    /// cache hit must never cost a worker a read (D120: not reading the
+    /// file is the entire point of the cache).
+    ///
+    /// `source_name` is [`Ingester::ingest_file`]'s named identity; the
+    /// walk always passes `None` (canonical-path identity).
+    fn stage(
         &mut self,
+        seq: u64,
         path: &Path,
         meta: &fs::Metadata,
         source_name: Option<&str>,
-        report: &mut IngestReport,
-    ) -> Result<(), IngestError> {
+    ) -> Result<Staged, IngestError> {
         let canonical = fs::canonicalize(path).map_err(|e| IngestError::io(path, e))?;
         let key =
             source_name.map_or_else(|| canonical.to_string_lossy().into_owned(), str::to_owned);
@@ -318,88 +599,145 @@ impl<'a> Ingester<'a> {
                 .lookup_unchanged_source(&key, mtime_ns, size)?
                 .is_some()
         {
-            report.files_unchanged += 1;
-            return Ok(());
+            return Ok(Staged::Unchanged);
         }
+        // What this file may buffer whole: skipper evaluation, and only
+        // skipper evaluation (D120 amendment). Charging a container
+        // that merely LOOKS eligible over-charges, which is the safe
+        // direction; charging a 40 GB CHD that streams through 64 KiB
+        // would serialize exactly the files the pool exists for.
+        let weight = if self.detectors.is_empty() || size > self.config.skipper_cap {
+            0
+        } else {
+            size
+        };
+        Ok(Staged::Work(Job {
+            seq,
+            path: path.to_owned(),
+            canonical,
+            key,
+            mtime_ns,
+            size,
+            weight,
+        }))
+    }
 
-        let source = File::open(&canonical).map_err(|e| IngestError::io(&canonical, e))?;
-        let (hash, aliases, outcome) = self.store.put_new(StoreNs::Data, source)?;
-        match outcome {
+    fn retire_work(
+        &mut self,
+        path: PathBuf,
+        work: Result<FileWork, IngestError>,
+        report: &mut IngestReport,
+    ) {
+        let outcome = match work {
+            Ok(work) => self.apply(&path, work, report),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = outcome {
+            report.errors.push((path, e.to_string()));
+        }
+    }
+
+    /// Record one file's verdict: the same rows the serial pipeline
+    /// wrote, in the same order, and the `source_file` row still LAST
+    /// so a crash re-processes the file (module doc's crash
+    /// discipline). Every write below is a content-addressed upsert.
+    fn apply(
+        &mut self,
+        path: &Path,
+        work: FileWork,
+        report: &mut IngestReport,
+    ) -> Result<(), IngestError> {
+        match work.stored {
             PutOutcome::Stored => report.files_stored += 1,
             PutOutcome::AlreadyPresent => report.files_already_present += 1,
         }
-        let blob_id = self.record_resident_blob(&hash, &aliases)?;
-
-        // Look inside the *stored* bytes (verifies what we published).
-        let mut blob = self
-            .store
-            .get(StoreNs::Data, &hash)?
-            .expect("just published");
-        // One head read serves both container sniffs (zip magic is 4 bytes,
-        // a CHD v5 header is 124).
-        let mut head = [0u8; datboi_formats::chd::CHD_V5_HEADER_LEN];
-        let head_len = read_head(&mut blob, &mut head).map_err(|e| IngestError::io(path, e))?;
-        if let Some(chd) = datboi_formats::chd::parse_header(&head[..head_len]) {
-            self.process_chd(path, blob_id, &chd, report)?;
-        } else if zip::looks_like_zip(&head[..head_len]) {
-            if let Err(e) = self.process_zip(path, &hash, &mut blob, report) {
-                report.errors.push((path.to_owned(), e.to_string()));
+        let blob_id = self.record_resident_blob(&work.hash, &work.aliases)?;
+        report.notes.extend(work.notes);
+        for (member, reason) in work.member_skips {
+            report.member_skips.push((path.to_owned(), member, reason));
+        }
+        // Failures from looking INSIDE are per-path and non-fatal: a
+        // container we could not read is still a literal we hold, and
+        // it still earns its rescan-cache row.
+        for err in work.errors {
+            report.errors.push((path.to_owned(), err));
+        }
+        match work.inside {
+            Inside::Opaque => {}
+            Inside::ChdV5(sha1) => {
+                self.db.insert_declared_chd_sha1(blob_id, &sha1)?;
+                report.chd_v5 += 1;
             }
-        } else if archive::looks_like_7z(&head[..head_len]) {
-            if let Err(e) = self.process_7z(&hash, report) {
-                report.errors.push((path.to_owned(), e));
+            Inside::Zip(members) => self.claim_zip_members(members, report)?,
+            Inside::Component(fmt) => {
+                let extracted = match fmt {
+                    ExFormat::SevenZ => self.process_7z(&work.hash, report),
+                    ExFormat::Rar => self.process_rar(&work.hash, report),
+                };
+                if let Err(e) = extracted {
+                    report.errors.push((path.to_owned(), e));
+                }
             }
-        } else if archive::looks_like_rar(&head[..head_len]) {
-            if let Err(e) = self.process_rar(&hash, report) {
-                report.errors.push((path.to_owned(), e));
-            }
-        } else if !self.detectors.is_empty() {
-            if size <= self.config.skipper_cap {
-                blob.seek(SeekFrom::Start(0))
-                    .map_err(|e| IngestError::io(path, e))?;
-                let mut bytes = Vec::with_capacity(size as usize);
-                blob.read_to_end(&mut bytes)
-                    .map_err(|e| IngestError::io(path, e))?;
-                self.process_detectors(&bytes, &hash, report)?;
-            } else {
-                report.skipper_skipped_large += 1;
-            }
+            Inside::Detector(claim) => self.claim_detector(*claim, report)?,
+            Inside::SkipperTooLarge => report.skipper_skipped_large += 1,
         }
 
         // Last, so a crash before this point re-processes the file.
-        self.db
-            .upsert_source_file(&key, mtime_ns, size, Some(blob_id), now_unix())?;
+        self.db.upsert_source_file(
+            &work.key,
+            work.mtime_ns,
+            work.size,
+            Some(blob_id),
+            now_unix(),
+        )?;
         Ok(())
     }
 
-    /// Claim every supported member of a stored zip container.
-    /// CHD v5: record the header's declared internal sha1 (the identity
-    /// MAME disk claims reference). Header-only — the declaration grades as
-    /// `probable` in audit (D44) until a decompressing verify exists (M3).
-    fn process_chd(
+    /// Claim every member a worker hashed out of a zip container.
+    fn claim_zip_members(
         &mut self,
-        path: &Path,
-        blob_id: i64,
-        chd: &datboi_formats::chd::ChdHeader,
+        members: Vec<MemberClaim>,
         report: &mut IngestReport,
     ) -> Result<(), IngestError> {
-        match chd {
-            datboi_formats::chd::ChdHeader::V5(v5) => {
-                self.db.insert_declared_chd_sha1(blob_id, &v5.sha1)?;
-                report.chd_v5 += 1;
-                if v5.has_parent() {
-                    report.notes.push(format!(
-                        "{}: delta CHD (has a parent); recorded, but standalone rebuild is impossible",
-                        path.display()
-                    ));
+        for member in members {
+            self.record_absent_blob(&member.tuple)?;
+            match member.recipe {
+                // The empty member: the worker stored the empty literal
+                // so the identity is grounded, and assemble@1 rejects
+                // empty segment lists by design — no recipe to mint.
+                None => {
+                    self.db.upsert_blob(
+                        &member.tuple.blake3,
+                        Some(0),
+                        IndexNs::Data,
+                        Residency::Resident,
+                    )?;
                 }
+                Some((recipe, seek)) => self.record_recipe(&recipe, seek)?,
             }
-            datboi_formats::chd::ChdHeader::Unsupported { version } => {
-                report.notes.push(format!(
-                    "{}: CHD v{version} header not supported (v5 only); stored as opaque bytes",
-                    path.display()
-                ));
-            }
+            report.members_claimed += 1;
+        }
+        Ok(())
+    }
+
+    /// Record a detector hit's dual identity (D9) — the variant, and
+    /// the both-direction recipes when the decision licensed them.
+    fn claim_detector(
+        &mut self,
+        claim: DetectorClaim,
+        report: &mut IngestReport,
+    ) -> Result<(), IngestError> {
+        report.detector_hits += 1;
+        self.record_absent_blob(&claim.variant)?;
+        // A swap-operation decision aliases the variant and stops; the
+        // deferral note rides the file's notes.
+        let Some((derive, seek)) = claim.derive else {
+            return Ok(());
+        };
+        self.record_recipe(&derive, seek)?;
+        if let Some((header, rebuild, rebuild_seek)) = claim.rebuild {
+            self.record_resident_blob(&header.blake3, &header)?;
+            self.record_recipe(&rebuild, rebuild_seek)?;
         }
         Ok(())
     }
@@ -683,198 +1021,6 @@ impl<'a> Ingester<'a> {
         })
     }
 
-    fn process_zip(
-        &mut self,
-        path: &Path,
-        zip_hash: &Blake3,
-        blob: &mut datboi_store_fs::Blob,
-        report: &mut IngestReport,
-    ) -> Result<(), IngestError> {
-        let parsed = zip::parse_members(blob)?;
-        for skip in parsed.skipped {
-            report
-                .member_skips
-                .push((path.to_owned(), skip.name, skip.reason.to_owned()));
-        }
-        for member in parsed.members {
-            let tuple = match hash_member(blob, &member) {
-                Ok(t) => t,
-                Err(reason) => {
-                    report
-                        .member_skips
-                        .push((path.to_owned(), member.name, reason));
-                    continue;
-                }
-            };
-            self.record_absent_blob(&tuple)?;
-
-            if member.uncomp_size == 0 {
-                // The empty output needs no recipe (assemble@1 rejects
-                // empty segment lists by design); store the empty literal
-                // so the identity is grounded.
-                self.store
-                    .put(StoreNs::Data, tuple.blake3, std::io::empty())?;
-                self.db
-                    .upsert_blob(&tuple.blake3, Some(0), IndexNs::Data, Residency::Resident)?;
-                report.members_claimed += 1;
-                continue;
-            }
-
-            let (op, seek, params) = match member.method {
-                Method::Stored => (
-                    builtin("assemble@1"),
-                    SeekClass::Affine,
-                    AssembleParams {
-                        segments: vec![Segment::BlobRange {
-                            input_ix: 0,
-                            offset: member.data_start,
-                            len: member.comp_size,
-                        }],
-                    }
-                    .encode()
-                    .map_err(|e| IngestError::Recipe(e.to_string()))?,
-                ),
-                Method::Deflate => (
-                    builtin("deflate-decompress@1"),
-                    SeekClass::Opaque,
-                    DeflateWindow {
-                        offset: member.data_start,
-                        len: member.comp_size,
-                    }
-                    .encode(),
-                ),
-            };
-            let recipe = Recipe {
-                op,
-                inputs: vec![InputRef {
-                    hash: *zip_hash,
-                    role: None,
-                }],
-                outputs: vec![OutputRef {
-                    hash: tuple.blake3,
-                    size: member.uncomp_size,
-                    name: Some(member.name.clone()),
-                }],
-                params,
-            };
-            self.record_recipe(&recipe, seek)?;
-            report.members_claimed += 1;
-        }
-        Ok(())
-    }
-
-    /// Evaluate detectors against a whole buffered file; first match wins.
-    fn process_detectors(
-        &mut self,
-        bytes: &[u8],
-        file_hash: &Blake3,
-        report: &mut IngestReport,
-    ) -> Result<(), IngestError> {
-        let file_len = bytes.len() as u64;
-        for detector in self.detectors {
-            let Some(decision) = detector.evaluate(bytes) else {
-                continue;
-            };
-            if decision.is_whole_file(file_len) || decision.is_empty() {
-                return Ok(());
-            }
-            report.detector_hits += 1;
-
-            let variant = decision.apply(bytes);
-            let mut hasher = AliasHasher::new();
-            hasher.update(&variant);
-            let tuple = hasher.finalize();
-            self.record_absent_blob(&tuple)?;
-
-            if decision.operation != Operation::None {
-                report.notes.push(format!(
-                    "detector {}: swap-operation recipe deferred until swap@1 params freeze \
-                     (variant {} aliased only)",
-                    detector.name, tuple.blake3
-                ));
-                return Ok(());
-            }
-            let role = format!("skipper:{}", detector.name);
-
-            // Derive: variant = slice of the stored file.
-            let derive_params = AssembleParams {
-                segments: vec![Segment::BlobRange {
-                    input_ix: 0,
-                    offset: decision.start,
-                    len: decision.len(),
-                }],
-            }
-            .encode()
-            .map_err(|e| IngestError::Recipe(e.to_string()))?;
-            let derive = Recipe {
-                op: builtin("assemble@1"),
-                inputs: vec![InputRef {
-                    hash: *file_hash,
-                    role: Some(role.clone()),
-                }],
-                outputs: vec![OutputRef {
-                    hash: tuple.blake3,
-                    size: decision.len(),
-                    name: None,
-                }],
-                params: derive_params,
-            };
-            self.record_recipe(&derive, SeekClass::Affine)?;
-
-            // Rebuild: file = header blob + variant. Only for the common
-            // prefix-header shape (decision reaches EOF); the header is a
-            // real blob so it dedupes across dumps (docs/recipes.md).
-            if decision.start > 0 && decision.end == file_len {
-                let header = &bytes[..decision.start as usize];
-                let mut h = AliasHasher::new();
-                h.update(header);
-                let header_tuple = h.finalize();
-                self.store.put(StoreNs::Data, header_tuple.blake3, header)?;
-                let header_hash = header_tuple.blake3;
-                self.record_resident_blob(&header_hash, &header_tuple)?;
-
-                let rebuild_params = AssembleParams {
-                    segments: vec![
-                        Segment::BlobRange {
-                            input_ix: 0,
-                            offset: 0,
-                            len: decision.start,
-                        },
-                        Segment::BlobRange {
-                            input_ix: 1,
-                            offset: 0,
-                            len: decision.len(),
-                        },
-                    ],
-                }
-                .encode()
-                .map_err(|e| IngestError::Recipe(e.to_string()))?;
-                let rebuild = Recipe {
-                    op: builtin("assemble@1"),
-                    inputs: vec![
-                        InputRef {
-                            hash: header_tuple.blake3,
-                            role: Some(role.clone()),
-                        },
-                        InputRef {
-                            hash: tuple.blake3,
-                            role: None,
-                        },
-                    ],
-                    outputs: vec![OutputRef {
-                        hash: *file_hash,
-                        size: file_len,
-                        name: None,
-                    }],
-                    params: rebuild_params,
-                };
-                self.record_recipe(&rebuild, SeekClass::Affine)?;
-            }
-            return Ok(());
-        }
-        Ok(())
-    }
-
     fn record_resident_blob(
         &mut self,
         hash: &Blake3,
@@ -906,6 +1052,421 @@ impl<'a> Ingester<'a> {
     fn record_recipe(&mut self, recipe: &Recipe, seek: SeekClass) -> Result<(), IngestError> {
         mint_recipe(self.store, self.db, recipe, seek)?;
         Ok(())
+    }
+}
+
+/// Whether the in-flight budget has room for `weight`. A streaming
+/// file (weight zero) always passes, and a file heavier than the whole
+/// cap runs alone rather than never.
+const fn admits(inflight: u64, cap: u64, weight: u64) -> bool {
+    weight == 0 || inflight == 0 || inflight.saturating_add(weight) <= cap
+}
+
+/// Hand one job to the pool, charging its weight — or, if the pool is
+/// already gone, park the failure in the commit queue where its walk
+/// position is.
+fn dispatch(
+    jobs: &mpsc::Sender<Job>,
+    job: Job,
+    inflight_bytes: &mut u64,
+    outstanding: &mut usize,
+    pending: &mut BTreeMap<u64, Retire>,
+) {
+    let (seq, weight) = (job.seq, job.weight);
+    *inflight_bytes = inflight_bytes.saturating_add(weight);
+    *outstanding += 1;
+    if let Err(mpsc::SendError(job)) = jobs.send(job) {
+        *inflight_bytes = inflight_bytes.saturating_sub(weight);
+        *outstanding -= 1;
+        pending.insert(
+            seq,
+            Retire::Failed(job.path, "hashing pool stopped".to_owned()),
+        );
+    }
+}
+
+/// Everything one file's hashing concluded — the value a worker hands
+/// the writer (D120). The worker has already made every STORE write it
+/// needs (content-addressed, idempotent, safe from any thread); what
+/// travels here is only what the index has to learn.
+struct FileWork {
+    key: String,
+    mtime_ns: i64,
+    size: u64,
+    hash: Blake3,
+    aliases: AliasTuple,
+    stored: PutOutcome,
+    inside: Inside,
+    /// Per-path failures raised while looking inside.
+    errors: Vec<String>,
+    /// (member, reason) — the container's path is the writer's.
+    member_skips: Vec<(String, String)>,
+    notes: Vec<String>,
+}
+
+/// What the head sniff found, and what the writer owes the index for it.
+enum Inside {
+    /// Nothing to look into (or a CHD version we don't parse — the
+    /// note carries that).
+    Opaque,
+    /// CHD v5's declared internal sha1: the identity MAME disk claims
+    /// reference. Header-only, so audit grades it `probable` (D44).
+    ChdV5([u8; 20]),
+    Zip(Vec<MemberClaim>),
+    /// 7z/rar: extraction runs on the writer (D120).
+    Component(ExFormat),
+    Detector(Box<DetectorClaim>),
+    /// Over `skipper_cap`: detectors are skipped, never half-applied.
+    SkipperTooLarge,
+}
+
+/// One zip member's claim: its identity, and the derive recipe that
+/// rebuilds it from the container (`None` for the empty member).
+struct MemberClaim {
+    tuple: AliasTuple,
+    recipe: Option<(Recipe, SeekClass)>,
+}
+
+/// A detector hit's dual identity (D9).
+struct DetectorClaim {
+    variant: AliasTuple,
+    /// `None` for a swap-operation decision: the variant is aliased
+    /// only, until `swap@1` params freeze.
+    derive: Option<(Recipe, SeekClass)>,
+    /// The common prefix-header shape: the header blob's identity plus
+    /// the file = header + variant rebuild.
+    rebuild: Option<(AliasTuple, Recipe, SeekClass)>,
+}
+
+/// Hash one file and everything inside it. Pure CPU and source I/O —
+/// no `Db`, which is what lets N of these run at once (D120).
+fn hash_file(
+    store: &Store,
+    detectors: &[Detector],
+    config: &IngestConfig,
+    job: &Job,
+) -> Result<FileWork, IngestError> {
+    let source = File::open(&job.canonical).map_err(|e| IngestError::io(&job.canonical, e))?;
+    let (hash, aliases, stored) = store.put_new(StoreNs::Data, source)?;
+    let mut work = FileWork {
+        key: job.key.clone(),
+        mtime_ns: job.mtime_ns,
+        size: job.size,
+        hash,
+        aliases,
+        stored,
+        inside: Inside::Opaque,
+        errors: Vec::new(),
+        member_skips: Vec::new(),
+        notes: Vec::new(),
+    };
+
+    // Look inside the *stored* bytes (verifies what we published).
+    let mut blob = store.get(StoreNs::Data, &hash)?.expect("just published");
+    // One head read serves both container sniffs (zip magic is 4 bytes,
+    // a CHD v5 header is 124).
+    let mut head = [0u8; datboi_formats::chd::CHD_V5_HEADER_LEN];
+    let head_len = read_head(&mut blob, &mut head).map_err(|e| IngestError::io(&job.path, e))?;
+    if let Some(chd) = datboi_formats::chd::parse_header(&head[..head_len]) {
+        work.inside = read_chd(&job.path, &chd, &mut work.notes);
+    } else if zip::looks_like_zip(&head[..head_len]) {
+        match hash_zip_members(store, &hash, &mut blob, &mut work.member_skips) {
+            Ok(members) => work.inside = Inside::Zip(members),
+            Err(e) => work.errors.push(e.to_string()),
+        }
+    } else if archive::looks_like_7z(&head[..head_len]) {
+        work.inside = Inside::Component(ExFormat::SevenZ);
+    } else if archive::looks_like_rar(&head[..head_len]) {
+        work.inside = Inside::Component(ExFormat::Rar);
+    } else if !detectors.is_empty() {
+        if job.size <= config.skipper_cap {
+            blob.seek(SeekFrom::Start(0))
+                .map_err(|e| IngestError::io(&job.path, e))?;
+            let mut bytes = Vec::with_capacity(job.size as usize);
+            blob.read_to_end(&mut bytes)
+                .map_err(|e| IngestError::io(&job.path, e))?;
+            work.inside = evaluate_detectors(store, detectors, &bytes, &hash, &mut work.notes)?;
+        } else {
+            work.inside = Inside::SkipperTooLarge;
+        }
+    }
+    Ok(work)
+}
+
+/// CHD v5: record the header's declared internal sha1 (the identity
+/// MAME disk claims reference). Header-only — the declaration grades as
+/// `probable` in audit (D44) until a decompressing verify exists (M3).
+fn read_chd(path: &Path, chd: &datboi_formats::chd::ChdHeader, notes: &mut Vec<String>) -> Inside {
+    match chd {
+        datboi_formats::chd::ChdHeader::V5(v5) => {
+            if v5.has_parent() {
+                notes.push(format!(
+                    "{}: delta CHD (has a parent); recorded, but standalone rebuild is impossible",
+                    path.display()
+                ));
+            }
+            Inside::ChdV5(v5.sha1)
+        }
+        datboi_formats::chd::ChdHeader::Unsupported { version } => {
+            notes.push(format!(
+                "{}: CHD v{version} header not supported (v5 only); stored as opaque bytes",
+                path.display()
+            ));
+            Inside::Opaque
+        }
+    }
+}
+
+/// Hash every supported member of a stored zip container and build its
+/// claim (D35: member bytes are never stored — a recipe rebuilds them
+/// from the container, which stays a literal).
+fn hash_zip_members(
+    store: &Store,
+    zip_hash: &Blake3,
+    blob: &mut datboi_store_fs::Blob,
+    skips: &mut Vec<(String, String)>,
+) -> Result<Vec<MemberClaim>, IngestError> {
+    let parsed = zip::parse_members(blob)?;
+    for skip in parsed.skipped {
+        skips.push((skip.name, skip.reason.to_owned()));
+    }
+    let mut claims = Vec::with_capacity(parsed.members.len());
+    for member in parsed.members {
+        let tuple = match hash_member(blob, &member) {
+            Ok(t) => t,
+            Err(reason) => {
+                skips.push((member.name, reason));
+                continue;
+            }
+        };
+
+        if member.uncomp_size == 0 {
+            // The empty output needs no recipe (assemble@1 rejects
+            // empty segment lists by design); store the empty literal
+            // so the identity is grounded.
+            store.put(StoreNs::Data, tuple.blake3, std::io::empty())?;
+            claims.push(MemberClaim {
+                tuple,
+                recipe: None,
+            });
+            continue;
+        }
+
+        let (op, seek, params) = match member.method {
+            Method::Stored => (
+                builtin("assemble@1"),
+                SeekClass::Affine,
+                AssembleParams {
+                    segments: vec![Segment::BlobRange {
+                        input_ix: 0,
+                        offset: member.data_start,
+                        len: member.comp_size,
+                    }],
+                }
+                .encode()
+                .map_err(|e| IngestError::Recipe(e.to_string()))?,
+            ),
+            Method::Deflate => (
+                builtin("deflate-decompress@1"),
+                SeekClass::Opaque,
+                DeflateWindow {
+                    offset: member.data_start,
+                    len: member.comp_size,
+                }
+                .encode(),
+            ),
+        };
+        let recipe = Recipe {
+            op,
+            inputs: vec![InputRef {
+                hash: *zip_hash,
+                role: None,
+            }],
+            outputs: vec![OutputRef {
+                hash: tuple.blake3,
+                size: member.uncomp_size,
+                name: Some(member.name.clone()),
+            }],
+            params,
+        };
+        claims.push(MemberClaim {
+            tuple,
+            recipe: Some((recipe, seek)),
+        });
+    }
+    Ok(claims)
+}
+
+/// Evaluate detectors against a whole buffered file; first match wins.
+fn evaluate_detectors(
+    store: &Store,
+    detectors: &[Detector],
+    bytes: &[u8],
+    file_hash: &Blake3,
+    notes: &mut Vec<String>,
+) -> Result<Inside, IngestError> {
+    let file_len = bytes.len() as u64;
+    for detector in detectors {
+        let Some(decision) = detector.evaluate(bytes) else {
+            continue;
+        };
+        if decision.is_whole_file(file_len) || decision.is_empty() {
+            return Ok(Inside::Opaque);
+        }
+
+        let variant = decision.apply(bytes);
+        let mut hasher = AliasHasher::new();
+        hasher.update(&variant);
+        let tuple = hasher.finalize();
+
+        if decision.operation != Operation::None {
+            notes.push(format!(
+                "detector {}: swap-operation recipe deferred until swap@1 params freeze \
+                 (variant {} aliased only)",
+                detector.name, tuple.blake3
+            ));
+            return Ok(Inside::Detector(Box::new(DetectorClaim {
+                variant: tuple,
+                derive: None,
+                rebuild: None,
+            })));
+        }
+        let role = format!("skipper:{}", detector.name);
+
+        // Derive: variant = slice of the stored file.
+        let derive_params = AssembleParams {
+            segments: vec![Segment::BlobRange {
+                input_ix: 0,
+                offset: decision.start,
+                len: decision.len(),
+            }],
+        }
+        .encode()
+        .map_err(|e| IngestError::Recipe(e.to_string()))?;
+        let derive = Recipe {
+            op: builtin("assemble@1"),
+            inputs: vec![InputRef {
+                hash: *file_hash,
+                role: Some(role.clone()),
+            }],
+            outputs: vec![OutputRef {
+                hash: tuple.blake3,
+                size: decision.len(),
+                name: None,
+            }],
+            params: derive_params,
+        };
+
+        // Rebuild: file = header blob + variant. Only for the common
+        // prefix-header shape (decision reaches EOF); the header is a
+        // real blob so it dedupes across dumps (docs/recipes.md).
+        let mut rebuild = None;
+        if decision.start > 0 && decision.end == file_len {
+            let header = &bytes[..decision.start as usize];
+            let mut h = AliasHasher::new();
+            h.update(header);
+            let header_tuple = h.finalize();
+            store.put(StoreNs::Data, header_tuple.blake3, header)?;
+
+            let rebuild_params = AssembleParams {
+                segments: vec![
+                    Segment::BlobRange {
+                        input_ix: 0,
+                        offset: 0,
+                        len: decision.start,
+                    },
+                    Segment::BlobRange {
+                        input_ix: 1,
+                        offset: 0,
+                        len: decision.len(),
+                    },
+                ],
+            }
+            .encode()
+            .map_err(|e| IngestError::Recipe(e.to_string()))?;
+            rebuild = Some((
+                header_tuple,
+                Recipe {
+                    op: builtin("assemble@1"),
+                    inputs: vec![
+                        InputRef {
+                            hash: header_tuple.blake3,
+                            role: Some(role.clone()),
+                        },
+                        InputRef {
+                            hash: tuple.blake3,
+                            role: None,
+                        },
+                    ],
+                    outputs: vec![OutputRef {
+                        hash: *file_hash,
+                        size: file_len,
+                        name: None,
+                    }],
+                    params: rebuild_params,
+                },
+                SeekClass::Affine,
+            ));
+        }
+        return Ok(Inside::Detector(Box::new(DetectorClaim {
+            variant: tuple,
+            derive: Some((derive, SeekClass::Affine)),
+            rebuild,
+        })));
+    }
+    Ok(Inside::Opaque)
+}
+
+/// One position of the sorted walk.
+enum Step {
+    File(PathBuf, fs::Metadata),
+    Note(String),
+    Failed(PathBuf, String),
+}
+
+/// The sorted walk as a resumable cursor: a stack of already-sorted
+/// sibling lists. The writer interleaves walking with retiring, so the
+/// walk yields one position at a time and never collects the corpus
+/// first — D36's ten million small files are exactly the case that
+/// would pay for a path vector.
+struct Walk {
+    stack: Vec<std::vec::IntoIter<PathBuf>>,
+}
+
+impl Walk {
+    fn new(roots: Vec<PathBuf>) -> Self {
+        Self {
+            stack: vec![roots.into_iter()],
+        }
+    }
+
+    fn next(&mut self) -> Option<Step> {
+        loop {
+            let path = loop {
+                let top = self.stack.last_mut()?;
+                if let Some(path) = top.next() {
+                    break path;
+                }
+                self.stack.pop();
+            };
+            let meta = match fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(e) => return Some(Step::Failed(path, e.to_string())),
+            };
+            if meta.file_type().is_symlink() {
+                return Some(Step::Note(format!("skipped symlink: {}", path.display())));
+            }
+            if meta.is_dir() {
+                let mut entries: Vec<PathBuf> = match fs::read_dir(&path) {
+                    Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+                    Err(e) => return Some(Step::Failed(path, e.to_string())),
+                };
+                entries.sort();
+                self.stack.push(entries.into_iter());
+                continue;
+            }
+            return Some(Step::File(path, meta));
+        }
     }
 }
 

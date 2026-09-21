@@ -635,3 +635,196 @@ fn ingest_file_names_the_source_identity() {
         report.errors
     );
 }
+
+// ---- D120: the pool is a speed change, not a semantics change ----
+
+/// A corpus shaped to make completion order disagree with walk order:
+/// sizes span two orders of magnitude, zips sit between loose files,
+/// and the detector lane, the empty-member lane, the symlink note and
+/// a walk failure all land at different depths.
+fn parallel_corpus(root: &Path) {
+    fs::create_dir_all(root.join("aa/deep")).expect("mkdir");
+    fs::create_dir_all(root.join("bb")).expect("mkdir");
+    fs::create_dir_all(root.join("cc")).expect("mkdir");
+
+    // Incompressible bodies of very different sizes: a worker that gets
+    // #0 finishes long after a worker that gets #9.
+    for i in 0..10u32 {
+        let len = 4096 * (1 + (9 - i) as usize * 37);
+        let body: Vec<u8> = (0..len)
+            .map(|b| ((b as u32).wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let dir = match i % 3 {
+            0 => root.join("aa"),
+            1 => root.join("aa/deep"),
+            _ => root.join("bb"),
+        };
+        fs::write(dir.join(format!("body-{i:02}.bin")), &body).expect("body");
+    }
+
+    // Zips, each with a different member mix (stored, deflate, empty).
+    for i in 0..4u32 {
+        let mut zb = ZipBuilder::new();
+        zb.add("a.rom", A_ROM, false, 0);
+        zb.add(&format!("dir/b-{i}.rom"), B_ROM, true, 0);
+        if i % 2 == 0 {
+            zb.add("empty.rom", b"", false, 0);
+        }
+        let big: Vec<u8> = (0..(64_000 * (i as usize + 1)))
+            .map(|b| ((b as u32).wrapping_mul(2_246_822_519) >> 11) as u8)
+            .collect();
+        zb.add("big.rom", &big, true, 0);
+        fs::write(root.join("cc").join(format!("pack-{i}.zip")), zb.finish()).expect("zip");
+    }
+
+    // The detector lane (dual identity, header blob, both recipes).
+    for i in 0..3u8 {
+        let mut f = ines_file();
+        f.push(i);
+        fs::write(root.join(format!("rom-{i}.nes")), &f).expect("nes");
+    }
+    // A CHD-shaped head and a 7z/rar-shaped head would drag the wasm
+    // host in; the lanes above are the ones the pool owns.
+    fs::write(root.join("bb/loose.bin"), PLAIN).expect("loose");
+
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(root.join("bb/loose.bin"), root.join("bb/link.bin")).expect("link");
+}
+
+/// Every table the ingest writes, rendered as text and ordered by its
+/// own columns — clock-dependent columns dropped, since two runs are
+/// seconds apart by construction. `blob_id` is NOT dropped: identical
+/// ids across the two runs is the sharp end of "order the commit
+/// queue, not the work" (D120), because ids are handed out in the
+/// order the writer inserts.
+fn dump_db(db: &Db) -> String {
+    const VOLATILE: &[&str] = &[
+        "verified_at",
+        "last_access",
+        "scanned_at",
+        "analyzed_at",
+        "enqueued_at",
+        "marked_at",
+        "quarantined_at",
+        "leased_until",
+        "expires_at",
+    ];
+    let conn = db.cache();
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .expect("q")
+        .query_map([], |r| r.get(0))
+        .expect("q")
+        .collect::<Result<_, _>>()
+        .expect("q");
+
+    let mut out = String::new();
+    for table in tables {
+        let cols: Vec<String> = conn
+            .prepare(&format!(
+                "SELECT name FROM pragma_table_info('{table}') ORDER BY cid"
+            ))
+            .expect("q")
+            .query_map([], |r| r.get::<_, String>(0))
+            .expect("q")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("q")
+            .into_iter()
+            .filter(|c| !VOLATILE.contains(&c.as_str()))
+            .collect();
+        if cols.is_empty() {
+            continue;
+        }
+        let list = cols.join(", ");
+        out.push_str(&format!("== {table} ({list})\n"));
+        let mut stmt = conn
+            .prepare(&format!("SELECT {list} FROM {table} ORDER BY {list}"))
+            .expect("q");
+        let rows: Vec<String> = stmt
+            .query_map([], |r| {
+                let cells: Vec<String> = (0..cols.len())
+                    .map(|i| format!("{:?}", r.get_ref(i).expect("cell")))
+                    .collect();
+                Ok(cells.join(" | "))
+            })
+            .expect("q")
+            .collect::<Result<_, _>>()
+            .expect("q");
+        for row in rows {
+            out.push_str(&row);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Ingest one corpus into a private store+index at the given worker
+/// count, and return (report, database dump).
+fn ingest_at(corpus: &Path, parallelism: usize, detectors: &[Detector]) -> (String, String) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(dir.path().join("store")).expect("store");
+    let db_dir = dir.path().join("db");
+    fs::create_dir_all(&db_dir).expect("db dir");
+    let mut db = Db::open(&db_dir).expect("db");
+    // A path that does not exist: the walk's own failure has a place in
+    // the commit queue too.
+    let missing = corpus.join("nope").join("missing.bin");
+    let report = Ingester::new(&store, &mut db, detectors)
+        .with_config(IngestConfig {
+            parallelism,
+            ..IngestConfig::default()
+        })
+        .ingest(&[corpus.to_owned(), missing]);
+    (format!("{report:?}"), dump_db(&db))
+}
+
+/// D120: the same corpus ingested with one worker and with eight must
+/// produce a byte-equal report AND a byte-equal index — counters,
+/// notes, errors, member skips, fresh-blob ids and the blob ids
+/// themselves. The hashing fans out; the commit queue does not.
+#[test]
+fn parallel_ingest_agrees_with_serial_exactly() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let corpus = dir.path().join("corpus");
+    fs::create_dir_all(&corpus).expect("mkdir");
+    parallel_corpus(&corpus);
+    let detectors = vec![Detector::parse(INES_DETECTOR.as_bytes()).expect("detector")];
+
+    let (serial_report, serial_db) = ingest_at(&corpus, 1, &detectors);
+    let (parallel_report, parallel_db) = ingest_at(&corpus, 8, &detectors);
+    let (again, again_db) = ingest_at(&corpus, 3, &detectors);
+
+    assert_eq!(
+        serial_report, parallel_report,
+        "report diverged at 8 workers"
+    );
+    assert_eq!(serial_report, again, "report diverged at 3 workers");
+    assert_eq!(serial_db, parallel_db, "index diverged at 8 workers");
+    assert_eq!(serial_db, again_db, "index diverged at 3 workers");
+
+    // The corpus really did exercise every lane, so the equality above
+    // is not two empty runs agreeing.
+    assert!(
+        serial_report.contains("files_scanned: 18"),
+        "{serial_report}"
+    );
+    assert!(
+        serial_report.contains("files_stored: 18"),
+        "{serial_report}"
+    );
+    assert!(
+        serial_report.contains("members_claimed: 14"),
+        "{serial_report}"
+    );
+    assert!(
+        serial_report.contains("detector_hits: 3"),
+        "{serial_report}"
+    );
+    // Exactly one walk failure (the missing root), and the symlink note.
+    assert_eq!(
+        serial_report.matches("missing.bin").count(),
+        1,
+        "{serial_report}"
+    );
+    assert!(serial_report.contains("skipped symlink"), "{serial_report}");
+}
