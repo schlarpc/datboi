@@ -1878,3 +1878,83 @@ fn bless_pass_end_to_end() {
         "residency converged",
     );
 }
+
+/// `datboi unpack` (D123) end to end: a corpus ingested under the
+/// retaining default, converted by an explicit run. The dry run has to
+/// state BOTH halves of the bill before anything is destroyed, and the
+/// real run has to leave members readable and the archive gone.
+#[test]
+fn unpack_pass_end_to_end() {
+    let u = Universe::new();
+    fs::create_dir_all(u.src()).unwrap();
+
+    let member = |salt: u8| -> Vec<u8> {
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D ^ u64::from(salt);
+        (0..120_000)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 24) as u8
+            })
+            .collect()
+    };
+    let bodies: Vec<Vec<u8>> = (0..4).map(member).collect();
+    let zips: Vec<Vec<u8>> = bodies
+        .chunks(2)
+        .map(|pair| deflated_zip(&[("a.rom", &pair[0]), ("b.rom", &pair[1])]))
+        .collect();
+    for (i, zip) in zips.iter().enumerate() {
+        fs::write(u.src().join(format!("set{i}.zip")), zip).unwrap();
+    }
+    // A loose rom that is not transport: nothing must touch it.
+    fs::write(u.src().join("loose.bin"), &bodies[0][..4096]).unwrap();
+    u.cmd().arg("ingest").arg(u.src()).assert().success();
+
+    let member_bytes: u64 = bodies.iter().map(|b| b.len() as u64).sum();
+    let zip_bytes: u64 = zips.iter().map(|z| z.len() as u64).sum();
+
+    // --dry-run: both numbers, no destruction, exit 1 (work remains).
+    let out = u
+        .cmd()
+        .args(["unpack", "--dry-run", "--json"])
+        .assert()
+        .code(1);
+    let dry: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(dry["population"], 2, "two containers, not the loose rom");
+    assert_eq!(dry["selected"], 2);
+    assert_eq!(dry["selected_bytes"].as_u64().unwrap(), zip_bytes);
+    assert_eq!(dry["claimed_member_bytes"].as_u64().unwrap(), member_bytes);
+    assert_eq!(dry["unpacked"], 0);
+    assert!(dry["walked_it_all"].as_bool().unwrap());
+    assert!(!dry["complete"].as_bool().unwrap());
+
+    // The real pass.
+    let out = u
+        .cmd()
+        .args(["unpack", "--jobs", "2", "--json"])
+        .assert()
+        .success();
+    let run: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(run["unpacked"], 2);
+    assert_eq!(run["members_resident"], 4);
+    assert_eq!(run["dropped_bytes"].as_u64().unwrap(), zip_bytes);
+    assert_eq!(run["member_bytes"].as_u64().unwrap(), member_bytes);
+    assert_eq!(run["population_after"], 0);
+    assert!(run["complete"].as_bool().unwrap());
+
+    // Idempotent, and it says so in the human output.
+    u.cmd()
+        .arg("unpack")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nothing outstanding"));
+
+    // scrub sees no missing bytes: a dropped container is Absent, which
+    // is an honest row, not the resident-with-no-file that would be
+    // real loss.
+    u.cmd()
+        .args(["scrub", "--sample", "100"])
+        .assert()
+        .success();
+}

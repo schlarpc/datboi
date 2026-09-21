@@ -6,10 +6,15 @@
 //! stream into the store via `put_new` (single pass computes the full
 //! alias tuple, D2; source untouched — D40 `--copy`), then look *inside*:
 //!
-//! - **Zip containers** stay literal; each STORED/DEFLATE member is
+//! - **Zip containers** stay literal by default; each STORED/DEFLATE member is
 //!   hashed by streaming out of the stored blob and claimed via a derive
 //!   recipe (`assemble@1` slice for STORED, `deflate-decompress@1` with a
 //!   window param for DEFLATE) — member bytes are never stored (D35).
+//!   Under `IngestConfig::unpack` (D123) the same single inflate
+//!   PUBLISHES each member instead, and the container's bytes are
+//!   dropped once every member is durable: a container no dat names is
+//!   transport, and retention is the operator's choice rather than a
+//!   property of the format. See `unpack`.
 //! - **Header skippers** (D9): files matching a detector also get the
 //!   transformed variant's alias tuple and, for `operation="none"`
 //!   decisions, both-direction recipes (variant = slice of the stored

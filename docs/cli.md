@@ -14,6 +14,12 @@ datboi ingest <path>...              # hash + claim content into the store
     --copy                           # default: source untouched (D40)
     --move                           # rename into store (bulk adoption; destroys source layout)
     --rescan                         # force full rescan (ignore O(changed) cache)
+    --unpack                         # containers are TRANSPORT (D123): every zip/7z/rar
+                                     # member becomes a resident literal and the archive's
+                                     # own bytes are dropped once they are all durable.
+                                     # Destroys packaging, not content — and destroys it
+                                     # for good (an archive is not reconstructible).
+                                     # Costs the plaintext; buys O(range) reads.
     --jobs <n>                       # files hashed at once (D120); default: core count
 
 datboi audit --against <dir>         # audit-only: hash + report, take no custody (D40)
@@ -42,6 +48,18 @@ datboi bless                         # build the output trees a read would
     --include-affine                 # also promote D63 carve-out routes to full
                                      # D49 (optional; nothing needs it to read)
     --limit <n>                      # stop after n outputs; resume by re-running
+                                     # exit: 0 nothing outstanding, 1 work remains
+
+datboi unpack                        # convert retained transport containers (D123):
+                                     # members become resident literals, the archive's
+                                     # bytes are dropped. Never a dat-named blob, never
+                                     # one with a rebuild route (preflate owns those),
+                                     # never bytes that do not sniff as zip/7z/rar.
+    --jobs <n>                       # containers at once; default: core count
+                                     # (7z/rar run on the coordinator, D120)
+    --dry-run                        # BOTH halves of the bill: archive bytes dropped
+                                     # and member bytes written. Destroys nothing
+    --limit <n>                      # stop after n containers; resume by re-running
                                      # exit: 0 nothing outstanding, 1 work remains
 
 datboi scrub [--sample <pct>]        # background verification pass

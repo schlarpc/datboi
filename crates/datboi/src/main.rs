@@ -186,6 +186,31 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Unpack retained transport containers (D123): every zip/7z/rar
+    /// member becomes a resident literal and the archive's own bytes
+    /// are dropped. No dat names an archive, so this destroys
+    /// packaging, not content — but an archive is not reconstructible,
+    /// so the drop is final. Containers a dat names, containers that
+    /// already have a rebuild route (preflate), and anything whose
+    /// bytes do not sniff as zip/7z/rar are never touched. Start with
+    /// --dry-run: it states both halves of the bill.
+    Unpack {
+        /// How many containers to unpack at once. Default: the core
+        /// count. 7z/rar run on the coordinator regardless (D120).
+        #[arg(long, value_name = "N")]
+        jobs: Option<usize>,
+        /// Report what would be converted — and what it costs in both
+        /// directions — without destroying anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Stop after this many containers (0 = no limit). Safe to
+        /// interrupt and resume: every container is independent and a
+        /// re-run skips the ones already done.
+        #[arg(long, default_value_t = 0, value_name = "N")]
+        limit: u64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Rematerialize an evicted or claimed blob into the store by
     /// replaying its cheapest recipe route.
     Materialize {
@@ -620,7 +645,12 @@ fn ledger_stamp(command: &Command) -> Option<(datboi_index::JobKind, String)> {
         // with its own JobKind — but that is a wire enum and an
         // activity-page change, and shoehorning it into Gc is what the
         // note above forbids. Same waiting room as Recover/Snapshot.
+        // `Unpack` is the same shape and the same waiting room: it is
+        // byte-DESTROYING work (D123), so it wants a ledger row more
+        // than most, and for exactly that reason it wants an honest
+        // kind rather than a borrowed one.
         Command::Bless { .. }
+        | Command::Unpack { .. }
         | Command::Dat(_)
         | Command::Audit { .. }
         | Command::Export(_)
@@ -749,6 +779,12 @@ fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
             },
             json,
         ),
+        Command::Unpack {
+            jobs,
+            dry_run,
+            limit,
+            json,
+        } => cmds::unpack(&cli.global.open()?, jobs, dry_run, limit, json),
         Command::Dat(DatCommand::Import {
             file,
             provider,

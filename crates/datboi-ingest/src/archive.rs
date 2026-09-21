@@ -7,10 +7,13 @@
 //! literal (D24). Since D58 (rar) and D110 (7z) both formats run
 //! sandboxed extractor components — see `Ingester::process_rar` /
 //! `Ingester::process_7z` — and members carry container→member derive
-//! recipes, so they are evictable and the double-residency is
-//! transient, not structural. The in-process sevenz-rust2 reader this
-//! module once held left with D110 (its writer half survives as a
-//! dev-dependency: the tests forge fixtures with it).
+//! recipes, so the MEMBERS are evictable — but the container is not
+//! (nothing rebuilds a rar), so the double residency is structural, not
+//! transient. D123 is the answer to that: retention is a choice, and
+//! `--unpack` / `datboi unpack` drop the archive once its members are
+//! durable. The in-process sevenz-rust2 reader this module once held
+//! left with D110 (its writer half survives as a dev-dependency: the
+//! tests forge fixtures with it).
 
 /// 7z signature: `'7' 'z' 0xBC 0xAF 0x27 0x1C`.
 #[must_use]

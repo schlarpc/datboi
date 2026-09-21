@@ -375,6 +375,199 @@ fn print_bless(
     }
 }
 
+// ---- unpack (D123) ----
+
+/// `datboi unpack`: convert every retained transport container into
+/// resident members and drop the archive (D123).
+///
+/// The pass lives in datboi-ingest (it is ingest's container path, run
+/// from the store instead of from a source tree); the CLI owns the
+/// clock, the throttle and the printing.
+pub fn unpack(
+    env: &Env,
+    jobs: Option<usize>,
+    dry_run: bool,
+    limit: u64,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    use datboi_ingest::unpack::{UnpackOptions, unpack_corpus};
+
+    let opts = UnpackOptions {
+        parallelism: jobs.unwrap_or(0),
+        dry_run,
+        limit,
+    };
+
+    let started = SystemTime::now();
+    let mut last = started;
+    let quiet = json || !std::io::IsTerminal::is_terminal(&std::io::stderr());
+    let report = unpack_corpus(&env.store, &env.db, &opts, &mut |r| {
+        if quiet {
+            return;
+        }
+        let now = SystemTime::now();
+        if now
+            .duration_since(last)
+            .is_ok_and(|d| d < Duration::from_secs(2))
+        {
+            return;
+        }
+        last = now;
+        eprint!(
+            "\r\x1b[K{} unpacked / {} outstanding — {} of members written, {} of archives \
+             reclaimed",
+            r.unpacked,
+            r.selected.saturating_sub(r.unpacked),
+            human_bytes(r.member_bytes),
+            human_bytes(r.dropped_bytes),
+        );
+    })?;
+    if !quiet {
+        eprintln!();
+    }
+    let elapsed = SystemTime::now()
+        .duration_since(started)
+        .unwrap_or(Duration::ZERO);
+
+    if json {
+        println!(
+            "{}",
+            json!({
+                "population": report.population,
+                "population_after": report.population_after,
+                "walked_it_all": report.walked_it_all(),
+                "complete": report.complete(),
+                "examined": report.examined,
+                "not_transport": report.not_transport,
+                "reconciled": report.reconciled,
+                "selected": report.selected,
+                "selected_bytes": report.selected_bytes,
+                "claimed_member_bytes": report.claimed_member_bytes,
+                "unpacked": report.unpacked,
+                "members_resident": report.members_resident,
+                "member_bytes": report.member_bytes,
+                "dropped_bytes": report.dropped_bytes,
+                "unrecorded": report.unrecorded,
+                "out_of_room": report.out_of_room,
+                "outstanding": report.outstanding(),
+                "elapsed_secs": elapsed.as_secs_f64(),
+                "jobs": opts.workers(),
+                "dry_run": opts.dry_run,
+                "skipped_members": report.skipped_members.iter()
+                    .map(|(c, m, r)| json!({"container": c, "member": m, "reason": r}))
+                    .collect::<Vec<_>>(),
+                "failed": report.failed.iter()
+                    .map(|(h, e)| json!({"hash": h, "error": e}))
+                    .collect::<Vec<_>>(),
+            })
+        );
+    } else {
+        print_unpack(&report, &opts, elapsed);
+    }
+    Ok(if report.complete() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
+fn print_unpack(
+    report: &datboi_ingest::unpack::UnpackReport,
+    opts: &datboi_ingest::unpack::UnpackOptions,
+    elapsed: Duration,
+) {
+    println!(
+        "containers         {:>8}   by a straight index count",
+        report.population
+    );
+    println!("examined           {:>8}", report.examined);
+    if !report.walked_it_all() {
+        println!(
+            "INCOMPLETE WALK: examined {} of {} candidates — the population moved while the \
+             pass ran (a daemon ingesting, refining or serving). Re-run.",
+            report.examined, report.population
+        );
+    }
+    if report.not_transport > 0 {
+        // The index only narrows; the sniff decides. Say how many rows
+        // it declined, because a large number here means the predicate
+        // is finding something nobody expected.
+        println!(
+            "not transport      {:>8}   single-input routes whose bytes are not zip/7z/rar",
+            report.not_transport
+        );
+    }
+    if report.reconciled > 0 {
+        println!(
+            "reconciled         {:>8}   interrupted drops finished; bytes were already gone",
+            report.reconciled
+        );
+    }
+    if opts.dry_run {
+        // BOTH halves of the bill, always. Unpacking a rom corpus is
+        // not a storage win — it trades archive bytes for plaintext,
+        // and on a split-style set the plaintext is the bigger number.
+        println!(
+            "would unpack       {:>8}   {} of archives dropped, {} of members written",
+            report.selected,
+            human_bytes(report.selected_bytes),
+            human_bytes(report.claimed_member_bytes),
+        );
+        if report.complete() {
+            println!("nothing outstanding");
+        }
+        return;
+    }
+    if report.unpacked > 0 {
+        let secs = elapsed.as_secs_f64().max(0.001);
+        println!(
+            "unpacked           {:>8}   {} members in {:.1}s ({} jobs)",
+            report.unpacked,
+            report.members_resident,
+            secs,
+            opts.workers(),
+        );
+        println!(
+            "storage delta      {:>8}   -{} of archives, +{} of members",
+            "",
+            human_bytes(report.dropped_bytes),
+            human_bytes(report.member_bytes),
+        );
+    }
+    for (container, member, reason) in &report.skipped_members {
+        println!("skip: {container} :: {member}: {reason}");
+    }
+    if report.unrecorded > 0 {
+        println!(
+            "UNRECORDED: {} container(s) have durable members whose index rows could not be \
+             written (a contended database). Nothing is lost and nothing was dropped — re-run \
+             to reconcile.",
+            report.unrecorded
+        );
+    }
+    if report.out_of_room {
+        println!("OUT OF ROOM: the store filesystem is full; re-run after making room");
+    }
+    if report.outstanding() > 0 {
+        println!(
+            "outstanding        {:>8}   re-run to continue",
+            report.outstanding()
+        );
+    }
+    if report.population_after > 0 {
+        println!(
+            "still containers   {:>8}   the index predicate cannot sniff bytes",
+            report.population_after
+        );
+    }
+    for (hash, err) in &report.failed {
+        println!("FAILED: {hash}: {err}");
+    }
+    if report.complete() {
+        println!("nothing outstanding");
+    }
+}
+
 /// A byte count, optionally with a K/M/G/T suffix (powers of 1024; a
 /// trailing `B`/`iB` is accepted and ignored). Deliberately narrow —
 /// this is a size floor, not a units library.
