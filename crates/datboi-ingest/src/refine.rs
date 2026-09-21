@@ -28,6 +28,47 @@ pub fn analyzer_tag(versioned_name: &str) -> Blake3 {
     Blake3::compute(format!("datboi-analyzer:{versioned_name}").as_bytes())
 }
 
+/// Why one analysis could not run. The kind is the whole point (D81,
+/// sharpened by D126): an analyzer that could not reach its bytes must
+/// say whether asking again could ever help.
+#[derive(Debug, Clone)]
+pub struct AnalyzeError {
+    pub message: String,
+    pub kind: FailureKind,
+}
+
+/// D81's line, made a type so it cannot be dropped on the floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    /// The environment failed, not the analysis: out of disk, a missing
+    /// component, an I/O error on the byte source, a wedged mount, fuel
+    /// exhausted. The item stays queued and retries.
+    Environmental,
+    /// The bytes cannot be produced, and re-running changes nothing: the
+    /// only route to them deterministically traps or errors in the
+    /// guest (D126). No conclusion about the bytes is available — the
+    /// analyzer never saw them — so the item WAITS (D116) on its own
+    /// hash instead of settling a verdict it did not reach.
+    Unobtainable,
+}
+
+impl std::fmt::Display for AnalyzeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl<E: Into<String>> From<E> for AnalyzeError {
+    /// Anything stringly is environmental — the safe default, and what
+    /// every `map_err(|e| e.to_string())?` in an analyzer means.
+    fn from(message: E) -> Self {
+        Self {
+            message: message.into(),
+            kind: FailureKind::Environmental,
+        }
+    }
+}
+
 /// What one analysis produced.
 pub struct AnalysisResult {
     pub outcome: AnalysisOutcome,
@@ -115,15 +156,25 @@ impl<'a, 's> Logical<'a, 's> {
     /// analyzers must never conclude over bytes that aren't the
     /// item's (a mismatch wastes this sweep, never mints a claim).
     ///
+    /// A route that DISPROVES ITSELF is recorded where it belongs
+    /// (D126): a non-fuel guest trap, or a guest-reported error, means
+    /// this recipe does not produce the bytes it claims, so the route is
+    /// poisoned (D25's `Failed` — the same verdict `replay` writes for
+    /// the same trap) and the failure comes back
+    /// [`FailureKind::Unobtainable`]. That is NOT a conclusion about the
+    /// blob: nothing read it. Fuel exhaustion, missing components and
+    /// plain I/O stay environmental and retry.
+    ///
     /// # Errors
     /// Environmental (store I/O, no groundable route right now, spill
-    /// I/O, hash mismatch): the analysis is retryable, not settled.
+    /// I/O, hash mismatch): retryable, not settled. Unobtainable: the
+    /// route is now poisoned and the caller should let the item wait.
     pub fn open(
         &self,
         item: &SweepItem,
         db: &Db,
         pulse: &mut dyn Pulse,
-    ) -> Result<datboi_store_fs::Blob, String> {
+    ) -> Result<datboi_store_fs::Blob, AnalyzeError> {
         use std::io::{Read, Seek, Write};
 
         if let Some(file) = self
@@ -140,7 +191,9 @@ impl<'a, 's> Logical<'a, 's> {
                     Ok(()) => "blob not resident — index said resident, store had no bytes; \
                                demoted to absent"
                         .into(),
-                    Err(e) => format!("blob not resident (and the index demote failed: {e})"),
+                    Err(e) => AnalyzeError::from(format!(
+                        "blob not resident (and the index demote failed: {e})"
+                    )),
                 });
             }
             Some(_) => {}
@@ -149,16 +202,30 @@ impl<'a, 's> Logical<'a, 's> {
 
         // Grounded absent: verified sequential stream, spilled to the
         // executor's spill location (never the OS tmp by accident —
-        // dual-layer images do not fit a tmpfs).
-        let mut stream = self
-            .exec
-            .open_stream(db, &item.hash)
-            .map_err(|e| format!("logical open of absent blob: {e}"))?;
+        // dual-layer images do not fit a tmpfs). The route comes back
+        // with the reader because a streaming guest fails on its own
+        // thread, long after this call returned.
+        let (mut stream, route) = match self.exec.open_stream_route(db, &item.hash) {
+            Ok(opened) => opened,
+            // The executor already poisoned the route if the failure
+            // disproved it (D126); all that is left is to carry the
+            // kind up so the driver lets the item wait.
+            Err(e) if e.is_claim_failure() => {
+                return Err(AnalyzeError {
+                    message: format!("logical open of absent blob: {e}"),
+                    kind: FailureKind::Unobtainable,
+                });
+            }
+            Err(e) => return Err(format!("logical open of absent blob: {e}").into()),
+        };
         let mut tmp = self.exec.spill_tempfile().map_err(|e| e.to_string())?;
         let mut hasher = blake3::Hasher::new();
         let mut buf = vec![0u8; 64 * 1024];
         loop {
-            let n = stream.read(&mut buf).map_err(|e| e.to_string())?;
+            let n = match stream.read(&mut buf) {
+                Ok(n) => n,
+                Err(e) => return Err(self.spill_failure(db, route, &e)),
+            };
             if n == 0 {
                 break;
             }
@@ -167,10 +234,39 @@ impl<'a, 's> Logical<'a, 's> {
             pulse.tick(n as u64);
         }
         if Blake3(*hasher.finalize().as_bytes()) != item.hash {
-            return Err("spilled route produced bytes that are not the item's".into());
+            // The route ran to completion and produced the WRONG bytes:
+            // a claim failure by D25's oldest rule, and deterministic.
+            return Err(self.disprove(
+                db,
+                route,
+                "spilled route produced bytes that are not the item's".to_owned(),
+            ));
         }
         tmp.rewind().map_err(|e| e.to_string())?;
         Ok(datboi_store_fs::Blob::loose(tmp))
+    }
+
+    /// Classify a mid-stream read failure (D126) and record it.
+    fn spill_failure(&self, db: &Db, route: Option<i64>, e: &std::io::Error) -> AnalyzeError {
+        match datboi_runtime::pipe::deterministic_cause(e) {
+            Some(why) => self.disprove(db, route, why.to_owned()),
+            None => AnalyzeError::from(e.to_string()),
+        }
+    }
+
+    /// Poison the route and report the bytes unobtainable.
+    fn disprove(&self, db: &Db, route: Option<i64>, why: String) -> AnalyzeError {
+        let mut message = why;
+        if let Some(recipe_id) = route {
+            match self.exec.poison_route(db, recipe_id, &message) {
+                Ok(()) => message.push_str(" — route poisoned (D25/D126)"),
+                Err(e) => message.push_str(&format!(" — and poisoning the route failed: {e}")),
+            }
+        }
+        AnalyzeError {
+            message,
+            kind: FailureKind::Unobtainable,
+        }
     }
 }
 
@@ -236,9 +332,12 @@ pub trait Analyzer {
     /// exactly while work advances.
     ///
     /// # Errors
-    /// A per-blob error string: recorded nowhere, item stays queued (the
-    /// environment failed, not the analysis — a negative CONCLUSION must
-    /// be returned as `Ok(Negative)`).
+    /// A per-blob [`AnalyzeError`]. `Environmental` is recorded nowhere
+    /// and the item stays queued (the environment failed, not the
+    /// analysis — a negative CONCLUSION must be returned as
+    /// `Ok(Negative)`). `Unobtainable` means the only route to the
+    /// bytes disproved itself (D126): still no conclusion, but the item
+    /// WAITS instead of retrying.
     fn analyze(
         &mut self,
         item: &SweepItem,
@@ -246,7 +345,7 @@ pub trait Analyzer {
         store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
-    ) -> Result<AnalysisResult, String>;
+    ) -> Result<AnalysisResult, AnalyzeError>;
 }
 
 /// A sweep that concludes "nothing found" about everything it touches —
@@ -280,7 +379,7 @@ impl Analyzer for NoopAnalyzer {
         _store: &Store,
         _db: &mut Db,
         _pulse: &mut dyn Pulse,
-    ) -> Result<AnalysisResult, String> {
+    ) -> Result<AnalysisResult, AnalyzeError> {
         Ok(AnalysisResult {
             waiting_on: None,
             outcome: AnalysisOutcome::Negative,
@@ -300,6 +399,12 @@ pub struct SweepReport {
     pub negative: usize,
     /// Items that left the queue to wait on a named blob (D116).
     pub deferred: usize,
+    /// (blob hash, why) — items whose ONLY route disproved itself, so
+    /// the route was poisoned and the item now waits on its own bytes
+    /// (D126). Counted in `deferred` too; listed separately because an
+    /// operator wants to see a poisoning, and a plain D116 wait is not
+    /// one.
+    pub unobtainable: Vec<(Blake3, String)>,
     /// (blob hash, error) — items left queued for a later sweep.
     pub errors: Vec<(Blake3, String)>,
     /// The analyzer family is disabled (D60): nothing ran.
@@ -578,9 +683,23 @@ pub fn process_round(
                 }
                 observer.item_finished(&item, Ok(result.outcome));
             }
+            Err(e) if e.kind == FailureKind::Unobtainable => {
+                // D126: the only route to these bytes disproved itself
+                // and is now poisoned. There is NO conclusion to record
+                // — nothing read the bytes — so the item takes D116's
+                // wait on its own hash: out of the queue (so the D108
+                // class gate stops holding this blob's fallback
+                // families), no analysis row, and re-enqueued the
+                // moment the literal is resident again. Settled for
+                // scheduling, open for truth.
+                db.defer_sweep_item(item.blob_id, &id, &item.hash)?;
+                report.deferred += 1;
+                report.unobtainable.push((item.hash, e.message));
+                observer.item_finished(&item, Ok(AnalysisOutcome::Negative));
+            }
             Err(e) => {
-                observer.item_finished(&item, Err(&e));
-                report.errors.push((item.hash, e));
+                observer.item_finished(&item, Err(&e.message));
+                report.errors.push((item.hash, e.message));
             }
         }
     }

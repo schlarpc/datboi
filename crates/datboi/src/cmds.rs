@@ -244,6 +244,7 @@ pub fn bless(env: &Env, args: &BlessArgs<'_>, json: bool) -> anyhow::Result<Exit
                 "bytes": report.bytes,
                 "outstanding": report.outstanding(),
                 "out_of_room": report.out_of_room,
+                "poisoned": report.poisoned,
                 "elapsed_secs": elapsed.as_secs_f64(),
                 "jobs": opts.workers(),
                 "dry_run": opts.dry_run,
@@ -369,6 +370,15 @@ fn print_bless(
     }
     for (hash, err) in &report.failed {
         println!("FAILED: {hash}: {err}");
+    }
+    if report.poisoned > 0 {
+        // D126: the failures that will NOT come back. Worth saying out
+        // loud — the alternative reading of a repeated failure count is
+        // that the run learned nothing.
+        println!(
+            "poisoned routes    {:>8}   disproved themselves; `datboi scrub --rehabilitate` reverses it",
+            report.poisoned
+        );
     }
     if report.complete() {
         println!("nothing outstanding");
@@ -1418,6 +1428,7 @@ pub fn sweep(
                 "negative": report.negative,
                 "deferred": report.deferred,
                 "errors": report.errors.iter().map(|(h, e)| json!({"blob": h.to_hex(), "error": e})).collect::<Vec<_>>(),
+                "unobtainable": report.unobtainable.iter().map(|(h, e)| json!({"blob": h.to_hex(), "why": e})).collect::<Vec<_>>(),
                 "queue_remaining": remaining,
             })
         );
@@ -1436,6 +1447,11 @@ pub fn sweep(
         );
         for (hash, error) in &report.errors {
             println!("error: {hash}: {error}");
+        }
+        // D126: not an error — a route disproved itself, was recorded
+        // as such, and the item is waiting rather than retrying.
+        for (hash, why) in &report.unobtainable {
+            println!("unobtainable: {hash}: {why}");
         }
     }
     Ok(if report.errors.is_empty() {

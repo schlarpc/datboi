@@ -580,6 +580,13 @@ fn drain_family(
             debug!("refine job {job}: {hash}: {error}");
             jobs.refine_error(job, &hash.to_hex(), error);
         }
+        // D126: a route that disproved itself is a poisoning, which is
+        // a self-heal, not a per-item error — WARN, and never counted
+        // against the job (D81's levels). It is loud on purpose: the
+        // graph just lost a route an operator may care about.
+        for (hash, why) in &report.unobtainable {
+            warn!("refine job {job}: {hash}: {why}");
+        }
         let remaining = db.sweep_queue_len(&id).unwrap_or(0);
         jobs.refine_progress(job, done, done + remaining);
         if report.analyzed == 0 && report.errors.is_empty() {

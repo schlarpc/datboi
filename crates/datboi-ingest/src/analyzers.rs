@@ -13,7 +13,7 @@ use datboi_store_fs::{Namespace as StoreNs, Store};
 use datboi_index::Candidacy;
 
 use crate::refine::{
-    AnalysisResult, Analyzer, AnalyzerClass, Logical, Pulse, TickReader, analyzer_tag,
+    AnalysisResult, AnalyzeError, Analyzer, AnalyzerClass, Logical, Pulse, TickReader, analyzer_tag,
 };
 
 /// FastCDC parameters (D3 strategy ladder, rung 3): gear hash, NC level
@@ -340,7 +340,7 @@ impl Analyzer for PreflateZipAnalyzer {
         store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
-    ) -> Result<AnalysisResult, String> {
+    ) -> Result<AnalysisResult, AnalyzeError> {
         use std::io::{Read, Seek, SeekFrom};
 
         let mut file = bytes.open(item, db, pulse)?;
@@ -469,7 +469,7 @@ impl Analyzer for PreflateZipAnalyzer {
                     if let Some(msg) = reader.fail.take() {
                         failures.push(format!("{:?}: {msg}", deflate_members[ix].name));
                     } else {
-                        return Err(e.to_string());
+                        return Err(e.to_string().into());
                     }
                 }
             }
@@ -727,7 +727,7 @@ impl Analyzer for ChunkAnalyzer {
         store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
-    ) -> Result<AnalysisResult, String> {
+    ) -> Result<AnalysisResult, AnalyzeError> {
         let Some(size) = item
             .size
             .or_else(|| store.len(StoreNs::Data, &item.hash).ok().flatten())
@@ -1009,7 +1009,7 @@ impl Analyzer for EcmAnalyzer {
         store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
-    ) -> Result<AnalysisResult, String> {
+    ) -> Result<AnalysisResult, AnalyzeError> {
         use std::io::Read;
 
         let mut file = bytes.open(item, db, pulse)?;
@@ -1169,7 +1169,7 @@ impl Analyzer for NdsAnalyzer {
         store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
-    ) -> Result<AnalysisResult, String> {
+    ) -> Result<AnalysisResult, AnalyzeError> {
         let file = bytes.open(item, db, pulse)?;
         let mut rom = TickRandom { inner: file, pulse };
 
@@ -1182,7 +1182,7 @@ impl Analyzer for NdsAnalyzer {
                     detail: Some(refusal.to_string()),
                 });
             }
-            Err(crate::nds::NdsError::Io(e)) => return Err(format!("reading rom: {e}")),
+            Err(crate::nds::NdsError::Io(e)) => return Err(format!("reading rom: {e}").into()),
         };
 
         // Claim every piece + mint the coverage-map rebuild (shared with
@@ -1306,7 +1306,7 @@ impl Analyzer for NarcAnalyzer {
         store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
-    ) -> Result<AnalysisResult, String> {
+    ) -> Result<AnalysisResult, AnalyzeError> {
         let file = bytes.open(item, db, pulse)?;
         let mut narc = TickRandom { inner: file, pulse };
 
@@ -1319,7 +1319,7 @@ impl Analyzer for NarcAnalyzer {
                     detail: Some(refusal.to_string()),
                 });
             }
-            Err(crate::nds::NdsError::Io(e)) => return Err(format!("reading narc: {e}")),
+            Err(crate::nds::NdsError::Io(e)) => return Err(format!("reading narc: {e}").into()),
         };
 
         // Recipe-volume gate (D91-style molten policy): a huge-member
@@ -1469,7 +1469,7 @@ impl Analyzer for XdvdfsAnalyzer {
         store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
-    ) -> Result<AnalysisResult, String> {
+    ) -> Result<AnalysisResult, AnalyzeError> {
         let file = bytes.open(item, db, pulse)?;
         let mut img = TickRandom { inner: file, pulse };
 
@@ -1488,7 +1488,9 @@ impl Analyzer for XdvdfsAnalyzer {
                     detail: Some(refusal.to_string()),
                 });
             }
-            Err(crate::xdvdfs::XdvdfsError::Io(e)) => return Err(format!("reading image: {e}")),
+            Err(crate::xdvdfs::XdvdfsError::Io(e)) => {
+                return Err(format!("reading image: {e}").into());
+            }
         };
 
         // The filler stream: an absent claim grounded by its own
@@ -1733,7 +1735,7 @@ impl Analyzer for GcmAnalyzer {
         store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
-    ) -> Result<AnalysisResult, String> {
+    ) -> Result<AnalysisResult, AnalyzeError> {
         let file = bytes.open(item, db, pulse)?;
         let mut img = TickRandom { inner: file, pulse };
 
@@ -1752,7 +1754,7 @@ impl Analyzer for GcmAnalyzer {
                     detail: Some(refusal.to_string()),
                 });
             }
-            Err(crate::gcm::GcmError::Io(e)) => return Err(format!("reading image: {e}")),
+            Err(crate::gcm::GcmError::Io(e)) => return Err(format!("reading image: {e}").into()),
         };
 
         // The junk stream: an absent claim grounded by its own
@@ -2023,7 +2025,7 @@ impl Analyzer for WiiAnalyzer {
         store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
-    ) -> Result<AnalysisResult, String> {
+    ) -> Result<AnalysisResult, AnalyzeError> {
         use crate::wii::{self, WiiError};
 
         let file = bytes.open(item, db, pulse)?;
@@ -2038,12 +2040,12 @@ impl Analyzer for WiiAnalyzer {
         let header = match wii::read_disc_header(&mut img) {
             Ok(h) => h,
             Err(WiiError::Refused(r)) => return Ok(negative(r.to_string())),
-            Err(WiiError::Io(e)) => return Err(format!("reading image: {e}")),
+            Err(WiiError::Io(e)) => return Err(format!("reading image: {e}").into()),
         };
         let parts = match wii::read_partitions(&mut img) {
             Ok(p) => p,
             Err(WiiError::Refused(r)) => return Ok(negative(r.to_string())),
-            Err(WiiError::Io(e)) => return Err(format!("reading image: {e}")),
+            Err(WiiError::Io(e)) => return Err(format!("reading image: {e}").into()),
         };
 
         // Key discovery (D12/D116): every partition's ticket names a
@@ -2088,7 +2090,7 @@ impl Analyzer for WiiAnalyzer {
         let layout = match wii::parse_layout(&mut img, max_pieces, header, &parts, &keys) {
             Ok(layout) => layout,
             Err(WiiError::Refused(r)) => return Ok(negative(r.to_string())),
-            Err(WiiError::Io(e)) => return Err(format!("reading image: {e}")),
+            Err(WiiError::Io(e)) => return Err(format!("reading image: {e}").into()),
         };
 
         // The junk streams (D116): the disc's over its whole address
@@ -2326,7 +2328,7 @@ impl Analyzer for Iso9660Analyzer {
         store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
-    ) -> Result<AnalysisResult, String> {
+    ) -> Result<AnalysisResult, AnalyzeError> {
         let file = bytes.open(item, db, pulse)?;
         let mut img = TickRandom { inner: file, pulse };
 
@@ -2346,7 +2348,7 @@ impl Analyzer for Iso9660Analyzer {
                 });
             }
             Err(crate::iso9660::Iso9660Error::Io(e)) => {
-                return Err(format!("reading image: {e}"));
+                return Err(format!("reading image: {e}").into());
             }
         };
 
@@ -2603,7 +2605,7 @@ impl Analyzer for ChdVerifyAnalyzer {
         _store: &Store,
         db: &mut Db,
         pulse: &mut dyn Pulse,
-    ) -> Result<AnalysisResult, String> {
+    ) -> Result<AnalysisResult, AnalyzeError> {
         use datboi_formats::chd;
 
         let settled = |detail: String| {
@@ -2632,7 +2634,7 @@ impl Analyzer for ChdVerifyAnalyzer {
         let verified = match chd::verify(&mut file, &mut progress) {
             Ok(v) => v,
             Err(e) if e.is_conclusion() => return settled(e.to_string()),
-            Err(e) => return Err(format!("reading CHD: {e}")),
+            Err(e) => return Err(format!("reading CHD: {e}").into()),
         };
 
         let version = verified.header.version;
