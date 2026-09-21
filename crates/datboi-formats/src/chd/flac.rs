@@ -397,7 +397,14 @@ fn decode_residual(
                     .read_unary(1 << 20)
                     .ok_or_else(|| ChdError::Malformed("flac Rice quotient runs away".into()))?;
                 let remainder = bits.read(param);
-                let value = (quotient << param) | remainder;
+                // Widen before shifting: a corrupt stream can pair a
+                // 20-bit quotient with a 30-bit parameter, which
+                // overflows a u32 (and panics in a debug build) long
+                // before the frame CRC gets a chance to reject it.
+                let value = (u64::from(quotient) << param) | u64::from(remainder);
+                let value = u32::try_from(value).map_err(|_| {
+                    ChdError::Malformed("flac residual does not fit 32 bits".into())
+                })?;
                 // Zigzag: LSB is the sign.
                 #[allow(clippy::cast_possible_wrap)]
                 let signed = ((value >> 1) as i32) ^ -((value & 1) as i32);

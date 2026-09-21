@@ -284,6 +284,42 @@ fn a_corrupt_hunk_is_caught_by_the_maps_checksum() {
     }
 }
 
+/// Every one of these decoders is fed bytes off the internet. A
+/// corrupt hunk may fail any way it likes, but it may never panic —
+/// an analyzer that aborts the process on one bad file is worse than
+/// one that reports it. Cheap stand-in for the fuzz targets
+/// open-questions.md still owes.
+#[test]
+fn corruption_never_panics_whatever_the_codec() {
+    for &codec in &[
+        CODEC_ZLIB,
+        CODEC_LZMA,
+        CODEC_HUFFMAN,
+        CODEC_FLAC,
+        CODEC_CD_ZLIB,
+        CODEC_CD_LZMA,
+        CODEC_CD_FLAC,
+    ] {
+        let (spec, data) = if codec == CODEC_CD_FLAC {
+            (SynthSpec::cd(codec), cd_audio_frames(8))
+        } else if matches!(codec, CODEC_CD_ZLIB | CODEC_CD_LZMA) {
+            (SynthSpec::cd(codec), cd_frames(8))
+        } else {
+            (SynthSpec::new(5, codec), wave(4096 * 2))
+        };
+        let bytes = build(&spec, &data);
+        // Walk a deterministic spread of byte positions, flipping one
+        // at a time: headers, map, payloads and metadata all get hit.
+        let step = (bytes.len() / 97).max(1);
+        for at in (0..bytes.len()).step_by(step) {
+            let mut corrupt = bytes.clone();
+            corrupt[at] ^= 0xa5;
+            // The only requirement is that this returns.
+            let _ = verify(Cursor::new(&corrupt), &mut |_| {});
+        }
+    }
+}
+
 /// Bytes no codec beats, so the writer stores them raw.
 fn incompressible(len: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(len);
