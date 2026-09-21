@@ -4605,7 +4605,6 @@ floor on containers (the read tax is per-member and the storage trade is
 per-container; there is no one number, and a zip's members are not
 independently droppable anyway — the gate is all-or-nothing by
 construction).
-||||||| 0104388
 
 ## D124 — CHD hunk decomposition is not built; FastCDC already generalises it (2026-09-21)
 
