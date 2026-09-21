@@ -4152,6 +4152,15 @@ should be able to make. Several-output routes stay unlicensed —
 producing one output does not prove the others — and `Executor::replay`
 remains the way to license those.
 
+**Both halves of that trade were checked on the bench corpus, not just
+argued.** After `bless --materialize --limit 20` over the 1,200-member
+fixture: `datboi evict --dry-run` reports "20 blob(s) evictable,
+83886080 byte(s) reclaimable, 0 candidate(s) blocked" — the licensing
+advance does make the spend refundable — while `datboi status` still
+reports the 150 containers as "literal-only … (no rebuild route yet)",
+which is the other half: the containers stay put, so the bytes are a
+high-water and not a swap.
+
 **This is a ruling on half of an open question, and only half.**
 `docs/open-questions.md` leaves open "materialize view-pinned absent
 members whose containers refused a preflate split (the serving case)".
