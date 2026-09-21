@@ -704,6 +704,54 @@ impl Db {
         Ok(u64::try_from(count).unwrap_or(0))
     }
 
+    /// D121 blessing candidates: Data-namespace blobs whose bytes are
+    /// NOT local, that are bigger than `min_size`, and that at least one
+    /// non-Failed recipe claims to produce — every blob whose first read
+    /// would have to materialize a route.
+    ///
+    /// This is deliberately a COARSE filter. It cannot tell whether a
+    /// sidecar already exists (D109 dropped `blob.obao`; the store owns
+    /// that answer) and it must not try to tell whether the route
+    /// qualifies for the D63 carve-out — `Executor::affine_carveout`
+    /// decides that on the PLANNED route, which is the same predicate
+    /// `serve_range` consults. A second definition here would drift from
+    /// the one that decides what actually gets served.
+    ///
+    /// `min_size` is the caller's chunk-group threshold: blobs at or
+    /// under one bao group have an empty outboard by construction and
+    /// need no blessing (which is exactly the fact that hid the D63
+    /// amendment's bug for months). Streaming, in `blob_id` order, so
+    /// the pass is O(block) memory over a corpus of any size and the
+    /// candidate sequence is stable across runs.
+    ///
+    /// # Errors
+    /// Query failures; a row whose residency code does not decode.
+    pub fn for_each_bless_candidate(
+        &self,
+        min_size: u64,
+        f: &mut dyn FnMut(Blake3, u64),
+    ) -> Result<(), IndexError> {
+        let min = i64::try_from(min_size).unwrap_or(i64::MAX);
+        let mut stmt = self.cache().prepare_cached(
+            "SELECT b.hash, b.size FROM blob b
+             WHERE b.namespace = 0 AND b.residency != 0 AND b.size > ?1
+               AND EXISTS (
+                 SELECT 1 FROM recipe_output ro
+                 JOIN recipe r ON r.recipe_id = ro.recipe_id
+                 WHERE ro.blob_id = b.blob_id AND r.verify != 2)
+             ORDER BY b.blob_id",
+        )?;
+        let mut rows = stmt.query([min])?;
+        while let Some(row) = rows.next()? {
+            let size = row.get::<_, i64>(1)?;
+            f(
+                Blake3(row.get::<_, [u8; 32]>(0)?),
+                u64::try_from(size).unwrap_or(0),
+            );
+        }
+        Ok(())
+    }
+
     /// A rebuild route's inputs in position (coverage) order, each with
     /// its sharing evidence for the D91 predicate.
     pub fn rebuild_inputs(&self, recipe_id: i64) -> Result<Vec<RebuildInput>, IndexError> {

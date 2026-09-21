@@ -1607,3 +1607,82 @@ fn deferred_sweep_items_wait_for_a_named_blob() {
     assert!(db.deferred_sweep_items(&analyzer).unwrap().is_empty());
     assert_eq!(db.enqueue_unanalyzed(&analyzer, 6).unwrap(), 0);
 }
+
+/// D121 blessing candidates: the coarse SQL filter in front of the
+/// pass. Non-local bytes, over the caller's chunk-group threshold, with
+/// at least one live producing route — everything else is either
+/// already servable or has no route to materialize. Deliberately says
+/// nothing about affinity (`Executor::affine_carveout` rules on the
+/// planned route) or about sidecars (the store owns that answer).
+#[test]
+fn bless_candidates_are_absent_derived_blobs_over_the_threshold() {
+    let (_dir, mut db) = open_db();
+    const GROUP: u64 = 16 * 1024;
+
+    let sized = |db: &Db, seed: &[u8], size: u64, residency: Residency| -> i64 {
+        db.upsert_blob(
+            &Blake3::compute(seed),
+            Some(size),
+            Namespace::Data,
+            residency,
+        )
+        .expect("upsert")
+    };
+    let input = sized(&db, b"container", GROUP * 100, Residency::Resident);
+
+    // The shape the pass exists for: a big absent member with a live
+    // route. And an evicted one — bytes gone, route live, same need.
+    let member = sized(&db, b"big-member", GROUP * 20, Residency::Absent);
+    let evicted = sized(
+        &db,
+        b"evicted-member",
+        GROUP * 20,
+        Residency::EvictedCovered,
+    );
+    // At or under one group: empty outboard by construction. The `>`
+    // matters — a blob of exactly GROUP bytes needs no tree.
+    let exactly_one_group = sized(&db, b"one-group", GROUP, Residency::Absent);
+    // Resident: its bytes are here, so nothing has to be materialized.
+    let resident = sized(&db, b"resident-member", GROUP * 20, Residency::Resident);
+    for out in [member, evicted, exactly_one_group, resident] {
+        recipe(
+            &mut db,
+            format!("route-{out}").as_bytes(),
+            &[input],
+            &[out],
+            VerifyState::Verified,
+        );
+    }
+    // Absent and big, but only a POISONED route claims it: there is
+    // nothing to materialize, so it is not a candidate.
+    let poisoned_out = sized(&db, b"poisoned-member", GROUP * 20, Residency::Absent);
+    let poisoned = recipe(
+        &mut db,
+        b"lying-route",
+        &[input],
+        &[poisoned_out],
+        VerifyState::Pending,
+    );
+    db.set_verify_state(
+        poisoned,
+        VerifyAdvance::Failed {
+            error: "lied",
+            peer: None,
+        },
+        3,
+    )
+    .expect("poison");
+    // Absent, big, and underived: a peer-advertised hash with no route.
+    sized(&db, b"no-route", GROUP * 20, Residency::Absent);
+
+    let mut got = Vec::new();
+    db.for_each_bless_candidate(GROUP, &mut |h, size| got.push((h, size)))
+        .expect("candidates");
+    let mut want = vec![
+        (Blake3::compute(b"big-member"), GROUP * 20),
+        (Blake3::compute(b"evicted-member"), GROUP * 20),
+    ];
+    got.sort_unstable_by_key(|(h, _)| h.0);
+    want.sort_unstable_by_key(|(h, _)| h.0);
+    assert_eq!(got, want);
+}
