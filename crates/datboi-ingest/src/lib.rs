@@ -1232,13 +1232,22 @@ fn hash_zip_members(
     }
     let mut claims = Vec::with_capacity(parsed.members.len());
     for member in parsed.members {
-        let tuple = match hash_member(blob, &member) {
+        let (tuple, sidecar) = match hash_member(blob, &member) {
             Ok(t) => t,
             Err(reason) => {
                 skips.push((member.name, reason));
                 continue;
             }
         };
+        // D63 amendment: the member blob itself is never stored (D35),
+        // but its outboard is — a sidecar with no `.data` beside it is
+        // exactly the shape D49 rule 1 already keeps after an eviction,
+        // and the store scan skips `.obao4` files either way. Without
+        // it a `deflate-decompress@1` range read has no carve-out and
+        // no tree, so it cannot be served at all.
+        if let Some(sidecar) = sidecar {
+            store.put_obao(StoreNs::Data, &tuple.blake3, &sidecar)?;
+        }
 
         if member.uncomp_size == 0 {
             // The empty output needs no recipe (assemble@1 rejects
@@ -1537,10 +1546,50 @@ fn builtin(name_at_major: &str) -> Op {
     }
 }
 
+/// DEFLATE cannot expand by more than ~1032:1 (a 258-byte match coded
+/// in as little as two bits), so a central directory declaring more
+/// than that from its compressed bytes is lying and the member will
+/// fail its size check below. That normally costs nothing — the
+/// decoder simply runs dry — but `obao::compute` sizes its tree buffer
+/// (~len/256) from the DECLARED length UP FRONT, before the lie can
+/// surface. Members past this bound therefore skip ingest blessing
+/// rather than let a fabricated size drive an allocation.
+const MAX_DEFLATE_EXPANSION: u64 = 1032;
+
+/// Does this member's derive route need an output outboard built here?
+/// (D63 amendment.) Three conditions, all necessary:
+///
+/// - **DEFLATE only.** A STORED member's recipe is affine over the
+///   container, so the D63 carve-out already serves every byte of it
+///   verified — blessing it is the pure cost D63 rejected.
+/// - **Bigger than one chunk group.** At or under 16 KiB the outboard
+///   is empty by construction and absence IS the sidecar; this is
+///   exactly why small ROMs read fine while larger ones returned
+///   `MissingOutboard`.
+/// - **A believable declaration** ([`MAX_DEFLATE_EXPANSION`]).
+fn blesses_at_ingest(member: &zip::Member) -> bool {
+    member.method == Method::Deflate
+        && datboi_store_fs::obao::outboard_size(member.uncomp_size) > 0
+        && member.uncomp_size
+            <= member
+                .comp_size
+                .saturating_mul(MAX_DEFLATE_EXPANSION)
+                .saturating_add(datboi_store_fs::obao::GROUP_BYTES)
+}
+
 /// Hash one member by streaming out of the stored container. Returns a
 /// reason string (for the report) on any inconsistency — a lying central
 /// directory must not produce a claim.
-fn hash_member<R: Read + Seek>(blob: &mut R, member: &zip::Member) -> Result<AliasTuple, String> {
+///
+/// For a member whose route cannot take the D63 carve-out
+/// ([`blesses_at_ingest`]) the second half of the pair is its bao
+/// outboard, built in the SAME inflate that builds the alias tuple:
+/// the bytes are already streaming past for D2's five hashers, so the
+/// tree is one more consumer, never a second pass (D63 amendment).
+fn hash_member<R: Read + Seek>(
+    blob: &mut R,
+    member: &zip::Member,
+) -> Result<(AliasTuple, Option<Vec<u8>>), String> {
     blob.seek(SeekFrom::Start(member.data_start))
         .map_err(|e| e.to_string())?;
     let window = Window {
@@ -1552,6 +1601,13 @@ fn hash_member<R: Read + Seek>(blob: &mut R, member: &zip::Member) -> Result<Ali
     // and a bomb-shaped member (tiny declared size, monstrous actual
     // inflation) costs declared-size work instead of full inflation.
     let cap = member.uncomp_size.saturating_add(1);
+    if blesses_at_ingest(member) {
+        return hash_and_bless_member(
+            flate2::read::DeflateDecoder::new(window).take(cap),
+            member,
+            hasher,
+        );
+    }
     let counted = match member.method {
         Method::Stored => stream_into(window.take(cap), &mut hasher),
         Method::Deflate => stream_into(
@@ -1561,18 +1617,99 @@ fn hash_member<R: Read + Seek>(blob: &mut R, member: &zip::Member) -> Result<Ali
     }
     .map_err(|e| format!("member data unreadable: {e}"))?;
     if counted > member.uncomp_size {
-        return Err(format!(
-            "member inflates past its declared {} bytes — bomb-shaped, refusing claim",
-            member.uncomp_size
-        ));
+        return Err(bomb_shaped(member));
     }
     if counted != member.uncomp_size {
+        return Err(size_mismatch(member, counted));
+    }
+    Ok((hasher.finalize(), None))
+}
+
+/// The blessing variant of the pass above: the bao tree builder pulls,
+/// [`TeeHash`] feeds the alias chain on the way past. Exactly one
+/// inflate, two sets of hashers.
+fn hash_and_bless_member(
+    reader: impl Read,
+    member: &zip::Member,
+    mut hasher: AliasHasher,
+) -> Result<(AliasTuple, Option<Vec<u8>>), String> {
+    let mut tee = TeeHash {
+        inner: reader,
+        hasher: &mut hasher,
+        count: 0,
+    };
+    // `compute` pulls exactly the declared length, so a short member
+    // surfaces here as an I/O error, not as a wrong tree.
+    let computed = datboi_store_fs::obao::compute(&mut tee, member.uncomp_size);
+    let counted = tee.count;
+    let (root, sidecar) = match computed {
+        Ok(v) => v,
+        Err(e) if counted < member.uncomp_size => {
+            // Keep the non-blessing path's diagnosis: the directory
+            // over-declared, which is a claim verdict, not an I/O fault.
+            let _ = e;
+            return Err(size_mismatch(member, counted));
+        }
+        Err(e) => return Err(format!("member data unreadable: {e}")),
+    };
+    // The `cap` take left room for exactly one byte past the
+    // declaration; if it is there, the directory under-declared.
+    let mut extra = [0u8; 1];
+    match tee.read(&mut extra) {
+        Ok(0) => {}
+        Ok(_) => return Err(bomb_shaped(member)),
+        Err(e) => return Err(format!("member data unreadable: {e}")),
+    }
+    let tuple = hasher.finalize();
+    // Free correctness check: the obao root and the tuple's blake3 are
+    // the same value computed two ways, over the same bytes, in the
+    // same pass. They can only disagree if one of the two is broken.
+    if root != tuple.blake3 {
         return Err(format!(
-            "central directory size mismatch: cd says {}, data yields {counted}",
-            member.uncomp_size
+            "outboard root {root} disagrees with the member's blake3 {} — refusing claim",
+            tuple.blake3
         ));
     }
-    Ok(hasher.finalize())
+    Ok((tuple, Some(sidecar)))
+}
+
+fn bomb_shaped(member: &zip::Member) -> String {
+    format!(
+        "member inflates past its declared {} bytes — bomb-shaped, refusing claim",
+        member.uncomp_size
+    )
+}
+
+fn size_mismatch(member: &zip::Member, counted: u64) -> String {
+    format!(
+        "central directory size mismatch: cd says {}, data yields {counted}",
+        member.uncomp_size
+    )
+}
+
+/// A reader that feeds every byte it yields into an [`AliasHasher`] on
+/// the way past, counting as it goes — what lets one inflate drive both
+/// the alias tuple and the bao tree (D63 amendment).
+struct TeeHash<'a, R> {
+    inner: R,
+    hasher: &'a mut AliasHasher,
+    count: u64,
+}
+
+impl<R: Read> Read for TeeHash<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            match self.inner.read(buf) {
+                Ok(n) => {
+                    self.hasher.update(&buf[..n]);
+                    self.count += n as u64;
+                    return Ok(n);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
 }
 
 fn stream_into(mut reader: impl Read, hasher: &mut AliasHasher) -> std::io::Result<u64> {
