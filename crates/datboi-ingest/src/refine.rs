@@ -37,6 +37,20 @@ pub struct AnalyzeError {
     pub kind: FailureKind,
 }
 
+/// What a panic payload actually said, if it said anything printable.
+/// `panic!("...")` and `assert!`/index-out-of-bounds arrive as `&str` or
+/// `String`; anything else is opaque and we say so rather than invent a
+/// message.
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
 /// D81's line, made a type so it cannot be dropped on the floor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureKind {
@@ -50,6 +64,23 @@ pub enum FailureKind {
     /// analyzer never saw them — so the item WAITS (D116) on its own
     /// hash instead of settling a verdict it did not reach.
     Unobtainable,
+    /// The analyzer PANICKED on these bytes. Unlike `Unobtainable` the
+    /// analyzer did reach them and ran its own code over them, so this
+    /// is a statement about the analyzer's competence on this input —
+    /// which is what D81 says must settle rather than retry: a panic in
+    /// pinned native code is deterministic on the same bytes, so asking
+    /// again buys a second crash and nothing else.
+    ///
+    /// Not D126 poisoning. There is no route to poison — the bytes are
+    /// a resident literal — and a D116 wait on an already-resident hash
+    /// is re-admitted on the very next ambient pass, which is the same
+    /// forever-loop with extra steps.
+    ///
+    /// The escape hatch is analyzer identity: a versioned analyzer name
+    /// that embeds its dependency version (as the preflate family's
+    /// does) mints a fresh tag when that dependency moves, and every
+    /// blob settled this way is swept again under the new name.
+    Trapped,
 }
 
 impl std::fmt::Display for AnalyzeError {
@@ -405,6 +436,11 @@ pub struct SweepReport {
     /// operator wants to see a poisoning, and a plain D116 wait is not
     /// one.
     pub unobtainable: Vec<(Blake3, String)>,
+    /// (blob hash, panic message) — items whose analyzer panicked. The
+    /// item is settled Negative (D81) and counted in `negative` too;
+    /// listed separately because a panic is a bug someone should see,
+    /// not an ordinary negative result.
+    pub trapped: Vec<(Blake3, String)>,
     /// (blob hash, error) — items left queued for a later sweep.
     pub errors: Vec<(Blake3, String)>,
     /// The analyzer family is disabled (D60): nothing ran.
@@ -659,7 +695,35 @@ pub fn process_round(
         };
         observer.item_started(&item);
         let mut pulse = LeaseHeartbeat::new(&keeper, id, item.blob_id);
-        match analyzer.analyze(&item, bytes, store, db, &mut pulse) {
+        // Analyzers run native third-party code (preflate-rs, the
+        // decoders) over bytes chosen by whatever is in the store. A
+        // panic in one of them must cost one item, not the worker: the
+        // drone fleet spawns detached threads, so an escaping unwind
+        // kills a drone permanently and silently, and the fleet bleeds
+        // out over a few minutes with nothing in the log to say so.
+        //
+        // AssertUnwindSafe is load-bearing rather than incidental here,
+        // because `db` and `analyzer` are used again after the catch. It
+        // holds: `claim_sweep_items` commits its own transaction before
+        // returning, so nothing is open across this call; `Db` writes
+        // are per-statement with nothing half-applied; and analyzers
+        // carry no per-item state between calls.
+        //
+        // The payload is kept, unlike the three older catch sites in
+        // this tree which discard it. Those report into an interactive
+        // run; this one settles a durable verdict on an unattended
+        // sweep, and the panic text is the only thing that will ever
+        // tell an operator which upstream bug they hit.
+        let analyzed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            analyzer.analyze(&item, bytes, store, db, &mut pulse)
+        }))
+        .unwrap_or_else(|payload| {
+            Err(AnalyzeError {
+                message: format!("analyzer panicked: {}", panic_message(&payload)),
+                kind: FailureKind::Trapped,
+            })
+        });
+        match analyzed {
             Ok(result) => {
                 if let Some(waiting_on) = result.waiting_on {
                     // D116: no conclusion — the item waits for the blob
@@ -695,6 +759,25 @@ pub fn process_round(
                 db.defer_sweep_item(item.blob_id, &id, &item.hash)?;
                 report.deferred += 1;
                 report.unobtainable.push((item.hash, e.message));
+                observer.item_finished(&item, Ok(AnalysisOutcome::Negative));
+            }
+            Err(e) if e.kind == FailureKind::Trapped => {
+                // D81: a deterministic conclusion settles. The analyzer
+                // reached these bytes and its own code fell over on
+                // them, so the honest record is a Negative carrying the
+                // panic text — written through the same
+                // `complete_sweep_item` the success path uses, which is
+                // what releases the claim and drops the queue row.
+                db.complete_sweep_item(
+                    item.blob_id,
+                    &id,
+                    AnalysisOutcome::Negative,
+                    Some(&e.message),
+                    now_unix(),
+                )?;
+                report.analyzed += 1;
+                report.negative += 1;
+                report.trapped.push((item.hash, e.message));
                 observer.item_finished(&item, Ok(AnalysisOutcome::Negative));
             }
             Err(e) => {
