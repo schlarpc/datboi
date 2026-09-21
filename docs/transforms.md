@@ -102,13 +102,21 @@ structurally free.
   the C-to-wasm lane (7-Zip SDK to wasm32-unknown-unknown) — the same
   infrastructure M7's CHD/RVZ/NSZ work wants, which is why it slots
   there. Interim hedges: the `status` literal-only counter sizes the
-  tax; an opt-in drop-containers-without-routes policy is a future
-  discussion (byte-destroying, so never a default).
+  tax; the opt-in drop-containers-without-routes policy this bullet
+  called a future discussion was RULED as D123 — `datboi unpack` and
+  `ingest --unpack`, byte-destroying and therefore never a default,
+  never a dat-named blob, and never a container that already has a
+  rebuild route (which is what this whole recompression lane is
+  trying to mint).
 - **RAR — confirmed infeasible, permanently literal.** No recompressor
   exists for v3/v5; the encoder is closed and the unrar license
   forbids using its source to recreate compression. The
   extraction-based ingest (D9/D58: members carry derive recipes, the
-  container stays a literal) is the final answer.
+  container stays a literal) is the final answer for REBUILDING one.
+  D123 adds the other answer: a rar no dat names is transport, and an
+  operator may drop it once its members are resident — the double
+  residency this bullet implies is structural, not transient, and
+  `unpack` is how it ends.
 - **Ogg Vorbis / Opus — balrogg, feasible, deferred (research pass,
   2026-09-06).** [balrogg](https://github.com/iczelia/balrogg) (C99,
   GPL-3.0, v1.1, format unstable until 2.0) re-entropy-codes the

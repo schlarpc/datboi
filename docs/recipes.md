@@ -153,7 +153,10 @@ over the container, so the carve-out already guarantees every byte.
   blob — iNES headers recur and dedupe).
 - Wild zip stored extracted: rebuild via `xf-zip-build@1` with skeleton
   blob input; no rebuild recipe minted if trial recompression failed (D24)
-  — container stays literal, members still extracted.
+  — container stays literal, members still extracted. Under D123's
+  `--unpack` the members become resident literals and the container is
+  dropped instead; its `container->member` recipes stay as the
+  provenance edge, grounded by nothing and therefore inert.
 - Chunked 4 GB ISO: one ~30 KB `assemble` recipe over 900 chunk blobs.
 - Switch NSP: derive `decrypt(NSP, keys{role:keys}) → D`; rebuild
   `xf-nca-crypt@1/encrypt(D, keys, params{sections,nonces}) → NSP`;
