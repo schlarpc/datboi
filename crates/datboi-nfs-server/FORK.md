@@ -90,10 +90,18 @@ survived.
 
 ## Keeping the diff legible
 
-Everything else is upstream 0.11.0 verbatim, so `diff` against the
-crates.io source stays small enough to audit:
+Everything else is upstream 0.11.0. The import landed as its own commit
+with the sources semantically untouched — the READDIR bug above was
+still present in it — so the behavioural diff is auditable commit by
+commit:
 
-    diff -ru ~/.cargo/registry/src/*/nfsserve-0.11.0/src crates/datboi-nfs-server/src
+    git log --oneline crates/datboi-nfs-server
+
+One caveat on diffing against crates.io directly: this repo's
+pre-commit hook runs `cargo fmt --all` over every workspace member and
+there is no per-crate opt-out, so the import is rustfmt-normalised to
+repo style. Normalise upstream the same way before comparing, or the
+whitespace will bury the three real hunks.
 
 Upstream's `demo` feature and its `intaglio` / `tracing-subscriber`
 dependencies are dropped — the feature gates no source file in the
