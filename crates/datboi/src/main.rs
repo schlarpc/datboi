@@ -138,6 +138,42 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Bless recipe outputs ahead of the reader (D63/D121): materialize
+    /// every route that has no output outboard and cache the tree, in
+    /// parallel, so a serving surface never pays for one inside a read.
+    Bless {
+        /// How many outputs to bless at once. Default: the core count.
+        #[arg(long, value_name = "N")]
+        jobs: Option<usize>,
+        /// Report what is outstanding without materializing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// KEEP the bytes instead of discarding them, making each output
+        /// a resident literal. An opaque route (a zip's DEFLATE member)
+        /// serves every range read by spilling a full materialization,
+        /// so blessing alone leaves reads quadratic in the output size;
+        /// keeping the bytes makes them plain file reads. Costs the
+        /// content bytes — pair it with --min-size. Reversible: the
+        /// route is licensed, so `datboi evict` can take them back.
+        #[arg(long)]
+        materialize: bool,
+        /// Only consider outputs at least this large, in bytes (suffixes
+        /// K/M/G accepted). Below one bao group (16 KiB) there is no
+        /// tree to build, and that is the floor whatever you pass.
+        #[arg(long, value_name = "BYTES")]
+        min_size: Option<String>,
+        /// Also bless routes the D63 affine carve-out already serves.
+        /// Nothing is unreadable without this — it is the optional
+        /// promotion to full D49, and it costs a pass over every byte.
+        #[arg(long)]
+        include_affine: bool,
+        /// Stop after this many outputs (0 = no limit). Safe to
+        /// interrupt and resume either way: the sidecar is the record.
+        #[arg(long, default_value_t = 0, value_name = "N")]
+        limit: u64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Rematerialize an evicted or claimed blob into the store by
     /// replaying its cheapest recipe route.
     Materialize {
@@ -568,7 +604,12 @@ fn ledger_stamp(command: &Command) -> Option<(datboi_index::JobKind, String)> {
         // OWN kinds when their history surfaces exist (the
         // open-questions eval-report entry) — do not shoehorn them
         // into Gc.
-        Command::Dat(_)
+        // `Bless` is real byte-level work and belongs in the ledger
+        // with its own JobKind — but that is a wire enum and an
+        // activity-page change, and shoehorning it into Gc is what the
+        // note above forbids. Same waiting room as Recover/Snapshot.
+        Command::Bless { .. }
+        | Command::Dat(_)
         | Command::Audit { .. }
         | Command::Export(_)
         | Command::Recover { .. }
@@ -675,6 +716,26 @@ fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Fetch { peer, wants, json } => {
             cmds::fetch_peer(cli.global.open()?, &peer, &wants, json)
         }
+        Command::Bless {
+            jobs,
+            dry_run,
+            materialize,
+            min_size,
+            include_affine,
+            limit,
+            json,
+        } => cmds::bless(
+            &cli.global.open()?,
+            &cmds::BlessArgs {
+                jobs,
+                dry_run,
+                materialize,
+                min_size: min_size.as_deref(),
+                include_affine,
+                limit,
+            },
+            json,
+        ),
         Command::Dat(DatCommand::Import {
             file,
             provider,

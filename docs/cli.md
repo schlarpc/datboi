@@ -29,6 +29,21 @@ datboi export dat <source> -o x.dat  # dir2dat (D29)
 
 datboi recover                       # rebuild local DBs from the store (D15);
                                      # catalog replays from the newest verified snapshot
+datboi bless                         # build the output trees a read would
+                                     # otherwise build inside itself (D63/D121)
+    --jobs <n>                       # outputs blessed at once; default: core count
+    --dry-run                        # what is outstanding, in count and bytes
+    --materialize                    # KEEP the bytes: each output becomes a
+                                     # resident literal, so an opaque route's
+                                     # reads stop spilling a full materialization
+                                     # per window. Costs the content bytes;
+                                     # reversible via `datboi evict`
+    --min-size <bytes>               # candidate floor (K/M/G); aims --materialize
+    --include-affine                 # also promote D63 carve-out routes to full
+                                     # D49 (optional; nothing needs it to read)
+    --limit <n>                      # stop after n outputs; resume by re-running
+                                     # exit: 0 nothing outstanding, 1 work remains
+
 datboi scrub [--sample <pct>]        # background verification pass
 datboi status                        # store stats, snapshot age, last scrub
 

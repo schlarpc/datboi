@@ -134,6 +134,220 @@ fn print_ingest(r: &IngestReport) {
     }
 }
 
+// ---- bless (D63/D121) ----
+
+/// Everything `datboi bless` was asked for, as the CLI parsed it.
+pub struct BlessArgs<'a> {
+    pub jobs: Option<usize>,
+    pub dry_run: bool,
+    pub materialize: bool,
+    pub min_size: Option<&'a str>,
+    pub include_affine: bool,
+    pub limit: u64,
+}
+
+/// `datboi bless`: bless recipe outputs ahead of the reader (D121).
+///
+/// The pass itself lives in datboi-exec (D96: one implementation, and
+/// this is the surface a daemon job would share). The CLI owns the
+/// clock, the throttle and the printing — datboi-exec knows nothing
+/// about terminals.
+pub fn bless(env: &Env, args: &BlessArgs<'_>, json: bool) -> anyhow::Result<ExitCode> {
+    use datboi_exec::bless::BlessOptions;
+
+    let min_size = match args.min_size {
+        Some(text) => parse_size(text)
+            .with_context(|| format!("{text:?}: expected bytes, or a number with K/M/G"))?,
+        None => 0,
+    };
+    let opts = BlessOptions {
+        parallelism: args.jobs.unwrap_or(0),
+        materialize: args.materialize,
+        min_size,
+        include_affine: args.include_affine,
+        dry_run: args.dry_run,
+        limit: args.limit,
+    };
+    let exec = datboi_exec::Executor::new(&env.store, datboi_exec::ExecConfig::default())?;
+
+    // Progress, not a silent block: this runs for minutes on a real
+    // corpus. A line every two seconds to stderr, so `--json` on stdout
+    // stays a clean document and a pipe stays parseable.
+    let started = SystemTime::now();
+    let mut last = started;
+    let quiet = json || !std::io::IsTerminal::is_terminal(&std::io::stderr());
+    let report = exec.bless_corpus(&env.db, &opts, &mut |r| {
+        if quiet {
+            return;
+        }
+        let now = SystemTime::now();
+        if now
+            .duration_since(last)
+            .is_ok_and(|d| d < Duration::from_secs(2))
+        {
+            return;
+        }
+        last = now;
+        let secs = now
+            .duration_since(started)
+            .unwrap_or(Duration::ZERO)
+            .as_secs_f64()
+            .max(0.001);
+        eprint!(
+            "\r\x1b[K{} blessed / {} outstanding — {} at {}/s",
+            r.blessed,
+            r.selected.saturating_sub(r.blessed),
+            human_bytes(r.bytes),
+            human_bytes((r.bytes as f64 / secs) as u64),
+        );
+    })?;
+    if !quiet {
+        eprintln!();
+    }
+    let elapsed = SystemTime::now()
+        .duration_since(started)
+        .unwrap_or(Duration::ZERO);
+
+    if json {
+        println!(
+            "{}",
+            json!({
+                "examined": report.examined,
+                "already_blessed": report.already_blessed,
+                "resident": report.resident,
+                "carved_out": report.carved_out,
+                "no_route": report.no_route,
+                "selected": report.selected,
+                "selected_bytes": report.selected_bytes,
+                "blessed": report.blessed,
+                "materialized": report.materialized,
+                "bytes": report.bytes,
+                "outstanding": report.outstanding(),
+                "out_of_room": report.out_of_room,
+                "elapsed_secs": elapsed.as_secs_f64(),
+                "jobs": opts.workers(),
+                "dry_run": opts.dry_run,
+                "failed": report.failed.iter()
+                    .map(|(h, e)| json!({"hash": h, "error": e}))
+                    .collect::<Vec<_>>(),
+            })
+        );
+    } else {
+        print_bless(&report, &opts, elapsed);
+    }
+    // Outstanding work is the "incomplete" exit code the audit lane
+    // already uses: a --dry-run with work to do, a --limit that stopped
+    // short, or anything that refused to bless.
+    Ok(if report.is_clean() && report.outstanding() == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
+fn print_bless(
+    report: &datboi_exec::bless::BlessReport,
+    opts: &datboi_exec::bless::BlessOptions,
+    elapsed: Duration,
+) {
+    println!("examined           {:>8}", report.examined);
+    println!("already blessed    {:>8}", report.already_blessed);
+    if report.resident > 0 {
+        println!("resident (skipped) {:>8}", report.resident);
+    }
+    if report.carved_out > 0 {
+        println!(
+            "carve-out (skipped){:>8}   affine routes already serve these",
+            report.carved_out
+        );
+    }
+    if report.no_route > 0 {
+        println!("no route           {:>8}", report.no_route);
+    }
+    if opts.dry_run {
+        println!(
+            "outstanding        {:>8}   {} to materialize",
+            report.selected,
+            human_bytes(report.selected_bytes)
+        );
+        return;
+    }
+    let secs = elapsed.as_secs_f64().max(0.001);
+    println!(
+        "blessed            {:>8}   {} in {:.1}s ({}/s, {} jobs)",
+        report.blessed,
+        human_bytes(report.bytes),
+        secs,
+        human_bytes((report.bytes as f64 / secs) as u64),
+        opts.workers(),
+    );
+    if opts.materialize {
+        println!(
+            "materialized       {:>8}   bytes kept resident, {} on disk",
+            report.materialized,
+            human_bytes(report.bytes)
+        );
+    }
+    if report.out_of_room {
+        println!("OUT OF ROOM: the store filesystem is full; re-run after making room");
+    }
+    if report.outstanding() > 0 {
+        println!(
+            "outstanding        {:>8}   re-run to continue",
+            report.outstanding()
+        );
+    }
+    for (hash, err) in &report.failed {
+        println!("FAILED: {hash}: {err}");
+    }
+    if report.is_clean() && report.outstanding() == 0 {
+        println!("nothing outstanding");
+    }
+}
+
+/// A byte count, optionally with a K/M/G/T suffix (powers of 1024; a
+/// trailing `B`/`iB` is accepted and ignored). Deliberately narrow —
+/// this is a size floor, not a units library.
+fn parse_size(text: &str) -> anyhow::Result<u64> {
+    let text = text.trim();
+    let digits = text
+        .trim_end_matches(|c: char| c.is_ascii_alphabetic())
+        .trim();
+    let suffix = text[digits.len()..].trim();
+    let scale: u64 = match suffix
+        .trim_end_matches("iB")
+        .trim_end_matches('B')
+        .to_ascii_uppercase()
+        .as_str()
+    {
+        "" => 1,
+        "K" => 1 << 10,
+        "M" => 1 << 20,
+        "G" => 1 << 30,
+        "T" => 1 << 40,
+        other => bail!("unknown size suffix {other:?}"),
+    };
+    let n: u64 = digits.parse().context("not a number")?;
+    n.checked_mul(scale).context("size overflows u64")
+}
+
+/// Bytes at one decimal in the largest unit that keeps the number under
+/// 1024 — progress output, not a data format.
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 // ---- fetch (p2p sync, D100/D101) ----
 
 /// `datboi fetch --peer`: the D96 convenience lane for the D100 sync —

@@ -62,6 +62,16 @@ fn rom_xml(name: &str, content: &[u8]) -> String {
 
 /// Minimal STORED-only zip (mirrors the datboi-ingest fixture approach).
 fn stored_zip(members: &[(&str, &[u8])]) -> Vec<u8> {
+    zip_with(members, false)
+}
+
+/// The same fixture zip with DEFLATE members — the shape that mints
+/// `deflate-decompress@1` routes (opaque, no carve-out, D63 amendment).
+fn deflated_zip(members: &[(&str, &[u8])]) -> Vec<u8> {
+    zip_with(members, true)
+}
+
+fn zip_with(members: &[(&str, &[u8])], deflate: bool) -> Vec<u8> {
     let mut out = Vec::new();
     let mut central = Vec::new();
     for (name, data) in members {
@@ -70,33 +80,42 @@ fn stored_zip(members: &[(&str, &[u8])]) -> Vec<u8> {
             h.update(data);
             h.finalize()
         };
+        let (method, payload) = if deflate {
+            let mut enc =
+                flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+            std::io::Write::write_all(&mut enc, data).unwrap();
+            (8u16, enc.finish().unwrap())
+        } else {
+            (0u16, data.to_vec())
+        };
         let lho = u32::try_from(out.len()).unwrap();
         let (nlen, size) = (
             u16::try_from(name.len()).unwrap(),
             u32::try_from(data.len()).unwrap(),
         );
+        let csize = u32::try_from(payload.len()).unwrap();
         // Local file header.
         out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
         out.extend_from_slice(&20u16.to_le_bytes()); // version needed
         out.extend_from_slice(&0u16.to_le_bytes()); // flags
-        out.extend_from_slice(&0u16.to_le_bytes()); // method: STORED
+        out.extend_from_slice(&method.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes()); // dos time+date
         out.extend_from_slice(&crc.to_le_bytes());
-        out.extend_from_slice(&size.to_le_bytes()); // csize
+        out.extend_from_slice(&csize.to_le_bytes());
         out.extend_from_slice(&size.to_le_bytes()); // usize
         out.extend_from_slice(&nlen.to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes()); // extra len
         out.extend_from_slice(name.as_bytes());
-        out.extend_from_slice(data);
+        out.extend_from_slice(&payload);
         // Central directory entry.
         central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
         central.extend_from_slice(&20u16.to_le_bytes()); // made by
         central.extend_from_slice(&20u16.to_le_bytes()); // needed
         central.extend_from_slice(&0u16.to_le_bytes()); // flags
-        central.extend_from_slice(&0u16.to_le_bytes()); // method
+        central.extend_from_slice(&method.to_le_bytes());
         central.extend_from_slice(&0u32.to_le_bytes()); // time+date
         central.extend_from_slice(&crc.to_le_bytes());
-        central.extend_from_slice(&size.to_le_bytes());
+        central.extend_from_slice(&csize.to_le_bytes());
         central.extend_from_slice(&size.to_le_bytes());
         central.extend_from_slice(&nlen.to_le_bytes());
         central.extend_from_slice(&0u16.to_le_bytes()); // extra
@@ -304,6 +323,12 @@ fn corrupt_one_data_blob(data_root: &Path) {
 }
 
 fn walk(root: &Path) -> Vec<std::path::PathBuf> {
+    walk_ext(root, "data")
+}
+
+/// Every file under `root` with this extension — `data` for blobs,
+/// `obao4` for the D49 sidecars.
+fn walk_ext(root: &Path, ext: &str) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     let mut dirs = vec![root.to_path_buf()];
     while let Some(dir) = dirs.pop() {
@@ -312,7 +337,7 @@ fn walk(root: &Path) -> Vec<std::path::PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 dirs.push(path);
-            } else if path.extension().is_some_and(|e| e == "data") {
+            } else if path.extension().is_some_and(|e| e == ext) {
                 files.push(path);
             }
         }
@@ -1671,4 +1696,98 @@ fn cli_commands_stamp_the_job_ledger() {
         rows.iter().all(|r| r.finished_at.is_some()),
         "terminal-only rows, never running: {rows:?}"
     );
+}
+
+/// `datboi bless` (D63/D121) end to end: a corpus of big DEFLATE
+/// members, stripped of the trees ingest built for them (which is the
+/// state of every member adopted before D63's amendment landed), gets
+/// them all back in one parallel pass.
+#[test]
+fn bless_pass_end_to_end() {
+    let u = Universe::new();
+    fs::create_dir_all(u.src()).unwrap();
+
+    // Three members per zip, all past one bao group so they need trees.
+    let member = |salt: u8| -> Vec<u8> {
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D ^ u64::from(salt);
+        (0..200_000)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 24) as u8
+            })
+            .collect()
+    };
+    let bodies: Vec<Vec<u8>> = (0..3).map(member).collect();
+    let members: Vec<(&str, &[u8])> = vec![
+        ("a.rom", bodies[0].as_slice()),
+        ("b.rom", bodies[1].as_slice()),
+        ("c.rom", bodies[2].as_slice()),
+    ];
+    fs::write(u.src().join("set.zip"), deflated_zip(&members)).unwrap();
+    u.cmd().arg("ingest").arg(u.src()).assert().success();
+
+    // Ingest builds the trees in the same inflate that hashes the
+    // members; delete them to reproduce a pre-amendment corpus.
+    let trees = walk_ext(&u.store(), "obao4");
+    assert_eq!(trees.len(), 3, "three member trees to un-bless");
+    for path in trees {
+        fs::remove_file(&path).unwrap();
+    }
+
+    // --dry-run says what is outstanding, writes nothing, and exits 1
+    // (the audit lane's "incomplete" code).
+    let out = u
+        .cmd()
+        .args(["bless", "--dry-run", "--json"])
+        .assert()
+        .code(1);
+    let dry: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(dry["selected"], 3);
+    assert_eq!(dry["blessed"], 0);
+    assert!(dry["dry_run"].as_bool().unwrap());
+    assert!(
+        walk_ext(&u.store(), "obao4").is_empty(),
+        "a dry run stores nothing"
+    );
+
+    // The real pass.
+    let out = u
+        .cmd()
+        .args(["bless", "--jobs", "2", "--json"])
+        .assert()
+        .success();
+    let run: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(run["blessed"], 3);
+    assert_eq!(run["jobs"], 2);
+    assert_eq!(run["outstanding"], 0);
+    assert_eq!(run["materialized"], 0, "bytes are not kept by default");
+    assert_eq!(
+        run["bytes"].as_u64().unwrap(),
+        bodies.iter().map(|b| b.len() as u64).sum::<u64>()
+    );
+    assert_eq!(walk_ext(&u.store(), "obao4").len(), 3);
+
+    // Idempotent, and it says so.
+    let out = u.cmd().args(["bless", "--json"]).assert().success();
+    let again: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(again["selected"], 0);
+    assert_eq!(again["already_blessed"], 3);
+
+    // Human output names the work rather than printing an empty table.
+    u.cmd()
+        .arg("bless")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nothing outstanding"));
+
+    // A floor above every member finds nothing to do.
+    let out = u
+        .cmd()
+        .args(["bless", "--min-size", "1M", "--dry-run", "--json"])
+        .assert()
+        .success();
+    let floored: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(floored["examined"], 0);
 }
