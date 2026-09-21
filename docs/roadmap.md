@@ -154,7 +154,7 @@ recovery-equivalence as a property test.
   extractor, design recorded in open-questions). CHD's *read* half
   landed early — *2026-09-21*: v1–v5 parsing and the decompressing
   `chd-verify` sweep D44 deferred, which is what closes M1's
-  "no decompression" caveat above. CHD *rebuild* stays here, and D123
+  "no decompression" caveat above. CHD *rebuild* stays here, and D124
   rules out the decomposition that would have preceded it,
   read-only SMB1 server (D32), curated channels, waddup ZKP swarms,
   browser emulator cores.

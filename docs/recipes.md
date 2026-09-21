@@ -158,7 +158,7 @@ over the container, so the carve-out already guarantees every byte.
 - Switch NSP: derive `decrypt(NSP, keys{role:keys}) → D`; rebuild
   `xf-nca-crypt@1/encrypt(D, keys, params{sections,nonces}) → NSP`;
   planner drops NSP literal, keeps D (D12: keys are ordinary blobs).
-- CHD: **not built, ruled out for now (D123)** — the shape would be raw
+- CHD: **not built, ruled out for now (D124)** — the shape would be raw
   track image `R` stored with a rebuild pinning one chdman-port
   component forever, container sha1 aliasing the rebuild output and the
   softlist internal sha1 aliasing `R`. What exists today is the read

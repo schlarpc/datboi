@@ -4410,7 +4410,7 @@ gathered); making `blob.residency` authoritative and the store derived
 (inverts D15: the store is the durable artifact, the databases are
 rebuildable from it, and that is the whole shape of recovery).
 
-## D123 — CHD hunk decomposition is not built; FastCDC already generalises it (2026-09-21)
+## D124 — CHD hunk decomposition is not built; FastCDC already generalises it (2026-09-21)
 
 With the `chd-verify` sweep landed (D44 amendment), the remaining CHD
 question was storage: decompose each file into hunk blobs plus a

@@ -557,7 +557,7 @@ the writer** (lazily-built wasm host, recipe per member) — it already
 fans out internally per D89, and a container-heavy corpus is the
 measurement that would justify a host per worker.
 
-**Position as of 2026-09-21 — D44's deferred verify BUILT, D123 ruled
+**Position as of 2026-09-21 — D44's deferred verify BUILT, D124 ruled
 NOT to build**: CHDs stop being the corpus's blind spot. All five header
 versions and both map encodings parse (v1–v4 were opaque bytes with a
 note — 102 files on the live set), the `chd-verify` sweep family
@@ -567,7 +567,7 @@ is ruled out because FastCDC over the same blobs already generalises it.
 
 Residuals and watch items:
 
-- **The dedup measurement was never run.** D123's argument is
+- **The dedup measurement was never run.** D124's argument is
   structural, not empirical; the harness
   (`cargo test -p datboi-formats --test chd_dedup -- --ignored
   --nocapture`, `DATBOI_CHD_DIR=...`) exists precisely so the ruling can
