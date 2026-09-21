@@ -4752,6 +4752,15 @@ The discriminator is already in the data and needs no new vocabulary:
    incompressible member where it is not.) `ChunkAnalyzer` alone names
    nothing: its chunks appear only as `InputRef { role: None }` and its
    one `OutputRef` is the reassembled original, unnamed.
+   One edge worth stating rather than rediscovering: term 1 inverts for
+   COMPRESSION. A zip is smaller than the members it holds, so its
+   member recipes have outputs larger than the container and term 1
+   calls it a part. Term 2 is what keeps it a document, and it holds
+   for every custody door there is — each one runs through `Ingester`,
+   which writes the `source_file` row — and for a nested container,
+   which is its parent's named member. A future door that minted
+   `container→member` recipes without either would need one.
+
 3. **generated** — a zero-input recipe's output. D111/D112's junk and
    filler streams ARE named (`Some("gc-junk")`) AND they span their
    disc's whole address space, so neither other term catches them;
