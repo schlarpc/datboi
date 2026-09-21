@@ -959,6 +959,48 @@ not a ceiling. This unblocks never-fully-materialized giant images
 D49 (giant reified images unservable), mandatory blessing (one full
 pass over TB-scale images for no additional served-byte guarantee).
 
+*Amendment (2026-09-20): a floor only where a floor exists — non-affine
+derives bless.* D63's cost objection to mandatory blessing was aimed at
+affine routes over verified inputs, where the carve-out already
+guarantees every served byte and an output bao buys nothing but a full
+pass over a TB-scale image. It does not reach `deflate-decompress@1`
+zip members, and reading it that broadly left most ROMs inside zips
+unreadable through a view. Measured on the live deployment: 152,014
+deflate members, 107,090 of them over 16 KiB and therefore with neither
+a sidecar nor a carve-out — `serve_range` returned `MissingOutboard`,
+the daemon 500, the NFS client `NFS3ERR_IO`, and the client saw an
+empty read. `mame -verifyroms` over the mount passed 5,699 machines
+where our own audit says 27,975 are complete. Members at or under one
+chunk group have an empty outboard by construction and worked, which is
+what hid it. Two things are different about these routes. (1) **There
+is no floor to be a ceiling over**: the route is not affine, nothing
+qualifies for the carve-out, and the output bao is not a promotion —
+it is the only way to serve the bytes at all. (2) **The pass D63
+refused to pay is already being paid**: `hash_member` inflates every
+DEFLATE member in full to compute its alias tuple (D2), so the tree is
+one more hasher on bytes already streaming past, not a second pass.
+Ingest therefore computes the output outboard in the same inflate that
+computes the tuple and stores the sidecar beside the absent member
+(~len/256, ~0.4% of content — 143.0 GB of members costs ~560 MB of
+trees), checking the obao root against the tuple's blake3 on the way:
+the same value computed two ways, so the check is free. STORED members
+are untouched — the carve-out covers them and D63's cost objection
+still stands there. For members already ingested, which no ingest
+change reaches retroactively, `serve_range` blesses ON DEMAND where it
+used to return `MissingOutboard`: the same "cheap and one-time" shape
+as the lazy `ensure_obao` on literals, under a per-hash single-flight
+so a client's parallel readahead cannot turn one cold read into sixteen
+materializations of the same blob. No size cap — a cap turns "the first
+read is slow" back into "the bytes are unreadable", which is the bug.
+A blessing failure stays an error: D49's never-bad-bytes rule forbids
+the soft fallback of slicing an unverified spill. *Rejected:* blessing
+STORED members too (the carve-out already guarantees those bytes;
+D63's objection is exactly on point there); deferring the on-demand
+bless to a background pass and failing the read meanwhile (leaves the
+corpus unreadable until a sweep that does not exist); a size cap on
+on-demand blessing (permanent unreadability for the biggest members —
+the same failure in a nicer wrapper).
+
 ## D64 — Forward compatibility is the point: core and components evolve independently (2026-07-10)
 
 The unstated thesis behind D5/D6, ruled now because it just vetoed
