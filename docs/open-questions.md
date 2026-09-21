@@ -13,27 +13,6 @@ web-ui.md (the nav ruling). History lives in git.
 
 Each of these wants its D entry before (or as) the code lands.
 
-- **Ingest is single threaded, and the wall clock is one core's hash
-  chain.** `Ingester::ingest` is a serial walk calling `process_file`
-  one file at a time against a single `&mut Db`; there is no
-  parallelism knob. Measured adopting a 549 GB MAME set (35,494 zips,
-  ~767 CHDs) on an 8-core EPYC 9124 over NFS: **142 MB/s, 8 files/s,
-  71% of ONE core**, ~1.2 h. The network is not the constraint — the
-  same mount does 1,519 MB/s on a cold sequential read, 10x what the
-  ingest consumes. The constraint is `AliasHasher`: every byte goes
-  through crc32 + md5 + sha1 + sha256 + blake3 serially (D2's full
-  tuple, because dats identify by the legacy digests and the store
-  addresses by blake3), and every zip member is then inflated and run
-  through the same five again. With SHA-NI and AVX-512 present, sha1,
-  sha256 and blake3 are each multi-GB/s; **md5 has no hardware path
-  and is roughly half the chain's cost on its own**. The obvious shape
-  is a worker pool hashing files in parallel feeding one DB-writing
-  thread — SQLite has a single writer under WAL anyway, so only the
-  hashing needs to fan out, and the sorted-order determinism the
-  report promises can be restored by ordering the commit queue rather
-  than the work. Worth ruling before the "10M small files" case in D36
-  stops being hypothetical: at this rate that corpus is days.
-
 - **`import_dat` is not atomic past the blob.** Its own comment
   promises a failed import "leaves no trace", and that holds for a
   malformed file (validation precedes storage) but not for one that
@@ -491,6 +470,28 @@ partition walk without the crypto; (6) the H3 table rides as a
 (7) the leaf walk now packs NARC members instead of NARCs on DS (the
 `narc_swap` gate proves the mechanism on a synthetic pair) — the real
 MKDS pair is the measurement to take when the corpus has it.
+
+**Position as of 2026-09-20 — D120 BUILT**: ingest hashes in parallel.
+A bounded worker pool does the reading, hashing and recipe-building;
+one writer applies every `Db` mutation in walk order out of a small
+reorder buffer, so the report (counters, notes, errors, member skips,
+fresh-blob ids) and the blob ids themselves are byte-identical to the
+serial run — `parallel_ingest_agrees_with_serial_exactly` asserts
+exactly that over one corpus at 1, 3 and 8 workers. Defaults to the
+core count, `--jobs N` overrides. Measured on 1.9 GiB of loose files
+and zips (tmpfs, 16 cores): 6.46 s → 0.55 s, 11.7x, 14.7 cores busy,
+peak RSS 12 → 14 MiB. Residuals, none of them blocking: (1) **the
+five hashes still run serially within one file** — md5 has no hardware
+path and is about half the chain, so a lone huge CHD on an idle box
+still moves at one core's chain speed; D120 rejected teeing the
+stream for it, and the case to re-open on is a corpus with fewer
+files than cores; (2) **the skipper lane holds a file twice** —
+`decision.apply` copies the variant out beside the whole-file buffer,
+which is why the in-flight cap maps to ~2x heap; hashing the variant
+as a slice of the buffer would halve it; (3) **the 7z/rar lane runs on
+the writer** (lazily-built wasm host, recipe per member) — it already
+fans out internally per D89, and a container-heavy corpus is the
+measurement that would justify a host per worker.
 
 ## Resolved
 
