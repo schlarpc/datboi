@@ -467,6 +467,75 @@ ruling favors strictness — a truncated CHD with an intact header must
 not audit as have. Unsupported CHD versions (v1–v4) are stored as opaque
 bytes and reported.
 
+*Amendment (2026-09-21, the deferred verify landed):* the decompressing
+verify this entry deferred now exists as the `chd-verify` analyzer, and
+the grading it gates changes accordingly. **A CHD whose every hunk this
+build decompressed, and whose logical data hashes to what the header
+declares, links at `BASIS_SHA1` — have-verified.** That is not a
+softening of the ruling, it is the ruling's own exit condition: the
+grade rises because the evidence changed from an attestation we read to
+a digest we computed over bytes we produced ourselves. Everything else
+about D44 stands. The declared alias namespace is untouched, still
+answering nothing but disk claims at `BASIS_DECLARED`; a CHD nobody has
+verified yet is still `probable`; and a truncated CHD with an intact
+header still fails, now for the reason the entry named — the hunks are
+not there.
+
+The mechanism is a second alias namespace, `AliasAlgo::ChdSha1Verified`,
+written only by the analyzer and only after a full decompression. Two
+namespaces rather than one column: the *claim* a header makes and the
+*conclusion* a verify reached are different facts about different
+evidence, and a shared row would make "who said this" a matter of
+reading a flag correctly. Neither namespace ever answers a real sha1
+lookup (the digest describes decompressed content, not the blob), which
+is the invariant this entry set and the new one inherits verbatim.
+`link_identities_to_blobs` now upserts the basis to the MAXIMUM of what
+it has and what it found, so a re-link cannot silently demote a
+verified CHD back to probable — the old `INSERT OR IGNORE` would have
+frozen whichever grade got there first.
+
+Three consequences, ruled explicitly.
+
+**v1–v4 parse.** The legacy headers and hunk maps are read now, so those
+files stop being opaque bytes with a note. What they get is honesty
+about what each version declares, not a promotion: v4 carries the
+combined raw+metadata sha1 dats reference and behaves exactly like v5;
+v3's `sha1` field covers the RAW data only, and is recorded as the
+declared disk digest because that is what a v3-era dat listed; **v1 and
+v2 declare an md5 and no sha1 at all**, so they are parsed, verified,
+reported — and then held as ordinary literals with no disk-claim alias,
+because there is no sha1 they could answer with and offering their md5
+in a sha1's place is precisely the lie this entry forbids.
+
+**Partial verification is not verification.** The analyzer refuses a
+file *before* decompressing anything if any hunk in its map needs a
+codec this build lacks (`avhu`, today), or if it is a delta against a
+parent. `zlib`, `lzma`, `huff`, `flac`, `cdzl`, `cdlz`, `cdfl` and
+uncompressed hunks are all decoded. A refusal is a `Negative` naming
+the codec, not an `Err` (D81): the file will not become decodable by
+retrying, only by a new analyzer version — which is exactly the event
+the fixpoint is built on (D45).
+
+**Already-ingested CHDs are swept, not re-ingested.** A new analyzer
+identity means every blob is unanalyzed for it (D45), so the existing
+corpus is re-covered by the ordinary ambient sweep with no migration,
+no re-scan and no operator step. The alternative — verifying at ingest
+— was rejected on D45's own terms: a full decompression of 522 GB is
+the most expensive thing in the pipeline and belongs in the background
+by construction.
+
+*Rejected:* a `verified` boolean on the existing `identity_blob` row
+(the same shared-row confusion, one indirection later, and it would
+make the grade depend on reading a flag rather than on which namespace
+the evidence lives in); trusting the map's per-hunk CRCs as a cheap
+"verify" (they are written by the same tool as the sha1 — the identical
+self-attestation this entry refused, at a weaker checksum; they are
+checked, but as corruption detection *inside* a real verify, never as a
+substitute for one); promoting v1/v2 by hashing their decompressed data
+and offering the result as a sha1 (nothing in the file attests to it,
+so it is our number, not the dumper's, and it answers no claim anyone
+makes).
+
 ## D45 — Ingest is custody; analysis is a refinement fixpoint (2026-07-06)
 
 Ingest = custody + identity (single-pass full alias tuple) + only the
