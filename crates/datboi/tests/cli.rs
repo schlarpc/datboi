@@ -1817,6 +1817,8 @@ fn bless_pass_end_to_end() {
         "a sidecar is not a materialization"
     );
     assert_eq!(mat["materialized"], 3);
+    assert_eq!(mat["unrecorded"], 0);
+    assert_eq!(mat["reconciled"], 0);
     assert_eq!(mat["population"], 3);
     assert_eq!(mat["population_after"], 0, "resident rows leave the set");
     assert!(mat["complete"].as_bool().unwrap());
@@ -1832,5 +1834,47 @@ fn bless_pass_end_to_end() {
     assert_eq!(
         exact["population"], 0,
         "members are 200_000 bytes and already resident"
+    );
+
+    // D122: bytes on disk under a row that calls them absent is WORK.
+    // Walk one member's residency back by hand — the residue any
+    // writer interrupted between its rename and its row leaves — and
+    // the pass must repair it rather than count it done.
+    let hash = datboi_core::hash::Blake3::compute(&bodies[0]).to_hex();
+    let cache = u.db().join("cache.db");
+    let sqlite = |stmt: String| -> String {
+        let out = Command::new("sqlite3")
+            .arg(&cache)
+            .arg(stmt)
+            .output()
+            .expect("sqlite3");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    assert_eq!(
+        sqlite(format!(
+            "UPDATE blob SET residency = 2 WHERE hash = x'{hash}'; SELECT changes();"
+        )),
+        "1"
+    );
+
+    let out = u
+        .cmd()
+        .args(["bless", "--materialize", "--json"])
+        .assert()
+        .success();
+    let healed: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(
+        healed["population"], 1,
+        "the stale row is a candidate again"
+    );
+    assert_eq!(healed["reconciled"], 1, "repaired, not skipped");
+    assert_eq!(healed["materialized"], 0, "the bytes were already there");
+    assert!(healed["complete"].as_bool().unwrap());
+    assert_eq!(
+        sqlite(format!(
+            "SELECT residency FROM blob WHERE hash = x'{hash}';"
+        )),
+        "0",
+        "residency converged",
     );
 }

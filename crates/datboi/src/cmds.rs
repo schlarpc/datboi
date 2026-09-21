@@ -218,7 +218,8 @@ pub fn bless(env: &Env, args: &BlessArgs<'_>, json: bool) -> anyhow::Result<Exit
                 "complete": report.complete(),
                 "examined": report.examined,
                 "already_blessed": report.already_blessed,
-                "resident": report.resident,
+                "reconciled": report.reconciled,
+                "unrecorded": report.unrecorded,
                 "carved_out": report.carved_out,
                 "no_route": report.no_route,
                 "selected": report.selected,
@@ -274,8 +275,14 @@ fn print_bless(
     if report.already_blessed > 0 {
         println!("already blessed    {:>8}", report.already_blessed);
     }
-    if report.resident > 0 {
-        println!("resident (skipped) {:>8}", report.resident);
+    if report.reconciled > 0 {
+        // D122: bytes on disk under a row that called them absent. The
+        // repair is free here, so say it happened rather than hide it —
+        // it is evidence of an earlier writer that was interrupted.
+        println!(
+            "reconciled         {:>8}   rows repaired: bytes were on disk, the index said absent",
+            report.reconciled
+        );
     }
     if report.carved_out > 0 {
         println!(
@@ -311,6 +318,13 @@ fn print_bless(
             "materialized       {:>8}   bytes kept resident, {} on disk",
             report.materialized,
             human_bytes(report.bytes)
+        );
+    }
+    if report.unrecorded > 0 {
+        println!(
+            "UNRECORDED: {} blob(s) have durable bytes whose index row could not be written \
+             (a contended database). Nothing is lost — re-run to reconcile them.",
+            report.unrecorded
         );
     }
     if report.out_of_room {
