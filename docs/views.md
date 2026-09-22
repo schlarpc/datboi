@@ -51,7 +51,7 @@ snapshots are never evicted.
 | Surface | Status |
 |---|---|
 | HTTP Range + WebDAV (axum + dav-server) | day one |
-| In-process userspace NFSv3 (nfsserve/nfs3_server lineage, VFS trait) | primary mount, phase 2 |
+| In-process userspace NFSv3 (`datboi-nfs-server`, a vendored fork of nfsserve 0.11.0 — see that crate's FORK.md; nfs3_server lineage, VFS trait) | primary mount, phase 2 |
 | FUSE (fuser) | optional where available, never required |
 | SMB | sidecar Samba (generated smb.conf, NT1 only on isolated retro share) initially; **own read-only memory-safe SMB1 server** for OPL/OG-Xbox is an accepted future workstream (narrow, documented op subset; safer than NT1-in-Samba) |
 | FAT32 image synthesis | **shipped 2026-07-10** (D62/D63): hand-rolled layout math in the policy tier mints one `assemble@1` recipe per image (skeleton blobs + cluster-aligned content windows + fill); `view image <name> [--out]`; MBR default, params on the ViewDef (CBOR keys 8–11); obao blessed at mint, D63 carve-out serves un-blessed giants; fsck-in-CI + independent fatfs read-back mandatory (the `fatfs` crate is the *oracle*, never the writer) |

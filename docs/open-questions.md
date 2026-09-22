@@ -297,6 +297,31 @@ Named so they aren't rediscovered as bugs; not slated for change.
   itself round-trip through the GUEST before minting rather than
   trusting the native verify. Until then, `datboi bless --materialize`
   counts the poisonings and an operator can see the size of it.
+
+  **Amended 2026-09-22 (D128).** There is a SECOND instance of the same
+  upstream bug, at the other end of the pipeline: the NATIVE split
+  panics too, on the calling thread, at the same
+  `tree_predictor.rs:169`. The entry above is rebuild-time, reached
+  through the guest, where wasmtime turns the panic into a trap; this
+  is split-time, in-process, where it is a plain unwind. Before D128
+  that unwind escaped into a detached refine drone and killed it, and
+  four of them ended ambient refinement for the life of the process.
+  D128 contains it: the item settles Negative carrying the panic text,
+  and the fleet survives.
+
+  Measured on the live corpus once contained, which reframes the
+  severity of BOTH entries: preflate mints roughly **87,000 recipes per
+  90 minutes and panics about 8 times** in the same window — of order
+  one failure per eleven thousand recipes. It is not a broken analyzer;
+  it is a working one with a rare crash whose blast radius used to be
+  the whole worker pool. The operator lesson is recorded in
+  `hosts/datboi/FINDINGS.md` §10.2.1: disabling the family to survive
+  the panics also gave up those 87,000 recipes, which is the more
+  expensive half of that trade.
+
+  The owed work is unchanged and now has a cheaper way in: the trapped
+  items name their blobs in the refine log at ERROR, so capturing a
+  reproducing pair no longer needs the poisoned-recipe join.
 - **Sequential assemble over opaque children spills**: the executor
   opens assemble children random-access, so a sequential read of
   concat-of-derived spills each derived child. D72's watermark
