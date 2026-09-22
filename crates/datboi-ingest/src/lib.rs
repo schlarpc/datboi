@@ -1672,7 +1672,20 @@ pub(crate) fn mint_recipe(
         .encode()
         .map_err(|e| IngestError::Recipe(e.to_string()))?;
     let recipe_hash = Blake3::compute(&encoded);
+    // The store write stays OUTSIDE the transaction below. It is an NFS
+    // round-trip, and holding SQLite's exclusive writer lock across one
+    // is how a slow mount becomes everyone else's SQLITE_BUSY. The
+    // store is content-addressed and idempotent, so a crash between the
+    // put and the commit costs a re-put, never a wrong row.
     store.put(StoreNs::Meta, recipe_hash, encoded.as_slice())?;
+    // One write-lock hold for the whole recipe. This used to be four
+    // plus one-per-input and one-per-output separate transactions, and
+    // a decomposition mints a recipe per piece — so a large NDS/NARC
+    // item took the lock thousands of times, starving every other
+    // writer past its busy timeout. Everything called here takes
+    // `&self` and runs on this same connection, so the statements join
+    // this transaction rather than autocommitting one apiece.
+    let tx = db.cache_write_tx()?;
     let recipe_blob_id = db.upsert_blob(
         &recipe_hash,
         Some(encoded.len() as u64),
@@ -1680,10 +1693,16 @@ pub(crate) fn mint_recipe(
         Residency::Resident,
     )?;
     if let Some(existing) = db.recipe_id_for_blob(recipe_blob_id)? {
-        return Ok(existing); // re-mint of already-claimed content
+        // Re-mint of already-claimed content. The upsert above still
+        // matters (it records the recipe object as resident), so this
+        // commits rather than rolling back.
+        tx.commit().map_err(datboi_index::IndexError::from)?;
+        return Ok(existing);
     }
-    let recipe_id = db.index_recipe(recipe_blob_id, recipe, seek, RecipeSource::LocalIngest)?;
+    let recipe_id =
+        db.index_recipe_in(&tx, recipe_blob_id, recipe, seek, RecipeSource::LocalIngest)?;
     db.set_verify_state(recipe_id, datboi_index::VerifyAdvance::Verified, now_unix())?;
+    tx.commit().map_err(datboi_index::IndexError::from)?;
     Ok(recipe_id)
 }
 

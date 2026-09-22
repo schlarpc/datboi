@@ -2093,3 +2093,37 @@ fn unpack_candidates_are_resident_sole_input_containers() {
     );
     assert_eq!(db.unpack_candidate_count().expect("count"), 1);
 }
+
+/// Statements issued through `&self` helpers JOIN a transaction the
+/// caller already holds on the same connection — they do not autocommit
+/// one apiece.
+///
+/// This is load-bearing rather than incidental: it is what lets
+/// `mint_recipe` put a whole recipe's writes under one write-lock hold
+/// instead of four-plus. If it ever stopped being true the batching
+/// would silently revert to per-statement transactions and the lock
+/// starvation would come back, so it is asserted rather than assumed.
+#[test]
+fn helper_writes_join_an_open_transaction() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = Db::open(dir.path()).expect("db");
+    let hash = Blake3::compute(b"joins the caller's transaction");
+
+    {
+        let tx = db.cache_write_tx().expect("tx");
+        db.upsert_blob(&hash, Some(7), Namespace::Data, Residency::Resident)
+            .expect("write inside the caller's transaction");
+        // Visible to this connection before commit...
+        assert!(
+            db.get_blob_id(&hash).expect("read").is_some(),
+            "the write is visible within the open transaction"
+        );
+        drop(tx); // ...and rolls back with it.
+    }
+
+    assert!(
+        db.get_blob_id(&hash).expect("read").is_none(),
+        "the helper's write was part of the rolled-back transaction, \
+         not an autocommit of its own"
+    );
+}

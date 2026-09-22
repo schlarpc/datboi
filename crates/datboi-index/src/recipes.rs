@@ -190,8 +190,22 @@ const UNPACK_CANDIDATE_SQL: &str = "SELECT b.blob_id, b.hash, b.size
          WHERE ib.blob_id = b.blob_id)";
 
 impl Db {
-    pub fn insert_recipe(&mut self, new: &NewRecipe<'_>) -> Result<i64, IndexError> {
-        let tx = self.cache.transaction()?;
+    /// Write the recipe row and its input/output rows **into a
+    /// transaction the caller already holds**.
+    ///
+    /// Exists so a minting path can put its whole burst of writes under
+    /// ONE write-lock hold. `mint_recipe` used to issue four-plus
+    /// separate transactions per recipe — upsert, ensure per input,
+    /// ensure per output, insert, verify-state — and a decomposition
+    /// mints one recipe per piece, so a single large NDS/NARC item
+    /// could take the exclusive WAL writer lock ten thousand times.
+    /// Under a loaded fleet that is what starves every other writer past
+    /// its busy timeout.
+    pub fn insert_recipe_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        new: &NewRecipe<'_>,
+    ) -> Result<i64, IndexError> {
         tx.execute(
             "INSERT INTO recipe (blob_id, op_kind, op_name, seek_class, verify, source)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -227,6 +241,15 @@ impl Db {
                 ])?;
             }
         }
+        Ok(recipe_id)
+    }
+
+    /// Standalone twin of [`Db::insert_recipe_in`]: opens its own
+    /// transaction. Unchanged behaviour for every caller that is not
+    /// batching.
+    pub fn insert_recipe(&mut self, new: &NewRecipe<'_>) -> Result<i64, IndexError> {
+        let tx = self.cache_write_tx()?;
+        let recipe_id = self.insert_recipe_in(&tx, new)?;
         tx.commit()?;
         Ok(recipe_id)
     }
@@ -292,6 +315,83 @@ impl Db {
             inputs: &inputs,
             outputs: &outputs,
         })
+    }
+
+    /// [`Db::index_recipe`] inside a transaction the caller holds.
+    pub fn index_recipe_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        recipe_blob_id: i64,
+        recipe: &Recipe,
+        seek_class: SeekClass,
+        source: RecipeSource,
+    ) -> Result<i64, IndexError> {
+        let op_kind = match recipe.op {
+            Op::Builtin { .. } => OpKind::Builtin,
+            Op::Wasm { .. } => OpKind::Wasm,
+        };
+        let op_name = recipe.op.index_name();
+        let mut inputs = Vec::with_capacity(recipe.inputs.len());
+        for (position, input) in recipe.inputs.iter().enumerate() {
+            let id = self.ensure_blob_in(tx, &input.hash)?;
+            inputs.push((
+                u32::try_from(position).expect("recipe input count fits u32"),
+                id,
+                input.role.as_deref(),
+            ));
+        }
+        let mut outputs = Vec::with_capacity(recipe.outputs.len());
+        for (ordinal, output) in recipe.outputs.iter().enumerate() {
+            let id = self.ensure_blob_in(tx, &output.hash)?;
+            outputs.push((
+                u32::try_from(ordinal).expect("recipe output count fits u32"),
+                id,
+                output.size,
+                output.name.as_deref(),
+            ));
+        }
+        self.insert_recipe_in(
+            tx,
+            &NewRecipe {
+                blob_id: recipe_blob_id,
+                op_kind,
+                op_name: &op_name,
+                seek_class,
+                source,
+                inputs: &inputs,
+                outputs: &outputs,
+            },
+        )
+    }
+
+    /// [`Db::ensure_blob`] inside a transaction the caller holds.
+    fn ensure_blob_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        hash: &Blake3,
+    ) -> Result<i64, IndexError> {
+        if let Some(id) = tx
+            .query_row(
+                "SELECT blob_id FROM blob WHERE hash = ?1",
+                params![hash.0.as_slice()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+        {
+            return Ok(id);
+        }
+        Ok(tx.query_row(
+            "INSERT INTO blob (hash, size, namespace, residency)
+             VALUES (?1, NULL, ?2, ?3)
+             ON CONFLICT(hash) DO UPDATE SET hash = hash
+             RETURNING blob_id",
+            params![
+                hash.0.as_slice(),
+                Namespace::Data.code(),
+                Residency::Absent.code()
+            ],
+            |row| row.get(0),
+        )?)
     }
 
     /// Referenced-but-unindexed blobs get Absent rows (no size claim —
