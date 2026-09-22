@@ -684,7 +684,7 @@ impl NFSFileSystem for NfsFs {
     /// path behind that key is deferred to [`NfsFs::node`], which can
     /// do it off the reactor.
     fn fh_to_id(&self, fh: &nfs_fh3) -> Result<fileid3, nfsstat3> {
-        let (class, rest) = fh.data.split_first().ok_or(nfsstat3::NFS3ERR_BADHANDLE)?;
+        let (class, rest) = fh.data.split_first().ok_or(nfsstat3::NFS3ERR_STALE)?;
         match (*class, rest.len()) {
             (FH_ROOT, 0) => Ok(ROOT_ID),
             (FH_VIEW, 16) => {
@@ -697,7 +697,14 @@ impl NFSFileSystem for NfsFs {
                 Ok(self.remember_cold(id_of_key(&key), Cold::Path(snapshot, key)))
             }
             (FH_OPAQUE, 8) => Ok(u64::from_le_bytes(rest.try_into().expect("checked length"))),
-            _ => Err(nfsstat3::NFS3ERR_BADHANDLE),
+            // A handle shaped like nothing this server mints is one it
+            // no longer honours — including every handle minted before
+            // D129, which is what a client holds across the deploy that
+            // introduces it. `NFS3ERR_BADHANDLE` is the harsher reading
+            // and reaches userspace as a bare `Unknown error 521`;
+            // ESTALE is the one Linux has a recovery path for, and the
+            // one the cabinet's mount drop already listens for.
+            _ => Err(nfsstat3::NFS3ERR_STALE),
         }
     }
 
@@ -1429,11 +1436,15 @@ mod tests {
                 Err(nfsstat3::NFS3ERR_STALE)
             ));
 
-            // and garbage is refused at the door
-            for data in [vec![], vec![FH_PATH], vec![9, 9, 9]] {
+            // A handle in no shape this server mints is refused at
+            // the door, as ESTALE rather than BADHANDLE — a client can
+            // recover from one and not the other. The 16-byte case is
+            // literally what every client held across the D129 deploy:
+            // upstream's generation number over a counter.
+            for data in [vec![], vec![FH_PATH], vec![9, 9, 9], vec![7; 16]] {
                 assert!(matches!(
                     fs.fh_to_id(&nfs_fh3 { data }),
-                    Err(nfsstat3::NFS3ERR_BADHANDLE)
+                    Err(nfsstat3::NFS3ERR_STALE)
                 ));
             }
         });

@@ -5205,6 +5205,18 @@ the one node whose id then depends on mint order is REFUSED when its
 handle arrives rather than resolved to its neighbour. A handle carries
 128 bits precisely so that check is available to make.
 
+One transition cost, paid once: a handle minted before this ruling is
+16 bytes of generation number over a counter, which decodes to no class
+this server mints. Observed on bagel immediately after the deploy —
+`stat /mnt/arcade-view` returning `Unknown error 521`, the kernel's
+`EBADHANDLE` leaking to userspace with no recovery path behind it. So
+an undecodable handle answers `NFS3ERR_STALE`, not `NFS3ERR_BADHANDLE`:
+a handle in no shape this server mints is one it no longer honours,
+which is what STALE means, and ESTALE is the answer Linux and the
+cabinet's own mount drop already know how to act on. Mounts that
+predate the deploy still need one remount; every deploy after it is
+invisible.
+
 A restart now costs a client one extra resolution per handle it still
 holds, and nothing else. A walk interrupted by a deploy resumes where
 it stopped — even when that deploy also flipped the view underneath it,
