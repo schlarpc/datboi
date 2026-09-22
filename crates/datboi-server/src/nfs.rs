@@ -23,8 +23,20 @@
 //! the old tree to completion instead of invalidating every
 //! outstanding cookie.
 //!
-//! Ids are allocated per process; the NFS generation number stales
-//! all handles across daemon restarts, which is ordinary NFS behavior.
+//! ## Identity is derived, not allocated (D129)
+//!
+//! A fileid is a hash of what it names — `(snapshot, path)`, or a
+//! view's name — never a counter. Every process that serves this tree
+//! therefore agrees on every id without persisting anything, and an id
+//! can never come to mean a different node than it did before a
+//! restart.
+//!
+//! The opaque file handle carries that same identity on the wire
+//! (class byte, snapshot, 128-bit key) instead of upstream's startup
+//! generation number over a process-local id. So a handle a client
+//! cached before a deploy still names the file it named: a restart is
+//! invisible where it used to be `ESTALE` on every path until someone
+//! remounted.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,7 +45,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use datboi_core::hash::Blake3;
 use datboi_nfs_server::nfs::{
-    fattr3, fileid3, filename3, ftype3, nfspath3, nfsstat3, nfstime3, sattr3,
+    cookieverf3, fattr3, fileid3, filename3, ftype3, nfs_fh3, nfspath3, nfsstat3, nfstime3, sattr3,
 };
 use datboi_nfs_server::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
 
@@ -41,6 +53,22 @@ use crate::App;
 use crate::vfs::{self, LookupError, ViewIndex};
 
 const ROOT_ID: fileid3 = 1;
+
+/// Handle classes — the first byte of every opaque file handle.
+const FH_ROOT: u8 = 0;
+const FH_VIEW: u8 = 1;
+const FH_PATH: u8 = 2;
+/// An id this process cannot derive a handle for (see
+/// [`NfsFs::id_to_fh`]). Process-local, which is what every handle was
+/// before D129.
+const FH_OPAQUE: u8 = 3;
+
+/// A node's identity key: the leading 16 bytes of its identity hash.
+///
+/// A `fileid3` has room for 64 bits of it and a handle has room for
+/// more, so it uses more — matching a cold handle back to a path is
+/// exact at 128 bits even where the fileid alone could have collided.
+type NodeKey = [u8; 16];
 
 /// What a fileid names.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -52,30 +80,100 @@ enum Node {
     Path(Blake3, String),
 }
 
+/// A handle decoded off the wire whose node this process has not met
+/// yet: it names the node exactly, but the path behind the key has not
+/// been recovered from the snapshot. Always a handle a client minted
+/// before this process started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cold {
+    View(NodeKey),
+    Path(Blake3, NodeKey),
+}
+
+/// The identity key of a path within a snapshot — what a `Node::Path`
+/// handle carries, and where that node's fileid comes from. `probe` is
+/// the clash escape hatch in [`IdTable::id_for`] and is 0 for every
+/// identity that reaches a handle.
+fn path_key(snapshot: &Blake3, path: &str, probe: u64) -> NodeKey {
+    let mut buf = Vec::with_capacity(16 + 32 + path.len() + 8);
+    buf.extend_from_slice(b"datboi-nfs/path\0");
+    buf.extend_from_slice(&snapshot.0);
+    buf.extend_from_slice(path.as_bytes());
+    buf.extend_from_slice(&probe.to_le_bytes());
+    truncate(&Blake3::compute(&buf))
+}
+
+/// The identity key of a view directory: its NAME, so the id survives
+/// every snapshot flip underneath it — the view half of the identity
+/// model above. Domain-separated from [`path_key`], so a view named
+/// `x` and a path spelled `x` cannot collide by construction.
+fn view_key(name: &str, probe: u64) -> NodeKey {
+    let mut buf = Vec::with_capacity(16 + name.len() + 8);
+    buf.extend_from_slice(b"datboi-nfs/view\0");
+    buf.extend_from_slice(name.as_bytes());
+    buf.extend_from_slice(&probe.to_le_bytes());
+    truncate(&Blake3::compute(&buf))
+}
+
+fn truncate(hash: &Blake3) -> NodeKey {
+    hash.0[..16].try_into().expect("16 of 32 bytes")
+}
+
+/// `None` for the root, whose id is fixed by the protocol rather than
+/// derived.
+fn key_of(node: &Node, probe: u64) -> Option<NodeKey> {
+    match node {
+        Node::Root => None,
+        Node::View(name) => Some(view_key(name, probe)),
+        Node::Path(snapshot, path) => Some(path_key(snapshot, path, probe)),
+    }
+}
+
+/// The fileid a key names: its low 64 bits, kept clear of 0 (the
+/// start-of-directory cookie) and of [`ROOT_ID`].
+fn id_of_key(key: &NodeKey) -> fileid3 {
+    let id = u64::from_le_bytes(key[..8].try_into().expect("8 of 16 bytes"));
+    if id <= ROOT_ID { id + ROOT_ID + 1 } else { id }
+}
+
 #[derive(Default)]
 struct IdTable {
     by_id: HashMap<fileid3, Node>,
     by_node: HashMap<Node, fileid3>,
-    next: fileid3,
 }
 
 impl IdTable {
     fn new() -> Self {
-        let mut table = Self {
-            next: ROOT_ID + 1,
-            ..Self::default()
-        };
+        let mut table = Self::default();
         table.by_id.insert(ROOT_ID, Node::Root);
         table.by_node.insert(Node::Root, ROOT_ID);
         table
     }
 
+    /// The fileid for `node`, DERIVED from the node itself (D129) —
+    /// the same in every process, with nothing persisted.
+    ///
+    /// A `fileid3` is 64 bits wide, so a million-row view has roughly a
+    /// 1-in-10^8 chance that two of its paths hash alike. Rare is not
+    /// never, and an id that names two nodes would serve one file's
+    /// bytes under the other's name, so a clash re-derives under the
+    /// next probe and this table stays bijective. The loser of a clash
+    /// is then the one node whose id depends on mint order; its handle
+    /// still carries the full 128-bit key, and [`NfsFs::node`] refuses
+    /// such a handle rather than resolving it to the wrong node.
     fn id_for(&mut self, node: &Node) -> fileid3 {
         if let Some(id) = self.by_node.get(node) {
             return *id;
         }
-        let id = self.next;
-        self.next += 1;
+        let Some(key) = key_of(node, 0) else {
+            return ROOT_ID; // pre-bound by `new`; unreachable in practice
+        };
+        let mut id = id_of_key(&key);
+        let mut probe = 0u64;
+        while self.by_id.get(&id).is_some_and(|held| held != node) {
+            probe += 1;
+            id = id_of_key(&key_of(node, probe).expect("root is bound, never probed"));
+        }
         self.by_id.insert(id, node.clone());
         self.by_node.insert(node.clone(), id);
         id
@@ -85,6 +183,10 @@ impl IdTable {
         self.by_id.get(&id).cloned()
     }
 }
+
+/// Decoded-but-unresolved handles held at once — see
+/// [`NfsFs::remember_cold`].
+const COLD_HANDLE_CEILING: usize = 64 * 1024;
 
 /// Cached child entries, summed across every cached directory, before
 /// the listing cache is dropped wholesale. A view root of ~37k entries
@@ -114,6 +216,13 @@ pub(crate) struct NfsFs {
     ids: Mutex<IdTable>,
     /// Child listings by `(snapshot, path)` — see [`Listing`].
     listings: Mutex<HashMap<(Blake3, String), Arc<Listing>>>,
+    /// Handles decoded off the wire that this process has not matched
+    /// to a node yet — see [`NfsFs::node`]. An entry lives only until
+    /// the node behind it is recovered.
+    cold: Mutex<HashMap<fileid3, Cold>>,
+    /// Every node key a snapshot contains, by snapshot — how a cold
+    /// handle finds its path without a walk. See [`snapshot_keys`].
+    keys: Mutex<HashMap<Blake3, Arc<HashMap<NodeKey, String>>>>,
     /// Listings actually built from an index. A full enumeration costs
     /// one; it used to cost one per READDIR call.
     builds: AtomicU64,
@@ -125,6 +234,8 @@ impl NfsFs {
             app,
             ids: Mutex::new(IdTable::new()),
             listings: Mutex::new(HashMap::new()),
+            cold: Mutex::new(HashMap::new()),
+            keys: Mutex::new(HashMap::new()),
             builds: AtomicU64::new(0),
         }
     }
@@ -136,12 +247,130 @@ impl NfsFs {
             .id_for(node)
     }
 
-    fn node(&self, id: fileid3) -> Result<Node, nfsstat3> {
-        self.ids
+    /// The node a fileid names.
+    ///
+    /// A fileid this process minted is in the table. One that arrived
+    /// on a handle from a previous process is not — D129 makes that
+    /// recoverable rather than `ESTALE`: the handle carries the node's
+    /// key, and the snapshot it belongs to is immutable, so the path
+    /// behind the key can simply be looked up again.
+    async fn node(&self, id: fileid3) -> Result<Node, nfsstat3> {
+        if let Some(node) = self
+            .ids
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .node(id)
-            .ok_or(nfsstat3::NFS3ERR_STALE)
+        {
+            return Ok(node);
+        }
+        let cold = *self
+            .cold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .ok_or(nfsstat3::NFS3ERR_STALE)?;
+        // Resolved or not, the note has done its job: an entry lives
+        // for one operation, so the map is bounded by requests in
+        // flight rather than by handles ever seen.
+        let thawed = self.thaw(cold).await;
+        self.cold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
+        let node = thawed?;
+        if self.id_for(&node) != id {
+            // This process probed the node around a fileid clash, so
+            // the handle's 64-bit half no longer names it. The handle
+            // is honest and the node is real, but serving it under an
+            // id that means something else here is exactly the aliasing
+            // D129 exists to prevent. Refuse instead.
+            return Err(nfsstat3::NFS3ERR_STALE);
+        }
+        Ok(node)
+    }
+
+    /// Note a handle whose node is not known yet, and return the
+    /// fileid it claims. Never displaces a live binding.
+    fn remember_cold(&self, id: fileid3, cold: Cold) -> fileid3 {
+        if self
+            .ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .node(id)
+            .is_some()
+        {
+            return id;
+        }
+        let mut notes = self
+            .cold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The write-shaped ops answer `NFS3ERR_ROFS` without ever
+        // resolving the handle they were given, so a client that only
+        // ever sends those leaks a note per call. A valve, not a
+        // policy: reaching it needs more unresolved handles at once
+        // than any real client holds.
+        if notes.len() >= COLD_HANDLE_CEILING {
+            notes.clear();
+        }
+        notes.insert(id, cold);
+        id
+    }
+
+    /// Match a cold handle's key back to the node it names.
+    async fn thaw(&self, cold: Cold) -> Result<Node, nfsstat3> {
+        match cold {
+            // Views are few and the tag list is the authority on which
+            // exist, so this is a scan rather than a map.
+            Cold::View(key) => {
+                self.blocking(move |app| {
+                    vfs::view_tags(&app)
+                        .map_err(|e| map_lookup(&e))?
+                        .into_iter()
+                        .map(|(name, _)| name)
+                        .find(|name| view_key(name, 0) == key)
+                        .map(Node::View)
+                        .ok_or(nfsstat3::NFS3ERR_STALE)
+                })
+                .await
+            }
+            Cold::Path(snapshot, key) => {
+                let keys = self.key_map(snapshot).await?;
+                keys.get(&key)
+                    .map(|path| Node::Path(snapshot, path.clone()))
+                    .ok_or(nfsstat3::NFS3ERR_STALE)
+            }
+        }
+    }
+
+    /// A snapshot's node keys, from cache or built. Same bargain as
+    /// [`Listing`]: a snapshot is immutable, so this never invalidates
+    /// and dropping it only costs a rebuild.
+    async fn key_map(&self, snapshot: Blake3) -> Result<Arc<HashMap<NodeKey, String>>, nfsstat3> {
+        if let Some(hit) = self
+            .keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&snapshot)
+        {
+            return Ok(Arc::clone(hit));
+        }
+        let built = self
+            .blocking(move |app| {
+                let idx = vfs::snapshot_index(&app, snapshot).map_err(|e| map_lookup(&e))?;
+                Ok(Arc::new(snapshot_keys(&idx)))
+            })
+            .await?;
+        let mut cache = self
+            .keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cached: usize = cache.values().map(|keys| keys.len()).sum();
+        if cached >= LISTING_CACHE_ENTRIES {
+            cache.clear(); // immutable entries: dropping only costs a rebuild
+        }
+        cache.insert(snapshot, Arc::clone(&built));
+        Ok(built)
     }
 
     /// Run blocking store/index work off the reactor.
@@ -228,9 +457,27 @@ impl NfsFs {
         if start_after == 0 {
             return None;
         }
-        match self.node(start_after).ok()? {
-            Node::Path(snapshot, path) if !path.contains('/') => Some(snapshot),
-            _ => None,
+        let held = self
+            .ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .node(start_after);
+        match held {
+            Some(Node::Path(snapshot, path)) if !path.contains('/') => Some(snapshot),
+            Some(_) => None,
+            // A cookie this process never minted can still name its
+            // snapshot, if the client holds a handle for the same
+            // entry: a walk interrupted by a restart then resumes
+            // where it was instead of starting over (D129).
+            None => match self
+                .cold
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&start_after)
+            {
+                Some(Cold::Path(snapshot, _)) => Some(*snapshot),
+                _ => None,
+            },
         }
     }
 
@@ -327,6 +574,31 @@ fn root_children(app: &App) -> Result<Vec<Child>, nfsstat3> {
         .collect()
 }
 
+/// Key every node a snapshot holds: one per manifest row, plus one per
+/// directory those rows imply (directories are path prefixes, not
+/// objects — see vfs.rs). This is what turns a cold handle's key back
+/// into a path, so it has to cover exactly the nodes a handle can name.
+///
+/// Rows arrive path-sorted, so a directory is new exactly when the
+/// previous row was not inside it — one hash per node, not one per
+/// node per row.
+fn snapshot_keys(idx: &ViewIndex) -> HashMap<NodeKey, String> {
+    let mut out = HashMap::new();
+    let mut prev = "";
+    for (path, _) in idx.rows() {
+        for (cut, _) in path.match_indices('/') {
+            let dir = &path[..cut];
+            let covered = prev.len() > cut && prev.as_bytes()[cut] == b'/' && prev.starts_with(dir);
+            if !covered {
+                out.insert(path_key(&idx.snapshot, dir, 0), dir.to_owned());
+            }
+        }
+        out.insert(path_key(&idx.snapshot, path, 0), path.to_owned());
+        prev = path;
+    }
+    out
+}
+
 fn listing_nodes(idx: &ViewIndex, prefix: &str) -> Vec<Child> {
     let listing = idx.list(prefix);
     let join = |name: &str| {
@@ -371,8 +643,77 @@ impl NFSFileSystem for NfsFs {
         ROOT_ID
     }
 
+    /// The opaque handle for `id`: what it names, not where it was
+    /// minted (D129). A class byte plus the identity that class needs —
+    /// 49 bytes at most, inside NFSv3's 64.
+    ///
+    /// Upstream's default is a startup generation number over a
+    /// process-local id, which is precisely what made every handle die
+    /// with the daemon.
+    fn id_to_fh(&self, id: fileid3) -> nfs_fh3 {
+        let mut data = Vec::with_capacity(1 + 32 + 16);
+        let node = self
+            .ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .node(id);
+        match node {
+            Some(Node::Root) => data.push(FH_ROOT),
+            Some(Node::View(name)) => {
+                data.push(FH_VIEW);
+                data.extend_from_slice(&view_key(&name, 0));
+            }
+            Some(Node::Path(snapshot, path)) => {
+                data.push(FH_PATH);
+                data.extend_from_slice(&snapshot.0);
+                data.extend_from_slice(&path_key(&snapshot, &path, 0));
+            }
+            // An id this process never minted has no identity to
+            // derive from. Hand back the process-local form rather than
+            // a handle that would name something else.
+            None => {
+                data.push(FH_OPAQUE);
+                data.extend_from_slice(&id.to_le_bytes());
+            }
+        }
+        nfs_fh3 { data }
+    }
+
+    /// Decode a handle without touching the store: the fileid is the
+    /// low half of the key the handle already carries. Recovering the
+    /// path behind that key is deferred to [`NfsFs::node`], which can
+    /// do it off the reactor.
+    fn fh_to_id(&self, fh: &nfs_fh3) -> Result<fileid3, nfsstat3> {
+        let (class, rest) = fh.data.split_first().ok_or(nfsstat3::NFS3ERR_BADHANDLE)?;
+        match (*class, rest.len()) {
+            (FH_ROOT, 0) => Ok(ROOT_ID),
+            (FH_VIEW, 16) => {
+                let key: NodeKey = rest.try_into().expect("checked length");
+                Ok(self.remember_cold(id_of_key(&key), Cold::View(key)))
+            }
+            (FH_PATH, 48) => {
+                let snapshot = Blake3(rest[..32].try_into().expect("checked length"));
+                let key: NodeKey = rest[32..].try_into().expect("checked length");
+                Ok(self.remember_cold(id_of_key(&key), Cold::Path(snapshot, key)))
+            }
+            (FH_OPAQUE, 8) => Ok(u64::from_le_bytes(rest.try_into().expect("checked length"))),
+            _ => Err(nfsstat3::NFS3ERR_BADHANDLE),
+        }
+    }
+
+    /// The readdir cookie verifier. Upstream derives it from the
+    /// server's startup time, which tells every client its cookies died
+    /// with the last process. Since D129 they did not: a cookie is a
+    /// derived fileid, and a walk resuming into a directory that no
+    /// longer holds it is still answered `NFS3ERR_BAD_COOKIE` by the
+    /// listing itself. So the verifier is constant — a restart is not a
+    /// reason to make a client re-walk a 37k-entry directory.
+    fn serverid(&self) -> cookieverf3 {
+        *b"datboi\0\x01"
+    }
+
     async fn lookup(&self, dirid: fileid3, filename: &filename3) -> Result<fileid3, nfsstat3> {
-        let dir = self.node(dirid)?;
+        let dir = self.node(dirid).await?;
         let name = utf8_name(filename)?.to_owned();
         if name == "." {
             return Ok(dirid);
@@ -427,7 +768,7 @@ impl NFSFileSystem for NfsFs {
     }
 
     async fn getattr(&self, id: fileid3) -> Result<fattr3, nfsstat3> {
-        let node = self.node(id)?;
+        let node = self.node(id).await?;
         self.blocking(move |app| match &node {
             Node::Root => Ok(dir_attr(id, 0)),
             Node::View(name) => {
@@ -454,7 +795,7 @@ impl NFSFileSystem for NfsFs {
         offset: u64,
         count: u32,
     ) -> Result<(Vec<u8>, bool), nfsstat3> {
-        let Node::Path(snapshot, path) = self.node(id)? else {
+        let Node::Path(snapshot, path) = self.node(id).await? else {
             return Err(nfsstat3::NFS3ERR_ISDIR);
         };
         self.blocking(move |app| {
@@ -482,7 +823,7 @@ impl NFSFileSystem for NfsFs {
         start_after: fileid3,
         max_entries: usize,
     ) -> Result<ReadDirResult, nfsstat3> {
-        let listing = match self.node(dirid)? {
+        let listing = match self.node(dirid).await? {
             Node::Root => {
                 let children = self.blocking(|app| root_children(&app)).await?;
                 self.builds.fetch_add(1, Ordering::Relaxed);
@@ -602,6 +943,7 @@ mod tests {
     use super::*;
     use datboi_core::viewsnap::{ViewRow, ViewSnapshot};
     use datboi_index::{Db, Namespace as IxNs, Residency};
+    use datboi_nfs_server::nfs::NFS3_FHSIZE;
     use datboi_store_fs::{Namespace as StoreNs, Store};
 
     #[test]
@@ -615,6 +957,33 @@ mod tests {
         assert_eq!(t.node(a), Some(Node::Path(snap, "x/y".into())));
         assert_eq!(t.node(ROOT_ID), Some(Node::Root));
         assert_eq!(t.node(999), None);
+    }
+
+    /// D129: an id is a function of the node, so two processes over
+    /// one tree agree on every id without having agreed on anything.
+    #[test]
+    fn a_fileid_is_a_function_of_what_it_names() {
+        let snap = Blake3::compute(b"snap");
+        let (a, b) = (
+            Node::Path(snap, "x/y".into()),
+            Node::Path(snap, "x/z".into()),
+        );
+        let mut first = IdTable::new();
+        let (ida, idb) = (first.id_for(&a), first.id_for(&b));
+
+        // mint order differs; the ids do not
+        let mut second = IdTable::new();
+        assert_eq!(second.id_for(&b), idb, "id follows the node, not the order");
+        assert_eq!(second.id_for(&a), ida);
+
+        // a view's id follows its NAME, so it outlives every flip
+        let view = Node::View("arcade".into());
+        assert_eq!(first.id_for(&view), second.id_for(&view));
+
+        // nothing derives onto a reserved id
+        for id in [ida, idb, first.id_for(&view)] {
+            assert!(id > ROOT_ID, "{id} collides with a reserved id");
+        }
     }
 
     fn mint_snapshot(store: &Store, db: &Db, rows: Vec<ViewRow>, created_at: u64) -> Blake3 {
@@ -941,6 +1310,190 @@ mod tests {
                 fs.readdir(view_id, 424_242, 10).await,
                 Err(nfsstat3::NFS3ERR_BAD_COOKIE)
             ));
+        });
+    }
+
+    /// D129: a handle minted before a restart still names its file.
+    ///
+    /// Every deploy used to invalidate every handle every client held,
+    /// with no self-healing — the arcade cabinet's symptom was `Stale
+    /// file handle` on every path until someone dropped the mount. And
+    /// because ids came from a counter, nothing but luck stopped a
+    /// reused integer from naming a DIFFERENT file after the restart.
+    /// So this walks the second process onto other nodes first, which
+    /// is exactly what used to consume the cached handle's integer.
+    #[test]
+    fn a_handle_outlives_the_process_that_minted_it() {
+        let content = b"bytes that outlive a deploy".as_slice();
+        let (_root, app, _snap) = app_over(|store, db| {
+            vec![
+                row(store, db, "Dir/a.bin", content),
+                row(store, db, "Dir/b.bin", b"bee"),
+                row(store, db, "top.bin", b"top"),
+            ]
+        });
+        let rt = rt();
+
+        // what a client caches while the first daemon is up
+        let (root_fh, view_fh, dir_fh, file_fh) = rt.block_on(async {
+            let fs = NfsFs::new(Arc::clone(&app));
+            let view = fs
+                .lookup(ROOT_ID, &"test".as_bytes().into())
+                .await
+                .expect("view");
+            let dir = fs
+                .lookup(view, &"Dir".as_bytes().into())
+                .await
+                .expect("dir");
+            let file = fs
+                .lookup(dir, &"a.bin".as_bytes().into())
+                .await
+                .expect("file");
+            let fhs = (
+                fs.id_to_fh(ROOT_ID),
+                fs.id_to_fh(view),
+                fs.id_to_fh(dir),
+                fs.id_to_fh(file),
+            );
+            for fh in [&fhs.0, &fhs.1, &fhs.2, &fhs.3] {
+                assert!(
+                    fh.data.len() <= NFS3_FHSIZE as usize,
+                    "handle overruns NFS3_FHSIZE"
+                );
+            }
+            fhs
+        });
+
+        // the deploy: same store on disk, brand new server state
+        let fs = NfsFs::new(Arc::clone(&app));
+        rt.block_on(async {
+            assert_eq!(fs.fh_to_id(&root_fh).expect("root handle"), ROOT_ID);
+
+            // the view directory resolves by name, through its tag
+            let view = fs.fh_to_id(&view_fh).expect("view handle");
+            assert!(matches!(
+                fs.getattr(view).await.expect("view attr").ftype,
+                ftype3::NF3DIR
+            ));
+
+            // mint some ids the way a fresh client would, first
+            let top = fs
+                .lookup(view, &"top.bin".as_bytes().into())
+                .await
+                .expect("top");
+            let (bytes, _) = fs.read(top, 0, 4096).await.expect("read top");
+            assert_eq!(bytes.as_slice(), b"top");
+
+            // the cached file handle still means the file it meant
+            let file = fs.fh_to_id(&file_fh).expect("file handle");
+            assert_ne!(file, top, "two nodes, two ids");
+            let (bytes, eof) = fs.read(file, 0, 4096).await.expect("read");
+            assert_eq!(
+                (bytes.as_slice(), eof),
+                (content, true),
+                "same handle, same bytes"
+            );
+
+            // ...and so does a directory's, which is a path PREFIX
+            // rather than a manifest row (vfs.rs), so it has to be
+            // keyed too or `ls` of a cached subdirectory breaks alone.
+            let dir = fs.fh_to_id(&dir_fh).expect("dir handle");
+            let (names, _) = walk(&fs, dir, 10).await.expect("walk");
+            assert_eq!(names, vec!["a.bin", "b.bin"]);
+        });
+    }
+
+    /// D129: a handle that names nothing is refused, never resolved to
+    /// whatever is nearby.
+    #[test]
+    fn an_unresolvable_handle_is_stale_not_somebody_else() {
+        let (_root, app, snap) = app_over(|store, db| vec![row(store, db, "top.bin", b"top")]);
+        let fs = NfsFs::new(Arc::clone(&app));
+        rt().block_on(async {
+            // well-formed, correctly snapshot-scoped, names no node
+            let mut data = vec![FH_PATH];
+            data.extend_from_slice(&snap.0);
+            data.extend_from_slice(&path_key(&snap, "ghost.bin", 0));
+            let ghost = fs.fh_to_id(&nfs_fh3 { data }).expect("well-formed");
+            assert!(matches!(
+                fs.getattr(ghost).await,
+                Err(nfsstat3::NFS3ERR_STALE)
+            ));
+
+            // a view that no tag names any more
+            let mut data = vec![FH_VIEW];
+            data.extend_from_slice(&view_key("retired", 0));
+            let retired = fs.fh_to_id(&nfs_fh3 { data }).expect("well-formed");
+            assert!(matches!(
+                fs.getattr(retired).await,
+                Err(nfsstat3::NFS3ERR_STALE)
+            ));
+
+            // and garbage is refused at the door
+            for data in [vec![], vec![FH_PATH], vec![9, 9, 9]] {
+                assert!(matches!(
+                    fs.fh_to_id(&nfs_fh3 { data }),
+                    Err(nfsstat3::NFS3ERR_BADHANDLE)
+                ));
+            }
+        });
+    }
+
+    /// D129 + D127: a restart mid-walk does not restart the walk, even
+    /// when the deploy that caused it also flipped the view.
+    ///
+    /// The cookie is a derived fileid, so the new process reads it the
+    /// same way the old one wrote it; the handle the client holds for
+    /// that same entry still names its snapshot, so D127's pinning
+    /// survives the process that started the walk.
+    #[test]
+    fn a_walk_resumes_across_a_restart() {
+        let (_root, app, snap1) = app_over(|store, db| {
+            vec![
+                row(store, db, "alpha/rom.bin", b"a"),
+                row(store, db, "bravo/rom.bin", b"b"),
+                row(store, db, "charlie/rom.bin", b"c"),
+                row(store, db, "delta.bin", b"d"),
+            ]
+        });
+        let rt = rt();
+
+        // half a walk, then the client caches what it has
+        let (view_fh, cookie, cookie_fh) = rt.block_on(async {
+            let fs = NfsFs::new(Arc::clone(&app));
+            let view = fs
+                .lookup(ROOT_ID, &"test".as_bytes().into())
+                .await
+                .expect("view");
+            let page1 = fs.readdir(view, 0, 2).await.expect("page 1");
+            assert_eq!((page1.entries.len(), page1.end), (2, false));
+            let cookie = page1.entries[1].fileid;
+            (fs.id_to_fh(view), cookie, fs.id_to_fh(cookie))
+        });
+
+        // the deploy, which also flips the view to a disjoint tree
+        let snap2 = {
+            let db = app.db.lock().unwrap();
+            let store = app.store;
+            let rows = vec![row(store, &db, "zulu/rom.bin", b"z")];
+            mint_snapshot(store, &db, rows, 1_780_000_100)
+        };
+        assert_ne!(snap1, snap2);
+
+        let fs = NfsFs::new(Arc::clone(&app));
+        rt.block_on(async {
+            let view = fs.fh_to_id(&view_fh).expect("view handle");
+            // the client holds a handle for the entry it stopped at
+            fs.fh_to_id(&cookie_fh).expect("cookie handle");
+
+            let page2 = fs.readdir(view, cookie, 10).await.expect("page 2");
+            assert!(page2.end);
+            let rest: Vec<&[u8]> = page2.entries.iter().map(|e| e.name.0.as_slice()).collect();
+            assert_eq!(rest, vec![b"charlie".as_slice(), b"delta.bin".as_slice()]);
+
+            // a walk that starts here sees the new tree, as always
+            let (names, _) = walk(&fs, view, 10).await.expect("fresh walk");
+            assert_eq!(names, vec!["zulu"]);
         });
     }
 
