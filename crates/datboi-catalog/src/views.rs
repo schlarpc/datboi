@@ -43,6 +43,10 @@ const DEFKEY_IMAGE_PARTITION: u64 = 10;
 const DEFKEY_IMAGE_LABEL: u64 = 11;
 // Key 12 (additive): MAME merge mode, MameMode::code() vocabulary.
 const DEFKEY_MAME_MODE: u64 = 12;
+// Key 13 (additive): MAME curation filters, MameCuration::bits()
+// bitmask (D130). Absent or 0 = render every machine the merge mode
+// produces, which is what every definition written before D130 means.
+const DEFKEY_MAME_CURATE: u64 = 13;
 
 /// A named view definition (the mutable policy layer).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +67,9 @@ pub struct ViewDef {
     /// `Some` = render a MAME listxml source as merge-mode sets
     /// (D31 deferred set; [`crate::mame`]). Exclusive with 1G1R.
     pub mame: Option<crate::mame::MameMode>,
+    /// Which of those sets the view actually offers (D130). Default
+    /// (all filters off) renders everything the merge mode produces.
+    pub mame_curation: crate::mame::MameCuration,
 }
 
 fn def_key(name: &str) -> String {
@@ -78,6 +85,13 @@ pub fn define_view(db: &Db, def: &ViewDef) -> Result<(), CatalogError> {
         && crate::profiles::profile(name).is_none()
     {
         return Err(CatalogError::UnknownProfile(name.clone()));
+    }
+    if def.mame.is_none() && !def.mame_curation.is_empty() {
+        return Err(CatalogError::Mame(
+            "MAME curation filters need a MAME merge mode — they name \
+             machine properties that only a listxml source has"
+                .into(),
+        ));
     }
     if def.mame.is_some() && def.selection.is_some() {
         return Err(CatalogError::Mame(
@@ -125,6 +139,9 @@ pub fn define_view(db: &Db, def: &ViewDef) -> Result<(), CatalogError> {
     if let Some(mode) = def.mame {
         pairs.push((DEFKEY_MAME_MODE, Value::Uint(mode.code())));
     }
+    if !def.mame_curation.is_empty() {
+        pairs.push((DEFKEY_MAME_CURATE, Value::Uint(def.mame_curation.bits())));
+    }
     let bytes = cbor::encode(&Value::Map(pairs)).expect("static keys");
     db.config_set(&def_key(&def.name), &bytes)?;
     Ok(())
@@ -146,7 +163,7 @@ pub fn get_view(db: &Db, name: &str) -> Result<Option<ViewDef>, CatalogError> {
     let (mut mode, mut regions, mut langs, mut profile) = (0u64, Vec::new(), Vec::new(), None);
     let (mut image_mode, mut image_cluster, mut image_partition, mut image_label) =
         (0u64, None, 1u64, None);
-    let mut mame_mode = 0u64;
+    let (mut mame_mode, mut mame_curate) = (0u64, 0u64);
     for (key, value) in pairs {
         match (key, value) {
             (DEFKEY_PROVIDER, Value::Text(v)) => provider = Some(v),
@@ -168,6 +185,7 @@ pub fn get_view(db: &Db, name: &str) -> Result<Option<ViewDef>, CatalogError> {
             (DEFKEY_IMAGE_PARTITION, Value::Uint(v)) => image_partition = v,
             (DEFKEY_IMAGE_LABEL, Value::Text(v)) => image_label = Some(v),
             (DEFKEY_MAME_MODE, Value::Uint(v)) => mame_mode = v,
+            (DEFKEY_MAME_CURATE, Value::Uint(v)) => mame_curate = v,
             _ => return Err(CatalogError::Corrupt("view def")),
         }
     }
@@ -211,6 +229,7 @@ pub fn get_view(db: &Db, name: &str) -> Result<Option<ViewDef>, CatalogError> {
         profile,
         image,
         mame,
+        mame_curation: crate::mame::MameCuration::from_bits(mame_curate),
     }))
 }
 
@@ -349,7 +368,7 @@ pub fn evaluate_view(
                 def.name, def.provider, def.system
             )));
         }
-        let render = crate::mame::render_sets(db, revision_id, mode)?;
+        let render = crate::mame::render_sets(db, revision_id, mode, def.mame_curation)?;
         dangling_device_refs = render.dangling_device_refs;
         picked.extend(render.rows.into_iter().map(|r| Picked {
             entry_id: r.entry_id,

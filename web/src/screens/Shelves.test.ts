@@ -22,6 +22,7 @@ const shelf: ViewDetail = {
     profile: 'everdrive',
     image: { cluster_size: 512, partition: true, label: null },
     mame_mode: null,
+    mame_curation: [],
   },
   rows: 1412,
   bytes: 5.8 * 1024 ** 3,

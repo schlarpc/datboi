@@ -39,7 +39,7 @@ pub use export::export_dat;
 pub use fetch::{FetchedDat, fetch_dat};
 pub use image::{ImageParams, ImageReport, mint_image, missing_inputs};
 pub use import::{ImportOptions, ImportReport, import_dat};
-pub use mame::MameMode;
+pub use mame::{MameCuration, MameMode};
 pub use profiles::{PROFILES, Profile};
 pub use rollup::refresh_rollups;
 pub use selection::SelectionPolicy;

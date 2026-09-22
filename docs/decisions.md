@@ -5248,3 +5248,58 @@ datboi.service` — same fileid (`2038527758648287314`), same bytes, no
 remount, no ESTALE and no BADHANDLE anywhere in the server log. Before
 the remount that followed the D129 deploy, the same mount answered
 every path with `Unknown error 521`.
+
+## D130 — MAME curation is a view-level filter on set directories (2026-09-22)
+
+A view definition over a listxml source may name curation filters, and
+the MAME render offers only the machines they keep: `working` (drop
+`runnable="no"` and `preliminary` drivers), `parents-only` (drop
+clones), `no-bios`, `no-mechanical`. CLI `view define --mame-curate`,
+CBOR key 13 as a bitmask, and the same list on the `/v1` define request
+and read-side definition. Default is every filter off, so a definition
+written before this ruling renders exactly what it rendered before.
+
+Why here rather than in the consumer: the arcade cabinet cannot list
+the view — D127's readdir is bounded now, but the romlist generator
+still asks "is set `<name>` present?" one name at a time, and that
+question has exactly one answer per name. If the menu is to exclude
+the 30,000 machines nobody wants, the *mount* has to exclude them,
+because presence is the only signal the generator gets. "The mount is
+the menu" was always the target state; this is it for the properties
+a listxml records.
+
+The filters drop set **directories**, never roms. Curation is applied
+at the emit decision, after the entry graph and the held claims are
+loaded, so a dropped BIOS is still reachable through the sets that
+inherit its roms and a dropped device is still reachable through the
+`device_ref` closure. Verified on the cabinet before writing any of
+this: `mame -verifyroms sf2` passes against a rompath holding only
+`sf2/`, with no `neogeo/` anywhere, because a non-merged set already
+carries its BIOS roms inline (`mslug/sp-s2.sp1` is in `mslug/`). A
+curated view is a smaller menu, not a broken one.
+
+`working` keeps `imperfect` drivers deliberately. Imperfect means the
+sound is wrong or a sprite layer is missing, not that the machine fails
+to boot; a cabinet would rather show it than hide it. Only
+`preliminary` — the driver is a stub — is dropped.
+
+Unknown bits decode as off rather than as an error. A definition
+written by a newer datboi then renders with the filters this build
+understands, minus the ones it does not. The alternative is refusing to
+read the view at all, which turns a forward-compatible policy into an
+outage on a machine whose whole job is to come up with games on it.
+
+*Rejected:* the filter in the cabinet's generator (it only has presence
+to work with, so it cannot subtract what the view offers — and it would
+leave every other consumer of the view facing the raw 36,833); a named
+curation preset in `profiles` (profiles are device constraints —
+charset, name length, entries per directory — and a preset would hide
+which filters are on behind a name that has to be looked up); dropping
+curated machines in the SQL that loads the entry graph (fastest, and
+wrong: the `device_ref` closure and the cloneof chain both need entries
+the menu does not offer); one boolean column per filter in the CBOR (a
+bitmask is one additive key, and the filters are one policy).
+
+**Not ruled: control types.** The predicate arcade's §4.5 asks for ends
+with "control types the cabinet has", and that is not expressible here
+— see open questions.

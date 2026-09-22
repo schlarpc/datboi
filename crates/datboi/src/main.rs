@@ -512,6 +512,13 @@ enum ViewCommand {
         /// or merged (clones fold into parents). Exclusive with --1g1r.
         #[arg(long, conflicts_with = "one_per_family")]
         mame_mode: Option<String>,
+        /// Curate which machines the view offers as sets (D130), any
+        /// of: working (drop non-runnable and preliminary drivers),
+        /// parents-only (drop clones), no-bios, no-mechanical.
+        /// Filters drop set DIRECTORIES only — a dropped machine's
+        /// roms still ride inside the sets that inherit them.
+        #[arg(long, value_delimiter = ',', requires = "mame_mode")]
+        mame_curate: Vec<String>,
         /// Constraint profile for the target device (see `view profiles`).
         #[arg(long)]
         profile: Option<String>,
@@ -861,6 +868,7 @@ fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
                 langs,
                 strict,
                 mame_mode,
+                mame_curate,
                 profile,
                 image,
                 image_cluster_size,
@@ -881,6 +889,7 @@ fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
                     .as_deref()
                     .map(datboi_catalog::MameMode::parse)
                     .transpose()?,
+                datboi_catalog::MameCuration::parse_list(&mame_curate)?,
                 profile,
                 image.then_some(datboi_catalog::ImageParams {
                     cluster_size: image_cluster_size,

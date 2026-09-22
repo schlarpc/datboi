@@ -262,6 +262,18 @@ fn view_def_from_request(name: String, req: ViewDefineRequest) -> ViewDef {
             datboi_api::MameMode::Split => datboi_catalog::MameMode::Split,
             datboi_api::MameMode::Merged => datboi_catalog::MameMode::Merged,
         }),
+        mame_curation: req.mame_curation.iter().fold(
+            datboi_catalog::MameCuration::default(),
+            |mut acc, filter| {
+                match filter {
+                    datboi_api::MameCurationFilter::Working => acc.working_only = true,
+                    datboi_api::MameCurationFilter::ParentsOnly => acc.parents_only = true,
+                    datboi_api::MameCurationFilter::NoBios => acc.no_bios = true,
+                    datboi_api::MameCurationFilter::NoMechanical => acc.no_mechanical = true,
+                }
+                acc
+            },
+        ),
     }
 }
 

@@ -872,6 +872,26 @@ pub(crate) fn definition(def: &ViewDef) -> Definition {
                 datboi_catalog::MameMode::Merged => datboi_api::MameMode::Merged,
             })
             .into(),
+        mame_curation: {
+            // Spelled out rather than mapped from names(): a wildcard
+            // arm over strings would quietly turn a filter this build
+            // does not know into whichever one the arm names.
+            let c = def.mame_curation;
+            let mut filters = Vec::new();
+            if c.working_only {
+                filters.push(datboi_api::MameCurationFilter::Working);
+            }
+            if c.parents_only {
+                filters.push(datboi_api::MameCurationFilter::ParentsOnly);
+            }
+            if c.no_bios {
+                filters.push(datboi_api::MameCurationFilter::NoBios);
+            }
+            if c.no_mechanical {
+                filters.push(datboi_api::MameCurationFilter::NoMechanical);
+            }
+            filters
+        },
     }
 }
 

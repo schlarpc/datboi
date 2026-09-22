@@ -194,6 +194,23 @@ pub enum MameMode {
     Merged,
 }
 
+/// One MAME curation filter (D130): which machines the view offers as
+/// sets of its own. Filters drop set *directories*; a dropped machine's
+/// roms still ride inside the sets that inherit them, so curating a
+/// BIOS out does not take it away from the games that need it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum MameCurationFilter {
+    /// Drop `runnable="no"` machines and `preliminary` drivers.
+    Working,
+    /// Drop clones, leaving one set per parent machine.
+    ParentsOnly,
+    /// Drop BIOS machines as sets of their own.
+    NoBios,
+    /// Drop mechanical machines (pinball, slots, redemption).
+    NoMechanical,
+}
+
 // ---- GET /v1/auth/whoami ----
 
 /// Whoami is open by design: it answers `authenticated: false` instead
@@ -525,6 +542,9 @@ pub struct Definition {
     pub profile: Nullable<String>,
     pub image: Nullable<ImageParams>,
     pub mame_mode: Nullable<MameMode>,
+    /// Curation filters applied to the MAME render (D130); empty when
+    /// the view offers every set its merge mode produces.
+    pub mame_curation: Vec<MameCurationFilter>,
 }
 
 /// 1G1R selection policy (D57).
@@ -596,6 +616,11 @@ pub struct ViewDefineRequest {
     /// `Some` = render a MAME listxml source as merge-mode sets.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mame_mode: Option<MameMode>,
+    /// Curation filters for that render (D130). Needs `mame_mode`;
+    /// sending them without it is a 400. Omit or send empty to offer
+    /// every set the merge mode produces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mame_curation: Vec<MameCurationFilter>,
 }
 
 /// PUT /v1/views/{name} result: the stored definition, echoed back so

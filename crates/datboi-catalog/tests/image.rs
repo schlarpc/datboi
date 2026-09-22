@@ -273,6 +273,7 @@ fn view_def_image_params_round_trip() {
         profile: None,
         image: None,
         mame: None,
+        mame_curation: datboi_catalog::MameCuration::default(),
     };
     define_view(&fx.db, &base).expect("define");
     assert_eq!(

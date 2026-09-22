@@ -10,7 +10,8 @@ use std::net::SocketAddr;
 use std::str::FromStr as _;
 
 use datboi_catalog::{
-    ImageParams, ImportOptions, ViewDef, define_view, evaluate_view, import_dat, mint_image,
+    ImageParams, ImportOptions, MameCuration, ViewDef, define_view, evaluate_view, import_dat,
+    mint_image,
 };
 use datboi_core::alias::AliasHasher;
 use datboi_core::hash::Blake3;
@@ -104,6 +105,7 @@ fn fixture_ext(with_image: bool) -> Fixture {
         profile: None,
         image: None,
         mame: None,
+        mame_curation: MameCuration::default(),
     };
     define_view(&db, &def).expect("define");
     let eval = evaluate_view(&mut db, &store, &def, 1_780_000_000).expect("eval");
@@ -127,6 +129,7 @@ fn fixture_ext(with_image: bool) -> Fixture {
             profile: None,
             image: Some(params.clone()),
             mame: None,
+            mame_curation: MameCuration::default(),
         };
         define_view(&db, &def).expect("define");
         let eval = evaluate_view(&mut db, &store, &def, 1_780_000_000).expect("eval");

@@ -73,6 +73,37 @@ view "gba-everdrive" {
 }
 ```
 
+### MAME curation (D130)
+
+A view over a listxml source may name curation filters, and the render
+offers only the machines they keep:
+
+```
+view "arcade" {
+  query:     dat("mame/arcade", current) ∩ have(verified)
+  mame:      non-merged
+  curate:    [working, parents-only, no-bios, no-mechanical]
+  layout:    template "{entry}/{name}"
+}
+```
+
+`working` drops `runnable="no"` machines and `preliminary` drivers, and
+deliberately keeps `imperfect` ones — imperfect is "the sound is wrong",
+not "it does not boot". `parents-only` drops clones, `no-bios` drops
+BIOS machines as sets of their own, `no-mechanical` drops pinball and
+slots.
+
+Filters drop set **directories**, never roms. They are applied after the
+entry graph and held claims are loaded, so a dropped BIOS is still
+reachable through the sets that inherit its roms and a dropped device
+still arrives through the `device_ref` closure — a non-merged set
+carries its BIOS roms inline, which is the whole point of non-merged.
+
+This is what makes the mount the menu for a consumer that can only ask
+"is set `<name>` present?" one name at a time. Control types are the one
+filter §4.5 wants that this cannot express — the listxml parser drops
+`<input>`; see open questions.
+
 Constraint **profiles** (curated, overridable: everdrive, opl-smb,
 xbox-fatx ≤42 chars, mister) enforce filename charset/length, FAT32
 4 GiB−1 cap (auto-split or fail per policy), max_dir_entries (console UIs

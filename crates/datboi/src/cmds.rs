@@ -2118,6 +2118,7 @@ pub fn view_define(
     template: &str,
     selection: Option<datboi_catalog::SelectionPolicy>,
     mame: Option<datboi_catalog::MameMode>,
+    mame_curation: datboi_catalog::MameCuration,
     profile: Option<String>,
     image: Option<datboi_catalog::ImageParams>,
     json: bool,
@@ -2132,6 +2133,7 @@ pub fn view_define(
         profile,
         image,
         mame,
+        mame_curation,
     };
     datboi_catalog::define_view(&env.db, &def)?;
     if json {
@@ -2151,6 +2153,8 @@ pub fn view_define(
                     "label": i.label,
                 })),
                 "mame_mode": def.mame.map(datboi_catalog::MameMode::as_str),
+                "mame_curation": (!def.mame_curation.is_empty())
+                    .then(|| def.mame_curation.describe()),
             })
         );
     } else {
@@ -2172,7 +2176,12 @@ pub fn view_define(
             None => String::new(),
         };
         let mame = match def.mame {
-            Some(m) => format!(", mame {}", m.as_str()),
+            Some(m) if def.mame_curation.is_empty() => format!(", mame {}", m.as_str()),
+            Some(m) => format!(
+                ", mame {} (curated {})",
+                m.as_str(),
+                def.mame_curation.describe()
+            ),
             None => String::new(),
         };
         println!(

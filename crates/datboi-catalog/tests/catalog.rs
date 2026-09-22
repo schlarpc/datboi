@@ -510,6 +510,7 @@ fn re_evaluating_an_unchanged_view_remints_the_same_snapshot() {
         profile: None,
         image: None,
         mame: None,
+        mame_curation: datboi_catalog::MameCuration::default(),
     };
     define_view(&f.db, &def).expect("define");
 

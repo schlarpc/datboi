@@ -674,3 +674,30 @@ Residuals and watch items:
    nobody has done. A cheap first move would be a `datboi status` line
    counting rows whose residency disagrees with the store, so the drift
    is visible without running a pass over it.
+7. **D130 cannot filter on control type, because the listxml parser
+   throws `<input>` away.** `crates/datboi-formats/src/listxml.rs`
+   skips the emulation-only elements without buffering —
+   chip/display/input/dipswitch — so player counts and
+   `<control type="trackball">` never reach the database, and a view
+   cannot say "only what this cabinet's panel can play". Three of the
+   four filters arcade's §4.5 asks for landed in D130; this is the
+   fourth.
+
+   The work is: keep `<input>`'s `players`/`coins` attributes and its
+   `<control>` children as entry attrs (`input:players`,
+   `input:controls` as a set), then a `controls` filter on
+   `MameCuration` taking the list a device can drive. Bit 16 is free
+   and the decode already ignores bits it does not know, so no existing
+   definition has to change.
+
+   Worth deciding at the same time whether the attrs blob is the right
+   home or whether control type earns a column: "which machines can
+   this panel play" is the question a cabinet asks most, and it is a
+   JSON scan today.
+
+   Note the asymmetry while this is open: the *cabinet* can read
+   `<input>` for itself — it parses the same pinned listxml to build
+   its romlist columns, so titles, years and player counts are already
+   available to it. Only the view-level filter is blocked, which means
+   the cabinet can show the right metadata for a game its panel cannot
+   actually play.

@@ -661,6 +661,13 @@
           "image": {
             "$ref": "#/components/schemas/Nullable_ImageParams"
           },
+          "mame_curation": {
+            "description": "Curation filters applied to the MAME render (D130); empty when\nthe view offers every set its merge mode produces.",
+            "items": {
+              "$ref": "#/components/schemas/MameCurationFilter"
+            },
+            "type": "array"
+          },
           "mame_mode": {
             "$ref": "#/components/schemas/Nullable_MameMode"
           },
@@ -687,7 +694,8 @@
           "one_g_one_r",
           "profile",
           "image",
-          "mame_mode"
+          "mame_mode",
+          "mame_curation"
         ],
         "type": "object"
       },
@@ -1601,6 +1609,16 @@
           "password"
         ],
         "type": "object"
+      },
+      "MameCurationFilter": {
+        "description": "One MAME curation filter (D130): which machines the view offers as\nsets of its own. Filters drop set *directories*; a dropped machine's\nroms still ride inside the sets that inherit them, so curating a\nBIOS out does not take it away from the games that need it.",
+        "enum": [
+          "working",
+          "parents-only",
+          "no-bios",
+          "no-mechanical"
+        ],
+        "type": "string"
       },
       "MameMode": {
         "description": "MAME set rendering mode (D31 deferred set).",
@@ -2662,6 +2680,13 @@
                 "description": "`Some` = the view also reifies as a FAT32 image (D62)."
               }
             ]
+          },
+          "mame_curation": {
+            "description": "Curation filters for that render (D130). Needs `mame_mode`;\nsending them without it is a 400. Omit or send empty to offer\nevery set the merge mode produces.",
+            "items": {
+              "$ref": "#/components/schemas/MameCurationFilter"
+            },
+            "type": "array"
           },
           "mame_mode": {
             "oneOf": [
