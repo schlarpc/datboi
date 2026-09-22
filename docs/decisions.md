@@ -5238,3 +5238,13 @@ cookie would still be a reusable integer — the half of the hazard that
 was real); leaving it to the client (ESTALE does not release a mount,
 which is precisely what the cabinet's lazy-umount workaround does by
 hand).
+
+*Confirmed on the deployed daemon, 2026-09-22.* bagel holding a v3
+mount of `view/arcade` (38,805 entries): `ls` of the view root, the
+command D127 was written against, returns in 0.147 s. A cached handle
+minted by PID 175816 then served a READ of a file that client had
+never opened, through PID 176151, after a bare `systemctl restart
+datboi.service` — same fileid (`2038527758648287314`), same bytes, no
+remount, no ESTALE and no BADHANDLE anywhere in the server log. Before
+the remount that followed the D129 deploy, the same mount answered
+every path with `Unknown error 521`.
