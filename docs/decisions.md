@@ -5143,3 +5143,86 @@ dependency would cost the next family. Treating the panic as
 against. A blanket `panic = "abort"` — it would make the failure loud
 immediately, at the cost of taking the whole daemon down for one bad
 blob in a corpus of millions.
+
+## D129 — A file handle names what it holds, not the process that minted it (2026-09-21)
+
+Every deploy staled every NFS handle every client held. Observed on the
+arcade cabinet: seven ordinary restarts of `datboi.service` in about
+three hours (`NRestarts=0` — the other track deploying, not crashes),
+after which every path under `/mnt/datboi` answered `Stale file
+handle`, the mount root included, and stayed that way. ESTALE does not
+release a mount, so the `x-systemd.automount` that would have fetched a
+fresh handle never re-triggered; a lazy unmount fixed it instantly
+(10/10 direct lookups straight after), which is the proof that the
+server was healthy and only the client's handles were dead. The cabinet
+has no keyboard and nobody watching it, so a deploy left a frontend
+with no games until someone SSHed in. `hosts/arcade/default.nix` works
+around it by treating an unreadable rompath as expected and dropping
+the mount lazily — a patch over a server defect, and the reason this is
+a ruling rather than a cabinet-side fix.
+
+Identity here was ALLOCATED. `IdTable` handed out `next += 1` in order
+of first encounter, and upstream's default handle is that id behind a
+generation number taken from the server's startup time. Nothing was
+persisted and nothing was derived from what the id named, so a restart
+emptied the table, reset the counter, and made every handle a client
+had cached meaningless. The generation number then turned that into an
+honest ESTALE rather than a silent mis-resolve — worth recording,
+because the note that prompted this ruling reasoned the opposite: that
+a restarted counter could hand a cached integer to a different file.
+For HANDLES it could not; the generation number is exactly the guard
+against it. For READDIR COOKIES it could. A cookie is a bare fileid
+with no generation number anywhere in it, and this server does not
+check the cookie verifier (upstream comments the check out and says so:
+"We do not use cookie verifier"), so a walk resumed across a restart
+could genuinely resume at whatever node inherited the integer. The
+hazard was real and filed against the wrong half.
+
+The fix is the shape D127 already used one level down. An id is now a
+hash of what it names — `(snapshot, path)`, domain-separated from a
+view's name — so every process serving this tree agrees on every id
+with nothing persisted and nothing coordinated, and an id can no longer
+come to mean a different node than it did before a restart. The handle
+carries that same identity on the wire: a class byte, the snapshot, and
+128 bits of the node's key, 49 bytes inside NFSv3's 64. A path does not
+fit in a handle, so the key is matched back to one against the snapshot
+the handle names — immutable, therefore a table built once and cached
+exactly like the listings are (every manifest row, plus every directory
+those rows imply, since a directory here is a path prefix and not an
+object). Decoding touches no store: the fileid is the key's low half,
+so `fh_to_id` stays the pure function the trait wants, and the path is
+recovered afterwards off the reactor, inside the op that needs it. The
+cookie verifier becomes a constant for the same reason — cookies now
+outlive the process that issued them, and a cookie naming nothing in
+the directory it is presented against is still `NFS3ERR_BAD_COOKIE`.
+
+64 bits is all a `fileid3` has room for, so a million-row view carries
+about a 1-in-10^8 chance that two paths share a low half. Rare is not
+never, and an aliased id serves one file's bytes under another's name —
+the exact failure this ruling exists to remove. So a clash re-derives
+under the next probe, the id table stays bijective by construction, and
+the one node whose id then depends on mint order is REFUSED when its
+handle arrives rather than resolved to its neighbour. A handle carries
+128 bits precisely so that check is available to make.
+
+A restart now costs a client one extra resolution per handle it still
+holds, and nothing else. A walk interrupted by a deploy resumes where
+it stopped — even when that deploy also flipped the view underneath it,
+because the handle the client holds for the entry it stopped at still
+names the snapshot D127 pins the walk to.
+
+*Rejected:* persisting the id table (buys the same property at the cost
+of writes on the read path and a table that can now be stale or
+corrupt — a new failure mode, to reconstruct something that was
+derivable all along); putting the path in the handle literally (64
+bytes less a 32-byte snapshot leaves 31 for a path; it fits arcade's
+`pacman/pacman.zip`, and nothing about that is a guarantee); an ordinal
+into the manifest instead of a hash (collision-free and smaller, but a
+directory has no row to be the nth of, and an ordinal is unique only
+within one snapshot, so two views would report the same `st_ino` for
+different files); keeping the counter and fixing only the handle (a
+client's `st_ino` would still change under it at every restart, and a
+cookie would still be a reusable integer — the half of the hazard that
+was real); leaving it to the client (ESTALE does not release a mount,
+which is precisely what the cabinet's lazy-umount workaround does by
+hand).

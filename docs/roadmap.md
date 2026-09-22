@@ -106,7 +106,8 @@ recovery-equivalence as a property test.
   SD sync — *shipped 2026-07-09* (`view sync`, incremental,
   temp+fsync+rename); in-process NFSv3 — *shipped 2026-07-09*
   (nfsserve, opt-in `--nfs-listen`, snapshot-pinned fileids; vendored
-  as `datboi-nfs-server` 2026-09-22 — D127/FORK.md); view
+  as `datboi-nfs-server` 2026-09-22 — D127/FORK.md; derived
+  fileids and restart-surviving handles, D129); view
   defs/tags ride the statesnap — *shipped 2026-07-09* (additive payload
   keys 8/9, recovery drill proves it); all gates ruled 2026-07-10
   (D55–D63 decision session — nothing in M4 waits on a ruling).
