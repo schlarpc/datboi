@@ -5303,3 +5303,15 @@ bitmask is one additive key, and the filters are one policy).
 **Not ruled: control types.** The predicate arcade's §4.5 asks for ends
 with "control types the cabinet has", and that is not expressible here
 — see open questions.
+
+*Amendment (same day):* `parents-only` ships, but the arcade cabinet
+does not use it. MAME picks a clone family's parent on historical and
+technical grounds, not on which version anyone recognises: `pacman` is
+a clone of `puckman`, and `gradius` is a clone of `nemesis`. Two of the
+cabinet's 45 candidate games, checked against the pinned listxml. A
+view curated `parents-only` would therefore offer Puckman and Nemesis
+and no Pac-Man or Gradius, which is a worse menu, not a tidier one.
+The cabinet's view runs `working,no-bios,no-mechanical`. `parents-only`
+stays for the case it was written for — a 1G1R-shaped set where the
+family, not the title, is the unit — and this is the note for whoever
+reaches for it next.
