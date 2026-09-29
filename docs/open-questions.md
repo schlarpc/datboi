@@ -46,6 +46,12 @@ Each of these wants its D entry before (or as) the code lands.
   being touched anyway. A compensating delete on the error path is
   the cheap alternative and is strictly better than the status quo.
 
+- **Midstate chains replace the waddup ZKP slot** (D8 tier 2, D22).
+  [midstates.md](midstates.md) is the open design pass: fetch-by-dat-hash
+  for the friends plane (journey 3, gap-fill), checkpoints as derived
+  alias evidence in the index, serve/fetch policy. Seven rulings are
+  enumerated at its end. The public tier is flagged there as a
+  vision.md ruling ("not a downloader") before an engineering one.
 - **Recon ACL before any discovery/advertisement tier** (D100/D102
   residual): today the recon ALPN reveals the recipe/roots inventory
   to anyone holding the unlisted EndpointId — capability-addressed

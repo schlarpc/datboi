@@ -14,16 +14,18 @@ a citation sends you.
 5. [worlds.md](worlds.md) — the component ABI: lanes, semver, vending,
    publishing (D89).
 6. [p2p.md](p2p.md) — friends, trust, and byte exchange.
-7. [infra.md](infra.md) — nix, builds, deployment.
-8. [dats.md](dats.md) — dat ingestion and the naming authority.
-9. [schema.md](schema.md) — the index/database schema.
-10. [recipes.md](recipes.md) — recipe semantics, verification, serving.
-11. [views.md](views.md) — projections, shares, reified images.
-12. [cli.md](cli.md) — the operator surface.
-13. [web-ui.md](web-ui.md) — **governs every web surface** (persona,
+7. [midstates.md](midstates.md) — fetching by dat hash: midstate
+   chains, checkpoints, fetch/serve policy (design pass open).
+8. [infra.md](infra.md) — nix, builds, deployment.
+9. [dats.md](dats.md) — dat ingestion and the naming authority.
+10. [schema.md](schema.md) — the index/database schema.
+11. [recipes.md](recipes.md) — recipe semantics, verification, serving.
+12. [views.md](views.md) — projections, shares, reified images.
+13. [cli.md](cli.md) — the operator surface.
+14. [web-ui.md](web-ui.md) — **governs every web surface** (persona,
     vocabulary, design rules).
-14. [emulation.md](emulation.md) — in-browser cores; the third wasm lane.
-15. [saves.md](saves.md) — save persistence, lineage & attribution
+15. [emulation.md](emulation.md) — in-browser cores; the third wasm lane.
+16. [saves.md](saves.md) — save persistence, lineage & attribution
     (design pass open).
 
 Cross-cutting records, always current:
