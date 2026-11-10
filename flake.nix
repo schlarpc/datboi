@@ -680,7 +680,9 @@
             cargoNextestExtraArgs = "--workspace";
             # The D62 fsck-in-CI gate: fsck.vfat must exist and MUST run
             # (the test skips gracefully outside nix; CI never skips).
-            nativeCheckInputs = [ (pkgsFor system).dosfstools ];
+            # sqlite3: the D122 bless gate walks a row back by hand in
+            # cache.db (crates/datboi/tests/cli.rs).
+            nativeCheckInputs = [ (pkgsFor system).dosfstools (pkgsFor system).sqlite ];
             DATBOI_REQUIRE_FSCK = "1";
           });
 
