@@ -150,6 +150,13 @@ in
     # libmagic for the `magic` crate (D79 blob sniff).
     magic-sys.inputs = p: [ p.file ];
 
+    # datboi-api's only product is datboi-gen-openapi, a dev tool run
+    # from a checkout (D69) whose job is to write openapi.json back into
+    # the source tree it was built from — so it names that tree by
+    # design (CARGO_MANIFEST_DIR). It never ships; the check is for
+    # shipped outputs.
+    datboi-api.checks.noSourceReferences = null;
+
     # WIT is read by path from the bindgen macros (../../wit).
     datboi-runtime.extraSources = [ "wit" ];
     datboi-guest-transform.extraSources = [ "wit" ];
