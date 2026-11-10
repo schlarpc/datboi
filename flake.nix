@@ -11,7 +11,11 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    crane.url = "github:ipetkov/crane";
+    # Rust builds: one derivation per Cargo unit (nix/rust.nix). No
+    # nixpkgs.follows: breakbulk's own tools (planner, unit builder)
+    # then come from its pinned nixpkgs and stay put across our
+    # nixpkgs bumps — a new unit builder would rebuild every unit.
+    breakbulk.url = "github:schlarpc/breakbulk";
 
     # NO nixpkgs.follows: its patched skopeo tracks the skopeo version
     # in its own pin; following ours breaks the patch (and forfeits any
@@ -29,7 +33,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, systems, rust-overlay, crane, nix-direnv, nix2container-turbo, git-hooks, ... }:
+  outputs = { self, nixpkgs, systems, rust-overlay, breakbulk, nix-direnv, nix2container-turbo, git-hooks, ... }:
     let
       eachSystem = nixpkgs.lib.genAttrs (import systems);
 
@@ -43,13 +47,6 @@
       rustToolchainFor = system:
         let pkgs = pkgsFor system;
         in pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-
-      craneLibFor = system:
-        let
-          pkgs = pkgsFor system;
-          rustToolchain = rustToolchainFor system;
-        in
-        (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
       # Formatting enforced at commit time (git-hooks.nix): the devshell's
       # shellHook installs a git pre-commit hook running the SAME pinned
@@ -69,84 +66,6 @@
             };
           };
         };
-
-      # ---- host workspace (crates/) ----
-
-      # cleanCargoSource drops non-Rust files; keep test fixtures (.xml,
-      # the committed .wasm component the determinism gate pins, and the
-      # preflate vectors .deflate/.bin) and the WIT ABI (.wit) in the
-      # build source.
-      srcFor = system: root:
-        let craneLib = craneLibFor system;
-        in
-        nixpkgs.lib.cleanSourceWith {
-          src = root;
-          filter = path: type:
-            (builtins.match ".*\\.(xml|wit|wasm|deflate|bin|rar|7z)$" path != null)
-            # WIT package dependencies are symlinks named after the dep
-            # package (wit/<lane>/v<n>/deps/streams → ../../../streams/v1,
-            # D89) — extensionless, so the .wit match above misses them.
-            || (builtins.match ".*/deps/[^/]+$" path != null)
-            # ex-unrar vendors C++ (.cpp/.hpp) plus force-included compat
-            # headers (.h) and the license/patch provenance (.txt); the
-            # build.rs cross-compiles them (D58). ex-7z's glue is plain
-            # C (.c) on the same lane (D110).
-            || (builtins.match ".*\\.(c|cpp|hpp|h|txt|def|rc|vcxproj)$" path != null)
-            # The checked-in /v1 contract spec (D69): datboi-api's
-            # staleness test include_str!s it, so hermetic builds need
-            # it in the source.
-            || (builtins.match ".*openapi\\.json$" path != null)
-            || (craneLib.filterCargoSources path type);
-          name = "source";
-        };
-
-      hostArgsFor = system:
-        {
-          src = srcFor system ./.;
-          strictDeps = true;
-          pname = "datboi";
-          version = "0.1.0";
-          # libmagic (the C library behind file(1)) for the `magic`
-          # crate: the blob inspector's sniff (D79 headline fallback)
-          # asks the real magic database instead of a hand-rolled
-          # four-entry table.
-          buildInputs = [ (pkgsFor system).file ];
-        };
-
-      hostDepsFor = system:
-        let craneLib = craneLibFor system;
-        in craneLib.buildDepsOnly (hostArgsFor system);
-
-      # ---- components (crates/datboi-{xf,ex}-*, wasm32-unknown-unknown) ----
-      #
-      # Each component is a STANDALONE workspace with its own lockfile
-      # (D54): sibling crates must not be able to perturb a component's
-      # bytes through shared dependency resolution. The reproducibility
-      # boundary is one crate directory plus the frozen ../../wit plus
-      # the lane's guest crate ../datboi-guest-<lane> (D66 layout amended
-      # by D89: the pregen-bindings crates are part of the ABI surface
-      # and both tree hashes ride the stamp).
-      #
-      # Two lanes, distinguished by crate prefix (D58/D89):
-      # `datboi-xf-` = datboi:transform (streaming; buffered authoring is
-      # guest-crate sugar), `datboi-ex-` = datboi:extractor (seekable
-      # containers in → member streams + metadata out). The build, stamp,
-      # and zero-import gate are identical across both; extractors
-      # additionally cross-compile a vendored C++ staticlib (see the
-      # wasiToolchainFor / datboi-ex-unrar wiring below).
-
-      wasmCrateNames = [
-        "datboi-xf-cso"
-        "datboi-xf-ecm"
-        "datboi-xf-preflate"
-        "datboi-xf-reference"
-        "datboi-xf-reference-stream"
-        "datboi-xf-xgd1-prng"
-        "datboi-xf-gc-junk"
-        "datboi-xf-wii-crypt"
-        "datboi-ex-unrar"
-        "datboi-ex-7z"
-      ];
 
       # ---- C-to-wasm toolchain lane (D58) ----
       #
@@ -180,10 +99,6 @@
           };
         };
 
-      # Extractor crates need the C-to-wasm toolchain in the build env;
-      # transforms don't. Keyed by prefix.
-      isExtractor = crate: nixpkgs.lib.hasPrefix "datboi-ex-" crate;
-
       # ex-unrar's C++ source lives out-of-tree (D66): a hash-pinned rarlab
       # tarball + this crate's patch series, fetched and patched here instead
       # of vendoring ~800K of unrar into the repo. build.rs consumes it via
@@ -196,132 +111,6 @@
       # build.rs consumes it via DATBOI_LZMA_SRC.
       lzmaSdkFor = system:
         (pkgsFor system).callPackage ./crates/datboi-ex-7z/nix/lzma-sdk.nix { };
-
-      # Which pregen-bindings crate a component lane consumes (D89,
-      # docs/worlds.md §vending).
-      guestCrateFor = crate:
-        if isExtractor crate then "datboi-guest-extractor" else "datboi-guest-transform";
-
-      # The shared ABI surface, staged so the guests' relative paths
-      # resolve exactly as they do in the repo: nest the unpacked crate
-      # one level deeper, put wit at the top (`../../wit/<lane>/v1`),
-      # and stage the lane's guest crate beside the component
-      # (`../datboi-guest-<lane>`). Raw flake paths on purpose — a flake
-      # path is exactly the git-tracked content, so the staged trees
-      # match `git rev-parse <commit>:wit` / `:crates/<guest>` verbatim.
-      abiStageFor = system: crate: ''
-        mkdir -p "$NIX_BUILD_TOP/nest"
-        mv "$NIX_BUILD_TOP/$sourceRoot" "$NIX_BUILD_TOP/nest/$sourceRoot"
-        sourceRoot="nest/$sourceRoot"
-        cp -r ${./wit} "$NIX_BUILD_TOP/wit"
-        cp -r ${./crates + "/${guestCrateFor crate}"} "$NIX_BUILD_TOP/nest/${guestCrateFor crate}"
-        chmod -R u+w "$NIX_BUILD_TOP/wit" "$NIX_BUILD_TOP/nest/${guestCrateFor crate}"
-      '';
-
-      wasmCrateArgsFor = system: crate:
-        let
-          toolchain = wasiToolchainFor system;
-        in
-        {
-          # Deliberately UNFILTERED (unlike the host's srcFor): a flake
-          # path is exactly the git-tracked content, so the in-derivation
-          # `git write-tree` reproduces `git rev-parse <commit>:crates/<crate>`
-          # verbatim — cargo-filtering the source made the D54 stamp hash a
-          # tree that exists nowhere in git history.
-          src = ./crates + "/${crate}";
-          strictDeps = true;
-          pname = crate;
-          version = "0.1.0";
-          cargoLock = ./crates + "/${crate}/Cargo.lock";
-          # unknown-unknown, NOT wasip2: components must import nothing (D5
-          # empty-import determinism contract), and wasip2's std wires WASI
-          # shims into every component. Core modules are componentized with
-          # `wasm-tools component new` in the install phase.
-          CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
-          # Wasm artifacts are data, not executables to test here; the host
-          # runs them under the determinism gate instead.
-          doCheck = false;
-          postUnpack = abiStageFor system crate;
-        }
-        # Extractors (ex-*) cross-compile a C++ staticlib in their build.rs;
-        # hand it the wasi toolchain via env (D58). Transforms get nothing extra.
-        // nixpkgs.lib.optionalAttrs (isExtractor crate) toolchain.env
-        # ex-unrar additionally needs its out-of-tree unrar source (nix/unrar-src.nix).
-        // nixpkgs.lib.optionalAttrs (crate == "datboi-ex-unrar") {
-          DATBOI_UNRAR_SRC = "${unrarSrcFor system}";
-        }
-        # ex-7z likewise (nix/lzma-sdk.nix, D110).
-        // nixpkgs.lib.optionalAttrs (crate == "datboi-ex-7z") {
-          DATBOI_LZMA_SRC = "${lzmaSdkFor system}";
-        };
-
-      # One stamped component per crate (D54 attribution): identity
-      # metadata rides IN the artifact as execution-inert custom sections,
-      # and the loader refuses components without it. `revision` carries
-      # the GIT TREE HASHES of the two source inputs (computed with
-      # `git write-tree` over the build inputs — no .git needed):
-      # `tree:` = the crate, `guest:` = the lane's pregen-bindings crate
-      # (D89 — its source shapes component bytes too). Content-scoped,
-      # so unrelated repo commits cannot churn component bytes, and
-      # verifiable by anyone with git — no nix required:
-      #   git rev-parse <commit>:crates/<crate>
-      #   git rev-parse <commit>:crates/<datboi-guest-lane>
-      transformPackageFor = system: crate:
-        let
-          craneLib = craneLibFor system;
-          pkgs = pkgsFor system;
-          args = wasmCrateArgsFor system crate;
-          crateToml = builtins.fromTOML (builtins.readFile (./crates + "/${crate}/Cargo.toml"));
-          moduleName = builtins.replaceStrings [ "-" ] [ "_" ] crate;
-          # Stamped name stays `datboi:xf-*` / `datboi:ex-*` — the
-          # `datboi-` crate-name prefix would double the namespace.
-          stampName = nixpkgs.lib.removePrefix "datboi-" crate;
-        in
-        craneLib.buildPackage (args // {
-          cargoArtifacts = craneLib.buildDepsOnly args;
-          nativeBuildInputs = [ pkgs.wasm-tools pkgs.gitMinimal ];
-          installPhaseCommand = ''
-            # Revision = git tree hashes of the pristine sources (the
-            # store copies, not the build dir — target/ must not leak in).
-            export GIT_DIR="$TMPDIR/rev-git"
-            git init -q "$GIT_DIR"
-            export GIT_INDEX_FILE="$TMPDIR/rev-index"
-            git --work-tree=${args.src} add -A
-            tree=$(git write-tree)
-            export GIT_INDEX_FILE="$TMPDIR/rev-index-guest"
-            git --work-tree=${./crates + "/${guestCrateFor crate}"} add -A
-            guest=$(git write-tree)
-            mkdir -p $out/lib
-            wasm-tools component new \
-              target/wasm32-unknown-unknown/release/${moduleName}.wasm \
-              -o stamped-input.wasm
-            wasm-tools metadata add stamped-input.wasm \
-              --name "datboi:${stampName}" \
-              --description ${nixpkgs.lib.escapeShellArg crateToml.package.description} \
-              --authors ${nixpkgs.lib.escapeShellArg (builtins.head crateToml.package.authors)} \
-              --licenses ${nixpkgs.lib.escapeShellArg crateToml.package.license} \
-              --source "https://github.com/schlarpc/datboi/tree/main/crates/${crate}" \
-              --revision "tree:$tree;guest:$guest" \
-              -o "$out/lib/${moduleName}.wasm"
-          '';
-        });
-
-      # All stamped components in one lib/ — the artifacts recipes pin
-      # (D5/D6/D54) and the host embeds at build time (D66).
-      transformsFor = system: (pkgsFor system).symlinkJoin {
-        name = "datboi-transforms";
-        paths = map (transformPackageFor system) wasmCrateNames;
-      };
-
-      # D66: host builds embed the nix-built components — the embedding
-      # crates' build.rs re-exports this for `include_bytes!` (and falls
-      # back to invoking `nix build .#transforms` itself in a dev
-      # checkout, where this var is unset). Applied to the final
-      # build/test/clippy args — NOT to buildDepsOnly, so a component
-      # edit doesn't rebuild the dep cache.
-      componentsEnvFor = system: {
-        DATBOI_COMPONENTS_DIR = "${transformsFor system}/lib";
-      };
 
       # ---- browser emulator cores (crates/datboi-emu-*, D84) ----
       #
@@ -337,43 +126,6 @@
         in pkgs.rust-bin.nightly."2025-12-20".minimal.override {
           targets = [ "wasm32-unknown-unknown" ];
         };
-
-      emuCraneLibFor = system:
-        (crane.mkLib (pkgsFor system)).overrideToolchain (emuToolchainFor system);
-
-      # wasm + JS glue via wasm-bindgen-cli (whose version the crate's
-      # wasm-bindgen dep pins exactly — the glue is version-locked to the
-      # CLI), plus the crate's bare test page at the output root:
-      # `python3 -m http.server -d result/` and go.
-      emuDsFor = system:
-        let
-          craneLib = emuCraneLibFor system;
-          pkgs = pkgsFor system;
-          args = {
-            src = ./crates/datboi-emu-ds;
-            strictDeps = true;
-            pname = "datboi-emu-ds";
-            version = "0.1.0";
-            cargoLock = ./crates/datboi-emu-ds/Cargo.lock;
-            CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
-            doCheck = false;
-          };
-        in
-        craneLib.buildPackage (args // {
-          cargoArtifacts = craneLib.buildDepsOnly args;
-          nativeBuildInputs = [ pkgs.wasm-bindgen-cli ];
-          installPhaseCommand = ''
-            mkdir -p $out
-            wasm-bindgen --target web --no-typescript --out-dir $out/pkg \
-              target/wasm32-unknown-unknown/release/datboi_emu_ds.wasm
-            # The core asset proper: descriptor.json + worker.js next to
-            # pkg/ (the host speaks only postMessage to worker.js — also
-            # the GPL boundary). The test page rides along for the bare
-            # serve-and-poke loop; the web UI won't ship it.
-            cp -r asset/. $out/
-            cp -r test-page/. $out/
-          '';
-        });
 
       # ---- web UI (web/, D67) ----
       #
@@ -437,23 +189,6 @@
           '';
         };
 
-      # D84: the daemon embeds the emu core the same way (served under
-      # /emu/nds/ by src/emu.rs) — same placement rules as webEnvFor.
-      emuEnvFor = system: {
-        DATBOI_EMU_DS = "${emuDsFor system}";
-      };
-
-      # D67: the datboi binary embeds the nix-built web dist —
-      # datboi-server's build.rs re-exports this for `include_dir!` (and
-      # falls back to invoking `nix build .#web` itself in a dev
-      # checkout, where this var is unset). Applied to the final
-      # build/test/clippy args — NOT to buildDepsOnly, so a web edit
-      # doesn't rebuild the dep cache (same placement as
-      # componentsEnvFor, D66).
-      webEnvFor = system: {
-        DATBOI_WEB_DIST = "${webFor system}";
-      };
-
       # D79: the compiled magic database (file(1)'s magic.mgc) the blob
       # sniff embeds — copied out of nixpkgs' `file` so the output IS
       # the one file datboi-server's build.rs include_bytes!-es. Wired
@@ -465,8 +200,51 @@
           cp ${pkgs.file}/share/misc/magic.mgc $out
         '';
 
-      magicEnvFor = system: {
-        DATBOI_MAGIC_DB = "${magicDbFor system}";
+      # ---- Rust: every workspace through breakbulk (nix/rust.nix) ----
+      #
+      # One derivation per Cargo unit, planned by tracing our own cargo.
+      # The host workspace, the ten standalone component workspaces
+      # (D54: one crate = one lockfile, so one breakbulk workspace each)
+      # and the nightly emu lane are all workspaces of one repository, so
+      # identical units (same crate, features, profile, toolchain) are
+      # shared between them. The non-Rust artifacts the Rust side embeds
+      # ride `datboi` into the module, where each reaches only the
+      # package whose build.rs reads it (D66/D67/D79/D84).
+      components = import ./nix/components.nix { inherit (nixpkgs) lib; };
+
+      repoFor = system:
+        let
+          pkgs = pkgsFor system;
+          wasi = wasiToolchainFor system;
+          repo = breakbulk.lib.mkRepository {
+            inherit pkgs;
+            root = self;
+            modules = [ ./nix/rust.nix ];
+            specialArgs.datboi = {
+              rustToolchain = rustToolchainFor system;
+              emuToolchain = emuToolchainFor system;
+              wasiEnv = wasi.env;
+              unrarSrc = unrarSrcFor system;
+              lzmaSdk = lzmaSdkFor system;
+              web = webFor system;
+              magicdb = magicDbFor system;
+              transforms = transformsOf pkgs repo;
+              emuDs = repo.workspaces.datboi-emu-ds.packages.datboi-emu-ds;
+            };
+          };
+        in
+        repo;
+
+      # Evaluated once per system: a repository's IFD plans are shared by
+      # every output that names it.
+      repos = eachSystem repoFor;
+
+      # All stamped components in one lib/ — the artifacts recipes pin
+      # (D5/D6/D54) and the host embeds at build time (D66): the D54
+      # stamp stage's output, laid out by breakbulk's install stage.
+      transformsOf = pkgs: repo: pkgs.symlinkJoin {
+        name = "datboi-transforms";
+        paths = map (components.productOf repo) components.names;
       };
 
       # ---- WIT package distribution (D89, docs/worlds.md §publishing) ----
@@ -588,20 +366,18 @@
     {
       packages = eachSystem (system:
         let
-          craneLib = craneLibFor system;
-          hostArgs = hostArgsFor system;
+          repo = repos.${system};
         in
         {
-          default = craneLib.buildPackage (hostArgs // componentsEnvFor system // webEnvFor system // magicEnvFor system // emuEnvFor system // {
-            cargoArtifacts = hostDepsFor system;
-            doCheck = false;
-          });
+          # The daemon + CLI binary (bin/datboi), with the components,
+          # web dist, magic.mgc and emu core embedded at build time.
+          default = repo.workspaces.host.packages.datboi;
 
           datboi = self.packages.${system}.default;
 
-          transforms = transformsFor system;
+          transforms = transformsOf (pkgsFor system) repo;
 
-          emu-ds = emuDsFor system;
+          emu-ds = repo.workspaces.datboi-emu-ds.packages.datboi-emu-ds;
 
           web = webFor system;
 
@@ -616,11 +392,25 @@
 
       checks = eachSystem (system:
         let
-          craneLib = craneLibFor system;
-          hostArgs = hostArgsFor system;
-          hostArtifacts = hostDepsFor system;
+          repo = repos.${system};
+          native = (pkgsFor system).stdenv.hostPlatform.rust.rustcTarget;
+          # breakbulk's own gates: every product build of every
+          # workspace, one test run per test binary (nextest per binary,
+          # D62 fsck required), doctests, `host/<triple>/variant-clippy/
+          # check` (--workspace --all-targets -D warnings) and
+          # `host/fmt`. The component workspaces' native target exists
+          # only for their unit tests (crane's `<crate>-test`), so its
+          # products and their checks are left out.
+          isNativeComponentProduct = name:
+            builtins.any
+              (crate: nixpkgs.lib.hasPrefix "${crate}/${native}/" name
+                && builtins.match ".*/(test-[^/]*|doctest)" name == null)
+              components.names;
+          rustChecks = nixpkgs.lib.filterAttrs
+            (name: _: !isNativeComponentProduct name)
+            repo.checks;
         in
-        {
+        rustChecks // {
           build = self.packages.${system}.default;
           transforms = self.packages.${system}.transforms;
           # The emu lane (D84) has no host-side consumer yet (that's
@@ -628,6 +418,9 @@
           # nightly pin + upstream rev honest in the meantime.
           emu-ds = self.packages.${system}.emu-ds;
           web = self.packages.${system}.web;
+          # Short names for the two workspace-wide gates.
+          clippy = repo.checks."host/${native}/variant-clippy/check";
+          fmt = repo.checks."host/fmt";
 
           # svelte-check + vitest over the same fileset source. Generated
           # files first, mirroring the dev flow: `npm run generate` derives
@@ -657,59 +450,11 @@
               installPhase = "touch $out";
             };
 
-          clippy = craneLib.cargoClippy (hostArgs // componentsEnvFor system // webEnvFor system // magicEnvFor system // emuEnvFor system // {
-            cargoArtifacts = hostArtifacts;
-            # --workspace: default-members is just `cargo run` ergonomics
-            # (root Cargo.toml); lints must cover every member.
-            cargoClippyExtraArgs = "--workspace --all-targets -- --deny warnings";
-          });
-
-          fmt = craneLib.cargoFmt {
-            src = hostArgs.src;
-          };
-
           # The commit-time gate, also proven in CI so the hook config
           # can't rot (it runs the same hooks over the whole tree).
           pre-commit = preCommitFor system;
 
-          test = craneLib.cargoNextest (hostArgs // componentsEnvFor system // webEnvFor system // magicEnvFor system // emuEnvFor system // {
-            cargoArtifacts = hostArtifacts;
-            partitions = 1;
-            partitionType = "count";
-            # --workspace: see the clippy note above.
-            cargoNextestExtraArgs = "--workspace";
-            # The D62 fsck-in-CI gate: fsck.vfat must exist and MUST run
-            # (the test skips gracefully outside nix; CI never skips).
-            # sqlite3: the D122 bless gate walks a row back by hand in
-            # cache.db (crates/datboi/tests/cli.rs).
-            nativeCheckInputs = [ (pkgsFor system).dosfstools (pkgsFor system).sqlite ];
-            DATBOI_REQUIRE_FSCK = "1";
-          });
-
-        } // nixpkgs.lib.listToAttrs (map
-          # Component unit tests run natively per crate (logic is
-          # target-independent; wasm artifacts are exercised by the host
-          # determinism/extractor gates). `--no-tests=pass` because an
-          # extractor's logic can be entirely wasm-guest (ex-unrar's is C++
-          # under the sandbox; its conformance lives in datboi-runtime), so
-          # a crate legitimately has zero host-native tests.
-          (crate:
-            let
-              args = builtins.removeAttrs (wasmCrateArgsFor system crate)
-                [ "CARGO_BUILD_TARGET" "doCheck" ] // {
-                pname = "${crate}-host";
-              };
-            in
-            {
-              name = "${crate}-test";
-              value = craneLib.cargoNextest (args // {
-                cargoArtifacts = craneLib.buildDepsOnly args;
-                partitions = 1;
-                partitionType = "count";
-                cargoNextestExtraArgs = "--no-tests=pass";
-              });
-            })
-          wasmCrateNames)
+        }
         # D95: boot a VM, enable the module, prove the daemon comes up
         # and serves. Linux-only (nixosTest needs KVM); built on demand,
         # not on the default `nix build` path.
@@ -743,13 +488,17 @@
           preCommit = preCommitFor system;
         in
         {
+          # Hand-written rather than breakbulk's workspace devShell: that
+          # one merges every package's env into the shell, and the D66/D67
+          # dev flow depends on DATBOI_* staying UNSET here (see below).
           default = pkgs.mkShell {
-            inputsFrom = [ self.packages.${system}.default ];
-
             # Installs the pre-commit hook into .git/hooks on shell entry
             # (direnv), so formatting is enforced before every commit.
             shellHook = preCommit.shellHook;
-            buildInputs = preCommit.enabledPackages;
+            # libmagic for the `magic` crate (D79), found by its build
+            # script the same way the nix build's packages.magic-sys
+            # input provides it.
+            buildInputs = preCommit.enabledPackages ++ [ pkgs.file ];
 
             nativeBuildInputs = [
               rustToolchain
@@ -764,6 +513,8 @@
               pkgs.wasmtime
               # FAT32 image synthesis gate (D62 fsck-in-CI)
               pkgs.dosfstools
+              # the D122 bless gate's hand-walked cache.db row
+              pkgs.sqlite
               nix-direnv.packages.${system}.default
               # web/ toolchain (D67): the link hook symlinks the store-built
               # node_modules into web/ on shell entry (npmRoot below, rof-gui
@@ -785,10 +536,9 @@
             # crates' build.rs runs `nix build .#transforms` / `.#web`
             # itself and watches the sources, so edits propagate on the
             # next cargo build with no shell reload. Hermetic builds
-            # (crane) set the vars.
+            # (nix/rust.nix) set the vars.
           };
         });
-
       # Consume as a flake dep: add `overlays.default` for `pkgs.datboi`,
       # or import `nixosModules.default` and `services.datboi.enable = true`
       # (D95, docs/infra.md §NixOS module). The module defaults its
