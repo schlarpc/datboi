@@ -188,7 +188,7 @@ structurally free.
   lepton_file_writer.rs routed through it) yields a ZERO-import
   component; upstream PR is the right home, `[patch.crates-io]` on a
   fork rev the interim (D66 fetch+patch posture, Rust flavour; nix
-  needs the git dep's outputHash in the crane args). wasm roundtrip
+  needs the git dep's narHash in nix/rust.nix's `gitHashes`). wasm roundtrip
   (encode+decode) of the 3.8 MB sample: 1.4 s including JIT, ~2×
   native; peak ~100 MiB. Memory is 2 B/coefficient (pixels × components
   × 2), so the crate's default 16386-px dimension cap can exceed the

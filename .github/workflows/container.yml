@@ -29,7 +29,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v22
 
       # Nix store cache over the GitHub Actions cache — check and publish
-      # share store paths across runs (the wasm/crane trees are the win).
+      # share store paths across runs (breakbulk's per-unit Rust derivations are the win).
       # FlakeHub cache is off: we're not registered, so it only 401-spammed
       # the log; the GitHub Actions cache is the one we actually use.
       - uses: DeterminateSystems/magic-nix-cache-action@v14

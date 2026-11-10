@@ -48,8 +48,15 @@ this file points at them and covers what an agent trips over.
 - Full hermetic proof when flake/deps/build.rs change:
   `nix build .#datboi`.
 - Embedded artifacts (wasm components, web dist, magic.mgc) ride
-  `DATBOI_*` env vars: crane sets them; dev builds' build.rs falls
-  back to `nix build .#<output>` itself (D66 pattern).
+  `DATBOI_*` env vars: the nix build sets them per package
+  (`nix/rust.nix`, breakbulk); dev builds' build.rs falls back to
+  `nix build .#<output>` itself (D66 pattern).
+- Rust builds are breakbulk (`nix/rust.nix`): one derivation per Cargo
+  unit, planned by running cargo during evaluation (IFD), so the first
+  eval after a Cargo.toml/lock change takes minutes. Checks are one
+  per test binary (`checks.<system>."host/<triple>/<pkg>/test-<bin>"`,
+  nextest, D62 fsck armed) plus doctests, `clippy`, `fmt`, and the
+  non-Rust gates.
 
 ## API contract (D69)
 

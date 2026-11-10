@@ -13,7 +13,8 @@ and reads unlike the user's other repos. If outputs explode, split into
 
 ```
 datboi/
-├── flake.nix                  # crane + rust-overlay + importNpmLock
+├── flake.nix                  # breakbulk + rust-overlay + importNpmLock
+├── nix/rust.nix               # breakbulk modules: every Rust workspace
 ├── rust-toolchain.toml        # stable + wasm32-unknown-unknown target (D42)
 ├── Cargo.toml                 # host workspace
 ├── crates/

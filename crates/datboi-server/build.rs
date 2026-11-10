@@ -4,7 +4,7 @@
 //! (`packages.magicdb`, nixpkgs' file(1) magic.mgc) for the blob
 //! sniff, on the same rails.
 //!
-//! Hermetic builds (crane/CI) set `DATBOI_WEB_DIST` / `DATBOI_MAGIC_DB`
+//! Hermetic builds (nix/rust.nix, CI) set `DATBOI_WEB_DIST` / `DATBOI_MAGIC_DB`
 //! and this script only re-exports them. In a dev checkout the
 //! variables are unset and the script builds the outputs itself via
 //! the flake — nix caching makes that near-free, and the

@@ -1,6 +1,7 @@
 //! Golden-fixture integration tests for the dat parsers, exercising the
 //! dats gotcha list per format. cmpro fixtures are inline raw strings
-//! (non-.xml files don't survive the flake's crane source filter).
+//! (a holdover from the old crane build, whose source filter dropped
+//! non-.xml files; breakbulk's source view keeps the whole crate).
 
 use datboi_formats::model::{ClaimKind, ClaimStatus, DatFile, ParseError};
 use datboi_formats::{cmpro, listxml, logiqx, parse, softlist};

@@ -1,7 +1,7 @@
 //! D66: embedded components come from the nix-built transform
 //! derivations, never a checked-in artifact.
 //!
-//! Hermetic builds (crane/CI) set `DATBOI_COMPONENTS_DIR` and this
+//! Hermetic builds (nix/rust.nix, CI) set `DATBOI_COMPONENTS_DIR` and this
 //! script only re-exports it. In a dev checkout the variable is unset
 //! and the script builds the components itself via the flake — nix
 //! caching makes that near-free, and the `rerun-if-changed` watches
