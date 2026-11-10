@@ -21,7 +21,7 @@ const COMPONENT: &[u8] = include_bytes!(concat!(
 ));
 
 /// blake3 of the fixture — the identity a recipe would pin.
-const COMPONENT_BLAKE3: &str = "7ce9d1ec5e94e569528bf26a2fab5c8d4653d15b448126f9284d6da872922dcd";
+const COMPONENT_BLAKE3: &str = "6dd3bbdbb0cddcc3a5cd0c07192384bdca5c4ee4e06382d9f48f931a46422637";
 
 /// Dolphin's vector: GALE disc 0 at 0x600000.
 const ID: [u8; 4] = *b"GALE";

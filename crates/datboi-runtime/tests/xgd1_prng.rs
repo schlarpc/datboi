@@ -20,7 +20,7 @@ const COMPONENT: &[u8] = include_bytes!(concat!(
 ));
 
 /// blake3 of the fixture — the identity a recipe would pin.
-const COMPONENT_BLAKE3: &str = "264640d875d81e02d5958b2839051465d762e1abd92a6c126557482fafd65701";
+const COMPONENT_BLAKE3: &str = "e85ead9a34cd36f08a9cf94e50c6a51b9a73c7382d0b5a85c85ebb951df4c42a";
 
 /// Halo: Combat Evolved (USA) (v1.02), game-partition sector 0 — the
 /// seed the prototype recovered and confirmed against sectors 0..31.

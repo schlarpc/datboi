@@ -5315,3 +5315,45 @@ The cabinet's view runs `working,no-bios,no-mechanical`. `parents-only`
 stays for the case it was written for — a 1G1R-shaped set where the
 family, not the title, is the unit — and this is the note for whoever
 reaches for it next.
+
+## D131 — PROPOSED (pending sign-off): component bytes re-minted by the breakbulk build; re-pin, don't match crane (2026-11-10)
+
+**Status: PROPOSED on the `breakbulk-port` branch, not ruled.** It
+rides in its own commit so it can be dropped with the port.
+
+Moving the Rust builds from crane to breakbulk changes the bytes of
+all ten components, so six `component_bytes_are_pinned` goldens fail
+(the other four components are unpinned). The D54 stamps are
+identical (`tree:…;guest:…` equal `git rev-parse`), and so is the
+code: after normalising call targets, constants and memory offsets,
+every function body of every component matches its crane twin as a
+multiset, and code-section sizes are equal to the byte. Two things
+differ. (1) **Panic-location strings in the data section.** crane's
+bytes name its own build layout: the guest crate as
+`/build/nest/datboi-guest-transform/…`, rust-src as a scrubbed
+`/nix/store/eeee…-rust-default-1.96.1/lib/rustlib/src/rust/library/…`,
+registry crates under crane's vendor directory. breakbulk remaps them
+to `./crates/datboi-guest-transform/…`, `/rustc/<commit>/library/…`
+(rustup's own convention) and `<crate>-<version>/src/…`. The data sections
+shrink by 36–2020 bytes, and every load/store/const that points into
+data shifts with them. (2) **Function order** is permuted in nine of
+ten modules (2–78 positions); the set of bodies is unchanged.
+breakbulk's bytes reproduce under `nix build --rebuild` (unit and stamp
+stage checked). So the new bytes are the more canonical of the two,
+because they no longer encode one build tool's sandbox layout. The
+port re-pins rather than bending breakbulk to reproduce crane's paths.
+
+Consequence under D65: every shipped component gets a new hash,
+including the unpinned ones (xf-reference, xf-reference-stream,
+ex-unrar, ex-7z). The deploy is the policy. Old hashes stay in the CAS
+and keep resolving for recipes that pin them. The sweep re-covers the
+corpus for the new hashes as ordinary idle-time work. That is the one
+real cost of the switch, and it falls on the next deploy.
+
+*Rejected:* keeping crane's bytes by injecting its paths through
+`--remap-path-prefix` in the breakbulk build (it would pin a
+deleted tool's sandbox layout into the format forever); keeping crane
+for the component lanes only (two Rust build systems in one flake, for
+bytes that carry no meaning); skipping the pin tests (D54 says
+component bytes are a reproducibility contract, and the pins are how
+that contract is checked).

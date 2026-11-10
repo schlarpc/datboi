@@ -24,7 +24,7 @@ const COMPONENT: &[u8] = include_bytes!(concat!(
 ));
 
 /// blake3 of the fixture — the identity a recipe would pin.
-const COMPONENT_BLAKE3: &str = "fdf50a69d036498612b05c81ed43a9e845bb970edd4f9e59791756ba6af0a9ba";
+const COMPONENT_BLAKE3: &str = "7af9162fa315ac93002eec244f766cec2abf6d1404fd7cdcacb00f1316582d57";
 
 fn pattern(len: usize, seed: u64) -> Vec<u8> {
     let mut state = seed;

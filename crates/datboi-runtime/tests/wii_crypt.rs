@@ -25,7 +25,7 @@ const COMPONENT: &[u8] = include_bytes!(concat!(
 ));
 
 /// blake3 of the fixture — the identity a recipe would pin.
-const COMPONENT_BLAKE3: &str = "3c0f4c6bc4ed652375ffe5e4bc44dee652e5b3c574a7e4e60b88046a18fc0789";
+const COMPONENT_BLAKE3: &str = "0bd04670278739ba893c8b913128fdab43b9d56476c60f94e9a32cfa25758867";
 
 /// A partition spanning two groups, the second partial (64 + 5 sectors).
 const SECTORS: u64 = GROUP_SECTORS as u64 + 5;

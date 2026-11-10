@@ -27,7 +27,7 @@ const COMPONENT: &[u8] = include_bytes!(concat!(
 ));
 
 /// blake3 of the fixture — the identity a recipe would pin.
-const COMPONENT_BLAKE3: &str = "33aa9577b7017529db21c92db72b9c6fdcdb3091abb0ba7d291ee9c3fb122498";
+const COMPONENT_BLAKE3: &str = "4362b6fa4ae7ec450e8f34155118129c901c049354989db14ad2aaad981cdb77";
 
 const MEMBER: &[u8] = include_bytes!("fixtures/preflate_member.deflate");
 const CORRECTIONS: &[u8] = include_bytes!("fixtures/preflate_corrections.bin");
