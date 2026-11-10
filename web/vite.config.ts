@@ -43,5 +43,11 @@ export default defineConfig({
   },
   test: {
     environment: 'happy-dom',
+    // A test's first dynamic import() pays the module's cold transform
+    // (svelte + wuchale), and checks.web-test runs beside clippy and
+    // nextest in the same `nix flake check`: on a loaded builder that
+    // alone overran vitest's 5 s default (router.test.ts's registry
+    // round-trips). A hung test still fails, just later.
+    testTimeout: 30_000,
   },
 });
